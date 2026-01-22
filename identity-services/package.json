@@ -1,0 +1,26 @@
+{
+  "name": "@launchpad/root_project",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "build": "pnpm -r --workspace-root=false run build",
+    "dev": "pnpm -r --parallel --workspace-root=false run dev",
+    "lint": "pnpm -r --workspace-root=false run lint",
+    "format": "pnpm -r --workspace-root=false run format",
+    "test": "pnpm -r --workspace-root=false run test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.14.0",
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^25.0.3",
+    "@typescript-eslint/eslint-plugin": "^8.50.1",
+    "@typescript-eslint/parser": "^8.50.1",
+    "eslint": "^9.39.2",
+    "prettier": "^3.7.4",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
