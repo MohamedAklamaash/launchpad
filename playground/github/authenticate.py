@@ -48,12 +48,11 @@ def callback_github(request: Request):
     }
     repos = []
     page = 1
-    page_size = 100
     while True:
         r = requests.get(
             "https://api.github.com/user/repos",
             headers=headers,
-            params={"visibility": "all", "affiliation": "owner,collaborator,organization_member", "per_page": page_size, "page": page},
+            params={"visibility": "all", "affiliation": "owner,collaborator,organization_member", "per_page": 100, "page": page},
         )
         r.raise_for_status()
         data = r.json()
