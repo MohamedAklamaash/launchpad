@@ -8,14 +8,7 @@ export const sequelize = new Sequelize(
     `${env.DATABASE_HOST}:${env.DATABASE_PORT}/${env.DATABASE_NAME}`,
     {
         dialect: "postgres",
-        dialectOptions: env.DATABASE_SSL
-            ? {
-                ssl: {
-                    require: true,
-                    rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED,
-                },
-            }
-            : {},
+        dialectOptions: {}, // need to add ssl options here
         logging:
             env.NODE_ENV === "development"
                 ? (msg: string) => logger.info({ sequelize: msg })

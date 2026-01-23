@@ -9,6 +9,7 @@ export interface UserOTPAttributes {
     invited_user_id: string;
     otp: string;
     expires_at: Date;
+    infra_id: string
 }
 
 export type UserOTPCreationAttributes = Optional<
@@ -21,6 +22,7 @@ export class UserOTP extends Model<UserOTPAttributes, UserOTPCreationAttributes>
     declare invited_user_id: string;
     declare otp: string;
     declare expires_at: Date;
+    declare infra_id: string;
 }
 
 UserOTP.init(
@@ -40,6 +42,10 @@ UserOTP.init(
         },
         otp: {
             type: DataTypes.STRING,
+            allowNull: false,
+        },
+        infra_id: {
+            type: DataTypes.UUID,
             allowNull: false,
         },
         expires_at: {

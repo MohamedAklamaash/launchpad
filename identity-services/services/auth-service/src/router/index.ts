@@ -1,8 +1,13 @@
 import { Router, Request, Response } from "express";
 import { connectToDatabase } from "@/db/sequalize";
+import { authRouter } from "@/router/invited-user.routes";
+import { userRouter } from "@/router/user.router";
 
 export const registerRoutes = (): Router => {
     const app = Router();
+
+    app.use("/auth", authRouter);
+    app.use("/user", userRouter);
 
     app.get("/liveness", (_req: Request, res: Response) => {
         res.status(200).json({ status: "alive" });

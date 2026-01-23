@@ -19,12 +19,18 @@ export interface InvitedUserLoginInput {
     infra_id: string; // a user can belong to multiple infras but they can join into an infra one by one
 }
 
+export interface AuthenticateUserInput {
+    invited_user_id: string;
+    otp: string;
+    infra_id: string;
+}
+
 export interface UserData {
     id: string;
     email: string;
     user_name: string;
     role: USER_ROLE;
-    infra_id: string;
+    infra_id: string[];
     createdAt: string;
 }
 

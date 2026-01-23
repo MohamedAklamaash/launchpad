@@ -14,6 +14,16 @@ const envSchema = z.object({
     DATABASE_SSL_REJECT_UNAUTHORIZED: z.coerce.boolean().default(false),
 
     AUTH_DB_URL: z.string().url(),
+
+    JWT_SECRET: z.string(),
+    JWT_REFRESH_SECRET: z.string(),
+    JWT_EXPIRES_IN: z.string(),
+    JWT_REFRESH_EXPIRES_IN: z.string(),
+
+    GITHUB_TOKEN: z.string(),
+    GITHUB_CLIENT_ID: z.string(),
+    GITHUB_CLIENT_SECRET: z.string(),
+    GITHUB_REDIRECT_URI: z.string(),
 });
 
 export const env = createEnv(envSchema, {

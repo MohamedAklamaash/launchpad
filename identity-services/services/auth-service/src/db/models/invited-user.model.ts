@@ -76,7 +76,7 @@ InvitedUser.init(
         },
         opt_id: {
             type: DataTypes.UUID,
-            allowNull: false,
+            allowNull: true,
         },
         created_at: {
             type: DataTypes.DATE,

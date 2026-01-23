@@ -6,6 +6,8 @@ export interface UserAttributes {
     id: string;
     email: string;
     user_name: string;
+    github_id?: string;
+    github_token?: string;
     profile_url?: string;
     created_at: Date;
     updated_at: Date;
@@ -14,13 +16,15 @@ export interface UserAttributes {
 
 export type UserCreationAttributes = Optional<
     UserAttributes,
-    "id" | "created_at" | "updated_at" | "metadata" | "profile_url"
+    "id" | "created_at" | "updated_at" | "metadata" | "profile_url" | "github_id" | "github_token"
 >;
 
 export class User extends Model<UserAttributes, UserCreationAttributes> {
     declare id: string;
     declare email: string;
     declare user_name: string;
+    declare github_id?: string;
+    declare github_token?: string;
     declare profile_url?: string;
     declare createdAt: Date;
     declare updatedAt: Date;
@@ -42,6 +46,15 @@ User.init({
         type: DataTypes.STRING,
         allowNull: false,
         unique: true,
+    },
+    github_id: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        unique: true,
+    },
+    github_token: {
+        type: DataTypes.STRING,
+        allowNull: true,
     },
     profile_url: {
         type: DataTypes.STRING,
