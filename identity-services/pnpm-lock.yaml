@@ -58,7 +58,7 @@ importers:
   services/auth-service:
     dependencies:
       '@launchpad/common':
-        specifier: workspace:^
+        specifier: workspace:*
         version: link:../../packages/common
       amqplib:
         specifier: ^0.10.9
@@ -87,12 +87,31 @@ importers:
       sequelize:
         specifier: ^6.37.7
         version: 6.37.7(pg@8.17.2)
+    devDependencies:
+      '@types/amqplib':
+        specifier: ^0.10.8
+        version: 0.10.8
+      '@types/cors':
+        specifier: ^2.8.19
+        version: 2.8.19
+      '@types/express':
+        specifier: ^5.0.6
+        version: 5.0.6
+      '@types/morgan':
+        specifier: ^1.9.10
+        version: 1.9.10
 
   services/notification-service:
     dependencies:
       '@launchpad/common':
         specifier: workspace:^
         version: link:../../packages/common
+      '@types/cors':
+        specifier: ^2.8.19
+        version: 2.8.19
+      '@types/express':
+        specifier: ^5.0.6
+        version: 5.0.6
       amqplib:
         specifier: ^0.10.9
         version: 0.10.9
@@ -117,6 +136,12 @@ importers:
       '@launchpad/common':
         specifier: workspace:^
         version: link:../../packages/common
+      '@types/cors':
+        specifier: ^2.8.19
+        version: 2.8.19
+      '@types/express':
+        specifier: ^5.0.6
+        version: 5.0.6
       amqplib:
         specifier: ^0.10.9
         version: 0.10.9
@@ -360,11 +385,17 @@ packages:
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
 
+  '@types/amqplib@0.10.8':
+    resolution: {integrity: sha512-vtDp8Pk1wsE/AuQ8/Rgtm6KUZYqcnTgNvEHwzCkX8rL7AGsC6zqAfKAAJhUZXFhM/Pp++tbnUHiam/8vVpPztA==}
+
   '@types/body-parser@1.19.6':
     resolution: {integrity: sha512-HLFeCYgz89uk22N5Qg3dvGvsv46B8GLvKKo1zKG4NybA8U2DiEO3w9lqGg29t/tfLRJpJ6iQxnVw4OnB7MoM9g==}
 
   '@types/connect@3.4.38':
     resolution: {integrity: sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==}
+
+  '@types/cors@2.8.19':
+    resolution: {integrity: sha512-mFNylyeyqN93lfe/9CSxOGREz8cpzAhH+E93xJ4xWQf62V8sQ/24reV2nyzUWM6H6Xji+GGHpkbLe7pVoUEskg==}
 
   '@types/debug@4.1.12':
     resolution: {integrity: sha512-vIChWdVG3LG1SMxEvI/AK+FWJthlrqlTu7fbrlywTkkaONwk/UAGaULXRlf8vkzFBLVm0zkMdCquhL5aOjhXPQ==}
@@ -383,6 +414,9 @@ packages:
 
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
+
+  '@types/morgan@1.9.10':
+    resolution: {integrity: sha512-sS4A1zheMvsADRVfT0lYbJ4S9lmsey8Zo2F7cnbYjWHP67Q0AwMYuuzLlkIM2N8gAbb9cubhIVFwcIN2XyYCkA==}
 
   '@types/ms@2.1.0':
     resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
@@ -1510,12 +1544,20 @@ snapshots:
 
   '@pinojs/redact@0.4.0': {}
 
+  '@types/amqplib@0.10.8':
+    dependencies:
+      '@types/node': 25.0.10
+
   '@types/body-parser@1.19.6':
     dependencies:
       '@types/connect': 3.4.38
       '@types/node': 25.0.10
 
   '@types/connect@3.4.38':
+    dependencies:
+      '@types/node': 25.0.10
+
+  '@types/cors@2.8.19':
     dependencies:
       '@types/node': 25.0.10
 
@@ -1541,6 +1583,10 @@ snapshots:
   '@types/http-errors@2.0.5': {}
 
   '@types/json-schema@7.0.15': {}
+
+  '@types/morgan@1.9.10':
+    dependencies:
+      '@types/node': 25.0.10
 
   '@types/ms@2.1.0': {}
 

@@ -21,6 +21,8 @@
   "packageManager": "pnpm@10.14.0",
   "dependencies": {
     "@launchpad/common": "workspace:^",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "amqplib": "^0.10.9",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",

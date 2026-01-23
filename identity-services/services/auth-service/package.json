@@ -20,7 +20,7 @@
   "license": "ISC",
   "packageManager": "pnpm@10.14.0",
   "dependencies": {
-    "@launchpad/common":"workspace:^",
+    "@launchpad/common": "workspace:*",
     "amqplib": "^0.10.9",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
@@ -30,5 +30,11 @@
     "morgan": "^1.10.1",
     "pg": "^8.17.2",
     "sequelize": "^6.37.7"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.10.8",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/morgan": "^1.9.10"
   }
 }
