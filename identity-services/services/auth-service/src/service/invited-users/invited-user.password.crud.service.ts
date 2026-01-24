@@ -4,8 +4,9 @@ import { sequelize } from "@/db/sequalize";
 import { hashPassword, comparePassword } from "@/utils/handle-password";
 import { signAccessToken, verifyAccessToken } from "@/utils/handle-token";
 import { Op } from "sequelize";
-import { HttpError } from "@launchpad/common";
+import { HttpError, FORGOT_PASSWORD_EVENT } from "@launchpad/common";
 import { InvitedUserForgotPasswordInput, InvitedUserVerifyResetOtpInput, InvitedUserResetPasswordInput, InvitedUserUpdatePasswordInput } from "@/types/auth.invited_user.types";
+import { userAuthenticationQueue } from "@/messaging/producer/user-created.message";
 
 export class PasswordService extends BaseService {
 
@@ -19,7 +20,16 @@ export class PasswordService extends BaseService {
             if (!targetInfraId) throw new HttpError(400, "User belongs to no infra");
 
             const otp = await this.createOTP(user.id, targetInfraId, transaction);
-            // TODO: In a real app, send this OTP via email instead of returning it
+
+            await userAuthenticationQueue.add(FORGOT_PASSWORD_EVENT, {
+                user_id: user.id,
+                email,
+                otp: otp.otp,
+                infra_id: targetInfraId,
+                source: "forgot-password",
+                user_name: user.user_name,
+            });
+
             return otp.otp;
         });
     }

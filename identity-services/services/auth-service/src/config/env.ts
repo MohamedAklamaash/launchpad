@@ -30,6 +30,8 @@ const envSchema = z.object({
     REDIS_PASSWORD: z.string(),
     REDIS_DB: z.coerce.number().default(0),
     REDIS_USERNAME: z.string(),
+
+    RABBITMQ_URL: z.string()
 });
 
 export const env = createEnv(envSchema, {

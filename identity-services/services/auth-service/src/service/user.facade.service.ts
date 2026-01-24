@@ -3,6 +3,7 @@ import { User } from "@/db";
 import { sequelize } from "@/db/sequalize";
 import { env } from "@/config/env";
 import { GithubCallbackInput, GithubUserUpsertInput } from "@/types/auth.user.types";
+import { PublishUserRegistered } from "@/messaging/producer/user-created.message";
 
 export class UserFacadeService {
     private clientId = env.GITHUB_CLIENT_ID;
@@ -34,8 +35,9 @@ export class UserFacadeService {
         });
 
         const { login: username, id: github_id, avatar_url, email } = userRes.data;
+        const githubIdStr = String(github_id);
 
-        return { token, username, github_id, avatar_url, email };
+        return { token, username, github_id: githubIdStr, avatar_url, email };
     }
 
     public async upsertUser(githubData: GithubUserUpsertInput) {
@@ -58,7 +60,20 @@ export class UserFacadeService {
                     github_token: githubData.token,
                     profile_url: githubData.avatar_url,
                     email: githubData.email ?? `${githubData.github_id}@github.com`,
+                    role: "admin",
+                    
                 }, { transaction });
+
+                PublishUserRegistered({
+                    id: user.id,
+                    email: user.email,
+                    user_name: user.user_name,
+                    created_at: user.created_at, // Access via property, model should map it
+                    infra_id: [], // GitHub users default to empty infra?
+                    role: user.role,
+                    updated_at: user.updated_at,
+                    metadata: user.metadata || {}
+                });
             }
 
             return user;

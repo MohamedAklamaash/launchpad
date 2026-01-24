@@ -2,17 +2,18 @@ import { Request, Response } from "express";
 import { InvitedUserFacade } from "@/service/invited-user.facade.service";
 import { HttpError } from "@launchpad/common";
 import { USER_ROLE } from "@/types/auth.invited_user.types";
+import { logger } from "@/utils/logger";
 
 const invitedUserFacade = new InvitedUserFacade();
 
 export const RegisterInvitedUser = async (req: Request, res: Response) => {
     try {
-        const { email, password, userName, infraId, role } = req.body;
+        const { email, password, user_name, infra_id, role } = req.body;
         const authRes = await invitedUserFacade.register({
             email,
             password,
-            user_name: userName,
-            infra_id: infraId,
+            user_name,
+            infra_id,
             role: role as USER_ROLE
         });
 
@@ -25,8 +26,8 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
 
 export const LoginUser = async (req: Request, res: Response) => {
     try {
-        const { email, password, infraId } = req.body;
-        const authRes = await invitedUserFacade.login({ email, password, infra_id: infraId });
+        const { email, password, infra_id } = req.body;
+        const authRes = await invitedUserFacade.login({ email, password, infra_id });
         return res.status(200).json(authRes);
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
@@ -36,7 +37,7 @@ export const LoginUser = async (req: Request, res: Response) => {
 
 export const AuthenticateOTP = async (req: Request, res: Response) => {
     try {
-        const { email, otp } = req.query as { email: string; otp: string }; // simple casting, schema validation should handle this in real middleware
+        const { email, otp } = req.query as { email: string; otp: string };
         const authRes = await invitedUserFacade.authenticateWithOTP({
             email,
             otp
@@ -76,7 +77,7 @@ export const VerifyResetOTP = async (req: Request, res: Response) => {
 
 export const ResetPassword = async (req: Request, res: Response) => {
     try {
-        const { token, newPassword } = req.body; // updated from email to token as per new flow
+        const { token, newPassword } = req.body;
         const success = await invitedUserFacade.resetPassword({
             reset_token: token,
             new_password: newPassword

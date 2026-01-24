@@ -2,13 +2,21 @@ import { createApp } from "./app";
 import { env } from "@/config/env";
 import { logger } from "@/utils/logger";
 import { createServer } from "node:http";
+import { ConnectToDatabase, CloseDatabase } from "@/db/sequalize";
+import { initMessaging, closeMessaging } from "@/messaging/consumer/user.consumer";
+import { initModels } from "@/db";
 
 const main = async () => {
+
+    await ConnectToDatabase();
+    await initModels()
+    await initMessaging();
+
     const app = createApp();
     const server = createServer(app);
 
     const shutdown = () => {
-        Promise.all([]).catch((error: unknown) => {
+        Promise.all([CloseDatabase(), closeMessaging()]).catch((error: unknown) => {
             logger.error({ error }, "Error shutting down tasks")
         }).finally(() => {
             server.close(() => {

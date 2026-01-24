@@ -7,5 +7,5 @@ export const redisConfig: RedisOptions = {
     password: env.REDIS_PASSWORD,
     db: env.REDIS_DB,
     username: env.REDIS_USERNAME,
-    maxRetriesPerRequest: 5,
+    maxRetriesPerRequest: null,
 };

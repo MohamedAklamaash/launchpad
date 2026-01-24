@@ -35,7 +35,7 @@ RefreshToken.init(
             type: DataTypes.UUID,
             allowNull: false,
             references: {
-                model: "users",
+                model: "invited_users",
                 key: "id",
             }
         },

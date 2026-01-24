@@ -3,6 +3,7 @@ import { env } from "@/config/env";
 import { logger } from "@/utils/logger";
 import { createServer } from "node:http";
 import { ConnectMongoDB, CloseMongoConnection } from "@/db/client/mongo.client";
+import { userEventsWorker } from "@/messaging/consumer/user-event.consumer";
 
 const main = async () => {
 
@@ -12,7 +13,7 @@ const main = async () => {
     const server = createServer(app);
 
     const shutdown = () => {
-        Promise.all([CloseMongoConnection()]).catch((error: unknown) => {
+        Promise.all([CloseMongoConnection(), userEventsWorker.close()]).catch((error: unknown) => {
             logger.error({ error }, "Error shutting down tasks")
         }).finally(() => {
             server.close(() => {

@@ -23,6 +23,7 @@
     "@launchpad/common": "workspace:^",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/nodemailer": "^7.0.5",
     "amqplib": "^0.10.9",
     "bullmq": "^5.66.7",
     "cors": "^2.8.5",
@@ -32,6 +33,7 @@
     "ioredis": "^5.9.2",
     "mongodb": "^7.0.0",
     "morgan": "^1.10.1",
+    "nodemailer": "^7.0.12",
     "resend": "^6.8.0"
   }
 }

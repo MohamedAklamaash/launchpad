@@ -3,8 +3,8 @@ import { InvitedUser } from "@/db";
 import { sequelize } from "@/db/sequalize";
 import { hashPassword } from "@/utils/handle-password";
 import { HttpError } from "@launchpad/common";
-import { InvitedUserRegisterInput } from "@/types/auth.invited_user.types";
-import { userAuthenticationQueue } from "@/messaging/producer/user-created.message";
+import { InvitedUserRegisterInput, USER_ROLE } from "@/types/auth.invited_user.types";
+import { PublishUserRegistered, userAuthenticationQueue } from "@/messaging/producer/user-created.message";
 import { AUTHENTICATE_INVITED_USER_EVENT } from "@launchpad/common";
 
 export class InvitedUserService extends BaseService {
@@ -13,6 +13,10 @@ export class InvitedUserService extends BaseService {
         const { email, password, user_name, infra_id, role } = input;
         return sequelize.transaction(async (transaction) => {
             const existingUser = await InvitedUser.findOne({ where: { email }, transaction });
+            const existingUserName = await InvitedUser.findOne({ where: { user_name }, transaction });
+            if (existingUserName && !existingUser) {
+                throw new HttpError(409, "Username already taken");
+            }
             let user: InvitedUser;
 
             if (existingUser) {
@@ -21,7 +25,11 @@ export class InvitedUserService extends BaseService {
                     existingUser.is_authenticated = false;
                     user = await existingUser.save({ transaction });
                 } else {
-                    throw new HttpError(400, "User already exists in this infra");
+                    if (!existingUser.is_authenticated) {
+                        user = existingUser; // User exists but not authenticated, proceed to resend OTP
+                    } else {
+                        throw new HttpError(409, "User already registered and authenticated in this infra");
+                    }
                 }
             } else {
                 const passwordHash = await hashPassword(password);
@@ -30,7 +38,7 @@ export class InvitedUserService extends BaseService {
                     user_name: user_name,
                     infra_id: [infra_id],
                     password_hash: passwordHash,
-                    role: role as any,
+                    role: role as USER_ROLE,
                     is_authenticated: false,
                 }, { transaction });
             }
@@ -45,7 +53,23 @@ export class InvitedUserService extends BaseService {
                 user_name,
             });
 
-            return user;
+            try {
+                PublishUserRegistered({
+                    id: user.id,
+                    email,
+                    user_name,
+                    created_at: user.created_at,
+                    infra_id: user.infra_id,
+                    role,
+                    updated_at: user.updated_at,
+                    metadata: {}
+                });
+            } catch (pubError) {
+                console.error("Failed to publish user registered event", pubError);
+                // Do not fail transaction if publishing fails, or maybe we should? best effort for now.
+            }
+
+            return { user, otp: otpRecord.otp };
         });
     }
 }

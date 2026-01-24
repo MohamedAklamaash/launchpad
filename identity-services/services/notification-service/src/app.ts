@@ -15,7 +15,7 @@ export const createApp = (): Express => {
     }));
     const notificationRouter = createRoutes();
 
-    app.use("/notifications", notificationRouter);
+    app.use("/api", notificationRouter);
 
     app.use((_req: Request, res: Response) => {
         res.status(404).json({ message: 'Not Found' });

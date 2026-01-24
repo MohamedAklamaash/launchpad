@@ -6,6 +6,7 @@ export interface UserAttributes {
     id: string;
     email: string;
     user_name: string;
+    role: string;
     github_id?: string;
     github_token?: string;
     profile_url?: string;
@@ -23,11 +24,12 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     declare id: string;
     declare email: string;
     declare user_name: string;
+    declare role: string;
     declare github_id?: string;
     declare github_token?: string;
     declare profile_url?: string;
-    declare createdAt: Date;
-    declare updatedAt: Date;
+    declare created_at: Date;
+    declare updated_at: Date;
     declare metadata: Record<string, unknown>;
 }
 
@@ -46,6 +48,11 @@ User.init({
         type: DataTypes.STRING,
         allowNull: false,
         unique: true,
+    },
+    role: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        defaultValue: "admin",
     },
     github_id: {
         type: DataTypes.STRING,
@@ -70,6 +77,7 @@ User.init({
         allowNull: false,
         defaultValue: DataTypes.NOW,
     },
+
     metadata: {
         type: DataTypes.JSON,
         allowNull: true,
@@ -78,6 +86,6 @@ User.init({
     sequelize,
     tableName: "users",
     timestamps: true,
-    createdAt: "createdAt",
-    updatedAt: "updatedAt",
+    createdAt: "created_at",
+    updatedAt: "updated_at",
 });

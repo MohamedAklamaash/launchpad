@@ -5,8 +5,8 @@ export const registerSchema = z.object({
     body: z.object({
         email: z.email(),
         password: z.string().min(6),
-        userName: z.string().min(3),
-        infraId: z.uuid(),
+        user_name: z.string().min(3),
+        infra_id: z.uuid(),
         role: z.enum(USER_ROLE)
     }),
 });
@@ -15,7 +15,7 @@ export const loginSchema = z.object({
     body: z.object({
         email: z.email(),
         password: z.string().min(6),
-        infraId: z.uuid(),
+        infra_id: z.uuid(),
     }),
 });
 
