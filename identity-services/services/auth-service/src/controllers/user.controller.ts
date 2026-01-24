@@ -13,7 +13,7 @@ export const GitHubCallback = async (req: Request, res: Response) => {
     if (!code) return res.status(400).json({ message: "Missing code" });
 
     try {
-        const githubData = await userService.handleCallback(code);
+        const githubData = await userService.handleCallback({ code });
         const user = await userService.upsertUser(githubData);
 
         return res.status(200).json({

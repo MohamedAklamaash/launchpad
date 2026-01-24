@@ -2,6 +2,7 @@ import express, { type Express, Request, Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import { errorHandler } from "@/middleware/error.middleware";
+import { createRoutes } from "@/router";
 
 export const createApp = (): Express => {
     const app = express()
@@ -12,6 +13,9 @@ export const createApp = (): Express => {
         origin: "*",
         credentials: true
     }));
+    const notificationRouter = createRoutes();
+
+    app.use("/notifications", notificationRouter);
 
     app.use((_req: Request, res: Response) => {
         res.status(404).json({ message: 'Not Found' });

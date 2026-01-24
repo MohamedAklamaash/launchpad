@@ -1,40 +1,50 @@
 import { InvitedUserService } from "@/service/invited-users/inviter-user.crud.service";
 import { PasswordService } from "@/service/invited-users/invited-user.password.crud.service";
 import { InvitedUserAuthService } from "@/service/invited-users/invited-user.auth.service";
+import {
+    InvitedUserRegisterInput,
+    InvitedUserLoginInput,
+    AuthenticateUserInput,
+    InvitedUserForgotPasswordInput,
+    InvitedUserVerifyResetOtpInput,
+    InvitedUserResetPasswordInput,
+    InvitedUserUpdatePasswordInput
+} from "@/types/auth.invited_user.types";
 
 export class InvitedUserFacade {
     private userService = new InvitedUserService();
     private passwordService = new PasswordService();
     private authService = new InvitedUserAuthService();
 
-    public async register(email: string, password: string, userName: string, infraId: string, role: string) {
-        const user = await this.userService.register(email, password, userName, infraId, role);
-        const otp = await this.passwordService.requestPasswordReset(email, infraId);
+    public async register(input: InvitedUserRegisterInput) {
+        const user = await this.userService.register(input);
+        const { email, infra_id } = input;
+        const otp = await this.passwordService.requestPasswordReset({ email, infra_id });
         return { user, otp };
     }
 
-    public async login(email: string, password: string, infraId: string) {
-        return this.authService.login(email, password, infraId);
+    public async login(input: InvitedUserLoginInput) {
+        return this.authService.login(input);
     }
 
-    public async authenticateWithOTP(userId: string, otp: string, infraId: string) {
-        return this.authService.authenticateWithOTP(userId, otp, infraId);
+    public async authenticateWithOTP(input: AuthenticateUserInput) {
+        return this.authService.authenticateWithOTP(input);
     }
 
-    public async forgotPassword(email: string, infraId: string) {
-        return this.passwordService.requestPasswordReset(email, infraId);
+    public async forgotPassword(input: InvitedUserForgotPasswordInput) {
+        return this.passwordService.requestPasswordReset(input);
     }
 
-    public async verifyResetOTP(userId: string, infraId: string, otp: string) {
-        return this.passwordService.verifyResetOTP(userId, infraId, otp);
+    public async verifyResetOTP(input: InvitedUserVerifyResetOtpInput) {
+        return this.passwordService.verifyResetOTP(input);
     }
 
-    public async resetPassword(userId: string, newPassword: string) {
-        return this.passwordService.resetPassword(userId, newPassword);
+    public async resetPassword(input: InvitedUserResetPasswordInput) {
+        return this.passwordService.resetPassword(input);
     }
 
-    public async updatePassword(userId: string, oldPassword: string, newPassword: string) {
-        return this.passwordService.updatePassword(userId, oldPassword, newPassword);
+    public async updatePassword(input: InvitedUserUpdatePasswordInput) {
+        return this.passwordService.updatePassword(input);
     }
 
     public async isPasswordExpired(userId: string) {

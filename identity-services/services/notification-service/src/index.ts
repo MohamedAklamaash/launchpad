@@ -2,13 +2,17 @@ import { createApp } from "./app";
 import { env } from "@/config/env";
 import { logger } from "@/utils/logger";
 import { createServer } from "node:http";
+import { ConnectMongoDB, CloseMongoConnection } from "@/db/client/mongo.client";
 
 const main = async () => {
+
+    await ConnectMongoDB()
+
     const app = createApp();
     const server = createServer(app);
 
     const shutdown = () => {
-        Promise.all([]).catch((error: unknown) => {
+        Promise.all([CloseMongoConnection()]).catch((error: unknown) => {
             logger.error({ error }, "Error shutting down tasks")
         }).finally(() => {
             server.close(() => {

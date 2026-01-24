@@ -2,37 +2,56 @@ import { BaseService } from "@/service/invited-users/invited-user.base.service";
 import { InvitedUser, UserOTP, PasswordSettings } from "@/db";
 import { sequelize } from "@/db/sequalize";
 import { hashPassword, comparePassword } from "@/utils/handle-password";
+import { signAccessToken, verifyAccessToken } from "@/utils/handle-token";
 import { Op } from "sequelize";
 import { HttpError } from "@launchpad/common";
+import { InvitedUserForgotPasswordInput, InvitedUserVerifyResetOtpInput, InvitedUserResetPasswordInput, InvitedUserUpdatePasswordInput } from "@/types/auth.invited_user.types";
 
 export class PasswordService extends BaseService {
 
-    public async requestPasswordReset(email: string, infraId: string) {
+    public async requestPasswordReset(input: InvitedUserForgotPasswordInput) {
+        const { email, infra_id } = input;
         return sequelize.transaction(async (transaction) => {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
             if (!user) throw new HttpError(404, "User not found");
 
-            const otp = await this.createOTP(user.id, infraId, transaction);
+            const targetInfraId = infra_id || user.infra_id[0];
+            if (!targetInfraId) throw new HttpError(400, "User belongs to no infra");
+
+            const otp = await this.createOTP(user.id, targetInfraId, transaction);
+            // TODO: In a real app, send this OTP via email instead of returning it
             return otp.otp;
         });
     }
 
-    public async verifyResetOTP(userId: string, infraId: string, otp: string) {
+    public async verifyResetOTP(input: InvitedUserVerifyResetOtpInput) {
+        const { email, otp } = input;
         return sequelize.transaction(async (transaction) => {
+            const user = await InvitedUser.findOne({ where: { email }, transaction });
+            if (!user) throw new HttpError(404, "User not found");
+
             const otpRecord = await UserOTP.findOne({
-                where: { invited_user_id: userId, infra_id: infraId, otp, expires_at: { [Op.gt]: new Date() } },
+                where: { invited_user_id: user.id, otp, expires_at: { [Op.gt]: new Date() } },
                 transaction
             });
             if (!otpRecord) throw new HttpError(400, "Invalid or expired OTP");
 
             await otpRecord.destroy({ transaction });
-            return true;
+
+            // Return a short-lived reset token specifically for password reset
+            return signAccessToken({ sub: user.id, email: user.email, scope: "password_reset" }, "5m");
         });
     }
 
-    public async resetPassword(userId: string, newPassword: string) {
+    public async resetPassword(input: InvitedUserResetPasswordInput) {
+        const { reset_token: resetToken, new_password: newPassword } = input;
+
+        // In a real implementation we should check the scope inside the token
+        const payload = verifyAccessToken(resetToken);
+        if (!payload || payload.scope !== "password_reset") throw new HttpError(401, "Invalid reset token");
+
         return sequelize.transaction(async (transaction) => {
-            const user = await InvitedUser.findByPk(userId, { transaction });
+            const user = await InvitedUser.findByPk(payload.sub, { transaction });
             if (!user) throw new HttpError(404, "User not found");
 
             user.password_hash = await hashPassword(newPassword);
@@ -47,9 +66,10 @@ export class PasswordService extends BaseService {
         });
     }
 
-    public async updatePassword(userId: string, oldPassword: string, newPassword: string) {
+    public async updatePassword(input: InvitedUserUpdatePasswordInput) {
+        const { email, old_password: oldPassword, new_password: newPassword } = input;
         return sequelize.transaction(async (transaction) => {
-            const user = await InvitedUser.findByPk(userId, { transaction });
+            const user = await InvitedUser.findOne({ where: { email }, transaction });
             if (!user) throw new HttpError(404, "User not found");
 
             const valid = await comparePassword(oldPassword, user.password_hash);

@@ -18,10 +18,16 @@ export interface RefreshTokenPayload {
 export interface AccessTokenPayload {
     sub: string, // userid
     email: string
+    scope?: string
 }
 
-export const signAccessToken = (payload: AccessTokenPayload): string => {
-    return jwt.sign(payload, ACCESS_TOKEN, ACCESS_OPTIONS)
+export const signAccessToken = (payload: AccessTokenPayload, expiresIn?: string): string => {
+    const options: SignOptions = expiresIn ? { ...ACCESS_OPTIONS, expiresIn: expiresIn as any } : ACCESS_OPTIONS;
+    return jwt.sign(payload, ACCESS_TOKEN, options);
+}
+
+export const verifyAccessToken = (token: string): AccessTokenPayload => {
+    return jwt.verify(token, ACCESS_TOKEN) as AccessTokenPayload;
 }
 
 export const signRefreshToken = (payload: RefreshTokenPayload): string => {

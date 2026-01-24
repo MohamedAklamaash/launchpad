@@ -37,9 +37,9 @@ authRouter.post(
     LoginUser
 );
 
-authRouter.post(
-    '/otp/authenticate',
-    validateRequest({ body: otpSchema.shape.body }),
+authRouter.get(
+    '/authenticate-with-otp',
+    validateRequest({ query: otpSchema.shape.query }),
     AuthenticateOTP
 );
 

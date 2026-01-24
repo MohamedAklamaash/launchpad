@@ -20,38 +20,35 @@ export const loginSchema = z.object({
 });
 
 export const otpSchema = z.object({
-    body: z.object({
-        userId: z.uuid(),
+    query: z.object({
+        email: z.email(),
         otp: z.string().length(6),
-        infraId: z.uuid(),
     }),
 });
 
 export const forgotPasswordSchema = z.object({
     body: z.object({
         email: z.email(),
-        infraId: z.uuid(),
     }),
 });
 
 export const verifyResetSchema = z.object({
     body: z.object({
-        userId: z.uuid(),
+        email: z.email(),
         otp: z.string().length(6),
-        infraId: z.uuid(),
     }),
 });
 
 export const resetPasswordSchema = z.object({
     body: z.object({
-        userId: z.uuid(),
+        token: z.string(),
         newPassword: z.string().min(6),
     }),
 });
 
 export const updatePasswordSchema = z.object({
     body: z.object({
-        userId: z.uuid(),
+        email: z.email(),
         oldPassword: z.string().min(6),
         newPassword: z.string().min(6),
     }),

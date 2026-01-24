@@ -24,6 +24,12 @@ const envSchema = z.object({
     GITHUB_CLIENT_ID: z.string(),
     GITHUB_CLIENT_SECRET: z.string(),
     GITHUB_REDIRECT_URI: z.string(),
+
+    REDIS_HOST: z.string(),
+    REDIS_PORT: z.coerce.number().default(6379),
+    REDIS_PASSWORD: z.string(),
+    REDIS_DB: z.coerce.number().default(0),
+    REDIS_USERNAME: z.string(),
 });
 
 export const env = createEnv(envSchema, {

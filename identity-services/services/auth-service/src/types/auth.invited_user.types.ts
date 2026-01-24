@@ -20,9 +20,8 @@ export interface InvitedUserLoginInput {
 }
 
 export interface AuthenticateUserInput {
-    invited_user_id: string;
+    email: string;
     otp: string;
-    infra_id: string;
 }
 
 export interface UserData {
@@ -41,4 +40,25 @@ export interface AuthTokens {
 
 export interface AuthResponse extends AuthTokens {
     user: UserData;
+}
+
+export interface InvitedUserForgotPasswordInput {
+    email: string;
+    infra_id?: string;
+}
+
+export interface InvitedUserVerifyResetOtpInput {
+    email: string;
+    otp: string;
+}
+
+export interface InvitedUserResetPasswordInput {
+    reset_token: string;
+    new_password: string;
+}
+
+export interface InvitedUserUpdatePasswordInput {
+    email: string;
+    old_password: string;
+    new_password: string;
 }

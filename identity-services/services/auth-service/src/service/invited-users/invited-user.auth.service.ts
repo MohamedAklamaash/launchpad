@@ -5,19 +5,21 @@ import { comparePassword } from "@/utils/handle-password";
 import { verifyRefreshToken } from "@/utils/handle-token";
 import { Op } from "sequelize";
 import { HttpError } from "@launchpad/common";
+import { InvitedUserLoginInput, AuthenticateUserInput } from "@/types/auth.invited_user.types";
 
 export class InvitedUserAuthService extends BaseService {
 
-    public async login(email: string, password: string, infraId: string) {
+    public async login(input: InvitedUserLoginInput) {
+        const { email, password, infra_id } = input;
         return sequelize.transaction(async (transaction) => {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
             if (!user) throw new HttpError(404, "User not found");
-            if (!user.infra_id.includes(infraId)) throw new HttpError(403, "User not part of infra");
+            if (!user.infra_id.includes(infra_id)) throw new HttpError(403, "User not part of infra");
 
             const isValid = await comparePassword(password, user.password_hash);
             if (!isValid) throw new HttpError(401, "Invalid password");
 
-            const pendingOtp = await UserOTP.findOne({ where: { invited_user_id: user.id, infra_id: infraId, expires_at: { [Op.gt]: new Date() } }, transaction });
+            const pendingOtp = await UserOTP.findOne({ where: { invited_user_id: user.id, infra_id: infra_id, expires_at: { [Op.gt]: new Date() } }, transaction });
             if (pendingOtp) throw new HttpError(401, "OTP pending for infra");
 
             const refreshToken = await this.createRefreshToken(user.id, transaction);
@@ -25,16 +27,17 @@ export class InvitedUserAuthService extends BaseService {
         });
     }
 
-    public async authenticateWithOTP(userId: string, otp: string, infraId: string) {
+    public async authenticateWithOTP(input: AuthenticateUserInput) {
+        const { email, otp } = input;
         return sequelize.transaction(async (transaction) => {
+            const user = await InvitedUser.findOne({ where: { email }, transaction });
+            if (!user) throw new HttpError(404, "User not found");
+
             const otpRecord = await UserOTP.findOne({
-                where: { invited_user_id: userId, otp, infra_id: infraId, expires_at: { [Op.gt]: new Date() } },
+                where: { invited_user_id: user.id, otp, expires_at: { [Op.gt]: new Date() } },
                 transaction
             });
             if (!otpRecord) throw new HttpError(400, "Invalid or expired OTP");
-
-            const user = await InvitedUser.findByPk(userId, { transaction });
-            if (!user) throw new HttpError(404, "User not found");
 
             user.is_authenticated = true;
             await user.save({ transaction });
