@@ -14,6 +14,7 @@ async def proxy_request(url: str, request: Request) -> Response:
         headers.pop("host", None)
         headers.pop("content-length", None)
         headers.pop("connection", None)
+        headers["X-INTERNAL-TOKEN"] = settings.INTERNAL_API_TOKEN
         
         body = await request.body()
         

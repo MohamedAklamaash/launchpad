@@ -15,7 +15,7 @@ export const userEventsWorker = new Worker(
         switch (job.name) {
             case AUTHENTICATE_INVITED_USER_EVENT:
                 const { user_id, email, otp, infra_id, source, user_name } = job.data;
-                const authUrl = `${env.AUTH_SERVICE_URL}/auth/authenticate-with-otp?email=${email}&otp=${otp}`;
+                const authUrl = `${env.GATEWAY_SERVICE_URL}/auth/authenticate-with-otp?email=${email}&otp=${otp}`;
                 const emailHtml = getAuthEmailTemplate(authUrl, user_name);
 
                 await sendMail(email, "Authenticate to Launchpad", emailHtml);

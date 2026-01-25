@@ -4,6 +4,7 @@ import { createEnv, z } from "@launchpad/common";
 const envSchema = z.object({
     NODE_ENV: z.enum(["development", "test", "staging", "production"]),
     AUTH_SERVICE_PORT: z.coerce.number().default(3000),
+    INTERNAL_API_TOKEN: z.string(),
 
     DATABASE_USER_NAME: z.string(),
     DATABASE_PASSWORD: z.string(),
@@ -13,7 +14,7 @@ const envSchema = z.object({
     DATABASE_SSL: z.coerce.boolean().default(false),
     DATABASE_SSL_REJECT_UNAUTHORIZED: z.coerce.boolean().default(false),
 
-    AUTH_DB_URL: z.string().url(),
+    AUTH_DB_URL: z.url(),
 
     JWT_SECRET: z.string(),
     JWT_REFRESH_SECRET: z.string(),

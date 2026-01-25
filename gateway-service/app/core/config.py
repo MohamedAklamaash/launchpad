@@ -11,5 +11,6 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS:str = os.getenv("ALLOWED_HOSTS", "*")
     DEBUG:bool = os.getenv("DEBUG", "True")
     PORT: int = int(os.getenv("PORT", "8000"))
+    INTERNAL_API_TOKEN:str = os.getenv("INTERNAL_API_TOKEN", "")
 
 settings = Settings()

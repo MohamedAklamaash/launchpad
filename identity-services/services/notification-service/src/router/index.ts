@@ -23,7 +23,7 @@ export const createRoutes = (): Router => {
         }
     });
 
-    router.get("/health", async (_req: Request, res: Response) => {
+    router.get("/healthz", async (_req: Request, res: Response) => {
         try {
             await ConnectMongoDB();
             res.status(200).json({ status: "healthy" });

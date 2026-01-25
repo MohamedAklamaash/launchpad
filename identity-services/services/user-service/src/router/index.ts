@@ -22,7 +22,7 @@ export const createRoutes = (): Router => {
         }
     });
 
-    router.get("/health", async (_req: Request, res: Response) => {
+    router.get("/healthz", async (_req: Request, res: Response) => {
         try {
             await ConnectToDatabase();
             res.status(200).json({ status: "healthy" });
