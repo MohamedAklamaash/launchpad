@@ -11,14 +11,18 @@ interface ReqOptions {
 
 export const CreateInternalAuthMiddleware = (expectedToken: string, options: ReqOptions): RequestHandler => {
     return (req: Request, _res: Response, next: NextFunction) => {
-        const exemptPaths = new Set(options.exemptPaths ?? [])
-        if (exemptPaths.has(req.path)) {
+        const exemptPaths = options.exemptPaths ?? []
+        const isExempt = exemptPaths.some(path => req.path === path || req.path.endsWith(path))
+
+        if (isExempt) {
             next()
             return;
         }
-        const headerName = options.headerName?.toLowerCase() ?? DEFAULT_HEADER_NAME;
+
+        const headerName = options.headerName?.toLowerCase() ?? DEFAULT_HEADER_NAME.toLowerCase();
         const providedToken = req.headers[headerName]
         const token = Array.isArray(providedToken) ? providedToken[0] : providedToken;
+
         if (typeof token !== "string" || expectedToken !== token) {
             next(new HttpError(401, "Unauthorized in Internal middleware", {
                 "message": "Internal token mismatch with expected token"
