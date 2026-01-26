@@ -2,7 +2,13 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+from pathlib import Path
 from api.common.envs.application import app_config
+
+# added the parent directory to sys.path to allow importing from 'shared'
+base_dir = Path(__file__).resolve().parent.parent
+if str(base_dir) not in sys.path:
+    sys.path.append(str(base_dir))
 
 def main():
     """Run administrative tasks."""
