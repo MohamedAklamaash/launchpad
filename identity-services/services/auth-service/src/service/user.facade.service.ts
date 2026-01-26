@@ -51,6 +51,15 @@ export class UserFacadeService {
             if (user) {
                 user.github_id = githubData.github_id;
                 user.github_token = githubData.token;
+                user.metadata = {
+                    github: {
+                        id: githubData.github_id,
+                        token: githubData.token,
+                        profile_url: githubData.avatar_url,
+                        email: githubData.email,
+                        username: githubData.username,
+                    }
+                }
                 user.profile_url = githubData.avatar_url;
                 await user.save({ transaction });
             } else {
@@ -61,7 +70,7 @@ export class UserFacadeService {
                     profile_url: githubData.avatar_url,
                     email: githubData.email ?? `${githubData.github_id}@github.com`,
                     role: "admin",
-                    
+
                 }, { transaction });
 
                 PublishUserRegistered({

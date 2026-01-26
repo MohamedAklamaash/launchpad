@@ -9,6 +9,7 @@ class Infrastructure(models.Model):
         default=uuid7_pk,
         editable=False,
     )
+    name = models.CharField(max_length=255)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,

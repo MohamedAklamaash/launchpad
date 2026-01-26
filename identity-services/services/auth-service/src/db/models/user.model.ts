@@ -54,15 +54,6 @@ User.init({
         allowNull: false,
         defaultValue: "admin",
     },
-    github_id: {
-        type: DataTypes.STRING,
-        allowNull: true,
-        unique: true,
-    },
-    github_token: {
-        type: DataTypes.STRING,
-        allowNull: true,
-    },
     profile_url: {
         type: DataTypes.STRING,
         allowNull: true,

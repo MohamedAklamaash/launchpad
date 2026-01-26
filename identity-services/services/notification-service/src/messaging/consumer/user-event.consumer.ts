@@ -6,12 +6,10 @@ import { sendMail } from "@/service/mail.service";
 import { notificationService } from "@/service/notification.service";
 import { env } from "@/config/env";
 import { redisConfig } from "@/client/redis";
-import { logger } from "@/utils/logger";
 
 export const userEventsWorker = new Worker(
     NOTIFICATION_EVENT_QUEUE,
     async (job: Job) => {
-        logger.info({ job: job.name, data: job.data }, 'Processing notification job');
         switch (job.name) {
             case AUTHENTICATE_INVITED_USER_EVENT:
                 const { user_id, email, otp, infra_id, source, user_name } = job.data;

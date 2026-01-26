@@ -1,6 +1,7 @@
 from shared.utils.uuid import uuid7_pk
 from django.db import models
 from django.conf import settings
+from api.models.infrastructure import Infrastructure
 
 class Application(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid7_pk, editable=False)
@@ -8,7 +9,7 @@ class Application(models.Model):
     description = models.TextField(blank=True, null=True)
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    infrastructure = models.ForeignKey("api.Infrastructure", on_delete=models.CASCADE)
+    infrastructure = models.ForeignKey(Infrastructure, on_delete=models.CASCADE)
     
     alloted_cpu = models.FloatField(default=0.0)
     alloted_memory = models.FloatField(default=0.0)
@@ -17,6 +18,7 @@ class Application(models.Model):
     project_remote_url = models.CharField(max_length=255)
     project_branch = models.CharField(max_length=255)
     project_commit_hash = models.CharField(max_length=255)
+    version = models.IntegerField(default=1)
 
     build_command = models.CharField(max_length=255)
     start_command = models.CharField(max_length=255)

@@ -14,6 +14,7 @@ class Infrastructure(models.Model):
         on_delete=models.CASCADE,
         related_name='infrastructures',
     )
+    name = models.CharField(max_length=255)
     cloud_provider = models.CharField(
         max_length=30,
         choices = CloudProvider.choices
