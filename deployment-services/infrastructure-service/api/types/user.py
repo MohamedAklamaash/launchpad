@@ -1,11 +1,15 @@
+from dataclasses import dataclass
+from typing import Optional, List, Any, Dict
+from uuid import UUID
+from datetime import datetime
 
-class User:
-    def __init__(self, user_id: str, username: str, email: str, role: str, metadata:dict):
-        self.user_id = user_id
-        self.username = username
-        self.email = email
-        self.role = role
-        self.metadata = metadata
-    
-    def __str__(self):
-        return self.email
+@dataclass
+class UserInfo:
+    id: UUID
+    email: str
+    user_name: str
+    role: str
+    is_active: bool
+    is_staff: bool
+    created_at: datetime
+    metadata: Optional[Dict[str, Any]] = None

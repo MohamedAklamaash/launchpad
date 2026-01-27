@@ -1,15 +1,15 @@
 import { sequelize } from "@/db/sequalize";
 import { DataTypes, Model, type Optional } from "sequelize";
 import { v7 as uuidv7 } from "uuid";
+import { USER_ROLE } from "@/types/auth.invited_user.types";
 
 export interface UserAttributes {
     id: string;
     email: string;
     user_name: string;
     role: string;
-    github_id?: string;
-    github_token?: string;
     profile_url?: string;
+    infra_id: string[];
     created_at: Date;
     updated_at: Date;
     metadata: Record<string, unknown>;
@@ -17,7 +17,7 @@ export interface UserAttributes {
 
 export type UserCreationAttributes = Optional<
     UserAttributes,
-    "id" | "created_at" | "updated_at" | "metadata" | "profile_url" | "github_id" | "github_token"
+    "id" | "created_at" | "updated_at" | "metadata" | "profile_url" | "infra_id"
 >;
 
 export class User extends Model<UserAttributes, UserCreationAttributes> {
@@ -25,9 +25,8 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     declare email: string;
     declare user_name: string;
     declare role: string;
-    declare github_id?: string;
-    declare github_token?: string;
     declare profile_url?: string;
+    declare infra_id: string[];
     declare created_at: Date;
     declare updated_at: Date;
     declare metadata: Record<string, unknown>;
@@ -52,11 +51,16 @@ User.init({
     role: {
         type: DataTypes.STRING,
         allowNull: false,
-        defaultValue: "admin",
+        defaultValue: USER_ROLE.ADMIN,
     },
     profile_url: {
         type: DataTypes.STRING,
         allowNull: true,
+    },
+    infra_id: {
+        type: DataTypes.ARRAY(DataTypes.UUID),
+        allowNull: false,
+        defaultValue: [],
     },
     created_at: {
         type: DataTypes.DATE,
@@ -68,7 +72,6 @@ User.init({
         allowNull: false,
         defaultValue: DataTypes.NOW,
     },
-
     metadata: {
         type: DataTypes.JSON,
         allowNull: true,

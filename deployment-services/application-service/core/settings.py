@@ -76,6 +76,16 @@ WSGI_APPLICATION = 'core.wsgi.application'
 
 AUTH_USER_MODEL = "api.User"
 
+INTERNAL_AUTH_TOKEN=app_config.internal_api_token
+
+INTERNAL_AUTH_EXEMPT_PATHS = [
+    "/health",
+    "/liveness",
+    "/readiness"
+]
+
+INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
+
 DJANGO_PORT = app_config.django_port
 
 # Database

@@ -1,34 +1,32 @@
-from api.models.infrastructure import Infrastructure
-from api.models.user import User
+from api.repositories.infrastructure import InfrastructureRepository
+from api.serializers.infrastructure import InfrastructureSerializer
 import logging
 
 logger = logging.getLogger(__name__)
 
 class InfrastructureService:
     def __init__(self):
-        self.infrastructure_model = Infrastructure()
-        self.user_model = User()
+        self.repo = InfrastructureRepository()
     
-    def get_infrastructure(self,user_id):
-        user = self.user_model.objects.get(id=user_id)
-        logger.info(user.infrastructures.all())
-        return self.infrastructure_model.objects.filter(user_id=user_id).values_list()
+    def get_all_for_user(self, user_id):
+        infras = self.repo.get_all_for_user(user_id)
+        return InfrastructureSerializer.serialize_list(infras)
+
+    def get_infrastructure(self, user_id, infra_id):
+        infra = self.repo.get_by_id(user_id, infra_id)
+        if infra:
+            return InfrastructureSerializer.serialize_instance(infra)
+        return None
 
     def create_infrastructure(self, user_id, infra_data):
-        infra = self.infrastructure_model(user_id=user_id, **infra_data)
-        infra.save()
-        return infra
+        infra = self.repo.create(user_id, infra_data)
+        return InfrastructureSerializer.serialize_instance(infra)
     
     def delete_infrastructure(self, user_id, infra_id):
-        infra = self.infrastructure_model.objects.filter(user_id=user_id, id=infra_id)
-        if infra.exists():
-            infra.delete()
-            return True
-        return False
+        return self.repo.delete(user_id, infra_id)
     
     def update_infrastructure(self, user_id, infra_id, update_data):
-        infra = self.infrastructure_model.objects.filter(user_id=user_id, id=infra_id)
-        if infra.exists():
-            infra.update(**update_data)
-            return infra.first()
+        infra = self.repo.update(user_id, infra_id, update_data)
+        if infra:
+            return InfrastructureSerializer.serialize_instance(infra)
         return None

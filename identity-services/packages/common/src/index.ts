@@ -1,6 +1,7 @@
 export * from "./errors/http.error";
 
 export * from "./events/auth.events";
+export * from "./events/infra.events";
 export * from "./events/event.types";
 
 export * from "./http/request.authenticate";

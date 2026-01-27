@@ -11,10 +11,14 @@ export interface GithubUserUpsertInput {
     email: string;
 }
 
-export interface GithubAuthResponse {
-    token: string;
-    username: string;
-    github_id: number;
-    avatar_url: string;
-    email: string;
+import { AuthTokens } from "./auth.invited_user.types";
+
+export interface GithubAuthResponse extends AuthTokens {
+    message: string;
+    user: {
+        id: string;
+        email: string;
+        user_name: string;
+        profile_url: string;
+    };
 }

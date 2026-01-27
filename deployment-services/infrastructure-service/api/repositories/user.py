@@ -1,13 +1,19 @@
-from api.services.user import UserService
 from api.models.user import User as UserModel
 
 class UserRepository:
-    def __init__(self):
-        self.user_model = UserModel()
-        self.user_service = UserService()
-    
     def get_user(self, user_id):
-        return self.user_service.get_user(user_id)
+        try:
+            return UserModel.objects.get(id=user_id)
+        except UserModel.DoesNotExist:
+            return None
     
-    def upsert_user(self, user_data):
-        return self.user_service.upsert_user(user_data)
+    def upsert_user(self, user_data: dict):
+        user_id = user_data.get("id")
+        if not user_id:
+            raise ValueError("User ID is required for upsert operation")
+
+        user, created = UserModel.objects.update_or_create(
+            id=user_id,
+            defaults=user_data
+        )
+        return user, created

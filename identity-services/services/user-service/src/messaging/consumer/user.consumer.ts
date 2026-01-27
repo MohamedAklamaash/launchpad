@@ -1,7 +1,7 @@
-import { AUTH_EVENT_EXCHANGE, AUTH_USER_REGISTERED_ROUTING_KEY } from '@launchpad/common';
+import { AUTH_EVENT_EXCHANGE, AUTH_USER_REGISTERED_ROUTING_KEY, INFRA_EVENT_EXCHANGE, INFRA_CREATED_ROUTING_KEY } from '@launchpad/common';
 import amqplib, { ConsumeMessage } from 'amqplib';
 
-import type { AuthRegisteredEvent, AuthUserRegisteredPayload } from '@launchpad/common';
+import type { AuthRegisteredEvent, AuthUserRegisteredPayload, InfraCreatedEvent } from '@launchpad/common';
 import type { Channel, ChannelModel, Connection } from 'amqplib';
 
 import { env } from '@/config/env';
@@ -42,6 +42,7 @@ const ensureChannel = async (): Promise<Channel | null> => {
     const amqpChannel = await amqpConnection.createChannel();
     channel = amqpChannel;
     await amqpChannel.assertExchange(AUTH_EVENT_EXCHANGE, 'topic', { durable: true });
+    await amqpChannel.assertExchange(INFRA_EVENT_EXCHANGE, 'topic', { durable: true });
 
     return amqpChannel;
 };
@@ -73,7 +74,26 @@ export const initMessaging = async () => {
                 channel?.nack(msg, false, false); // Dead letter or discard if failure
             }
         });
-        logger.info('User service RabbitMQ consumer started');
+
+        const infraQueue = await channel.assertQueue('user-service.infra-events', { durable: true });
+        await channel.bindQueue(infraQueue.queue, INFRA_EVENT_EXCHANGE, INFRA_CREATED_ROUTING_KEY);
+
+        await channel.consume(infraQueue.queue, async (msg: ConsumeMessage | null) => {
+            if (!msg) return;
+            try {
+                const event = JSON.parse(msg.content.toString()) as InfraCreatedEvent;
+                logger.info({ event }, 'Received infra created event');
+
+                await userService.syncInfraCreation(event.payload);
+
+                channel?.ack(msg);
+            } catch (error) {
+                logger.error({ err: error }, 'Failed to process infra event');
+                channel?.ack(msg); // Ack to avoid loops if persistent failure
+            }
+        });
+
+        logger.info('User service RabbitMQ consumers started');
     }
 };
 
