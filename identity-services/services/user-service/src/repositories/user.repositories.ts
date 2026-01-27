@@ -1,4 +1,5 @@
 import { Op, type WhereOptions } from 'sequelize';
+import { InfraCreatedPayload } from '@launchpad/common';
 
 import type { AuthUserRegisteredPayload } from '@launchpad/common'
 import { User as UserModel } from "@/db";
@@ -37,8 +38,8 @@ export class UserRepository {
                 user_id: payload.id,
                 email: payload.email,
                 role: payload.role,
-                created_at: new Date(payload.created_at),
-                updated_at: new Date(),
+                created_at: new Date(payload.created_at as any),
+                updated_at: payload.updated_at ? new Date(payload.updated_at as any) : new Date(),
                 infra_id: payload.infra_id,
                 metadata: payload.metadata,
                 user_name: payload.user_name,
@@ -47,6 +48,17 @@ export class UserRepository {
         );
 
         return toUserSignature(user);
+    }
+
+    async syncInfraCreation(payload: InfraCreatedPayload): Promise<void> {
+        const user = await UserModel.findByPk(payload.user_id);
+        if (user) {
+            const currentInfraIds = user.infra_id || [];
+            if (!currentInfraIds.includes(payload.infra_id)) {
+                user.infra_id = [...currentInfraIds, payload.infra_id];
+                await user.save();
+            }
+        }
     }
 
     async create(input: CreateUserInput): Promise<IUser> {

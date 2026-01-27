@@ -17,17 +17,23 @@ export abstract class BaseService {
         }, { transaction });
     }
 
-    protected buildAuthResponse(user: InvitedUser, refreshTokenId: string): AuthResponse {
+    protected buildAuthResponse(user: any, refreshTokenId: string): AuthResponse {
         return {
             user: {
                 id: user.id,
                 email: user.email,
                 user_name: user.user_name,
                 role: user.role as USER_ROLE,
-                infra_id: user.infra_id,
-                createdAt: user.created_at.toISOString(),
-            },
-            accessToken: signAccessToken({ sub: user.id, email: user.email }),
+                infra_id: user.infra_id || [],
+                createdAt: user.created_at ? user.created_at.toISOString() : new Date().toISOString(),
+                profile_url: user.profile_url,
+            } as any,
+            accessToken: signAccessToken({
+                sub: user.id,
+                email: user.email,
+                user_name: user.user_name,
+                role: user.role
+            }),
             refreshToken: signRefreshToken({ sub: user.id, tokenId: refreshTokenId }),
         };
     }

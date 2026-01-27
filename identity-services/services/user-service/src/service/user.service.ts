@@ -1,5 +1,5 @@
 import { userRepository, type UserRepository } from "@/repositories/user.repositories";
-import { AuthUserRegisteredPayload, HttpError } from '@launchpad/common';
+import { AuthUserRegisteredPayload, HttpError, InfraCreatedPayload } from '@launchpad/common';
 import { UniqueConstraintError } from 'sequelize';
 import { publishUserCreatedEvent } from "@/messaging/consumer/user.consumer";
 import { User, CreateUserInput } from "@/types/user.type";
@@ -31,7 +31,8 @@ class UserService {
                 infra_id: user.infra_id,
                 role: user.role,
                 profile_url: user.profile_url,
-                metadata: user.metadata
+                metadata: user.metadata,
+                updated_at: user.updated_at
             });
 
             return user;
@@ -62,6 +63,10 @@ class UserService {
     async syncFromAuthUser(payload: AuthUserRegisteredPayload): Promise<User> {
         const user = await this.repository.upsertFromAuthEvent(payload);
         return user;
+    }
+
+    async syncInfraCreation(payload: InfraCreatedPayload): Promise<void> {
+        await this.repository.syncInfraCreation(payload);
     }
 }
 

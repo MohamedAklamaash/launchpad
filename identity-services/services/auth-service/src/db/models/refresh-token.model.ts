@@ -2,8 +2,6 @@ import { DataTypes, Model, type Optional } from "sequelize";
 import { sequelize } from "@/db/sequalize";
 import { v7 as uuidv7 } from "uuid";
 
-import { InvitedUser } from "@/db/models/invited-user.model";
-
 export interface RefreshTokenAttributes {
     id: string;
     user_id: string;
@@ -32,12 +30,8 @@ RefreshToken.init(
             primaryKey: true,
         },
         user_id: {
-            type: DataTypes.UUID,
+            type: DataTypes.STRING,
             allowNull: false,
-            references: {
-                model: "invited_users",
-                key: "id",
-            }
         },
         token_id: {
             type: DataTypes.STRING,
@@ -65,5 +59,8 @@ RefreshToken.init(
     }
 )
 
-InvitedUser.hasMany(RefreshToken, { foreignKey: "user_id", as: "refresh_tokens", onDelete: "CASCADE" });
-RefreshToken.belongsTo(InvitedUser, { foreignKey: "user_id", as: "user" });
+// InvitedUser.hasMany(RefreshToken, { foreignKey: "user_id", as: "refresh_tokens", onDelete: "CASCADE", constraints: false });
+// RefreshToken.belongsTo(InvitedUser, { foreignKey: "user_id", as: "invited_user", constraints: false });
+
+// User.hasMany(RefreshToken, { foreignKey: "user_id", as: "refresh_tokens", onDelete: "CASCADE", constraints: false });
+// RefreshToken.belongsTo(User, { foreignKey: "user_id", as: "user", constraints: false });

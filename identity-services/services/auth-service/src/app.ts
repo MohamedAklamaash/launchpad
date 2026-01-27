@@ -21,7 +21,7 @@ export const createApp = (): Express => {
     const routes = registerRoutes();
 
     app.use(CreateInternalAuthMiddleware(env.INTERNAL_API_TOKEN, {
-        exemptPaths: ["/liveness", "/readiness", "/healthz", "/user/callback"],
+        exemptPaths: ["/liveness", "/readiness", "/healthz", "/user/callback", "/favicon.ico"],
     }))
 
     app.use("/api", routes);

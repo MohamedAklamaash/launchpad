@@ -16,9 +16,11 @@ export interface RefreshTokenPayload {
 }
 
 export interface AccessTokenPayload {
-    sub: string, // userid
-    email: string
-    scope?: string
+    sub: string; // userid
+    email: string;
+    user_name: string;
+    role: string;
+    scope?: string;
 }
 
 export const signAccessToken = (payload: AccessTokenPayload, expiresIn?: string): string => {

@@ -4,8 +4,11 @@ import { sequelize } from "@/db/sequalize";
 import { env } from "@/config/env";
 import { GithubCallbackInput, GithubUserUpsertInput } from "@/types/auth.user.types";
 import { PublishUserRegistered } from "@/messaging/producer/user-created.message";
+import { BaseService } from "@/service/invited-users/invited-user.base.service";
+import { signAccessToken, signRefreshToken } from "@/utils/handle-token";
+import { USER_ROLE } from "@/types/auth.invited_user.types";
 
-export class UserFacadeService {
+export class UserFacadeService extends BaseService {
     private clientId = env.GITHUB_CLIENT_ID;
     private clientSecret = env.GITHUB_CLIENT_SECRET;
     private redirectUri = env.GITHUB_REDIRECT_URI;
@@ -42,41 +45,64 @@ export class UserFacadeService {
 
     public async upsertUser(githubData: GithubUserUpsertInput) {
         return sequelize.transaction(async (transaction) => {
-            let user = await User.findOne({ where: { github_id: githubData.github_id }, transaction });
+            let user = await User.findOne({
+                where: {
+                    metadata: {
+                        github: {
+                            id: githubData.github_id
+                        }
+                    }
+                } as any,
+                transaction
+            });
 
             if (!user && githubData.email) {
                 user = await User.findOne({ where: { email: githubData.email }, transaction });
             }
 
+            const githubMetadata = {
+                id: githubData.github_id,
+                token: githubData.token,
+                profile_url: githubData.avatar_url,
+                email: githubData.email,
+                username: githubData.username,
+            };
+
             if (user) {
-                user.github_id = githubData.github_id;
-                user.github_token = githubData.token;
+                user.metadata = {
+                    ...(user.metadata || {}),
+                    github: githubMetadata
+                };
                 user.profile_url = githubData.avatar_url;
                 await user.save({ transaction });
             } else {
                 user = await User.create({
                     user_name: githubData.username,
-                    github_id: githubData.github_id,
-                    github_token: githubData.token,
                     profile_url: githubData.avatar_url,
                     email: githubData.email ?? `${githubData.github_id}@github.com`,
-                    role: "admin",
-                    
+                    role: USER_ROLE.SUPER_ADMIN,
+                    infra_id: [],
+                    metadata: {
+                        github: githubMetadata
+                    }
                 }, { transaction });
 
-                PublishUserRegistered({
-                    id: user.id,
-                    email: user.email,
-                    user_name: user.user_name,
-                    created_at: user.created_at, // Access via property, model should map it
-                    infra_id: [], // GitHub users default to empty infra?
-                    role: user.role,
-                    updated_at: user.updated_at,
-                    metadata: user.metadata || {}
-                });
             }
 
-            return user;
+            PublishUserRegistered({
+                id: user.id,
+                email: user.email,
+                user_name: user.user_name,
+                created_at: user.created_at,
+                infra_id: user.infra_id || [],
+                role: user.role,
+                updated_at: user.updated_at,
+                metadata: user.metadata || {}
+            });
+
+            const refreshTokenRecord = await this.createRefreshToken(user.id, transaction);
+
+            return this.buildAuthResponse(user, refreshTokenRecord.token_id);
         });
     }
 }

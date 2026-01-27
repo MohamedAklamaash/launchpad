@@ -2,7 +2,8 @@
 export enum USER_ROLE {
     ADMIN = "admin",
     USER = "user",
-    GUEST = "guest"
+    GUEST = "guest",
+    SUPER_ADMIN = "super_admin"
 }
 
 export interface InvitedUserRegisterInput {
