@@ -3,7 +3,7 @@ export type EventPayload = Record<string, unknown>;
 export interface DomainEvent<TType extends string, TPayload extends EventPayload> {
     type: TType;
     payload: TPayload;
-    occurredAt: string;
+    occured_at: string;
 }
 
 export interface EventMetadata {

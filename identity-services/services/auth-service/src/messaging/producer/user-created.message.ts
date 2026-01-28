@@ -54,7 +54,7 @@ export const PublishUserRegistered = (payload: AuthUserRegisteredPayload) => {
     const event = {
         type: AUTH_USER_REGISTERED_ROUTING_KEY,
         payload,
-        occurredAt: new Date().toISOString(),
+        occured_at: new Date().toISOString(),
         metadata: { version: 1 },
     };
 

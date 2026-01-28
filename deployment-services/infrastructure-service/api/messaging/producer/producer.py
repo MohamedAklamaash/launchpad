@@ -39,7 +39,7 @@ class InfraEventProducer:
                 "user_id": str(user_id),
                 "infra_id": str(infra_id)
             },
-            "occurredAt": None, # Could add timestamps if needed
+            "occured_at": None, # Could add timestamps if needed
             "metadata": {"version": 1}
         }
 
@@ -61,5 +61,4 @@ class InfraEventProducer:
         if self.connection and not self.connection.is_closed:
             self.connection.close()
 
-# Singleton instance
 infra_producer = InfraEventProducer()

@@ -1,7 +1,7 @@
 import json
 import logging
 import pika
-from django.conf import settings
+from api.models.infrastructure import Infrastructure
 from api.repositories.user import UserRepository
 from api.common.envs.application import app_config
 
@@ -45,13 +45,14 @@ class AuthEventConsumer:
             user_name = payload.get("user_name")
             role = payload.get("role")
             metadata = payload.get("metadata", {})
+            infra_ids = payload.get("infra_id", [])
 
             if not user_id or not email:
                 logger.warning(f"Received invalid event payload: {payload}")
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
-            self.user_repo.upsert_user({
+            user, created = self.user_repo.upsert_user({
                 "id": user_id,
                 "email": email,
                 "user_name": user_name,
@@ -61,7 +62,15 @@ class AuthEventConsumer:
                 "metadata": metadata,
             })
             
-            logger.info(f"Successfully synced user {email} ({user_id})")
+            if infra_ids:
+                for infra_id in infra_ids:
+                    try:
+                        infra = Infrastructure.objects.get(id=infra_id)
+                        infra.invited_users.add(user)
+                    except Infrastructure.DoesNotExist:
+                        logger.warning(f"Infra {infra_id} not found when syncing user {user_id}")
+            
+            logger.info(f"Successfully synced user {email} ({user_id}) and linked to {len(infra_ids)} infrastructures")
             ch.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:
