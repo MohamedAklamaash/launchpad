@@ -1,6 +1,6 @@
 from api.models.infrastructure import Infrastructure
 from api.models.user import User
-from django.db.models import QuerySet
+from django.db.models import QuerySet, Q
 from typing import Optional
 
 from django.db import IntegrityError
@@ -11,7 +11,9 @@ from api.messaging.producer.producer import infra_producer
 
 class InfrastructureRepository:
     def get_all_for_user(self, user_id) -> QuerySet:
-        return Infrastructure.objects.filter(user_id=user_id)
+        return Infrastructure.objects.filter(
+            Q(user_id=user_id) | Q(invited_users__id=user_id)
+        ).distinct()
 
     def get_by_id(self, user_id, infra_id) -> Optional[Infrastructure]:
         try:

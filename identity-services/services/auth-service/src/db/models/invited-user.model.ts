@@ -93,11 +93,11 @@ InvitedUser.init(
         sequelize,
         tableName: "invited_users",
         indexes: [
-            {
-                name: "invited_users_user_name_idx", // we can use gin_trgm_ops for partial matching later to handle type tolerance
-                fields: ["user_name"],
-                using: "BTREE",
-            },
+            // {
+            //     name: "invited_users_user_name_idx", // we can use gin_trgm_ops for partial matching later to handle type tolerance
+            //     fields: ["user_name"],
+            //     using: "BTREE",
+            // },
         ],
     }
 )

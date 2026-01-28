@@ -2,13 +2,21 @@ import { Request, Response } from "express";
 import { InvitedUserFacade } from "@/service/invited-user.facade.service";
 import { HttpError } from "@launchpad/common";
 import { USER_ROLE } from "@/types/auth.invited_user.types";
-import { logger } from "@/utils/logger";
+import { getAuthHeader } from "@/utils/auth-header";
+import { verifyAccessToken } from "@/utils/handle-token";
+import { superAdminMiddleware } from "@/utils/super-admin";
 
 const invitedUserFacade = new InvitedUserFacade();
 
 export const RegisterInvitedUser = async (req: Request, res: Response) => {
     try {
+        const token = getAuthHeader(req);
         const { email, password, user_name, infra_id, role } = req.body;
+        const payload = verifyAccessToken(token);
+        const super_user = await superAdminMiddleware(payload);
+        if (!super_user.infra_id.includes(infra_id)) {
+            throw new HttpError(401, `Unauthorized, user:${payload.user_name} is not authorized to invite users to ${infra_id}`);
+        }
         const authRes = await invitedUserFacade.register({
             email,
             password,
