@@ -11,3 +11,4 @@ stripe==14.2.0
 PyJWT==2.10.1
 typing_extensions==4.15.0
 urllib3==2.6.3
+djangorestframework==3.16.1

@@ -1,5 +1,4 @@
 from django.apps import AppConfig
-# from api.messaging.consumer.user import AuthEventConsumer <-- Move this inside ready
 import logging
 import threading
 import os

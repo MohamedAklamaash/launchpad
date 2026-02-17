@@ -16,6 +16,8 @@ class ApplicationConfig:
     stripe_secret_key: str
     stripe_webhook_secret: str
     frontend_url: str
+    backend_url: str
+
     @classmethod
     def from_env(cls) -> "ApplicationConfig":
         return cls(
@@ -27,7 +29,8 @@ class ApplicationConfig:
             stripe_publishable_key=os.environ["STRIPE_PUBLISHABLE_KEY"],
             stripe_secret_key=os.environ["STRIPE_SECRET_KEY"],
             stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
-            frontend_url=os.environ.get("FRONTEND_URL", "http://localhost:3000")
+            frontend_url=os.environ.get("FRONTEND_URL", "http://localhost:3000"),
+            backend_url=os.environ.get("BACKEND_URL", "http://localhost:8003")
         )
 
 app_config = ApplicationConfig.from_env()

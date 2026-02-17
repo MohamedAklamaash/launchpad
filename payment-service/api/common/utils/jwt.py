@@ -25,5 +25,5 @@ class JWTUser:
         return self.payload
 
 def decode_jwt(token: str, secret: str) -> JWTUser:
-    payload = jwt.decode(token, secret, algorithms=["HS256"])
+    payload = jwt.decode(token, secret, algorithms=["HS256"], leeway=300)
     return JWTUser(**payload)

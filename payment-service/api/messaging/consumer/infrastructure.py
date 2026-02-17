@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class InfraEventConsumer:
     EXCHANGE_NAME = "infrastructure.events"
-    ROUTING_KEY = "infra.created"
+    ROUTING_KEY = "infrastructure.created"
     QUEUE_NAME = "payment-service.infra-events"
 
     def __init__(self):
@@ -39,13 +39,13 @@ class InfraEventConsumer:
             event = json.loads(body)
             payload = event.get("payload", {})
             
-            infra_id = payload.get("id")
+            infra_id = payload.get("id") or payload.get("infra_id")
             user_id = payload.get("user_id")
             name = payload.get("name")
             status = payload.get("status", "active")
 
             if not infra_id or not user_id:
-                logger.warning(f"Received invalid infra event payload: {payload}")
+                logger.warning(f"Received invalid infra event payload (missing id or user_id): {payload}")
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
 
