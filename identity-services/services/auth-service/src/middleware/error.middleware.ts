@@ -1,22 +1,22 @@
 import { HttpError } from "@launchpad/common";
-
 import type { ErrorRequestHandler } from "express";
 import { logger } from "@/utils/logger";
 
 export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
-    logger.error({ err }, "Unhandled error occurred");
+    const statusCode = err instanceof HttpError ? err.statusCode : 500;
+    const message = err.message || "Internal Server Error";
 
-    const error = err instanceof HttpError || Error() ? err : undefined;
-    const statusCode = error?.statusCode ?? 500;
-    const message =
-        statusCode >= 500
-            ? "Internal Server Error"
-            : (error?.message ?? "Unknown Error");
-    const payload = error?.details
-        ? { message, details: error.details }
-        : { message };
+    if (statusCode >= 500) {
+        logger.error({ err: err.message, stack: err.stack }, "Unhandled error occurred");
+    } else {
+        logger.warn({ err: err.message }, "Request error occurred");
+    }
+
+    const responseMessage = statusCode >= 500 ? "Internal Server Error" : message;
+
+    const payload = (err instanceof HttpError && err.details)
+        ? { message: responseMessage, details: err.details }
+        : { message: responseMessage };
 
     res.status(statusCode).json(payload);
-
-    void _next();
 };

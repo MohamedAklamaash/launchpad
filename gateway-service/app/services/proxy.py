@@ -45,8 +45,15 @@ async def proxy_request(url: str, request: Request) -> Response:
                 status_code=response.status_code,
                 headers=response_headers
             )
-        except httpx.RequestError as exc:
+        except httpx.TimeoutException:
+            return Response(content="Gateway Timeout", status_code=504)
+        except httpx.HTTPStatusError as exc:
+            return Response(content=exc.response.content, status_code=exc.response.status_code)
+        except Exception as exc:
+            import logging
+            logging.error(f"Error forwarding request to {url}: {exc}", exc_info=True)
             return Response(
-                content=f"Error forwarding request: {exc}",
-                status_code=502
+                content={"message": "Error forwarding request", "details": str(exc)},
+                status_code=502,
+                media_type="application/json"
             )
