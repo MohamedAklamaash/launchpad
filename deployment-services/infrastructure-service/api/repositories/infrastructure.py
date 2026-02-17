@@ -34,7 +34,7 @@ class InfrastructureRepository:
             infra.save()
             
             # Publish event
-            infra_producer.publish_infra_created(user.id, infra.id)
+            infra_producer.publish_infra_created(user.id, infra.id, infra.name)
             
             return infra
         except User.DoesNotExist:

@@ -17,7 +17,7 @@ class ApplicationConfig:
             django_secret=os.environ["DJANGO_SECRET"],
             jwt_secret=os.environ["JWT_SECRET"],
             django_port=os.environ["DJANGO_PORT"],
-            internal_auth_token=os.environ["INTERNAL_API_TOKEN"]
+            internal_api_token=os.environ["INTERNAL_API_TOKEN"]
         )
 
 app_config = ApplicationConfig.from_env()

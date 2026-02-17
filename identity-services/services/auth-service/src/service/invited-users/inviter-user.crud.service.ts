@@ -21,7 +21,7 @@ export class InvitedUserService extends BaseService {
 
             if (existingUser) {
                 if (!existingUser.infra_id.includes(infra_id)) {
-                    existingUser.infra_id.push(infra_id);
+                    existingUser.infra_id = [...existingUser.infra_id, infra_id];
                     existingUser.is_authenticated = false;
                     user = await existingUser.save({ transaction });
                 } else {

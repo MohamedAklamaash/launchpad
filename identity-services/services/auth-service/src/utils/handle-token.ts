@@ -1,5 +1,6 @@
 import jwt, { type Secret, type SignOptions } from "jsonwebtoken";
 import { env } from "@/config/env";
+import { HttpError } from "@launchpad/common";
 
 const ACCESS_TOKEN: Secret = env.JWT_SECRET;
 const REFRESH_TOKEN: Secret = env.JWT_REFRESH_SECRET;
@@ -28,8 +29,13 @@ export const signAccessToken = (payload: AccessTokenPayload, expiresIn?: string)
     return jwt.sign(payload, ACCESS_TOKEN, options);
 }
 
+
 export const verifyAccessToken = (token: string): AccessTokenPayload => {
-    return jwt.verify(token, ACCESS_TOKEN) as AccessTokenPayload;
+    try {
+        return jwt.verify(token, ACCESS_TOKEN) as AccessTokenPayload;
+    } catch (error) {
+        throw new HttpError(401, "Invalid access token");
+    }
 }
 
 export const signRefreshToken = (payload: RefreshTokenPayload): string => {

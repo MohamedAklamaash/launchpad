@@ -6,7 +6,6 @@ logger = logging.getLogger(__name__)
 
 class MiddlewareJWTAuthentication(authentication.BaseAuthentication):
     def authenticate(self, request):
-        # Access the underlying Django request object
         django_request = request._request
         user = getattr(django_request, 'user', None)
         

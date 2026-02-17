@@ -29,7 +29,7 @@ class InfraEventProducer:
             logger.error(f"Failed to connect InfraEventProducer: {e}")
             raise e
 
-    def publish_infra_created(self, user_id, infra_id):
+    def publish_infra_created(self, user_id, infra_id, name=None):
         if not self.channel or self.connection.is_closed:
             self.connect()
 
@@ -37,7 +37,9 @@ class InfraEventProducer:
             "type": self.ROUTING_KEY,
             "payload": {
                 "user_id": str(user_id),
-                "infra_id": str(infra_id)
+                "id": str(infra_id),
+                "name": name,
+                "status": "active"
             },
             "occured_at": None, # Could add timestamps if needed
             "metadata": {"version": 1}

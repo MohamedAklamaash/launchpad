@@ -49,14 +49,13 @@ export class PasswordService extends BaseService {
             await otpRecord.destroy({ transaction });
 
             // Return a short-lived reset token specifically for password reset
-            return signAccessToken({ sub: user.id, email: user.email, scope: "password_reset" }, "5m");
+            return signAccessToken({ sub: user.id, email: user.email, scope: "password_reset", user_name: user.user_name, role: user.role }, "5m");
         });
     }
 
     public async resetPassword(input: InvitedUserResetPasswordInput) {
         const { reset_token: resetToken, new_password: newPassword } = input;
 
-        // In a real implementation we should check the scope inside the token
         const payload = verifyAccessToken(resetToken);
         if (!payload || payload.scope !== "password_reset") throw new HttpError(401, "Invalid reset token");
 
