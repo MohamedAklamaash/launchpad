@@ -2,7 +2,7 @@ import redis.asyncio as redis
 from fastapi import Request, HTTPException
 from app.core.config import settings
 import logging
-
+from constants import EXEMPT_PATHS
 logger = logging.getLogger("api.rate_limiter")
 
 class RateLimiter:
@@ -10,7 +10,7 @@ class RateLimiter:
         self.redis = redis.from_url(settings.REDIS_URL, encoding="utf-8", decode_responses=True)
 
     async def check_rate_limit(self, request: Request):
-        if request.url.path in ["/health", "/liveness", "/readiness", "/docs", "/openapi.json"]:
+        if request.url.path in EXEMPT_PATHS:
             return
 
         client_ip = request.client.host
