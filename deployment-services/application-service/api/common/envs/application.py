@@ -10,6 +10,7 @@ class ApplicationConfig:
     jwt_secret: str
     django_port: int
     internal_api_token: str
+    rabbitmq_url: str
     
     @classmethod
     def from_env(cls) -> "ApplicationConfig":
@@ -17,7 +18,8 @@ class ApplicationConfig:
             django_secret=os.environ["DJANGO_SECRET"],
             jwt_secret=os.environ["JWT_SECRET"],
             django_port=os.environ["DJANGO_PORT"],
-            internal_api_token=os.environ["INTERNAL_API_TOKEN"]
+            internal_api_token=os.environ["INTERNAL_API_TOKEN"],
+            rabbitmq_url=os.environ["RABBITMQ_URL"]
         )
 
 app_config = ApplicationConfig.from_env()
