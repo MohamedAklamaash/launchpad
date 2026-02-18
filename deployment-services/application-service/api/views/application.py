@@ -15,6 +15,7 @@ class ApplicationListCreateView(APIView):
 
     def get(self, request):
         """List all applications for the authenticated user for a specific infrastructure"""
+        """List all applications for the authenticated user for a specific infrastructure"""
         try:
             user = request.user
             infra_id = request.data.get("infrastructure_id", "")
