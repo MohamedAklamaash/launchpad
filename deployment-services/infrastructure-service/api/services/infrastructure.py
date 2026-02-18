@@ -1,8 +1,17 @@
 from api.repositories.infrastructure import InfrastructureRepository
 from api.serializers.infrastructure import InfrastructureSerializer
+from shared.resilience.circuit_breaker import CircuitBreaker
+import os
 import logging
 
 logger = logging.getLogger(__name__)
+
+cloud_cb = CircuitBreaker(
+    name="CloudProviderAPI",
+    failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", 5)),
+    timeout=float(os.environ.get("CB_TIMEOUT_MS", 30000)) / 1000.0,
+    success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", 2))
+)
 
 class InfrastructureService:
     def __init__(self):

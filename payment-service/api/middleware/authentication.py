@@ -7,12 +7,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 EXEMPT_PATHS = [
-    "/api/v1/payments/webhook/",
-    "/api/v1/payments/success/",
-    "/api/v1/payments/cancel/",
-    "/api/v1/payments/healthz/",
-    "/api/v1/payments/liveness/",
-    "/api/v1/payments/readiness/"
+    "/api/v1/webhook/",
+    "/api/v1/success/",
+    "/api/v1/cancel/",
+    "/api/v1/healthz/",
+    "/api/v1/liveness/",
+    "/api/v1/readiness/"
 ]
 
 class JWTAuthentication(BaseAuthentication):

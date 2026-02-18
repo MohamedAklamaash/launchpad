@@ -3,7 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import { CreateInternalAuthMiddleware } from "@launchpad/common";
 import { errorHandler } from "@/middleware/error.middleware";
-import { registerRoutes } from "@/router";
+import { registerRoutes, userRouter } from "@/router";
 import { env } from "@/config/env";
 
 export const createApp = (): Express => {
@@ -21,10 +21,19 @@ export const createApp = (): Express => {
     const routes = registerRoutes();
 
     app.use(CreateInternalAuthMiddleware(env.INTERNAL_API_TOKEN, {
-        exemptPaths: ["/liveness", "/readiness", "/healthz", "/user/callback", "/favicon.ico"],
+        exemptPaths: [
+            "/api/v1/liveness",
+            "/api/v1/readiness",
+            "/api/v1/healthz",
+            "/api/v1/user/callback",
+            "/api/user/callback",
+            "/favicon.ico"
+        ],
     }))
 
-    app.use("/api", routes);
+    app.use("/api/v1", routes);
+    // Legacy alias to support GitHub redirect without v1 prefix
+    app.use("/api/user", userRouter);
     app.use((_req: Request, res: Response) => {
         res.status(404).json({ message: 'Not Found' });
     });

@@ -1,7 +1,6 @@
-import json
 import logging
-import pika
 from api.common.envs.application import app_config
+from shared.resilience import ResilientPikaProducer
 
 logger = logging.getLogger(__name__)
 
@@ -10,29 +9,20 @@ class InfraEventProducer:
     ROUTING_KEY = "infrastructure.created"
 
     def __init__(self):
-        self.connection = None
-        self.channel = None
+        self.producer = ResilientPikaProducer(
+            url=app_config.rabbitmq_url,
+            exchange=self.EXCHANGE_NAME,
+            name="infra-service-producer"
+        )
 
     def connect(self):
         try:
-            parameters = pika.URLParameters(app_config.rabbitmq_url)
-            self.connection = pika.BlockingConnection(parameters)
-            self.channel = self.connection.channel()
-            
-            self.channel.exchange_declare(
-                exchange=self.EXCHANGE_NAME,
-                exchange_type='topic',
-                durable=True
-            )
-            logger.info("InfraEventProducer connected to RabbitMQ")
+            self.producer.connect()
         except Exception as e:
             logger.error(f"Failed to connect InfraEventProducer: {e}")
             raise e
 
     def publish_infra_created(self, user_id, infra_id, name=None):
-        if not self.channel or self.connection.is_closed:
-            self.connect()
-
         event = {
             "type": self.ROUTING_KEY,
             "payload": {
@@ -41,26 +31,17 @@ class InfraEventProducer:
                 "name": name,
                 "status": "active"
             },
-            "occured_at": None, # Could add timestamps if needed
+            "occured_at": None,
             "metadata": {"version": 1}
         }
 
-        try:
-            self.channel.basic_publish(
-                exchange=self.EXCHANGE_NAME,
-                routing_key=self.ROUTING_KEY,
-                body=json.dumps(event),
-                properties=pika.BasicProperties(
-                    delivery_mode=2,  # make message persistent
-                    content_type='application/json'
-                )
-            )
-            logger.info(f"Published infra.created event for user {user_id}, infra {infra_id}")
-        except Exception as e:
-            logger.error(f"Failed to publish infra.created event: {e}")
+        self.producer.publish(
+            routing_key=self.ROUTING_KEY,
+            body=event
+        )
+        logger.info(f"Published infra.created event for user {user_id}, infra {infra_id}")
 
     def close(self):
-        if self.connection and not self.connection.is_closed:
-            self.connection.close()
+        self.producer.close()
 
 infra_producer = InfraEventProducer()

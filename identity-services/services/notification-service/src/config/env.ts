@@ -16,9 +16,20 @@ const envSchema = z.object({
     REDIS_PORT: z.coerce.number().default(6379),
     REDIS_PASSWORD: z.string(),
     REDIS_DB: z.coerce.number().default(0),
-    REDIS_USERNAME: z.string(),
+    REDIS_USERNAME: z.string().optional().default("default"),
 
     MONGODB_URL: z.string(),
+
+    MONGO_POOL_SIZE: z.coerce.number().default(10),
+    MONGO_CONNECT_TIMEOUT_MS: z.coerce.number().default(30000),
+
+    REDIS_MAX_RETRIES: z.coerce.number().default(10),
+
+    CB_FAILURE_THRESHOLD: z.coerce.number().default(5),
+    CB_TIMEOUT_MS: z.coerce.number().default(30000),
+    CB_SUCCESS_THRESHOLD: z.coerce.number().default(2),
+
+    HTTP_REQUEST_TIMEOUT_MS: z.coerce.number().default(5000),
 
     AUTH_SERVICE_URL: z.string(),
     GATEWAY_SERVICE_URL: z.string()

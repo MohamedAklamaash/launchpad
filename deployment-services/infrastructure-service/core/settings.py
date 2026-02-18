@@ -82,18 +82,10 @@ AUTH_USER_MODEL = "api.User"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 db_config = DatabaseConfig.from_env()
 
+from shared.resilience import get_db_pool_config
+
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": db_config.name,
-        "USER": db_config.user_name,
-        "PASSWORD": db_config.password,
-        "HOST": db_config.host,
-        "PORT": db_config.port,
-        "OPTIONS": {
-            "sslmode": "require" if db_config.ssl else "disable",
-        },
-    }
+    "default": get_db_pool_config(db_config)
 }
 
 # Password validation

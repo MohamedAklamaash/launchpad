@@ -12,13 +12,25 @@ class ApiConfig(AppConfig):
         # Ensure it only runs in the main process, not the reloader
         if os.environ.get('RUN_MAIN') == 'true' or 'runserver' not in sys.argv:
             import threading
-            from django.core.management import call_command
-            
-            def run_consumers():
-                try:
-                    call_command('consume_events')
-                except Exception as e:
-                    import logging
-                    logging.getLogger(__name__).error(f"Failed to start consumers: {e}")
+            import logging
+            logger = logging.getLogger(__name__)
 
-            threading.Thread(target=run_consumers, daemon=True).start()
+            def start_infra_consumer():
+                from api.messaging.consumers.infrastructure import InfraEventConsumer
+                try:
+                    logger.info("Initializing Application Service InfraEventConsumer...")
+                    InfraEventConsumer().start()
+                except Exception as e:
+                    logger.error(f"Failed to start InfraEventConsumer: {e}")
+
+            def start_auth_consumer():
+                from api.messaging.consumers.user import AuthEventConsumer
+                try:
+                    logger.info("Initializing Application Service AuthEventConsumer...")
+                    AuthEventConsumer().start()
+                except Exception as e:
+                    logger.error(f"Failed to start AuthEventConsumer: {e}")
+
+            threading.Thread(target=start_infra_consumer, name="AppInfraConsumer", daemon=True).start()
+            threading.Thread(target=start_auth_consumer, name="AppAuthConsumer", daemon=True).start()
+            logger.info("Application Service messaging background threads started.")

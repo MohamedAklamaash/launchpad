@@ -1,9 +1,9 @@
-import json
 import logging
-import pika
+import json
 from api.models.infrastructure import Infrastructure
 from api.repositories.user import UserRepository
 from api.common.envs.application import app_config
+from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
 
@@ -13,26 +13,13 @@ class AuthEventConsumer:
     QUEUE_NAME = "infrastructure-service.auth-events"
 
     def __init__(self):
-        self.connection = None
-        self.channel = None
         self.user_repo = UserRepository()
-
-    def connect(self):
-        parameters = pika.URLParameters(app_config.rabbitmq_url)
-        self.connection = pika.BlockingConnection(parameters)
-        self.channel = self.connection.channel()
-        
-        self.channel.exchange_declare(
-            exchange=self.EXCHANGE_NAME,
-            exchange_type='topic',
-            durable=True
-        )
-        
-        self.channel.queue_declare(queue=self.QUEUE_NAME, durable=True)
-        self.channel.queue_bind(
+        self.consumer = ResilientPikaConsumer(
+            url=app_config.rabbitmq_url,
             exchange=self.EXCHANGE_NAME,
             queue=self.QUEUE_NAME,
-            routing_key=self.ROUTING_KEY
+            routing_key=self.ROUTING_KEY,
+            name="infra-service-auth-consumer"
         )
 
     def callback(self, ch, method, properties, body):
@@ -78,16 +65,10 @@ class AuthEventConsumer:
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     def start(self):
-        if not self.channel:
-            self.connect()
-            
-        logger.info(f"Starting consumer on queue {self.QUEUE_NAME}")
-        self.channel.basic_consume(
-            queue=self.QUEUE_NAME,
-            on_message_callback=self.callback
-        )
-        self.channel.start_consuming()
+        self.consumer.start(self.callback)
+
+    def stop(self):
+        self.consumer.stop()
 
     def close(self):
-        if self.connection and not self.connection.is_closed:
-            self.connection.close()
+        self.stop()

@@ -20,11 +20,11 @@ export const createApp = (): Express => {
     }));
 
     app.use(CreateInternalAuthMiddleware(env.INTERNAL_API_TOKEN, {
-        exemptPaths: ["/liveness", "/readiness", "/healthz"],
+        exemptPaths: ["/api/v1/liveness", "/api/v1/readiness", "/api/v1/healthz", "/favicon.ico"],
     }))
 
     const routes = createRoutes();
-    app.use("/api", routes);
+    app.use("/api/v1", routes);
 
     app.use((_req: Request, res: Response) => {
         res.status(404).json({ message: 'Not Found' });

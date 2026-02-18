@@ -12,6 +12,12 @@ export const sequelize = new Sequelize(env.USER_DB_URL, {
         underscored: true,
         freezeTableName: true,
     },
+    pool: {
+        max: env.DB_POOL_MAX,
+        min: env.DB_POOL_MIN,
+        acquire: env.DB_POOL_ACQUIRE_MS,
+        idle: env.DB_POOL_IDLE_MS,
+    },
 })
 
 export const ConnectToDatabase = async () => {

@@ -1,8 +1,8 @@
 import json
 import logging
-import pika
 from api.repositories.infrastructure import InfrastructureRepository
 from api.common.envs.application import app_config
+from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
 
@@ -13,19 +13,14 @@ class InfraEventConsumer:
     QUEUE_NAME = "application-service.infra-events"
 
     def __init__(self):
-        self.connection = None
-        self.channel = None
         self.infra_repo = InfrastructureRepository()
-
-    def connect(self):
-        """Establish connection to RabbitMQ and declare exchanges/queues."""
-        parameters = pika.URLParameters(app_config.rabbitmq_url)
-        self.connection = pika.BlockingConnection(parameters)
-        self.channel = self.connection.channel()
-        
-        self.channel.exchange_declare(exchange=self.EXCHANGE_NAME, exchange_type='topic', durable=True)
-        self.channel.queue_declare(queue=self.QUEUE_NAME, durable=True)
-        self.channel.queue_bind(exchange=self.EXCHANGE_NAME, queue=self.QUEUE_NAME, routing_key=self.ROUTING_KEY)
+        self.consumer = ResilientPikaConsumer(
+            url=app_config.rabbitmq_url,
+            exchange=self.EXCHANGE_NAME,
+            queue=self.QUEUE_NAME,
+            routing_key=self.ROUTING_KEY,
+            name="application-service-infra-consumer"
+        )
 
     def callback(self, ch, method, properties, body):
         """Process received infrastructure events."""
@@ -58,12 +53,12 @@ class InfraEventConsumer:
 
     def start(self):
         """Start consuming messages."""
-        if not self.channel: self.connect()
-        logger.info(f"Starting infra consumer on {self.QUEUE_NAME}")
-        self.channel.basic_consume(queue=self.QUEUE_NAME, on_message_callback=self.callback)
-        self.channel.start_consuming()
+        self.consumer.start(self.callback)
+
+    def stop(self):
+        """Stop consuming messages."""
+        self.consumer.stop()
 
     def close(self):
-        """Close RabbitMQ connection."""
-        if self.connection and not self.connection.is_closed:
-            self.connection.close()
+        """Close connection."""
+        self.stop()

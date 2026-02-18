@@ -1,11 +1,10 @@
-import axios from "axios";
+import { githubHttpClient } from "@/utils/http-client";
 import { User } from "@/db";
 import { sequelize } from "@/db/sequalize";
 import { env } from "@/config/env";
 import { GithubCallbackInput, GithubUserUpsertInput } from "@/types/auth.user.types";
 import { PublishUserRegistered } from "@/messaging/producer/user-created.message";
 import { BaseService } from "@/service/invited-users/invited-user.base.service";
-import { signAccessToken, signRefreshToken } from "@/utils/handle-token";
 import { USER_ROLE } from "@/types/auth.invited_user.types";
 
 export class UserFacadeService extends BaseService {
@@ -19,7 +18,7 @@ export class UserFacadeService extends BaseService {
 
     public async handleCallback(input: GithubCallbackInput) {
         const { code } = input;
-        const tokenRes = await axios.post(
+        const tokenRes = await githubHttpClient.post(
             "https://github.com/login/oauth/access_token",
             {
                 client_id: this.clientId,
@@ -30,14 +29,14 @@ export class UserFacadeService extends BaseService {
             { headers: { Accept: "application/json" } }
         );
 
-        const token = tokenRes.data.access_token;
+        const token = (tokenRes.data as any).access_token;
         if (!token) throw new Error("Failed to get GitHub token");
 
-        const userRes = await axios.get("https://api.github.com/user", {
+        const userRes = await githubHttpClient.get("https://api.github.com/user", {
             headers: { Authorization: `Bearer ${token}` },
         });
 
-        const { login: username, id: github_id, avatar_url, email } = userRes.data;
+        const { login: username, id: github_id, avatar_url, email } = userRes.data as any;
         const githubIdStr = String(github_id);
 
         return { token, username, github_id: githubIdStr, avatar_url, email };

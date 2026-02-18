@@ -8,7 +8,7 @@ export const sequelize = new Sequelize(
     `${env.DATABASE_HOST}:${env.DATABASE_PORT}/${env.DATABASE_NAME}`,
     {
         dialect: "postgres",
-        dialectOptions: {}, // need to add ssl options here
+        dialectOptions: {},
         logging:
             env.NODE_ENV === "development"
                 ? (msg: string) => logger.info({ sequelize: msg })
@@ -16,6 +16,12 @@ export const sequelize = new Sequelize(
         define: {
             underscored: true,
             freezeTableName: true,
+        },
+        pool: {
+            max: env.DB_POOL_MAX,
+            min: env.DB_POOL_MIN,
+            acquire: env.DB_POOL_ACQUIRE_MS,
+            idle: env.DB_POOL_IDLE_MS,
         },
     }
 );
