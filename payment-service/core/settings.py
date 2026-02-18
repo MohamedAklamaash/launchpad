@@ -56,11 +56,12 @@ MIDDLEWARE = [
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'api.common.auth.drf_auth.JWTAuthentication',
+        'api.middleware.authentication.JWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'EXCEPTION_HANDLER': 'api.common.errors.drf_handler.custom_exception_handler',
 }
 
 ROOT_URLCONF = 'core.urls'

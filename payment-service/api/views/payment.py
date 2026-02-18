@@ -1,6 +1,7 @@
 from django.shortcuts import redirect
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
 from rest_framework import status
 from api.services.payment_service import PaymentService
 from api.repositories.user import UserRepository
@@ -16,7 +17,6 @@ user_repo = UserRepository()
 def create_checkout_session(request):
     """
     Endpoint to initiate a Stripe Checkout Session.
-    Expects JSON body with 'amount' and 'infrastructure_id'.
     """
     user_id = request.user.sub
     user = user_repo.get_user(user_id)
@@ -64,7 +64,7 @@ def process_payment(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
-@permission_classes([])
+@permission_classes([AllowAny])
 def stripe_webhook(request):
     payload = request.body
     sig_header = request.headers.get('STRIPE_SIGNATURE')
@@ -81,7 +81,7 @@ def stripe_webhook(request):
         return Response(status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET'])
-@permission_classes([])
+@permission_classes([AllowAny])
 def payment_success(request):
     session_id = request.query_params.get('session_id')
     if session_id:
@@ -94,7 +94,7 @@ def payment_success(request):
     return redirect(f"{app_config.frontend_url}/payment/success?session_id={session_id}")
 
 @api_view(['GET'])
-@permission_classes([])
+@permission_classes([AllowAny])
 def payment_cancel(request):
     from api.common.env.application import app_config
     return redirect(f"{app_config.frontend_url}/payment/cancel")
