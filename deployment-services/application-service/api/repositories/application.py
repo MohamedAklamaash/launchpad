@@ -9,8 +9,8 @@ class ApplicationRepository:
     def get_by_id(self, application_id: str) -> Application:
         return Application.objects.filter(id=application_id).first()
 
-    def get_all_for_user(self, user_id: str) -> models.QuerySet:
-        return Application.objects.filter(user_id=user_id)
+    def get_all_for_user(self, user_id: str, infra_id: str) -> models.QuerySet:
+        return Application.objects.filter(user_id=user_id, infrastructure_id=infra_id)
 
     def update(self, application_id: str, data: dict) -> Application:
         Application.objects.filter(id=application_id).update(**data)

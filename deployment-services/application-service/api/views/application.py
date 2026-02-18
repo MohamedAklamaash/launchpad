@@ -14,15 +14,17 @@ class ApplicationListCreateView(APIView):
         self.service = ApplicationService()
 
     def get(self, request):
-        """List all applications for the authenticated user."""
+        """List all applications for the authenticated user for a specific infrastructure"""
         try:
             user = request.db_user
-            apps = self.service.get_user_applications(user.id)
+            infra_id = request.data.get("infrastructure_id", "")
+            if not infra_id:
+                raise Exception("Infrastructure ID is required in the request body")
+            apps = self.service.get_user_applications(user.id, infra_id)
             data = [
                 {
                     "id": str(app.id),
                     "name": app.name,
-                    "infra_id": str(app.infrastructure_id),
                     "cpu": app.alloted_cpu,
                     "memory": app.alloted_memory
                 } for app in apps
