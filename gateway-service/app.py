@@ -1,6 +1,8 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from app.api.router import api_router
 from app.core.config import settings
+from fastapi.responses import JSONResponse
+import logging
 
 app = FastAPI(
     title="Gateway Service",
@@ -25,13 +27,33 @@ async def liveness():
 async def readiness():
     return {"status": "The service is ready"}
 
-from fastapi.responses import JSONResponse
-import logging
+
+from app.core.rate_limiter import RateLimiter
+
+rate_limiter = RateLimiter()
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if request.url.path not in ["/docs", "/openapi.json", "/health", "/liveness", "/readiness"]:
+        try:
+            await rate_limiter.check_rate_limit(request)
+        except HTTPException as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"message": exc.detail},
+            )
+    response = await call_next(request)
+    return response
 
 app.include_router(api_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"message": exc.detail},
+        )
     logging.error(f"Global exception caught: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
