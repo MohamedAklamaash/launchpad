@@ -80,12 +80,12 @@ AUTH_USER_MODEL = "api.User"
 INTERNAL_AUTH_TOKEN=app_config.internal_api_token
 
 INTERNAL_AUTH_EXEMPT_PATHS = [
-    "/health",
-    "/liveness",
-    "/readiness"
+    "/api/v1/healthz",
+    "/api/v1/liveness",
+    "/api/v1/readiness"
 ]
-
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
+INTERNAL_AUTH_TOKEN = app_config.internal_api_token
 
 DJANGO_PORT = app_config.django_port
 

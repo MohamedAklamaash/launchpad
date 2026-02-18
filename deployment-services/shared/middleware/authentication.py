@@ -6,7 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico"]
+EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/api/v1/healthz", "/api/v1/liveness", "/api/v1/readiness"]
 
 class JWTAuthMiddleware:
     def __init__(self, get_response):
