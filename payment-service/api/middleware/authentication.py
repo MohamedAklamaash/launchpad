@@ -10,6 +10,9 @@ EXEMPT_PATHS = [
     "/api/v1/payments/webhook/",
     "/api/v1/payments/success/",
     "/api/v1/payments/cancel/",
+    "/api/v1/payments/healthz/",
+    "/api/v1/payments/liveness/",
+    "/api/v1/payments/readiness/"
 ]
 
 class JWTAuthentication(BaseAuthentication):

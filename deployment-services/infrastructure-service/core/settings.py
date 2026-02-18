@@ -57,6 +57,8 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'core.urls'
 
+APPEND_SLASH=True
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -112,6 +114,14 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+INTERNAL_AUTH_EXEMPT_PATHS = [
+    "/api/v1/healthz",
+    "/api/v1/liveness",
+    "/api/v1/readiness"
+]
+INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
+INTERNAL_AUTH_TOKEN = app_config.internal_api_token
+
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
@@ -134,8 +144,6 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-APPEND_SLASH = False
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

@@ -1,12 +1,12 @@
 from django.http import JsonResponse
-
 from shared.utils.jwt import JWTUser, decode_jwt
 from api.common.envs.application import app_config
+from shared.errors.exception import HttpError
 import logging
 
 logger = logging.getLogger(__name__)
 
-EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico"]
+EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/api/v1/healthz", "/api/v1/liveness", "/api/v1/readiness"]
 
 class JWTAuthMiddleware:
     def __init__(self, get_response):
@@ -16,27 +16,28 @@ class JWTAuthMiddleware:
         if request.path == "/" or any(request.path.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
             return self.get_response(request)
 
-        auth_header = request.headers.get("Authorization")
-        logger.info(f"Authorization header: {auth_header}")
-        if not auth_header:
-            raise Exception("Authorization header is required")
-
-        if not auth_header.startswith("Bearer "):
-            raise Exception("Invalid authorization header")
-
-        token = auth_header.split(" ", 1)[1]
-
         try:
+            auth_header = request.headers.get("Authorization")
+            logger.info(f"Authorization header: {auth_header}")
+            if not auth_header:
+                raise HttpError("Authorization header is required", status_code=401)
+
+            if not auth_header.startswith("Bearer "):
+                raise HttpError("Invalid authorization header", status_code=401)
+
+            token = auth_header.split(" ", 1)[1]
             request.user = decode_jwt(token, app_config.jwt_secret)
 
-        except Exception as e:
-            logger.error(f"JWT Verification Error: {e}")
+        except HttpError as e:
             return JsonResponse(
-                {
-                    "message": "Unauthorized: Invalid or expired token",
-                    "details": str(e),
-                },
-                status=401,
+                {"message": e.message, "details": e.details},
+                status=e.status_code
+            )
+        except Exception as e:
+            logger.exception(f"Unexpected error in JWTAuthMiddleware: {e}")
+            return JsonResponse(
+                {"message": "Internal Server Error", "details": str(e)},
+                status=500
             )
 
         return self.get_response(request)

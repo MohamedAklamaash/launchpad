@@ -52,7 +52,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'shared.middleware.authentication.JWTAuthMiddleware'
+    'shared.middleware.authentication.JWTAuthMiddleware',
+    'api.middleware.user_verification.UserVerificationMiddleware'
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -79,12 +80,12 @@ AUTH_USER_MODEL = "api.User"
 INTERNAL_AUTH_TOKEN=app_config.internal_api_token
 
 INTERNAL_AUTH_EXEMPT_PATHS = [
-    "/health",
-    "/liveness",
-    "/readiness"
+    "/api/v1/healthz",
+    "/api/v1/liveness",
+    "/api/v1/readiness"
 ]
-
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
+INTERNAL_AUTH_TOKEN = app_config.internal_api_token
 
 DJANGO_PORT = app_config.django_port
 
@@ -146,3 +147,7 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+REST_FRAMEWORK = {
+    'EXCEPTION_HANDLER': 'shared.errors.drf_handler.custom_exception_handler',
+}
