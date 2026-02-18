@@ -16,8 +16,11 @@ class ApplicationListCreateView(APIView):
     def get(self, request):
         """List all applications for the authenticated user."""
         try:
-            user = request.db_user
-            apps = self.service.get_user_applications(user.id)
+            user = request.user
+            infra_id = request.data.get("infrastructure_id", "")
+            if not infra_id:
+                raise Exception("Infrastructure ID is required in the request body")
+            apps = self.service.get_user_applications(user.id, infra_id)
             data = [
                 {
                     "id": str(app.id),
@@ -34,7 +37,7 @@ class ApplicationListCreateView(APIView):
     def post(self, request):
         """Create a new application."""
         try:
-            user = request.db_user
+            user = request.user
             app = self.service.create_application(user, request.data)
             return Response({"id": str(app.id), "name": app.name}, status=status.HTTP_201_CREATED)
         except PermissionError as e:
@@ -54,7 +57,7 @@ class ApplicationDetailDeleteView(APIView):
 
     def get(self, request, pk=None):
         """Get details of a specific application."""
-        user = request.db_user
+        user = request.user
         app = self.service.get_application_details(user.id, pk)
         if not app:
             return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -74,7 +77,7 @@ class ApplicationDetailDeleteView(APIView):
     def delete(self, request, pk=None):
         """Delete an application."""
         try:
-            user = request.db_user
+            user = request.user
             self.service.delete_application(user.id, pk)
             return Response(status=status.HTTP_204_NO_CONTENT)
         except PermissionError as e:

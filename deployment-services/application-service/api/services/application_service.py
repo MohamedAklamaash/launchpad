@@ -47,9 +47,9 @@ class ApplicationService:
         data["user"] = user
         return self.app_repo.create(data)
 
-    def get_user_applications(self, user_id: str):
+    def get_user_applications(self, user_id: str, infra_id:str):
         """Get all applications belonging to a user."""
-        return self.app_repo.get_all_for_user(user_id)
+        return self.app_repo.get_all_for_user(user_id, infra_id)
 
     def get_application_details(self, user_id: str, app_id: str):
         """Get details of a specific application if user is authorized."""
