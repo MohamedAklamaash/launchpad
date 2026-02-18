@@ -18,7 +18,7 @@ class UserVerificationMiddleware:
 
         try:
             req_user = User.objects.get(id=user_id)
-            request.db_user = req_user
+            request.user = req_user
         except User.DoesNotExist:
             logger.warning(f"User {user_id} authenticated via JWT but not found in DB")
             return JsonResponse({"message": "User not synchronized"}, status=403)
