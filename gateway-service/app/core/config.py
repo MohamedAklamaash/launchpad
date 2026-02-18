@@ -14,5 +14,9 @@ class Settings(BaseSettings):
     DEBUG:bool = os.getenv("DEBUG", "True")
     PORT: int = int(os.getenv("PORT", "8000"))
     INTERNAL_API_TOKEN:str = os.getenv("INTERNAL_API_TOKEN", "")
-
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+    MAX_REQUESTS: int = int(os.getenv("MAX_REQUESTS", "100"))
+    MAX_USER_REQUESTS: int = int(os.getenv("MAX_USER_REQUESTS", "10"))
+    RATE_LIMIT_WINDOW_SECONDS: int = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "300"))
+   
 settings = Settings()
