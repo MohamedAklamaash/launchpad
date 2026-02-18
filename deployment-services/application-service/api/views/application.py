@@ -25,7 +25,6 @@ class ApplicationListCreateView(APIView):
                 {
                     "id": str(app.id),
                     "name": app.name,
-                    "infra_id": str(app.infrastructure_id),
                     "cpu": app.alloted_cpu,
                     "memory": app.alloted_memory
                 } for app in apps

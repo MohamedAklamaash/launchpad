@@ -16,16 +16,13 @@ class ApplicationService:
         if not infra_id:
             raise ValueError("Infrastructure ID is required")
 
-        # 1. Check if user is authorized for this infrastructure
         if not self.infra_repo.is_user_authorized(infra_id, user.id):
             raise PermissionError("User is not authorized for this infrastructure")
 
-        # 2. Get infrastructure limits
         infra = self.infra_repo.get_infrastructure(infra_id)
         if not infra:
             raise ValueError("Infrastructure not found")
 
-        # 3. Check requested resources against infrastructure max limits
         requested_cpu = float(data.get("alloted_cpu", 0))
         requested_mem = float(data.get("alloted_memory", 0))
         requested_storage = float(data.get("alloted_storage", 0))
@@ -33,7 +30,6 @@ class ApplicationService:
         if requested_cpu > infra.max_cpu or requested_mem > infra.max_memory:
             raise ValueError("Requested resources exceed infrastructure absolute limits")
 
-        # 4. Check available quota (remaining resources)
         totals = self.app_repo.get_total_resources_for_infra(infra_id)
         current_cpu = totals.get("total_cpu") or 0
         current_mem = totals.get("total_memory") or 0
@@ -43,7 +39,6 @@ class ApplicationService:
         if (current_mem + requested_mem) > infra.max_memory:
             raise ValueError(f"Memory quota exceeded. Available: {infra.max_memory - current_mem}")
 
-        # 5. Create application
         data["user"] = user
         return self.app_repo.create(data)
 
