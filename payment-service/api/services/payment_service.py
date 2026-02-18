@@ -23,7 +23,7 @@ class PaymentService:
                 raise ValueError(f"Infrastructure {infrastructure_id} not found in payments database")
 
             billing = self._create_pending_billing(user, amount, infrastructure_id)
-
+            now = timezone.now()
             session = stripe.checkout.Session.create(
                 payment_method_types=['card'],
                 line_items=[{

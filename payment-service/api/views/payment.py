@@ -16,7 +16,6 @@ user_repo = UserRepository()
 def create_checkout_session(request):
     """
     Endpoint to initiate a Stripe Checkout Session.
-    Expects JSON body with 'amount' and 'infrastructure_id'.
     """
     user_id = request.user.sub
     user = user_repo.get_user(user_id)
