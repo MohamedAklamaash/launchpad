@@ -62,6 +62,7 @@ class AuthEventConsumer:
         email = payload.get("email")
         user_name = payload.get("user_name")
         role = payload.get("role")
+        invited_by = payload.get("invited_by")
         metadata = payload.get("metadata", {})
 
         log.info(
@@ -71,6 +72,7 @@ class AuthEventConsumer:
                 "user_id": user_id,
                 "email": email,
                 "event_type": event.get("type"),
+                "invited_by": invited_by,
             },
         )
 
@@ -92,6 +94,7 @@ class AuthEventConsumer:
                         "role": role,
                         "is_active": True,
                         "metadata": metadata,
+                        "invited_by": invited_by,
                     }
                 )
 

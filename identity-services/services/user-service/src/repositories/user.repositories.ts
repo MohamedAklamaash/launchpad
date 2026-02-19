@@ -16,6 +16,7 @@ const toUserSignature = (user: UserModel): IUser => {
         metadata: user.metadata,
         user_name: user.user_name,
         profile_url: user.profile_url,
+        invited_by: user.invited_by,
     }
 }
 
@@ -43,6 +44,7 @@ export class UserRepository {
                 infra_id: payload.infra_id,
                 metadata: payload.metadata,
                 user_name: payload.user_name,
+                invited_by: payload.invited_by,
             },
             { returning: true },
         );
@@ -70,6 +72,7 @@ export class UserRepository {
             infra_id: input.infra_id,
             profile_url: input.profile_url,
             metadata: input.metadata,
+            invited_by: input.invited_by,
             created_at: new Date(),
             updated_at: new Date()
         });

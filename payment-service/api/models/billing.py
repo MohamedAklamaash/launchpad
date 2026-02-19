@@ -4,6 +4,9 @@ from django.utils import timezone
 from api.common.utils.uuid import uuid7_pk
 from api.common.enums.billing_status import BillingPaymentMethod
 
+def thirty_days_hence():
+    return timezone.now() + timezone.timedelta(days=30)
+
 class Billing(models.Model):
     id = models.UUIDField(primary_key=True,default=uuid7_pk, editable=False)
     user_id = models.UUIDField()
@@ -18,7 +21,7 @@ class Billing(models.Model):
         BillingStatus.choices,
         default=BillingStatus.PENDING
     )
-    due_date = models.DateField(default=timezone.now() + timezone.timedelta(days=30))
+    due_date = models.DateField(default=thirty_days_hence)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     metadata = models.JSONField(null=True, blank=True)

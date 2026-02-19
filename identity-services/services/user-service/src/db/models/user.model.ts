@@ -13,6 +13,7 @@ export class User extends Model<Usermodel> implements Usermodel {
     declare updated_at: Date;
     declare metadata?: Record<string, any>;
     declare infra_id: string[];
+    declare invited_by?: string;
 }
 
 User.init({
@@ -52,6 +53,10 @@ User.init({
     infra_id: {
         type: DataTypes.JSON,
         allowNull: false,
+    },
+    invited_by: {
+        type: DataTypes.STRING,
+        allowNull: true,
     },
 }, {
     sequelize,

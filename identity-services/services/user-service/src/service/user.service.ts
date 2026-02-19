@@ -32,7 +32,8 @@ class UserService {
                 role: user.role,
                 profile_url: user.profile_url,
                 metadata: user.metadata,
-                updated_at: user.updated_at
+                updated_at: user.updated_at,
+                invited_by: user.invited_by
             });
 
             return user;

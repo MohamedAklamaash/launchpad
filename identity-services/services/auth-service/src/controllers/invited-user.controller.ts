@@ -22,8 +22,8 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
             password,
             user_name,
             infra_id,
-            role: role as USER_ROLE
-        });
+            role: role as USER_ROLE,
+        }, super_user.id);
 
         return res.status(201).json(authRes);
     } catch (error: unknown) {
