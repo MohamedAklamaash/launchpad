@@ -26,8 +26,8 @@ echo "Starting Gateway Service..."
 # Shared venv for deployment-services (application + infrastructure)
 DEPLOY_PYTHON="$(pwd)/deployment-services/venv/bin/python"
 
-# echo "Starting Application Service..."
-# (cd deployment-services/application-service && "$DEPLOY_PYTHON" manage.py migrate && "$DEPLOY_PYTHON" manage.py runserver 0.0.0.0:8001) &
+echo "Starting Application Service..."
+(cd deployment-services/application-service && "$DEPLOY_PYTHON" manage.py migrate && "$DEPLOY_PYTHON" manage.py runserver 0.0.0.0:8001) &
 
 echo "Starting Infrastructure Service..."
 (cd deployment-services/infrastructure-service && "$DEPLOY_PYTHON" manage.py migrate && "$DEPLOY_PYTHON" manage.py runserver 0.0.0.0:8002) &

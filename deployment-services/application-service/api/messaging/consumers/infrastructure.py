@@ -31,27 +31,13 @@ class InfraEventConsumer:
     @staticmethod
     def _is_transient(exc: Exception) -> bool:
         """
-        Return True for errors that are safe to retry (NACK with requeue=True).
-
-        Transient errors:
-          - User.DoesNotExist / ObjectDoesNotExist:  auth event hasn't arrived yet
-          - ProgrammingError:  table doesn't exist yet (migrations not applied)
-          - OperationalError:  DB connection dropped
-
-        Permanent errors (NACK with requeue=False):
-          - JSON decode failure
-          - Missing required fields (caught before this point)
-          - IntegrityError on a fully valid payload (duplicate PK etc.)
+            Return True for errors that are safe to retry (NACK with requeue=True).
         """
         return isinstance(exc, (ObjectDoesNotExist, ProgrammingError, OperationalError))
 
     def callback(self, ch, method, properties, body):
         """
         Process received infrastructure.created events.
-
-        ACK  → DB write committed successfully.
-        NACK requeue=True  → transient error (user lag, DB down, missing table).
-        NACK requeue=False → permanent error (bad JSON, missing required fields).
         """
         correlation_id = (
             properties.correlation_id
@@ -60,7 +46,6 @@ class InfraEventConsumer:
         )
         log = logger.getChild("infra_event")
 
-        # ── 1. Deserialize ────────────────────────────────────────────────────
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -74,7 +59,6 @@ class InfraEventConsumer:
 
         payload = event.get("payload", {})
 
-        # ── 2. Validate required fields ───────────────────────────────────────
         infra_id = payload.get("id") or payload.get("infra_id")
         user_id = payload.get("user_id")
 
@@ -96,7 +80,6 @@ class InfraEventConsumer:
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
 
-        # ── 3. DB write inside atomic transaction ─────────────────────────────
         try:
             with transaction.atomic():
                 self.infra_repo.upsert_infrastructure(

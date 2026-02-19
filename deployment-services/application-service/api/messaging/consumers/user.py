@@ -45,7 +45,6 @@ class AuthEventConsumer:
         )
         log = logger.getChild("auth_event")
 
-        # ── 1. Deserialize ────────────────────────────────────────────────────
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -75,7 +74,6 @@ class AuthEventConsumer:
             },
         )
 
-        # ── 2. Validate ───────────────────────────────────────────────────────
         if not user_id or not email:
             log.warning(
                 "auth event missing required fields user_id/email — discarding",
@@ -84,7 +82,6 @@ class AuthEventConsumer:
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
 
-        # ── 3. DB write inside atomic transaction ─────────────────────────────
         try:
             with transaction.atomic():
                 self.user_repo.upsert_user(

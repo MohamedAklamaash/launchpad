@@ -50,7 +50,6 @@ class ApiConfig(AppConfig):
 
     def ready(self):
         """Start RabbitMQ consumers when the server starts."""
-        # Guard: only run in the main process, not the reloader child
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 

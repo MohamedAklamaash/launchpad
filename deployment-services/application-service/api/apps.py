@@ -10,11 +10,7 @@ logger = logging.getLogger(__name__)
 
 def _wait_for_db(max_wait: int = 60, interval: int = 3) -> bool:
     """
-    Block until Django's default DB connection succeeds (i.e. migrations applied).
-    Returns True when ready, False if timed out.
-
-    Consumer threads must not start until tables exist — otherwise every
-    message NACKs with ProgrammingError until the thread crashes.
+        Consumer threads must not start until tables exists.
     """
     from django.db import connections
     from django.db.utils import OperationalError, ProgrammingError
@@ -26,7 +22,6 @@ def _wait_for_db(max_wait: int = 60, interval: int = 3) -> bool:
         try:
             conn = connections["default"]
             conn.ensure_connection()
-            # Probe a table that is always created by the first migration
             with conn.cursor() as cursor:
                 cursor.execute("SELECT 1 FROM api_user LIMIT 1")
             logger.info(f"DB ready after {attempt} attempt(s)")
@@ -54,7 +49,6 @@ class ApiConfig(AppConfig):
 
     def ready(self):
         """Start RabbitMQ consumers when the server starts."""
-        # Guard: skip in the reloader child process (runserver spawns two processes)
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 

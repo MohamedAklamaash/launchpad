@@ -35,8 +35,7 @@ class InfrastructureRepository:
         if not user_id:
             raise ValueError("user_id is required for upsert")
 
-        # Resolve the FK — if the user hasn't been synced yet, skip and NACK
-        # so the consumer will retry (caller handles the exception).
+        # if the user hasn't been synced yet, skip and NACK
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
