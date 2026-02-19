@@ -6,6 +6,7 @@ import { v7 as uuidv7 } from "uuid";
 export interface InvitedUserAttributes {
     id: string,
     infra_id: string[],
+    invited_by: string,
     email: string,
     user_name: string,
     password_hash: string,
@@ -25,6 +26,7 @@ export type InvitedUserCreationAttributes = Optional<
 export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreationAttributes> {
     declare id: string;
     declare infra_id: string[];
+    declare invited_by: string;
     declare email: string;
     declare user_name: string;
     declare password_hash: string;
@@ -46,6 +48,10 @@ InvitedUser.init(
         infra_id: {
             type: DataTypes.ARRAY(DataTypes.UUID),
             allowNull: false,
+        },
+        invited_by: {
+            type: DataTypes.UUID,
+            allowNull: false
         },
         email: {
             type: DataTypes.STRING,

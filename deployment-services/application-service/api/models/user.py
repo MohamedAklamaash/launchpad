@@ -33,6 +33,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     metadata = models.JSONField(null=True, blank=True)
+    invited_by = models.UUIDField(null=True, blank=True)
     project_access_token = models.CharField(max_length=255, null=True, blank=True)
 
     objects = UserManager()

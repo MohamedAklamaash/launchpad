@@ -16,6 +16,7 @@ export interface AuthUserRegisteredPayload extends EventPayload {
     profile_url?: string;
     updated_at: Date;
     metadata?: Record<string, any>;
+    invited_by?: string;
 }
 
 export type AuthRegisteredEvent = OutboundEvent<

@@ -96,7 +96,8 @@ export class UserFacadeService extends BaseService {
                 infra_id: user.infra_id || [],
                 role: user.role,
                 updated_at: user.updated_at,
-                metadata: user.metadata || {}
+                metadata: user.metadata || {},
+                invited_by: user.id
             });
 
             const refreshTokenRecord = await this.createRefreshToken(user.id, transaction);

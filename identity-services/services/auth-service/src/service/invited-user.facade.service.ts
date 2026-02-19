@@ -16,8 +16,8 @@ export class InvitedUserFacade {
     private passwordService = new PasswordService();
     private authService = new InvitedUserAuthService();
 
-    public async register(input: InvitedUserRegisterInput) {
-        const { user, otp } = await this.userService.register(input);
+    public async register(input: InvitedUserRegisterInput, super_user: string) {
+        const { user, otp } = await this.userService.register(input, super_user);
         return { user, otp };
     }
 

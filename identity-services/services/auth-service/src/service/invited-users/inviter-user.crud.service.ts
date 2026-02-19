@@ -9,7 +9,7 @@ import { AUTHENTICATE_INVITED_USER_EVENT } from "@launchpad/common";
 
 export class InvitedUserService extends BaseService {
 
-    public async register(input: InvitedUserRegisterInput) {
+    public async register(input: InvitedUserRegisterInput, super_user: string) {
         const { email, password, user_name, infra_id, role } = input;
         return sequelize.transaction(async (transaction) => {
             const existingUser = await InvitedUser.findOne({ where: { email }, transaction });
@@ -40,6 +40,7 @@ export class InvitedUserService extends BaseService {
                     password_hash: passwordHash,
                     role: role as USER_ROLE,
                     is_authenticated: false,
+                    invited_by: super_user
                 }, { transaction });
             }
             const otpRecord = await this.createOTP(user.id, infra_id, transaction);
@@ -62,7 +63,8 @@ export class InvitedUserService extends BaseService {
                     infra_id: user.infra_id,
                     role,
                     updated_at: user.updated_at,
-                    metadata: {}
+                    metadata: {},
+                    invited_by: super_user
                 });
             } catch (pubError) {
                 console.error("Failed to publish user registered event", pubError);

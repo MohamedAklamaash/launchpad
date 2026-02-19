@@ -9,6 +9,7 @@ export interface User {
     updated_at: Date;
     metadata?: Record<string, any>;
     infra_id: string[];
+    invited_by?: string;
 }
 
 export interface CreateUserInput {
@@ -19,4 +20,5 @@ export interface CreateUserInput {
     infra_id: string[];
     profile_url?: string;
     metadata?: Record<string, any>;
+    invited_by?: string;
 }
