@@ -24,11 +24,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = app_config.django_secret
+JWT_SECRET = app_config.jwt_secret
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -48,15 +49,17 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
+    # 'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'shared.middleware.internal_auth.InternalAuthMiddleware',
+    'shared.middleware.authentication.JWTAuthMiddleware',
 ]
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'api.middleware.authentication.JWTAuthentication',
+        'shared.auth.jwt_auth.MiddlewareJWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -87,18 +90,10 @@ WSGI_APPLICATION = 'core.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
+from shared.resilience import get_db_pool_config
+
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": db_config.name,
-        "USER": db_config.user_name,
-        "PASSWORD": db_config.password,
-        "HOST": db_config.host,
-        "PORT": db_config.port,
-        "OPTIONS": {
-            "sslmode": "require" if db_config.ssl else "disable",
-        },
-    }
+    "default": get_db_pool_config(db_config)
 }
 
 # Password validation
@@ -139,3 +134,11 @@ STATIC_URL = 'static/'
 
 AUTH_USER_MODEL = 'api.User'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+INTERNAL_AUTH_EXEMPT_PATHS = [
+    "/api/v1/healthz",
+    "/api/v1/liveness",
+    "/api/v1/readiness"
+]
+INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
+INTERNAL_AUTH_TOKEN = app_config.internal_api_token

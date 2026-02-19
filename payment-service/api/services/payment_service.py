@@ -1,14 +1,23 @@
 import stripe
-from api.common.env.application import app_config
-from api.repositories.billing import BillingRepository
-from api.repositories.infrastructure import InfrastructureRepository
-from api.common.enums.billing_status import BillingStatus
 import logging
 from django.utils import timezone
+from api.repositories.billing import BillingRepository
+from api.repositories.infrastructure import InfrastructureRepository
+from api.common.env.application import app_config
+from api.common.enums.billing_status import BillingStatus
+from shared.resilience.circuit_breaker import CircuitBreaker
+import os
 
 logger = logging.getLogger(__name__)
 
 stripe.api_key = app_config.stripe_secret_key
+
+stripe_cb = CircuitBreaker(
+    name="StripeAPI",
+    failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", 5)),
+    timeout=float(os.environ.get("CB_TIMEOUT_MS", 30000)) / 1000.0,
+    success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", 2))
+)
 
 class PaymentService:
     def __init__(self):
@@ -17,14 +26,14 @@ class PaymentService:
 
     def create_checkout_session(self, user, amount, infrastructure_id=None):
         try:
-            # 1. Validate Infrastructure existence
             infra = self.infra_repo.get_infrastructure(infrastructure_id)
             if not infra:
                 raise ValueError(f"Infrastructure {infrastructure_id} not found in payments database")
 
             billing = self._create_pending_billing(user, amount, infrastructure_id)
             now = timezone.now()
-            session = stripe.checkout.Session.create(
+            session = stripe_cb.execute(
+                stripe.checkout.Session.create,
                 payment_method_types=['card'],
                 line_items=[{
                     'price_data': {
@@ -37,8 +46,8 @@ class PaymentService:
                     'quantity': 1,
                 }],
                 mode='payment',
-                success_url=f'{app_config.backend_url}/api/v1/payments/success?session_id={{CHECKOUT_SESSION_ID}}',
-                cancel_url=f'{app_config.backend_url}/api/v1/payments/cancel',
+                success_url=f'{app_config.backend_url}/api/v1/success?session_id={{CHECKOUT_SESSION_ID}}',
+                cancel_url=f'{app_config.backend_url}/api/v1/cancel',
                 client_reference_id=str(billing.id),
                 customer_email=user.email,
             )
@@ -54,15 +63,14 @@ class PaymentService:
         Process a direct payment using Stripe PaymentIntent.
         """
         try:
-            # 1. Validate Infrastructure existence
             infra = self.infra_repo.get_infrastructure(infrastructure_id)
             if not infra:
                 return {"success": False, "error": f"Infrastructure {infrastructure_id} not found in payments database"}
 
             billing = self._create_pending_billing(user, amount, infrastructure_id)
 
-            # Create a PaymentIntent
-            intent = stripe.PaymentIntent.create(
+            intent = stripe_cb.execute(
+                stripe.PaymentIntent.create,
                 amount=int(amount),
                 currency='usd',
                 payment_method=payment_method_id,
@@ -71,7 +79,7 @@ class PaymentService:
                 off_session=True, # Allow processing without user being on-session
                 description=f'Direct Payment for Infrastructure Usage - {timezone.now().strftime("%B %Y")}',
                 metadata={"billing_id": str(billing.id)},
-                return_url=f'{app_config.backend_url}/api/v1/payments/success' # Redirect back to backend first
+                return_url=f'{app_config.backend_url}/api/v1/success' # Redirect back to backend first
             )
 
             if intent.status == 'succeeded':
@@ -119,7 +127,7 @@ class PaymentService:
         Verify a Stripe checkout session and update billing status.
         """
         try:
-            session = stripe.checkout.Session.retrieve(session_id)
+            session = stripe_cb.execute(stripe.checkout.Session.retrieve, session_id)
             billing_id = session.get('client_reference_id')
             
             if billing_id:

@@ -1,11 +1,13 @@
 import json
+import uuid
 import logging
-import pika
-from api.models.infrastructure import Infrastructure
+from django.db import transaction, ProgrammingError, OperationalError
 from api.repositories.user import UserRepository
 from api.common.env.application import app_config
+from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
+
 
 class AuthEventConsumer:
     EXCHANGE_NAME = "auth.events"
@@ -13,72 +15,103 @@ class AuthEventConsumer:
     QUEUE_NAME = "payment-service.auth-events"
 
     def __init__(self):
-        self.connection = None
-        self.channel = None
         self.user_repo = UserRepository()
-
-    def connect(self):
-        parameters = pika.URLParameters(app_config.rabbitmq_url)
-        self.connection = pika.BlockingConnection(parameters)
-        self.channel = self.connection.channel()
-        
-        self.channel.exchange_declare(
-            exchange=self.EXCHANGE_NAME,
-            exchange_type='topic',
-            durable=True
-        )
-        
-        self.channel.queue_declare(queue=self.QUEUE_NAME, durable=True)
-        self.channel.queue_bind(
+        self.consumer = ResilientPikaConsumer(
+            url=app_config.rabbitmq_url,
             exchange=self.EXCHANGE_NAME,
             queue=self.QUEUE_NAME,
-            routing_key=self.ROUTING_KEY
+            routing_key=self.ROUTING_KEY,
+            name="payment-service-auth-consumer",
+            prefetch_count=1,
         )
+
+    @staticmethod
+    def _is_transient(exc: Exception) -> bool:
+        return isinstance(exc, (ProgrammingError, OperationalError))
 
     def callback(self, ch, method, properties, body):
+        correlation_id = (
+            properties.correlation_id
+            if properties and properties.correlation_id
+            else str(uuid.uuid4())
+        )
+        log = logger.getChild("auth_event")
+
         try:
             event = json.loads(body)
-            payload = event.get("payload", {})
-            
-            user_id = payload.get("id")
-            email = payload.get("email")
-            user_name = payload.get("user_name")
-            role = payload.get("role")
-            metadata = payload.get("metadata", {})
-
-            if not user_id or not email:
-                logger.warning(f"Received invalid event payload: {payload}")
-                ch.basic_ack(delivery_tag=method.delivery_tag)
-                return
-
-            user, created = self.user_repo.upsert_user({
-                "id": user_id,
-                "email": email,
-                "user_name": user_name,
-                "role": role,
-                "is_active": True,
-                "is_staff": True,
-                "metadata": metadata,
-            })
-            
-            logger.info(f"Successfully synced user {email} ({user_id})")
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-            
-        except Exception as e:
-            logger.error(f"Error processing auth event: {e}")
+        except json.JSONDecodeError as exc:
+            log.error(
+                "JSON decode failed — discarding",
+                extra={"correlation_id": correlation_id, "error": str(exc)},
+                exc_info=True,
+            )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        payload = event.get("payload", {})
+        user_id = payload.get("id")
+        email = payload.get("email")
+        user_name = payload.get("user_name")
+        role = payload.get("role")
+        metadata = payload.get("metadata", {})
+
+        log.info(
+            "Received auth.user.registered event",
+            extra={
+                "correlation_id": correlation_id,
+                "user_id": user_id,
+                "email": email,
+                "event_type": event.get("type"),
+            },
+        )
+
+        if not user_id or not email:
+            log.warning(
+                "auth event missing required fields — discarding",
+                extra={"correlation_id": correlation_id, "payload": payload},
+            )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        try:
+            with transaction.atomic():
+                user, created = self.user_repo.upsert_user(
+                    {
+                        "id": user_id,
+                        "email": email,
+                        "user_name": user_name,
+                        "role": role,
+                        "is_active": True,
+                        "is_staff": True,
+                        "metadata": metadata,
+                    }
+                )
+            log.info(
+                "user upserted successfully — ACKing",
+                extra={"correlation_id": correlation_id, "user_id": user_id, "created": created},
+            )
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        except Exception as exc:
+            transient = self._is_transient(exc)
+            log.error(
+                "Error processing auth event — %s",
+                "NACKing with requeue (transient)" if transient else "NACKing without requeue (permanent)",
+                extra={
+                    "correlation_id": correlation_id,
+                    "user_id": user_id,
+                    "error": str(exc),
+                    "exc_type": type(exc).__name__,
+                },
+                exc_info=True,
+            )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
 
     def start(self):
-        if not self.channel:
-            self.connect()
-            
-        logger.info(f"Starting consumer on queue {self.QUEUE_NAME}")
-        self.channel.basic_consume(
-            queue=self.QUEUE_NAME,
-            on_message_callback=self.callback
-        )
-        self.channel.start_consuming()
+        self.consumer.start(self.callback)
+
+    def stop(self):
+        self.consumer.stop()
 
     def close(self):
-        if self.connection and not self.connection.is_closed:
-            self.connection.close()
+        self.stop()

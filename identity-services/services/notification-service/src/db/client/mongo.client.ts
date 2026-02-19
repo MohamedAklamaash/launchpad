@@ -9,7 +9,10 @@ export const ConnectMongoDB = async (): Promise<MongoClient | null> => {
         if (mongoClient) {
             return mongoClient
         }
-        mongoClient = new MongoClient(env.MONGODB_URL)
+        mongoClient = new MongoClient(env.MONGODB_URL, {
+            maxPoolSize: env.MONGO_POOL_SIZE,
+            connectTimeoutMS: env.MONGO_CONNECT_TIMEOUT_MS,
+        })
         await mongoClient.connect()
         logger.info("Connected to Mongodb successfully")
         return mongoClient

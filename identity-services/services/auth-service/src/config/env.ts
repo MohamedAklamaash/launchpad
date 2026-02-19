@@ -16,6 +16,11 @@ const envSchema = z.object({
 
     AUTH_DB_URL: z.url(),
 
+    DB_POOL_MAX: z.coerce.number().default(10),
+    DB_POOL_MIN: z.coerce.number().default(2),
+    DB_POOL_ACQUIRE_MS: z.coerce.number().default(30_000),
+    DB_POOL_IDLE_MS: z.coerce.number().default(10_000),
+
     JWT_SECRET: z.string(),
     JWT_REFRESH_SECRET: z.string(),
     JWT_EXPIRES_IN: z.string(),
@@ -30,9 +35,18 @@ const envSchema = z.object({
     REDIS_PORT: z.coerce.number().default(6379),
     REDIS_PASSWORD: z.string(),
     REDIS_DB: z.coerce.number().default(0),
-    REDIS_USERNAME: z.string(),
+    REDIS_USERNAME: z.string().optional().default("default"),
 
-    RABBITMQ_URL: z.string()
+    RABBITMQ_URL: z.string(),
+
+    CB_FAILURE_THRESHOLD: z.coerce.number().default(5),
+    CB_TIMEOUT_MS: z.coerce.number().default(30_000),
+    CB_SUCCESS_THRESHOLD: z.coerce.number().default(2),
+
+    HTTP_REQUEST_TIMEOUT_MS: z.coerce.number().default(5_000),
+    AMQP_MAX_RETRIES: z.coerce.number().default(0),
+    AMQP_RETRY_DELAY_MS: z.coerce.number().default(1_000),
+    AMQP_PREFETCH_COUNT: z.coerce.number().default(10),
 });
 
 export const env = createEnv(envSchema, {

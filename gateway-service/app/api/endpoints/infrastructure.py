@@ -6,5 +6,9 @@ router = APIRouter(prefix="/infrastructures", tags=["infrastructures"])
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 async def infrastructure_proxy(request: Request, path: str):
-    url = f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{path}"
+    # Route health checks to the correct backend path
+    if path.rstrip('/') in ["healthz", "liveness", "readiness"]:
+        url = f"{settings.INFRASTRUCTURE_SERVICE_URL}/{path}"
+    else:
+        url = f"{settings.INFRASTRUCTURE_SERVICE_URL}/infrastructures/{path}"
     return await proxy_request(url, request)

@@ -7,8 +7,6 @@ from django.db import IntegrityError
 from shared.errors.exception import HttpError
 from shared.enums.user_role import UserRole
 
-from api.messaging.producer.producer import infra_producer
-
 class InfrastructureRepository:
     def get_all_for_user(self, user_id) -> QuerySet:
         return Infrastructure.objects.filter(
@@ -32,10 +30,8 @@ class InfrastructureRepository:
                 )
             infra = Infrastructure(user=user, **infra_data)
             infra.save()
-            
-            # Publish event
-            infra_producer.publish_infra_created(user.id, infra.id, infra.name)
-            
+            # NOTE: Event publishing is handled at the service layer (InfrastructureService.create_infrastructure)
+            # to avoid duplicate events. Do NOT publish here.
             return infra
         except User.DoesNotExist:
             raise HttpError(

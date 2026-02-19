@@ -8,4 +8,11 @@ export const redisConfig: RedisOptions = {
     db: env.REDIS_DB,
     username: env.REDIS_USERNAME,
     maxRetriesPerRequest: null,
+    lazyConnect: true,
+    connectTimeout: 10_000,
+    commandTimeout: 10_000,
+    retryStrategy: (times: number) => {
+        if (times > env.REDIS_MAX_RETRIES) return null;
+        return Math.min(times * 200, 3_000);
+    },
 };

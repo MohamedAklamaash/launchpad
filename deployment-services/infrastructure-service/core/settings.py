@@ -23,6 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = app_config.django_secret
+JWT_SECRET = app_config.jwt_secret
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -52,6 +53,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'shared.middleware.internal_auth.InternalAuthMiddleware',
     'shared.middleware.authentication.JWTAuthMiddleware',
 ]
 
@@ -82,18 +84,10 @@ AUTH_USER_MODEL = "api.User"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 db_config = DatabaseConfig.from_env()
 
+from shared.resilience import get_db_pool_config
+
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": db_config.name,
-        "USER": db_config.user_name,
-        "PASSWORD": db_config.password,
-        "HOST": db_config.host,
-        "PORT": db_config.port,
-        "OPTIONS": {
-            "sslmode": "require" if db_config.ssl else "disable",
-        },
-    }
+    "default": get_db_pool_config(db_config)
 }
 
 # Password validation
@@ -147,7 +141,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'api.common.auth.jwt_auth.MiddlewareJWTAuthentication',
+        'shared.auth.jwt_auth.MiddlewareJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',

@@ -10,4 +10,6 @@ export * from "./http/request.validate";
 export * from "./utils/env";
 export * from "./utils/logger";
 
+export * from "./resilience";
+
 export { z } from "zod";
