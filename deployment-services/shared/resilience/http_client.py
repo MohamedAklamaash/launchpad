@@ -1,5 +1,6 @@
 import requests
 import logging
+import time
 from typing import Any, Optional, Dict
 from .circuit_breaker import CircuitBreaker
 
@@ -47,10 +48,10 @@ class ResilientHttpClient:
             res.raise_for_status()
             return res
 
-        start_time = requests.compat.time.time()
+        start_time = time.time()
         try:
             response = self.breaker.execute(make_request)
-            duration = requests.compat.time.time() - start_time
+            duration = time.time() - start_time
             logger.info(f"HTTP {method} {full_url} succeeded - status: {response.status_code}, duration: {duration:.3f}s")
             return response
         except requests.exceptions.HTTPError as e:

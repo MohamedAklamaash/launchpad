@@ -1,5 +1,6 @@
 from api.repositories.application import ApplicationRepository
 from api.repositories.infrastructure import InfrastructureRepository
+from api.repositories.user import UserRepository
 from shared.resilience.http_client import ResilientHttpClient
 from django.db import transaction
 import os
@@ -20,6 +21,11 @@ class ApplicationService:
         self.infra_client = ResilientHttpClient(
             name="InfraServiceClient",
             base_url=os.environ.get("INFRA_SERVICE_URL", "http://localhost:8002")
+        )
+        self.user_repo = UserRepository()
+        self.github_client = ResilientHttpClient(
+            name="GitHubClient",
+            base_url="https://api.github.com"
         )
     
     @transaction.atomic
@@ -52,6 +58,52 @@ class ApplicationService:
         if (current_mem + requested_mem) > infra.max_memory:
             raise ValueError(f"Memory quota exceeded. Available: {infra.max_memory - current_mem}")
 
+        project_remote_url = data.get("project_remote_url", "")
+        if not project_remote_url:
+            raise ValueError(f"Project remote url is required")
+        
+        if user.invited_by:
+            inviter = self.user_repo.get_user(user.invited_by)
+            if inviter:
+                github_metadata = inviter.metadata.get("github", {}) if inviter.metadata else {}
+                github_token = github_metadata.get("token")
+                
+                if github_token:
+                    try:
+                        response = self.github_client.get(
+                            "/user/repos?per_page=100", 
+                            headers={
+                                "Authorization": f"token {github_token}",
+                                "Accept": "application/vnd.github.v3+json"
+                            }
+                        )
+                        
+                        if response.status_code == 200:
+                            repos = response.json()
+                            allowed_urls = []
+                            for r in repos:
+                                allowed_urls.append(r.get("html_url", "").lower())
+                                allowed_urls.append(r.get("clone_url", "").lower())
+                                if r.get("html_url", "").endswith(".git"):
+                                    allowed_urls.append(r.get("html_url", "")[:-4].lower())
+                                else:
+                                    allowed_urls.append((r.get("html_url", "") + ".git").lower())
+                                    
+                            normalized_url = project_remote_url.lower().rstrip("/")
+                            if normalized_url not in allowed_urls:
+                                raise ValueError(f"Selected project {project_remote_url} is not in your inviter's ({inviter.user_name}) GitHub projects")
+                        else:
+                            logger.error(f"Failed to fetch GitHub repos for inviter: {response.status_code} {response.text}")
+                            raise ValueError("Unable to verify GitHub repository ownership at this time")
+                    except Exception as e:
+                        if isinstance(e, ValueError): raise
+                        logger.error(f"Error validating GitHub project: {str(e)}")
+                        raise ValueError(f"GitHub validation failed: {str(e)}")
+                else:
+                    logger.warning(f"Inviter {inviter.email} has no GitHub token in metadata")
+                    raise ValueError("Your inviter has not linked their GitHub account. Cannot verify project.")
+            else:
+                raise ValueError(f"User {user.email} has invited_by {user.invited_by} but inviter not found in DB")
         data["user"] = user
         return self.app_repo.create(data)
 
