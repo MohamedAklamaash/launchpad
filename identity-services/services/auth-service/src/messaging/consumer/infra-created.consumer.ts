@@ -11,25 +11,79 @@ import { User } from "@/db/models/user.model";
 const QUEUE_NAME = "auth-service.infra-events";
 
 const handler: MessageHandler = async (msg, channel) => {
-    const content = JSON.parse(msg.content.toString());
-    const { user_id, infra_id } = content.payload;
+    const correlationId =
+        (msg.properties.correlationId as string | undefined) ??
+        crypto.randomUUID();
 
-
-    const user = await User.findByPk(user_id);
-    if (user) {
-        const currentInfraIds = user.infra_id || [];
-        if (!currentInfraIds.includes(infra_id)) {
-            user.infra_id = [...currentInfraIds, infra_id];
-            await user.save();
-            logger.info({ user_id, infra_id }, "Updated user with new infra_id");
-        } else {
-            logger.info({ user_id, infra_id }, "User already has infra_id – skipping");
-        }
-    } else {
-        logger.warn({ user_id }, "User not found during infra.created sync");
+    // Step 1: Parse — discard unparseable messages immediately
+    let content: { payload?: { user_id?: string; infra_id?: string } };
+    try {
+        content = JSON.parse(msg.content.toString());
+    } catch (parseErr) {
+        logger.error(
+            { correlationId, err: parseErr },
+            "Failed to parse infra.created event — discarding",
+        );
+        channel.nack(msg, false, false);
+        return;
     }
 
-    channel.ack(msg);
+    const { user_id, infra_id } = content.payload ?? {};
+
+    logger.info(
+        { correlationId, user_id, infra_id },
+        "Received infra.created event",
+    );
+
+    // Step 2: Validate required fields
+    if (!user_id || !infra_id) {
+        logger.warn(
+            { correlationId, payload: content.payload },
+            "Missing user_id or infra_id in infra.created event — discarding",
+        );
+        channel.nack(msg, false, false);
+        return;
+    }
+
+    // Step 3: DB write with idempotency guard
+    try {
+        const user = await User.findByPk(user_id);
+        if (user) {
+            const currentInfraIds = user.infra_id || [];
+            if (!currentInfraIds.includes(infra_id)) {
+                logger.info(
+                    { correlationId, user_id, infra_id },
+                    "DB write: updating user infra_id array",
+                );
+                user.infra_id = [...currentInfraIds, infra_id];
+                await user.save();
+                logger.info(
+                    { correlationId, user_id, infra_id, total_infra: user.infra_id.length },
+                    "DB write: user infra_id updated successfully",
+                );
+            } else {
+                logger.info(
+                    { correlationId, user_id, infra_id },
+                    "Idempotent skip: user already has infra_id",
+                );
+            }
+        } else {
+            logger.warn(
+                { correlationId, user_id },
+                "User not found during infra.created sync — nacking to dead-letter",
+            );
+            channel.nack(msg, false, false);
+            return;
+        }
+
+        channel.ack(msg);
+    } catch (err) {
+        logger.error(
+            { correlationId, user_id, infra_id, err },
+            "DB write failed for infra.created — nacking to dead-letter",
+        );
+        channel.nack(msg, false, false);
+    }
 };
 
 export const infraCreatedConsumer = new ResilientAmqpConsumer({

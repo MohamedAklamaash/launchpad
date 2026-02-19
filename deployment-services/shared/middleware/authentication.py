@@ -1,9 +1,13 @@
-from django.http import JsonResponse
+from django.conf import settings
 from shared.utils.jwt import JWTUser, decode_jwt
-from api.common.envs.application import app_config
 from shared.errors.exception import HttpError
 import logging
+from django.http import JsonResponse
 
+def my_view(request):
+    data = {'message': 'Hello, world!', 'status': 'success'}
+    return JsonResponse(data)
+    
 logger = logging.getLogger(__name__)
 
 EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/api/v1/healthz", "/api/v1/liveness", "/api/v1/readiness"]
@@ -26,7 +30,7 @@ class JWTAuthMiddleware:
                 raise HttpError("Invalid authorization header", status_code=401)
 
             token = auth_header.split(" ", 1)[1]
-            request.user = decode_jwt(token, app_config.jwt_secret)
+            request.user = decode_jwt(token, settings.JWT_SECRET)
 
         except HttpError as e:
             return JsonResponse(

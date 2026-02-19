@@ -26,13 +26,19 @@ export const userCreatedPublisher = new ResilientAmqpPublisher({
 
 // Consumer for auth events (user registration)
 const authHandler: MessageHandler = async (msg, channel) => {
+    const correlationId =
+        (msg.properties.correlationId as string | undefined) ?? crypto.randomUUID();
     try {
         const event = JSON.parse(msg.content.toString()) as AuthRegisteredEvent;
-        logger.info({ event }, "Received auth user registered event");
+        logger.info(
+            { correlationId, event_type: event.type, user_id: event.payload.id, metadata: event.payload.metadata },
+            "Received auth.user.registered event",
+        );
         await userService.syncFromAuthUser(event.payload);
+        logger.info({ correlationId, user_id: event.payload.id }, "DB write: user synced");
         channel.ack(msg);
     } catch (error) {
-        logger.error({ err: error }, "Failed to process auth event");
+        logger.error({ correlationId, err: error }, "Failed to process auth event — nacking to dead-letter");
         channel.nack(msg, false, false);
     }
 };
@@ -51,14 +57,27 @@ export const authConsumer = new ResilientAmqpConsumer({
 
 // Consumer for infra events
 const infraHandler: MessageHandler = async (msg, channel) => {
+    const correlationId =
+        (msg.properties.correlationId as string | undefined) ?? crypto.randomUUID();
     try {
         const event = JSON.parse(msg.content.toString()) as InfraCreatedEvent;
-        logger.info({ event }, "Received infra created event");
+        logger.info(
+            { correlationId, event_type: event.type, infra_id: event.payload?.infra_id },
+            "Received infra.created event",
+        );
         await userService.syncInfraCreation(event.payload);
+        logger.info(
+            { correlationId, infra_id: event.payload?.infra_id },
+            "DB write: synced infra creation",
+        );
         channel.ack(msg);
     } catch (error) {
-        logger.error({ err: error }, "Failed to process infra event");
-        channel.ack(msg); // Ack to avoid loops if persistent failure
+        logger.error(
+            { correlationId, err: error },
+            "Failed to process infra event — nacking to dead-letter",
+        );
+        // FIXED: was channel.ack(msg) — that silently swallowed failures
+        channel.nack(msg, false, false);
     }
 };
 

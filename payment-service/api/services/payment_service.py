@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 stripe.api_key = app_config.stripe_secret_key
 
-# Circuit Breaker for Stripe integration
 stripe_cb = CircuitBreaker(
     name="StripeAPI",
     failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", 5)),
@@ -27,7 +26,6 @@ class PaymentService:
 
     def create_checkout_session(self, user, amount, infrastructure_id=None):
         try:
-            # 1. Validate Infrastructure existence
             infra = self.infra_repo.get_infrastructure(infrastructure_id)
             if not infra:
                 raise ValueError(f"Infrastructure {infrastructure_id} not found in payments database")
@@ -65,14 +63,12 @@ class PaymentService:
         Process a direct payment using Stripe PaymentIntent.
         """
         try:
-            # 1. Validate Infrastructure existence
             infra = self.infra_repo.get_infrastructure(infrastructure_id)
             if not infra:
                 return {"success": False, "error": f"Infrastructure {infrastructure_id} not found in payments database"}
 
             billing = self._create_pending_billing(user, amount, infrastructure_id)
 
-            # Create a PaymentIntent
             intent = stripe_cb.execute(
                 stripe.PaymentIntent.create,
                 amount=int(amount),

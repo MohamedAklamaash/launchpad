@@ -1,6 +1,7 @@
 from api.repositories.application import ApplicationRepository
 from api.repositories.infrastructure import InfrastructureRepository
 from shared.resilience.http_client import ResilientHttpClient
+from django.db import transaction
 import os
 
 import logging
@@ -20,7 +21,8 @@ class ApplicationService:
             name="InfraServiceClient",
             base_url=os.environ.get("INFRA_SERVICE_URL", "http://localhost:8002")
         )
-
+    
+    @transaction.atomic
     def create_application(self, user, data: dict):
         """Create a new application after validating user authorization and infra capacity."""
         infra_id = data.get("infrastructure_id")
