@@ -52,8 +52,10 @@ class ApiConfig(AppConfig):
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 
+        from api.messaging.consumers.infrastructure import InfraEventConsumer
+        from api.messaging.consumers.user import AuthEventConsumer
+
         def start_infra_consumer():
-            from api.messaging.consumers.infrastructure import InfraEventConsumer
             try:
                 if not _wait_for_db():
                     return
@@ -63,7 +65,6 @@ class ApiConfig(AppConfig):
                 logger.error(f"InfraEventConsumer crashed: {exc}", exc_info=True)
 
         def start_auth_consumer():
-            from api.messaging.consumers.user import AuthEventConsumer
             try:
                 if not _wait_for_db():
                     return

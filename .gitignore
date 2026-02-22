@@ -8,3 +8,5 @@ venv/
 playground/
 *.log
 *.sh
+.vscode/
+volumes/

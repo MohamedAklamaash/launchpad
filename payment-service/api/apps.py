@@ -10,10 +10,11 @@ class ApiConfig(AppConfig):
         # We only want to start the consumer in the main process, not the reloader
         if os.environ.get('RUN_MAIN') == 'true' or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
             logger = logging.getLogger(__name__)
+            from api.messaging.consumer.user import AuthEventConsumer
+            from api.messaging.consumer.infrastructure import InfraEventConsumer
             
             def start_auth_consumer():
                 logger.info("Initializing AuthEventConsumer thread...")
-                from api.messaging.consumer.user import AuthEventConsumer
                 consumer = AuthEventConsumer()
                 try:
                     consumer.start()
@@ -22,7 +23,6 @@ class ApiConfig(AppConfig):
 
             def start_infra_consumer():
                 logger.info("Initializing InfraEventConsumer thread...")
-                from api.messaging.consumer.infrastructure import InfraEventConsumer
                 consumer = InfraEventConsumer()
                 try:
                     consumer.start()

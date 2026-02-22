@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     APPLICATION_SERVICE_URL: str = os.getenv("APPLICATION_SERVICE_URL", "http://localhost:8001")
     PAYMENT_SERVICE_URL: str = os.getenv("PAYMENT_SERVICE_URL", "http://localhost:8003")
     ALLOWED_HOSTS:str = os.getenv("ALLOWED_HOSTS", "*")
-    DEBUG:bool = os.getenv("DEBUG", "True")
+    DEBUG:bool = os.getenv("DEBUG", "True").lower() in ("true", "1", "yes")
     PORT: int = int(os.getenv("PORT", "8000"))
     INTERNAL_API_TOKEN:str = os.getenv("INTERNAL_API_TOKEN", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
