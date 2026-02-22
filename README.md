@@ -2,3 +2,5 @@
 
 **On redis**
 - ACL SETUSER aklamaash on >akla123 ~* +@all
+
+ln -s ../deployment-services/shared payment-service/shared

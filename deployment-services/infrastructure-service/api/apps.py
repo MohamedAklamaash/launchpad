@@ -53,8 +53,9 @@ class ApiConfig(AppConfig):
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 
+        from api.messaging.consumer.consumer import AuthEventConsumer
+
         def start_auth_consumer():
-            from api.messaging.consumer.consumer import AuthEventConsumer
             try:
                 if not _wait_for_db():
                     return

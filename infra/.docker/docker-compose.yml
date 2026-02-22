@@ -1,4 +1,3 @@
-version: "3.9"
 
 services:
   postgres:
@@ -10,11 +9,12 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_DB: postgres
     ports:
       - "${POSTGRES_PORT}:5432"
     volumes:
       - ./volumes/postgres:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
     networks:
       - backend
 

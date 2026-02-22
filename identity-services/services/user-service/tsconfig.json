@@ -5,10 +5,8 @@
         "moduleResolution": "bundler",
         "rootDir": "src",
         "outDir": "dist",
-        "declaration": true,
-        "declarationMap": true,
+        "composite": false,
         "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo",
-        "composite": true,
         "baseUrl": "./",
         "paths": {
             "@/*": [
