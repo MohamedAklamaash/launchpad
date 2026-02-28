@@ -6,7 +6,7 @@ dist/
 venv/
 .DS_Store
 playground/
-*.log
-*.sh
+# app_scripts/
 .vscode/
 volumes/
+*.log
