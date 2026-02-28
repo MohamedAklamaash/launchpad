@@ -15,8 +15,13 @@ def infrastructure_list_create(request: HttpRequest):
         return Response(data)
     
     elif request.method == 'POST':
-        infra = infrastructure_service.create_infrastructure(user_id=request.user.id, infra_data=request.data)
-        return Response(infra, status=status.HTTP_201_CREATED)
+        try:
+            infra = infrastructure_service.create_infrastructure(user_id=request.user.id, infra_data=request.data)
+            return Response(infra, status=status.HTTP_201_CREATED)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': f"Failed to authenticate cloud provider: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
 @csrf_exempt
 @api_view(['GET', 'PUT', 'DELETE'])

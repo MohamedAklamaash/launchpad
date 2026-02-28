@@ -10,3 +10,6 @@ playground/
 .vscode/
 volumes/
 *.log
+.terraform/
+*.terraform*
+*.backup*
