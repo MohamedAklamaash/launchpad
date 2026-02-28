@@ -13,3 +13,4 @@ volumes/
 .terraform/
 *.terraform*
 *.backup*
+*.tfstate
