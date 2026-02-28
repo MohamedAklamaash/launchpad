@@ -1,0 +1,82 @@
+name: Launchpad Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: .
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: identity-services/pnpm-lock.yaml
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install & Build Identity Services
+        working-directory: identity-services
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            gateway-service/requirements.txt
+            deployment-services/requirements.txt
+            payment-service/requirements.txt
+
+      - name: Install Gateway Service Dependencies
+        working-directory: gateway-service
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Deployment Services Dependencies
+        working-directory: deployment-services
+        run: |
+          pip install -r requirements.txt
+
+      - name: Install Payment Service Dependencies
+        working-directory: payment-service
+        run: |
+          pip install -r requirements.txt
+
+      - name: Create Shared Symlinks
+        run: |
+          rm -rf deployment-services/application-service/shared
+          ln -s ../shared deployment-services/application-service/shared
+
+          rm -rf deployment-services/infrastructure-service/shared
+          ln -s ../shared deployment-services/infrastructure-service/shared
+
+          rm -rf payment-service/shared
+          ln -s ../deployment-services/shared payment-service/shared
+
+      - name: Verify structure
+        run: |
+          echo "Verifying symlinks..."
+          ls -la deployment-services/application-service
+          ls -la deployment-services/infrastructure-service
+          ls -la payment-service
+
+          echo "Build completed successfully."
