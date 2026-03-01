@@ -3,6 +3,8 @@ import sys
 import time
 import threading
 import logging
+import getpass
+from crontab import CronTab
 from django.apps import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,20 @@ def _wait_for_db(max_wait: int = 60, interval: int = 3) -> bool:
     )
     return False
 
+def setup_cron_job():
+    """Sets up the automated cron job when the app starts."""
+    try:
+        current_user = getpass.getuser()
+        cron = CronTab(user=current_user)
+        
+
+        
+        cron.write()
+        logger.info("Successfully configured automated cron job for Compute Optimizer.")
+    except Exception as e:
+        logger.error(f"Failed to setup cron job: {e}")
+
+
 
 class ApiConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
@@ -66,3 +82,6 @@ class ApiConfig(AppConfig):
 
         threading.Thread(target=start_auth_consumer, name="InfraAuthConsumer", daemon=True).start()
         logger.info("Infrastructure Service messaging thread scheduled.")
+
+        # Automatically setup the cron job for Rightsizing Enforcement
+        setup_cron_job()
