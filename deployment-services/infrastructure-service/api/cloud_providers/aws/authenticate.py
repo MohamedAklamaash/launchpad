@@ -1,6 +1,7 @@
 import boto3
 from api.models.infrastructure import Infrastructure
 from shared.enums.cloud_provider import CloudProvider
+from api.common.envs.application import app_config
 
 def authenticate_infrastructure(infrastructure: Infrastructure):
     if infrastructure.cloud_provider != CloudProvider.AWS:
@@ -12,7 +13,6 @@ def authenticate_infrastructure(infrastructure: Infrastructure):
     target_account_id = infrastructure.code
     metadata = infrastructure.metadata or {}
     
-    from api.common.envs.application import app_config
     sts_client = boto3.client(
         "sts",
         aws_access_key_id=app_config.aws_access_key_id,

@@ -73,10 +73,16 @@ class InfrastructureService:
                         infra_obj.refresh_from_db()
                         current_metadata = infra_obj.metadata or {}
                         
+                        metadata = current_metadata or {}
+                        aws_region = metadata.get("aws_region", "us-west-2")
+                        vpc_cidr = metadata.get("vpc_cidr", "10.0.0.0/16")
+
                         tf_config = {
-                            "environment": f"cli-{infra_id}", # cli meaning client to overcome the 64 chr limit
+                            "environment": f"cli-{infra_id}",
                             "owner": str(user_id),
                             "project": "launchpad-infra",
+                            "aws_region": aws_region,
+                            "vpc_cidr": vpc_cidr,
                         }
                         
                         logger.info(f"Triggering asynchronous Terraform apply for infrastructure {infra_id}...")
@@ -118,7 +124,12 @@ class InfrastructureService:
                         except Exception as inner_e:
                             logger.error(f"Failed to save error status to infra record: {str(inner_e)}")
 
-                threading.Thread(target=_provision_aws, daemon=True).start()
+                provision_thread = threading.Thread(
+                    target=_provision_aws, 
+                    daemon=True, 
+                    name=f"provision-{infra_id}"
+                )
+                provision_thread.start()
             
         transaction.on_commit(_on_commit_actions)
 
@@ -140,12 +151,24 @@ class InfrastructureService:
                 authenticate_infrastructure(infra)
                 
                 metadata = infra.metadata or {}
-                
+                aws_region = metadata.get("aws_region", "us-west-2")
+                vpc_cidr = metadata.get("vpc_cidr", "10.0.0.0/16")
+
                 tf_config = {
                     "environment": f"cli-{infra_id}",
                     "owner": str(user_id),
                     "project": "launchpad-infra",
+                    "aws_region": aws_region,
+                    "vpc_cidr": vpc_cidr,
                 }
+                
+                # Simple protection against race condition: check if an apply thread is running for this infra
+                # In a production system, we'd use a proper lock or status field in DB
+                for thread in threading.enumerate():
+                    if thread.name == f"provision-{infra_id}":
+                        logger.warning(f"Provisioning thread still active for {infra_id}. Waiting for it to finish...")
+                        thread.join(timeout=60) # Wait up to 60 seconds
+
                 tf_result = TerraformService.destroy(credentials=metadata, config=tf_config)
                 if not tf_result["success"]:
                     logger.error(f"Terraform destroy failed for infra {infra_id}: {tf_result.get('error')}")

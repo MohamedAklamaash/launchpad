@@ -62,14 +62,17 @@ class TerraformService:
             tmp_path = Path(tmp_dir)
             logger.info(f"Using isolated Terraform working directory: {tmp_path}")
             
-            shutil.copytree(TF_WORKING_DIR, tmp_path, dirs_exist_ok=True)
+            def ignore_tf(src, names):
+                return [n for n in names if n in [".terraform", ".terraform.lock.hcl", "terraform.tfstate", "terraform.tfstate.backup"]]
+            
+            shutil.copytree(TF_WORKING_DIR, tmp_path, dirs_exist_ok=True, ignore=ignore_tf)
             
             try:
                 bucket_name = cls._bootstrap_backend(credentials, region, env_name)
                 
                 logger.info(f"Running terraform init with backend bucket: {bucket_name}")
                 init_cmd = [
-                    "terraform", "init", "-no-color", "-input=false",
+                    "terraform", "init", "-no-color", "-input=false", "-reconfigure",
                     f"-backend-config=bucket={bucket_name}",
                     f"-backend-config=key={env_name}/terraform.tfstate",
                     f"-backend-config=region={region}"
