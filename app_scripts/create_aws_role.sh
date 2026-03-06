@@ -37,6 +37,8 @@ POLICIES=(
 "arn:aws:iam::aws:policy/AWSKeyManagementServicePowerUser"
 "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
 "arn:aws:iam::aws:policy/AWSCloudTrail_FullAccess"
+"arn:aws:iam::aws:policy/AmazonECS_FullAccess"
+"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
 )
 
 for POLICY_ARN in "${POLICIES[@]}"

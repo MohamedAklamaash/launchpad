@@ -94,7 +94,7 @@ class AuthEventConsumer:
                     "user_id": user_id,
                     "email": email,
                     "infra_count": len(infra_ids),
-                    "created": created,
+                    "user_created": created,
                 },
             )
             ch.basic_ack(delivery_tag=method.delivery_tag)

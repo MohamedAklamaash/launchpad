@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 import logging
 import threading
 from django.db import transaction
@@ -10,6 +11,7 @@ from api.messaging.producer.producer import infra_producer
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from shared.enums.cloud_provider import CloudProvider
 from api.services.terraform import TerraformService
+from api.models.environment import Environment
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,11 @@ class InfrastructureService:
                 authenticate_infrastructure(infra)
                 infra.refresh_from_db()
 
+            env = Environment.objects.create(
+                infrastructure=infra,
+                status='PROVISIONING'
+            )
+
             serialized_infra = InfrastructureSerializer.serialize_instance(infra)
 
             infra_id = serialized_infra["id"]
@@ -60,7 +67,6 @@ class InfrastructureService:
             code = serialized_infra.get("code", "")
 
         def _on_commit_actions():
-            # 1. Provision Infrastructure Asynchronously (AWS specific)
             if cloud_provider == CloudProvider.AWS:
                 def _provision_aws():
                     try:
@@ -86,12 +92,36 @@ class InfrastructureService:
                         }
                         
                         logger.info(f"Triggering asynchronous Terraform apply for infrastructure {infra_id}...")
-                        tf_result = TerraformService.apply(credentials=current_metadata, config=tf_config)
+                        tf_result = TerraformService.apply(credentials=current_metadata, config=tf_config, environment_id=str(infra_id))
                         
                         if not tf_result["success"]:
                             logger.error(f"Terraform apply failed for infra {infra_id}: {tf_result.get('error')}")
+                            Environment.objects.filter(infrastructure_id=infra_id).update(status='FAILED')
                         else:
                             logger.info(f"Terraform apply SUCCEEDED for infra {infra_id}")
+                            
+                            output_result = TerraformService.output(credentials=current_metadata, config=tf_config, environment_id=str(infra_id))
+                            
+                            if output_result["success"]:
+                                try:
+                                    outputs = json.loads(output_result["output"])
+                                    
+                                    env_obj = Environment.objects.get(infrastructure_id=infra_id)
+                                    env_obj.vpc_id = outputs.get("vpc_id", {}).get("value")
+                                    env_obj.cluster_arn = outputs.get("cluster_arn", {}).get("value")
+                                    env_obj.alb_arn = outputs.get("alb_arn", {}).get("value")
+                                    env_obj.alb_dns = outputs.get("alb_dns", {}).get("value")
+                                    env_obj.target_group_arn = outputs.get("target_group_arn", {}).get("value")
+                                    env_obj.ecr_repository_url = outputs.get("ecr_repository_url", {}).get("value")
+                                    env_obj.ecs_task_execution_role_arn = outputs.get("ecs_task_execution_role_arn", {}).get("value")
+                                    env_obj.status = 'READY'
+                                    env_obj.save()
+                                    
+                                    logger.info(f"Persisted Terraform outputs for environment {env_obj.id}")
+                                except Exception as e:
+                                    logger.error(f"Failed to parse/persist Terraform outputs: {str(e)}")
+                                    Environment.objects.filter(infrastructure_id=infra_id).update(status='FAILED')
+                            
                             try:
                                 final_infra = self.repo.get_by_id(user_id, infra_id)
                                 final_metadata = final_infra.metadata or {}
@@ -121,6 +151,7 @@ class InfrastructureService:
                                 fail_infra.metadata = {**meta, "provisioning_error": error_msg}
                                 fail_infra.is_cloud_authenticated = False
                                 fail_infra.save()
+                            Environment.objects.filter(infrastructure_id=infra_id).update(status='FAILED')
                         except Exception as inner_e:
                             logger.error(f"Failed to save error status to infra record: {str(inner_e)}")
 
@@ -162,16 +193,18 @@ class InfrastructureService:
                     "vpc_cidr": vpc_cidr,
                 }
                 
-                # Simple protection against race condition: check if an apply thread is running for this infra
-                # In a production system, we'd use a proper lock or status field in DB
                 for thread in threading.enumerate():
                     if thread.name == f"provision-{infra_id}":
                         logger.warning(f"Provisioning thread still active for {infra_id}. Waiting for it to finish...")
-                        thread.join(timeout=60) # Wait up to 60 seconds
+                        thread.join(timeout=60)
 
-                tf_result = TerraformService.destroy(credentials=metadata, config=tf_config)
+                Environment.objects.filter(infrastructure_id=infra_id).update(status='DESTROYING')
+
+                tf_result = TerraformService.destroy(credentials=metadata, config=tf_config, environment_id=str(infra_id))
                 if not tf_result["success"]:
                     logger.error(f"Terraform destroy failed for infra {infra_id}: {tf_result.get('error')}")
+                else:
+                    Environment.objects.filter(infrastructure_id=infra_id).delete()
             except Exception as e:
                 logger.error(f"Error triggering Terraform destroy for {infra_id}: {str(e)}")
 
