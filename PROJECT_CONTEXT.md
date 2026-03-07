@@ -59,6 +59,27 @@ Multi-tenant SaaS platform that provisions AWS infrastructure for users via Terr
 - `api/models/environment.py` - Environment/state model
 - `infra/aws/modules/` - Terraform modules
 
+### Terraform Modules
+- `vpc/` - VPC, subnets, NAT gateway, IGW, route tables, security groups, flow logs
+- `ecs/` - ECS Fargate cluster
+- `alb/` - Application Load Balancer, target groups, listeners
+- `ecr/` - ECR repository
+- `iam/` - IAM roles for ECS tasks
+
+**Deletion Order (automatic via Terraform):**
+1. ALB listeners, target groups, load balancer
+2. ECS cluster
+3. Route table associations
+4. Route tables (waits for NAT gateway)
+5. NAT gateway (takes 5-10 minutes)
+6. Elastic IP
+7. Internet gateway
+8. Subnets
+9. Security groups
+10. VPC
+
+**Note:** NAT Gateway deletion is slow (AWS limitation). Terraform waits for complete deletion before proceeding with subnets/VPC.
+
 ### Scripts
 - `app_scripts/create_aws_role.sh` - Create deployment role
 - `app_scripts/update_aws_role.sh` - Update IAM policy
