@@ -109,21 +109,31 @@ def main():
                 TerraformWorker.destroy(infra_id)
                 
                 from api.models.environment import Environment
-                env = Environment.objects.get(infrastructure_id=infra_id)
-                
-                if env.status == "DESTROYED":
+                try:
+                    env = Environment.objects.get(infrastructure_id=infra_id)
+                    
+                    if env.status == "DESTROYED":
+                        NotificationService.send_destroy_success(
+                            str(infra.user_id),
+                            infra_id,
+                            infra.name
+                        )
+                    else:
+                        NotificationService.send_destroy_failure(
+                            str(infra.user_id),
+                            infra_id,
+                            infra.name,
+                            env.error_message or "Unknown error"
+                        )
+                except Environment.DoesNotExist:
+                    logger.warning(f"Environment for {infra_id} already deleted")
                     NotificationService.send_destroy_success(
                         str(infra.user_id),
                         infra_id,
                         infra.name
                     )
-                else:
-                    NotificationService.send_destroy_failure(
-                        str(infra.user_id),
-                        infra_id,
-                        infra.name,
-                        env.error_message or "Unknown error"
-                    )
+            except Infrastructure.DoesNotExist:
+                logger.warning(f"Infrastructure {infra_id} already deleted")
             except Exception as e:
                 logger.error(f"Worker failed to destroy {infra_id}: {str(e)}", exc_info=True)
                 try:

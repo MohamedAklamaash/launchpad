@@ -388,8 +388,15 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             with transaction.atomic():
                 Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYING")
             
-            infra = Infrastructure.objects.get(id=infra_id)
-            metadata = infra.metadata or {}
+            try:
+                infra = Infrastructure.objects.get(id=infra_id)
+                metadata = infra.metadata or {}
+            except Infrastructure.DoesNotExist:
+                logger.warning(f"Infrastructure {infra_id} already deleted, skipping destroy")
+                with transaction.atomic():
+                    Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYED")
+                return
+            
             region = metadata.get("aws_region", "us-west-2")
             account_id = infra.code or "default"
             
