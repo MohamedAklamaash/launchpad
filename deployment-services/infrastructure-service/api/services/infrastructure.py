@@ -43,12 +43,20 @@ class InfrastructureService:
         validating authentication synchronously first.
         """
         correlation_id = str(uuid.uuid4())
+        
+        cloud_provider = infra_data.get("cloud_provider")
+        if cloud_provider == CloudProvider.AWS and not infra_data.get("code"):
+            raise ValueError("AWS Account ID is required in the 'code' field for AWS infrastructure.")
 
         with transaction.atomic():
             infra = self.repo.create(user_id, infra_data)
             
             if infra.cloud_provider == CloudProvider.AWS:
-                authenticate_infrastructure(infra)
+                try:
+                    authenticate_infrastructure(infra)
+                except Exception as e:
+                    logger.error(f"Cloud authentication failed during creation: {e}")
+                    raise ValueError(f"Cloud authentication failed: {str(e)}")
                 infra.refresh_from_db()
 
             env = Environment.objects.create(

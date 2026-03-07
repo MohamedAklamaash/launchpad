@@ -31,11 +31,18 @@ const authHandler: MessageHandler = async (msg, channel) => {
     try {
         const event = JSON.parse(msg.content.toString()) as AuthRegisteredEvent;
         logger.info(
-            { correlationId, event_type: event.type, user_id: event.payload.id, metadata: event.payload.metadata },
-            "Received auth.user.registered event",
+            { correlationId, event_type: event.type, user_id: event.payload.id, email: event.payload.email },
+            "Processing auth.user.registered event",
         );
-        await userService.syncFromAuthUser(event.payload);
-        logger.info({ correlationId, user_id: event.payload.id }, "DB write: user synced");
+
+        if (!event.payload.id || !event.payload.email) {
+            logger.error({ correlationId, payload: event.payload }, "Auth event missing critical data (id or email)");
+            channel.nack(msg, false, false);
+            return;
+        }
+
+        const user = await userService.syncFromAuthUser(event.payload);
+        logger.info({ correlationId, user_id: user.user_id, email: user.email }, "User successfully synced to database");
         channel.ack(msg);
     } catch (error) {
         logger.error({ correlationId, err: error }, "Failed to process auth event — nacking to dead-letter");
