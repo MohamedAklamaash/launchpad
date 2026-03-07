@@ -28,16 +28,27 @@ class Environment(models.Model):
     status = models.CharField(
         max_length=50,
         choices=[
+            ('PENDING', 'Pending'),
             ('PROVISIONING', 'Provisioning'),
-            ('READY', 'Ready'),
-            ('FAILED', 'Failed'),
+            ('ACTIVE', 'Active'),
+            ('ERROR', 'Error'),
             ('DESTROYING', 'Destroying'),
+            ('DESTROYED', 'Destroyed'),
         ],
-        default='PROVISIONING'
+        default='PENDING'
     )
+    
+    logs = models.TextField(null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
+    retry_count = models.IntegerField(default=0)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    locked_by = models.CharField(max_length=255, null=True, blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'environments'
+        indexes = [
+            models.Index(fields=['status', 'locked_at']),
+        ]

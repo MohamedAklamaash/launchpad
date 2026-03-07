@@ -21,7 +21,7 @@ def authenticate_infrastructure(infrastructure: Infrastructure):
 
     try:
         response = sts_client.assume_role(
-            RoleArn=f"arn:aws:iam::{target_account_id}:role/DeploymentRole",
+            RoleArn=f"arn:aws:iam::{target_account_id}:role/LaunchpadDeploymentRole",
             RoleSessionName="deployment-session"
         )
 

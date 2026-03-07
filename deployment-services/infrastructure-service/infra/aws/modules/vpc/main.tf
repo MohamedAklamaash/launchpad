@@ -195,7 +195,7 @@ data "aws_iam_policy_document" "vpc_kms_policy" {
     effect = "Allow"
     principals {
       type        = "AWS"
-      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/DeploymentRole"]
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/LaunchpadDeploymentRole"]
     }
     actions = [
       "kms:Encrypt",

@@ -1,10 +1,22 @@
 #!/bin/bash
+set -e
 
-ROLE_NAME="DeploymentRole"
+ROLE_NAME="LaunchpadDeploymentRole"
+POLICY_NAME="LaunchpadDeploymentPolicy"
+ASSUME_POLICY_NAME="AllowAssumeLaunchpadDeploymentRole"
+
 TRUSTED_ACCOUNT_ID="221082203366"
 PLATFORM_USER="aklamaash-terraform"
 
-echo "Creating trust policy..."
+echo "=========================================="
+echo "Launchpad AWS Role Setup"
+echo "=========================================="
+
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+########################################
+# TRUST POLICY
+########################################
 
 cat > trust-policy.json <<EOF
 {
@@ -13,7 +25,7 @@ cat > trust-policy.json <<EOF
     {
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::${TRUSTED_ACCOUNT_ID}:root"
+        "AWS": "arn:aws:iam::${TRUSTED_ACCOUNT_ID}:user/${PLATFORM_USER}"
       },
       "Action": "sts:AssumeRole"
     }
@@ -21,64 +33,73 @@ cat > trust-policy.json <<EOF
 }
 EOF
 
-echo "Creating IAM Role..."
-aws iam create-role \
-  --role-name ${ROLE_NAME} \
-  --assume-role-policy-document file://trust-policy.json
+########################################
+# CREATE ROLE (IDEMPOTENT)
+########################################
 
-echo "Attaching policies..."
+echo "Checking if role exists..."
 
-POLICIES=(
-"arn:aws:iam::aws:policy/AmazonS3FullAccess"
-"arn:aws:iam::aws:policy/AmazonVPCFullAccess"
-"arn:aws:iam::aws:policy/CloudWatchFullAccess"
-"arn:aws:iam::aws:policy/ElasticLoadBalancingFullAccess"
-"arn:aws:iam::aws:policy/IAMFullAccess"
-"arn:aws:iam::aws:policy/AWSKeyManagementServicePowerUser"
-"arn:aws:iam::aws:policy/SecretsManagerReadWrite"
-"arn:aws:iam::aws:policy/AWSCloudTrail_FullAccess"
-"arn:aws:iam::aws:policy/AmazonECS_FullAccess"
-"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess"
-)
-
-for POLICY_ARN in "${POLICIES[@]}"
-do
-  echo "Attaching $POLICY_ARN"
-  aws iam attach-role-policy \
+if aws iam get-role --role-name ${ROLE_NAME} >/dev/null 2>&1; then
+  echo "Role already exists."
+else
+  echo "Creating IAM role..."
+  aws iam create-role \
     --role-name ${ROLE_NAME} \
-    --policy-arn ${POLICY_ARN}
-done
+    --assume-role-policy-document file://trust-policy.json
+fi
 
-echo "Verifying attached policies..."
-aws iam list-attached-role-policies \
-  --role-name ${ROLE_NAME}
+########################################
+# POLICY FOR TERRAFORM INFRA
+########################################
 
-echo "Adding extra inline permissions for resource management..."
-cat > rollout-extra-permissions.json <<EOF
+cat > launchpad-policy.json <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
     {
       "Effect": "Allow",
       "Action": [
-        "kms:EnableKeyRotation",
-        "kms:TagResource",
-        "kms:ScheduleKeyDeletion",
-        "kms:DisableKey",
-        "kms:PutKeyPolicy",
-        "kms:GetKeyPolicy",
-        "kms:DescribeKey",
-        "kms:CreateGrant",
-        "kms:ListGrants",
-        "kms:RevokeGrant",
-        "compute-optimizer:UpdateEnrollmentStatus",
-        "compute-optimizer:GetEnrollmentStatus",
-        "ec2:DescribeAddressesAttribute",
-        "ec2:DescribeAddresses",
-        "iam:PassRole",
+        "ec2:*",
+        "ecs:*",
+        "elasticloadbalancing:*",
+        "ecr:*",
+        "logs:*",
+        "s3:*",
+        "dynamodb:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
         "iam:GetRole",
+        "iam:PassRole",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
         "iam:ListAttachedRolePolicies",
-        "iam:ListRolePolicies"
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateKey",
+        "kms:CreateAlias",
+        "kms:DeleteAlias",
+        "kms:DescribeKey",
+        "kms:EnableKeyRotation",
+        "kms:PutKeyPolicy",
+        "kms:ScheduleKeyDeletion",
+        "kms:TagResource",
+        "kms:UntagResource"
       ],
       "Resource": "*"
     }
@@ -86,16 +107,35 @@ cat > rollout-extra-permissions.json <<EOF
 }
 EOF
 
-aws iam put-role-policy \
+########################################
+# CREATE POLICY (IDEMPOTENT)
+########################################
+
+POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+
+if aws iam get-policy --policy-arn ${POLICY_ARN} >/dev/null 2>&1; then
+  echo "Policy already exists."
+else
+  echo "Creating deployment policy..."
+  aws iam create-policy \
+    --policy-name ${POLICY_NAME} \
+    --policy-document file://launchpad-policy.json
+fi
+
+########################################
+# ATTACH POLICY TO ROLE
+########################################
+
+echo "Attaching policy to role..."
+
+aws iam attach-role-policy \
   --role-name ${ROLE_NAME} \
-  --policy-name LaunchpadExtraPermissions \
-  --policy-document file://rollout-extra-permissions.json
+  --policy-arn ${POLICY_ARN} \
+  2>/dev/null || true
 
-rm -f rollout-extra-permissions.json
-
-echo "=========================================="
-echo "Creating Platform Caller Policy..."
-echo "=========================================="
+########################################
+# PLATFORM USER ASSUME ROLE POLICY
+########################################
 
 cat > allow-assume-role.json <<EOF
 {
@@ -104,29 +144,43 @@ cat > allow-assume-role.json <<EOF
     {
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
-      "Resource": "arn:aws:iam::${TRUSTED_ACCOUNT_ID}:role/${ROLE_NAME}"
+      "Resource": "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
     }
   ]
 }
 EOF
 
-echo "Creating IAM Policy AllowAssumeDeploymentRole..."
-POLICY_ARN=$(aws iam create-policy \
-  --policy-name AllowAssumeDeploymentRole \
-  --policy-document file://allow-assume-role.json \
-  --query 'Policy.Arn' --output text 2>/dev/null)
+ASSUME_POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${ASSUME_POLICY_NAME}"
 
-if [ -z "$POLICY_ARN" ]; then
-    echo "Policy AllowAssumeDeploymentRole might already exist. Fetching ARN..."
-    POLICY_ARN="arn:aws:iam::${TRUSTED_ACCOUNT_ID}:policy/AllowAssumeDeploymentRole"
+if aws iam get-policy --policy-arn ${ASSUME_POLICY_ARN} >/dev/null 2>&1; then
+  echo "Assume policy already exists."
+else
+  echo "Creating assume-role policy..."
+  aws iam create-policy \
+    --policy-name ${ASSUME_POLICY_NAME} \
+    --policy-document file://allow-assume-role.json
 fi
 
-echo "Attaching caller policy to user ${PLATFORM_USER}..."
+echo "Attaching assume-role policy to ${PLATFORM_USER}..."
+
 aws iam attach-user-policy \
   --user-name ${PLATFORM_USER} \
-  --policy-arn ${POLICY_ARN}
+  --policy-arn ${ASSUME_POLICY_ARN} \
+  2>/dev/null || true
 
-echo "Removing temporary JSON config files..."
-rm -f trust-policy.json allow-assume-role.json
+########################################
+# CLEANUP
+########################################
 
-echo "Done."
+rm -f trust-policy.json
+rm -f launchpad-policy.json
+rm -f allow-assume-role.json
+
+echo ""
+echo "=========================================="
+echo "Launchpad Role Setup Complete"
+echo "=========================================="
+echo ""
+echo "Role ARN:"
+echo "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
+echo ""
