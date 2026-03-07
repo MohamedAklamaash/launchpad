@@ -39,7 +39,10 @@ def infrastructure_detail(request: HttpRequest, infra_id):
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
     
     elif request.method == 'DELETE':
-        success = infrastructure_service.delete_infrastructure(user_id=request.user.id, infra_id=infra_id)
-        if success:
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            success = infrastructure_service.delete_infrastructure(user_id=request.user.id, infra_id=infra_id)
+            if success:
+                return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_409_CONFLICT)

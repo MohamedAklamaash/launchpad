@@ -1,0 +1,16 @@
+[Unit]
+Description=Infrastructure Terraform Worker
+After=network.target redis.service postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/home/aklamaash/Desktop/launchpad/deployment-services/infrastructure-service
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/home/aklamaash/Desktop/launchpad/deployment-services/infrastructure-service/.env
+ExecStart=/home/aklamaash/Desktop/launchpad/deployment-services/venv/bin/python /home/aklamaash/Desktop/launchpad/deployment-services/infrastructure-service/worker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

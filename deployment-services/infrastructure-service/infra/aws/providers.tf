@@ -6,8 +6,6 @@ terraform {
       version = "~> 5.0"
     }
   }
-  # Backend is configured dynamically via -backend-config during 'terraform init'
-  # in TerraformService.run_terraform to ensure per-infrastructure state isolation.
   backend "s3" {}
 }
 

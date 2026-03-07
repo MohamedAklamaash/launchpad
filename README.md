@@ -4,7 +4,7 @@
 
 ```bash
 aws sts assume-role \
-  --role-arn arn:aws:iam::<TARGET_ACCOUNT_ID>:role/DeploymentRole \
+  --role-arn arn:aws:iam::<TARGET_ACCOUNT_ID>:role/LaunchpadDeploymentRole \
   --role-session-name deployment-session
 ```
 

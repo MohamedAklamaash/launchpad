@@ -116,6 +116,11 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
 
+# Redis configuration
+REDIS_HOST = app_config.redis_host
+REDIS_PORT = app_config.redis_port
+REDIS_PASSWORD = app_config.redis_password
+REDIS_DB = app_config.redis_db
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/

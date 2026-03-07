@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  infra-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - DJANGO_SECRET=${DJANGO_SECRET}
+      - JWT_SECRET=${JWT_SECRET}
+      - DJANGO_PORT=${DJANGO_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - RABBITMQ_URL=${RABBITMQ_URL}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    depends_on:
+      - redis
+    restart: unless-stopped
+    volumes:
+      - /dev/shm:/dev/shm
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped

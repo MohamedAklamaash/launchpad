@@ -65,3 +65,16 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   role       = aws_iam_role.lambda_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
+
+output "ecs_task_execution_role_arn" {
+  value = aws_iam_role.ecs_task_execution_role.arn
+}
+
+output "ec2_execution_role_arn" {
+  value = aws_iam_role.ec2_execution_role.arn
+}
+
+output "lambda_execution_role_arn" {
+  value = aws_iam_role.lambda_execution_role.arn
+}
+

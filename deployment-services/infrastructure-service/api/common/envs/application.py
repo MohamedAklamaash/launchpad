@@ -13,6 +13,10 @@ class ApplicationConfig:
     internal_api_token: str
     aws_access_key_id: str
     aws_secret_access_key: str
+    redis_host: str
+    redis_port: int
+    redis_password: str
+    redis_db: int
 
     @classmethod
     def from_env(cls) -> "ApplicationConfig":
@@ -24,6 +28,10 @@ class ApplicationConfig:
             internal_api_token=os.environ["INTERNAL_API_TOKEN"],
             aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
             aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+            redis_host=os.environ.get("REDIS_HOST", "localhost"),
+            redis_port=int(os.environ.get("REDIS_PORT", "6379")),
+            redis_password=os.environ.get("REDIS_PASSWORD", ""),
+            redis_db=int(os.environ.get("REDIS_DB", "0")),
         )
 
 app_config = ApplicationConfig.from_env()

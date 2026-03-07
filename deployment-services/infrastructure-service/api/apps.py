@@ -72,6 +72,8 @@ class ApiConfig(AppConfig):
         from api.messaging.consumer.consumer import AuthEventConsumer
 
         def start_auth_consumer():
+            # Small delay to ensure the main thread has completed app initialization,
+            time.sleep(2)
             try:
                 if not _wait_for_db():
                     return
