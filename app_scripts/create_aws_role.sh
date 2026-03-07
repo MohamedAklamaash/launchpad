@@ -71,36 +71,12 @@ cat > launchpad-policy.json <<EOF
     },
     {
       "Effect": "Allow",
-      "Action": [
-        "iam:CreateRole",
-        "iam:DeleteRole",
-        "iam:GetRole",
-        "iam:PassRole",
-        "iam:AttachRolePolicy",
-        "iam:DetachRolePolicy",
-        "iam:PutRolePolicy",
-        "iam:DeleteRolePolicy",
-        "iam:GetRolePolicy",
-        "iam:ListRolePolicies",
-        "iam:ListAttachedRolePolicies",
-        "iam:TagRole",
-        "iam:UntagRole"
-      ],
+      "Action": "iam:*",
       "Resource": "*"
     },
     {
       "Effect": "Allow",
-      "Action": [
-        "kms:CreateKey",
-        "kms:CreateAlias",
-        "kms:DeleteAlias",
-        "kms:DescribeKey",
-        "kms:EnableKeyRotation",
-        "kms:PutKeyPolicy",
-        "kms:ScheduleKeyDeletion",
-        "kms:TagResource",
-        "kms:UntagResource"
-      ],
+      "Action": "kms:*",
       "Resource": "*"
     }
   ]

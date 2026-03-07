@@ -19,7 +19,6 @@ class NotificationService:
         message = f"""
 Infrastructure '{infra_name}' ({infra_id}) failed during provisioning.
 Reason: {error}
-All partially created resources were automatically destroyed.
 """
         logger.error(f"[NOTIFICATION] {user_id}: {message}")
         # TODO: Implement actual notification

@@ -337,16 +337,23 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             return
         
         # Rollback on permanent failure
-        logger.error(f"Permanent failure, triggering destroy")
+        logger.error(f"Permanent failure, triggering destroy for {infra_id}")
         destroy_result = TerraformWorker._exec_tf(
             ["terraform", "destroy", "-auto-approve", "-no-color", "-input=false"],
             tf_vars, credentials, str(infra_id), region, account_id
         )
         
+        if destroy_result["success"]:
+            logger.info(f"Successfully destroyed resources for failed infrastructure {infra_id}")
+            cleanup_status = "All resources were destroyed."
+        else:
+            logger.error(f"Failed to destroy resources for {infra_id}: {destroy_result.get('error')}")
+            cleanup_status = f"WARNING: Cleanup failed. Manual cleanup required in AWS account. Error: {destroy_result.get('error', 'Unknown')}"
+        
         combined_logs = logs + "\n[DESTROY]\n" + destroy_result.get("logs", "")
         with transaction.atomic():
             Environment.objects.filter(infrastructure_id=infra_id).update(
-                status="ERROR", logs=combined_logs, error_message=error
+                status="ERROR", logs=combined_logs, error_message=f"{error}\n\nCleanup: {cleanup_status}"
             )
     
     @staticmethod

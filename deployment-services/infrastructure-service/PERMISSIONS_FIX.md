@@ -1,6 +1,52 @@
 # AWS Permissions Fix
 
-## Problem
+## Latest Issue (2026-03-07 15:47)
+Terraform was failing with:
+- `kms:GetKeyPolicy` - Access Denied
+
+### Root Cause
+When Terraform creates a KMS key with a policy, it needs to read back the policy to verify it was set correctly.
+
+### Solution Applied
+Added `kms:GetKeyPolicy` to the KMS permissions block.
+
+**Updated KMS Permissions:**
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "kms:CreateKey",
+    "kms:CreateAlias",
+    "kms:DeleteAlias",
+    "kms:DescribeKey",
+    "kms:EnableKeyRotation",
+    "kms:GetKeyRotationStatus",
+    "kms:GetKeyPolicy",
+    "kms:PutKeyPolicy",
+    "kms:ScheduleKeyDeletion",
+    "kms:TagResource",
+    "kms:UntagResource"
+  ],
+  "Resource": "*"
+}
+```
+
+Applied via: `./update_aws_role.sh` → Policy version v5
+
+---
+
+## Previous Issue (2026-03-07 15:10)
+Terraform was failing with:
+- `kms:GetKeyRotationStatus` - Access Denied
+
+### Solution
+Added `kms:GetKeyRotationStatus` permission (required when `enable_key_rotation = true`)
+
+Applied via: `./update_aws_role.sh` → Policy version v3
+
+---
+
+## Original Issue
 Terraform was failing with:
 - `iam:CreateRole` - Access Denied
 - `kms:TagResource` - Access Denied
