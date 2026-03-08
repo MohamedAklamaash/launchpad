@@ -7,6 +7,7 @@ from aws.codebuild import CodeBuildClient
 from aws.ecs import ECSClient
 from aws.alb import ALBClient
 from aws.ecr import ECRClient
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -154,9 +155,7 @@ class ApplicationDeploymentService:
                 RoleName=role_name,
                 PolicyArn='arn:aws:iam::aws:policy/CloudWatchLogsFullAccess'
             )
-            
-            # Wait for role to propagate
-            import time
+                        
             logger.info("Waiting for IAM role to propagate...")
             time.sleep(10)
             logger.info(f"Created CodeBuild role: {service_role_arn}")
@@ -167,7 +166,6 @@ class ApplicationDeploymentService:
         image_tag = f"{application.name}-{application.version}"
         dockerfile_path = application.dockerfile_path or "Dockerfile"
         
-        # Get GitHub token from user metadata
         github_token = None
         try:
             user = application.user
@@ -271,7 +269,6 @@ class ApplicationDeploymentService:
             logger.error(f"Failed to get subnets: {e}")
             raise ValueError(f"Failed to get subnets from VPC: {e}")
         
-        # Get ALB security group
         try:
             alb_sg_response = ec2.describe_security_groups(
                 Filters=[
