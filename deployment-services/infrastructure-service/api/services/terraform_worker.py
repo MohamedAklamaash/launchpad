@@ -324,7 +324,6 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
         
         logger.error(f"Terraform apply failed for {infra_id}: {error}")
         
-        # Check if retryable
         if TerraformWorker._is_transient_error(error) and retry_count < MAX_RETRIES:
             logger.warning(f"Transient error, will retry (attempt {retry_count + 1}/{MAX_RETRIES})")
             with transaction.atomic():
