@@ -379,6 +379,36 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 env.status = "ACTIVE"
                 env.logs = combined_logs
                 env.save()
+                
+                # Get infrastructure for publishing
+                infra = Infrastructure.objects.get(id=infra_id)
+                
+                # Publish infrastructure.created event (now that it's fully provisioned)
+                from api.messaging.producer.producer import infra_producer
+                transaction.on_commit(lambda: infra_producer.publish_infra_created(
+                    user_id=infra.user_id,
+                    infra_id=infra_id,
+                    name=infra.name,
+                    cloud_provider=infra.cloud_provider,
+                    max_cpu=infra.max_cpu,
+                    max_memory=infra.max_memory,
+                    metadata=infra.metadata,
+                    correlation_id=None
+                ))
+                
+                # Publish environment.updated event
+                transaction.on_commit(lambda: infra_producer.publish_environment_updated(
+                    infra_id=infra_id,
+                    environment_id=env.id,
+                    status="ACTIVE",
+                    vpc_id=env.vpc_id,
+                    cluster_arn=env.cluster_arn,
+                    alb_arn=env.alb_arn,
+                    alb_dns=env.alb_dns,
+                    target_group_arn=env.target_group_arn,
+                    ecr_repository_url=env.ecr_repository_url,
+                    ecs_task_execution_role_arn=env.ecs_task_execution_role_arn
+                ))
     
     @staticmethod
     def destroy(infra_id: str):

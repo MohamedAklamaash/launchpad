@@ -1,0 +1,15 @@
+[Unit]
+Description=Launchpad Deployment Worker
+After=network.target postgresql.service redis.service
+
+[Service]
+Type=simple
+User=aklamaash
+WorkingDirectory=/home/aklamaash/Desktop/launchpad/deployment-services/application-service
+Environment="PATH=/home/aklamaash/Desktop/launchpad/deployment-services/venv/bin:/usr/bin"
+ExecStart=/home/aklamaash/Desktop/launchpad/deployment-services/venv/bin/python deployment_worker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

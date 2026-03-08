@@ -1,0 +1,83 @@
+import boto3
+import logging
+
+logger = logging.getLogger(__name__)
+
+class ALBClient:
+    def __init__(self, session):
+        self.client = session.client('elbv2')
+    
+    def create_target_group(self, name, vpc_id, port=8000):
+        try:
+            response = self.client.create_target_group(
+                Name=name,
+                Protocol='HTTP',
+                Port=port,
+                VpcId=vpc_id,
+                TargetType='ip',
+                HealthCheckEnabled=True,
+                HealthCheckPath='/',
+                HealthCheckIntervalSeconds=30,
+                HealthCheckTimeoutSeconds=10,
+                HealthyThresholdCount=2,
+                UnhealthyThresholdCount=5,
+                Matcher={'HttpCode': '200-499'}  # Accept any non-5xx response
+            )
+            return response['TargetGroups'][0]['TargetGroupArn']
+        except self.client.exceptions.DuplicateTargetGroupNameException:
+            logger.warning(f"Target group {name} already exists, fetching ARN")
+            response = self.client.describe_target_groups(Names=[name])
+            return response['TargetGroups'][0]['TargetGroupArn']
+    
+    def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority):
+        import time
+        response = self.client.create_rule(
+            ListenerArn=listener_arn,
+            Conditions=[{
+                'Field': 'path-pattern',
+                'Values': [path_pattern]
+            }],
+            Actions=[{
+                'Type': 'forward',
+                'TargetGroupArn': target_group_arn
+            }],
+            Priority=priority
+        )
+        logger.info(f"Created listener rule with priority {priority}")
+        
+        # Wait for AWS to propagate the attachment
+        logger.info("Waiting 5 seconds for listener rule to propagate...")
+        time.sleep(5)
+        
+        return response['Rules'][0]['RuleArn']
+    
+    def verify_target_group_attached(self, target_group_arn, listener_arn, max_retries=10, delay=2):
+        """Verify target group is attached via listener rule"""
+        import time
+        for attempt in range(max_retries):
+            try:
+                # Check if any listener rule forwards to this target group
+                response = self.client.describe_rules(ListenerArn=listener_arn)
+                for rule in response.get('Rules', []):
+                    for action in rule.get('Actions', []):
+                        if action.get('TargetGroupArn') == target_group_arn:
+                            logger.info(f"Target group {target_group_arn} is attached via listener rule")
+                            return True
+                
+                logger.warning(f"Target group not in listener rules yet, attempt {attempt + 1}/{max_retries}")
+                time.sleep(delay)
+            except Exception as e:
+                logger.error(f"Error verifying target group: {e}")
+                time.sleep(delay)
+        raise Exception(f"Target group {target_group_arn} not attached to listener after {max_retries} attempts")
+    
+    def get_listener_arn(self, alb_arn):
+        response = self.client.describe_listeners(LoadBalancerArn=alb_arn)
+        if response['Listeners']:
+            return response['Listeners'][0]['ListenerArn']
+        return None
+    
+    def get_next_priority(self, listener_arn):
+        response = self.client.describe_rules(ListenerArn=listener_arn)
+        priorities = [int(rule['Priority']) for rule in response['Rules'] if rule['Priority'] != 'default']
+        return max(priorities) + 1 if priorities else 1
