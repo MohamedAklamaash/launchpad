@@ -20,12 +20,36 @@ class Application(models.Model):
     project_commit_hash = models.CharField(max_length=255)
     version = models.IntegerField(default=1)
 
-    build_command = models.CharField(max_length=255)
-    start_command = models.CharField(max_length=255)
-    install_command = models.CharField(max_length=255)
+    dockerfile_path = models.CharField(max_length=255, default="Dockerfile", blank=True)
+    port = models.IntegerField(default=8080)  # Container port
+    build_command = models.CharField(max_length=255, blank=True, null=True)
+    start_command = models.CharField(max_length=255, blank=True, null=True)
+    install_command = models.CharField(max_length=255, blank=True, null=True)
 
     envs = models.JSONField(default=dict, null=True, blank=True)
     metadata = models.JSONField(default=dict, null=True, blank=True)
+    
+    status = models.CharField(
+        max_length=50,
+        choices=[
+            ('CREATED', 'Created'),
+            ('BUILDING', 'Building'),
+            ('PUSHING_IMAGE', 'Pushing Image'),
+            ('DEPLOYING', 'Deploying'),
+            ('ACTIVE', 'Active'),
+            ('FAILED', 'Failed'),
+        ],
+        default='CREATED'
+    )
+    
+    # Deployment resources
+    task_definition_arn = models.CharField(max_length=512, null=True, blank=True)
+    service_arn = models.CharField(max_length=512, null=True, blank=True)
+    target_group_arn = models.CharField(max_length=512, null=True, blank=True)
+    listener_rule_arn = models.CharField(max_length=512, null=True, blank=True)
+    deployment_url = models.CharField(max_length=512, null=True, blank=True)
+    build_id = models.CharField(max_length=255, null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

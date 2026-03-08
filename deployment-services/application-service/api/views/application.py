@@ -26,7 +26,8 @@ class ApplicationListCreateView(APIView):
                     "id": str(app.id),
                     "name": app.name,
                     "cpu": app.alloted_cpu,
-                    "memory": app.alloted_memory
+                    "memory": app.alloted_memory,
+                    "port": app.port
                 } for app in apps
             ]
             return Response(data)
@@ -65,12 +66,20 @@ class ApplicationDetailDeleteView(APIView):
             "id": str(app.id),
             "name": app.name,
             "description": app.description,
+            "status": app.status,
             "cpu": app.alloted_cpu,
             "memory": app.alloted_memory,
             "storage": app.alloted_storage,
+            "port": app.port,
             "url": app.project_remote_url,
             "branch": app.project_branch,
-            "envs": app.envs
+            "dockerfile_path": app.dockerfile_path,
+            "envs": app.envs,
+            "deployment_url": app.deployment_url,
+            "build_id": app.build_id,
+            "error_message": app.error_message,
+            "created_at": app.created_at.isoformat() if app.created_at else None,
+            "updated_at": app.updated_at.isoformat() if app.updated_at else None
         })
 
     def delete(self, request, pk=None):
@@ -83,3 +92,35 @@ class ApplicationDetailDeleteView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+class ApplicationDeployView(APIView):
+    """Handle application deployment."""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.service = ApplicationService()
+    
+    def post(self, request, pk=None):
+        """Deploy an application to AWS infrastructure."""
+        try:
+            from api.services.deployment_queue import DeploymentQueue
+            from api.repositories.application import ApplicationRepository
+            
+            app_repo = ApplicationRepository()
+            app = app_repo.get_by_id(pk)
+            if not app:
+                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            DeploymentQueue.enqueue_deployment(pk)
+            
+            return Response({
+                "message": "Deployment queued successfully",
+                "application_id": str(pk),
+                "status": "QUEUED"
+            }, status=status.HTTP_202_ACCEPTED)
+            
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Failed to queue deployment")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

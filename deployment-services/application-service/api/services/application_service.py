@@ -1,6 +1,7 @@
 from api.repositories.application import ApplicationRepository
 from api.repositories.infrastructure import InfrastructureRepository
 from api.repositories.user import UserRepository
+from api.services.application_deployment_service import ApplicationDeploymentService
 from shared.resilience.http_client import ResilientHttpClient
 from django.db import transaction
 import os
@@ -13,6 +14,7 @@ class ApplicationService:
     def __init__(self):
         self.app_repo = ApplicationRepository()
         self.infra_repo = InfrastructureRepository()
+        self.deployment_service = ApplicationDeploymentService()
         
         self.user_client = ResilientHttpClient(
             name="UserServiceClient",
@@ -124,3 +126,11 @@ class ApplicationService:
         if not app or str(app.user_id) != str(user_id):
             raise PermissionError("Application not found or unauthorized")
         return self.app_repo.delete(app_id)
+    
+    def deploy_application(self, app_id: str):
+        """Deploy an application to AWS infrastructure."""
+        app = self.app_repo.get_by_id(app_id)
+        if not app:
+            raise ValueError("Application not found")
+        
+        return self.deployment_service.deploy_application(app)

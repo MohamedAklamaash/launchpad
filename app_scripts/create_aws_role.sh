@@ -65,7 +65,8 @@ cat > launchpad-policy.json <<EOF
         "ecr:*",
         "logs:*",
         "s3:*",
-        "dynamodb:*"
+        "dynamodb:*",
+        "codebuild:*"
       ],
       "Resource": "*"
     },

@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 
 class InfraEventProducer:
     EXCHANGE_NAME = "infrastructure.events"
-    ROUTING_KEY = "infrastructure.created"
+    ROUTING_KEY_INFRA_CREATED = "infrastructure.created"
+    ROUTING_KEY_ENV_UPDATED = "environment.updated"
 
     def __init__(self):
         self.producer = ResilientPikaProducer(
@@ -50,10 +51,10 @@ class InfraEventProducer:
         """
         cid = correlation_id or str(uuid.uuid4())
         event = {
-            "type": self.ROUTING_KEY,
+            "type": self.ROUTING_KEY_INFRA_CREATED,
             "payload": {
-                "id": str(infra_id),           # canonical key for Python consumers
-                "infra_id": str(infra_id),     # compat key for TypeScript consumers
+                "id": str(infra_id),
+                "infra_id": str(infra_id),
                 "user_id": str(user_id),
                 "name": name,
                 "cloud_provider": cloud_provider,
@@ -73,15 +74,61 @@ class InfraEventProducer:
                 "correlation_id": cid,
                 "infra_id": str(infra_id),
                 "user_id": str(user_id),
-                "routing_key": self.ROUTING_KEY,
+                "routing_key": self.ROUTING_KEY_INFRA_CREATED,
                 "cloud_provider": cloud_provider,
             },
         )
-        self.producer.publish(routing_key=self.ROUTING_KEY, body=event)
+        self.producer.publish(routing_key=self.ROUTING_KEY_INFRA_CREATED, body=event)
         logger.info(
             "Published infrastructure.created event",
             extra={"correlation_id": cid, "infra_id": str(infra_id)},
         )
+    
+    def publish_environment_updated(
+        self,
+        infra_id,
+        environment_id,
+        status,
+        vpc_id=None,
+        cluster_arn=None,
+        alb_arn=None,
+        alb_dns=None,
+        target_group_arn=None,
+        ecr_repository_url=None,
+        ecs_task_execution_role_arn=None,
+        correlation_id=None,
+    ):
+        """Publish environment.updated event."""
+        cid = correlation_id or str(uuid.uuid4())
+        event = {
+            "type": self.ROUTING_KEY_ENV_UPDATED,
+            "payload": {
+                "id": str(environment_id),
+                "environment_id": str(environment_id),
+                "infrastructure_id": str(infra_id),
+                "status": status,
+                "vpc_id": vpc_id,
+                "cluster_arn": cluster_arn,
+                "alb_arn": alb_arn,
+                "alb_dns": alb_dns,
+                "target_group_arn": target_group_arn,
+                "ecr_repository_url": ecr_repository_url,
+                "ecs_task_execution_role_arn": ecs_task_execution_role_arn,
+            },
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"version": 1, "correlation_id": cid},
+        }
+
+        logger.info(
+            "Publishing environment.updated event",
+            extra={
+                "correlation_id": cid,
+                "environment_id": str(environment_id),
+                "infra_id": str(infra_id),
+                "status": status,
+            },
+        )
+        self.producer.publish(routing_key=self.ROUTING_KEY_ENV_UPDATED, body=event)
 
     def close(self):
         self.producer.close()
