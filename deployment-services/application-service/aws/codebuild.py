@@ -122,10 +122,33 @@ phases:
         if not response['builds']:
             return None
         build = response['builds'][0]
+        
+        # Try to fetch recent logs to detect specific errors
+        log_tail = None
+        try:
+            logs_info = build.get('logs', {})
+            if logs_info.get('groupName') and logs_info.get('streamName'):
+                logs_client = self.client._client_config.__dict__.get('_user_provided_options', {}).get('region_name')
+                import boto3
+                logs = boto3.client('logs', region_name=self.client.meta.region_name)
+                
+                log_response = logs.get_log_events(
+                    logGroupName=logs_info['groupName'],
+                    logStreamName=logs_info['streamName'],
+                    limit=50,
+                    startFromHead=False
+                )
+                
+                if log_response.get('events'):
+                    log_tail = '\n'.join([e['message'] for e in log_response['events'][-10:]])
+        except Exception as e:
+            logger.debug(f"Could not fetch log tail: {e}")
+        
         return {
             'status': build['buildStatus'],
             'phase': build.get('currentPhase', ''),
-            'logs': build.get('logs', {}).get('deepLink', '')
+            'logs': build.get('logs', {}).get('deepLink', ''),
+            'log_tail': log_tail
         }
     
     def wait_for_build(self, build_id, timeout=1800):
@@ -143,6 +166,23 @@ phases:
                 error_msg = f"Build failed with status: {status['status']}"
                 if status.get('logs'):
                     error_msg += f"\nLogs: {status['logs']}"
+                
+                # Check log content for specific errors
+                log_tail = status.get('log_tail', '')
+                if log_tail:
+                    if '429 Too Many Requests' in log_tail or 'toomanyrequests' in log_tail.lower():
+                        error_msg += (
+                            "\n\n❌ Docker Hub Rate Limit Exceeded!"
+                            "\n\nYour Dockerfile is pulling from Docker Hub (docker.io) which has rate limits."
+                            "\n\nFix: Update your Dockerfile to use ECR Public Gallery:"
+                            "\n  ❌ FROM python:3.11-slim"
+                            "\n  ✅ FROM public.ecr.aws/docker/library/python:3.11-slim"
+                            "\n\n  ❌ FROM node:21-alpine"
+                            "\n  ✅ FROM public.ecr.aws/docker/library/node:21-alpine"
+                            "\n\n  ❌ FROM nginx:alpine"
+                            "\n  ✅ FROM public.ecr.aws/docker/library/nginx:alpine"
+                        )
+                
                 logger.error(error_msg)
                 raise Exception(error_msg)
             

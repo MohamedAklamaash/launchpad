@@ -124,3 +124,56 @@ class ApplicationDeployView(APIView):
         except Exception as e:
             logger.exception("Failed to queue deployment")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class ApplicationRetryDeployView(APIView):
+    """Handle retrying failed deployments."""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.service = ApplicationService()
+    
+    def post(self, request, pk=None):
+        """Retry deployment for a failed application."""
+        try:
+            from api.services.deployment_queue import DeploymentQueue
+            from api.services.application_cleanup_service import ApplicationCleanupService
+            from api.repositories.application import ApplicationRepository
+            
+            user = request.user
+            app_repo = ApplicationRepository()
+            app = app_repo.get_by_id(pk)
+            
+            if not app:
+                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            if str(app.user_id) != str(user.id):
+                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            
+            # Clean up any partial deployment resources
+            cleanup_service = ApplicationCleanupService()
+            try:
+                cleanup_service.cleanup_application(app)
+                logger.info(f"Cleaned up partial deployment for {app.name}")
+            except Exception as e:
+                logger.warning(f"Cleanup failed (may not exist): {e}")
+            
+            # Reset application state
+            app.status = 'CREATED'
+            app.error_message = None
+            app.service_arn = None
+            app.task_definition_arn = None
+            app.target_group_arn = None
+            app.listener_rule_arn = None
+            app.save(update_fields=['status', 'error_message', 'service_arn', 'task_definition_arn', 'target_group_arn', 'listener_rule_arn'])
+            
+            DeploymentQueue.enqueue_deployment(pk)
+            
+            return Response({
+                "message": "Deployment retry queued successfully",
+                "application_id": str(pk),
+                "status": "QUEUED"
+            }, status=status.HTTP_202_ACCEPTED)
+            
+        except Exception as e:
+            logger.exception("Failed to retry deployment")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

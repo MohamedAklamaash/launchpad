@@ -221,7 +221,8 @@ class ApplicationDeploymentService:
             memory=application.alloted_memory,
             envs=envs,
             execution_role_arn=environment.ecs_task_execution_role_arn,
-            container_port=application.port
+            container_port=application.port,
+            app_name=application.name
         )
         
         logger.info(f"Created task definition {task_def_arn}")
@@ -231,10 +232,11 @@ class ApplicationDeploymentService:
         alb = ALBClient(session)
         
         tg_name = f"{application.name}-tg"[:32]
+        # Use port 80 for NGINX sidecar
         target_group_arn = alb.create_target_group(
             name=tg_name,
             vpc_id=environment.vpc_id,
-            port=application.port
+            port=80
         )
         
         logger.info(f"Created target group {target_group_arn}")
@@ -288,22 +290,22 @@ class ApplicationDeploymentService:
             if not security_group_ids:
                 raise ValueError(f"No security groups found in VPC {environment.vpc_id}")
             
-            # Add ingress rule to allow traffic from ALB to container port
+            # Add ingress rule to allow traffic from ALB to NGINX port 80
             if alb_sg_id:
                 try:
                     ec2.authorize_security_group_ingress(
                         GroupId=alb_sg_id,
                         IpPermissions=[{
                             'IpProtocol': 'tcp',
-                            'FromPort': application.port,
-                            'ToPort': application.port,
+                            'FromPort': 80,
+                            'ToPort': 80,
                             'UserIdGroupPairs': [{'GroupId': alb_sg_id}]
                         }]
                     )
-                    logger.info(f"Added ingress rule for port {application.port} to security group {alb_sg_id}")
+                    logger.info(f"Added ingress rule for port 80 to security group {alb_sg_id}")
                 except ec2.exceptions.ClientError as e:
                     if 'InvalidPermission.Duplicate' in str(e):
-                        logger.info(f"Ingress rule for port {application.port} already exists")
+                        logger.info(f"Ingress rule for port 80 already exists")
                     else:
                         raise
             
@@ -312,6 +314,7 @@ class ApplicationDeploymentService:
             logger.error(f"Failed to configure security groups: {e}")
             raise ValueError(f"Failed to configure security groups: {e}")
         
+        # Use NGINX sidecar container name and port 80
         service_arn = ecs.create_service(
             cluster_arn=environment.cluster_arn,
             service_name=f"{application.name}-service",
@@ -319,8 +322,8 @@ class ApplicationDeploymentService:
             target_group_arn=application.target_group_arn,
             subnet_ids=subnet_ids,
             security_group_ids=security_group_ids,
-            container_name=f"{application.name}-task",
-            container_port=application.port
+            container_name=f"{application.name}-task-nginx",
+            container_port=80
         )
         
         logger.info(f"Created ECS service {service_arn}")

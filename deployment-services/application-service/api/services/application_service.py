@@ -2,6 +2,7 @@ from api.repositories.application import ApplicationRepository
 from api.repositories.infrastructure import InfrastructureRepository
 from api.repositories.user import UserRepository
 from api.services.application_deployment_service import ApplicationDeploymentService
+from api.services.application_cleanup_service import ApplicationCleanupService
 from shared.resilience.http_client import ResilientHttpClient
 from django.db import transaction
 import os
@@ -15,6 +16,7 @@ class ApplicationService:
         self.app_repo = ApplicationRepository()
         self.infra_repo = InfrastructureRepository()
         self.deployment_service = ApplicationDeploymentService()
+        self.cleanup_service = ApplicationCleanupService()
         
         self.user_client = ResilientHttpClient(
             name="UserServiceClient",
@@ -125,6 +127,14 @@ class ApplicationService:
         app = self.app_repo.get_by_id(app_id)
         if not app or str(app.user_id) != str(user_id):
             raise PermissionError("Application not found or unauthorized")
+        
+        # Clean up AWS resources before deleting database record
+        try:
+            self.cleanup_service.cleanup_application(app)
+        except Exception as e:
+            logger.error(f"Failed to cleanup AWS resources for app {app_id}: {e}")
+            # Continue with database deletion even if AWS cleanup fails
+        
         return self.app_repo.delete(app_id)
     
     def deploy_application(self, app_id: str):

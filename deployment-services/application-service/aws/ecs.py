@@ -7,20 +7,11 @@ class ECSClient:
     def __init__(self, session):
         self.client = session.client('ecs')
     
-    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000):
+    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None):
         env_vars = [{'name': k, 'value': str(v)} for k, v in (envs or {}).items()]
+        logger.info(f"Creating task definition with {len(env_vars)} environment variables: {list(envs.keys()) if envs else []}")
         
         # Convert CPU and memory to valid Fargate values
-        # CPU is in vCPU (e.g., 0.25, 0.5, 1, 2, 4)
-        # Memory is in GB (e.g., 0.5, 1, 2, 4, 8)
-        
-        # Valid Fargate CPU/Memory combinations:
-        # 0.25 vCPU: 0.5GB, 1GB, 2GB
-        # 0.5 vCPU: 1GB, 2GB, 3GB, 4GB
-        # 1 vCPU: 2GB, 3GB, 4GB, 5GB, 6GB, 7GB, 8GB
-        # 2 vCPU: 4GB-16GB
-        # 4 vCPU: 8GB-30GB
-        
         if cpu <= 0.25:
             cpu_str = "256"
             memory = max(0.5, memory)
@@ -44,6 +35,80 @@ class ECSClient:
         
         memory_str = str(int(memory * 1024))
         
+        # Create NGINX config for path stripping
+        nginx_config = self._generate_nginx_config(app_name, container_port) if app_name else None
+        
+        container_definitions = []
+        
+        # Add application container FIRST
+        container_definitions.append({
+            'name': family,
+            'image': image,
+            'essential': True,
+            'environment': env_vars,
+            'portMappings': [{
+                'containerPort': container_port,
+                'protocol': 'tcp'
+            }],
+            'logConfiguration': {
+                'logDriver': 'awslogs',
+                'options': {
+                    'awslogs-group': f'/ecs/{family}',
+                    'awslogs-region': self.client.meta.region_name,
+                    'awslogs-stream-prefix': 'app'
+                }
+            }
+        })
+        
+        # Add NGINX sidecar if app_name provided (for path stripping)
+        if nginx_config:
+            # Base64 encode to avoid shell escaping issues
+            import base64
+            nginx_config_b64 = base64.b64encode(nginx_config.encode()).decode()
+            
+            container_definitions.append({
+                'name': f'{family}-nginx',
+                'image': 'public.ecr.aws/nginx/nginx:alpine',
+                'essential': True,
+                'dependsOn': [{
+                    'containerName': family,
+                    'condition': 'START'
+                }],
+                'portMappings': [{
+                    'containerPort': 80,
+                    'protocol': 'tcp'
+                }],
+                'environment': [
+                    {'name': 'NGINX_CONFIG_B64', 'value': nginx_config_b64}
+                ],
+                'command': [
+                    '/bin/sh', '-c',
+                    'echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/nginx.conf && '
+                    'echo "Waiting for app to be ready..." && '
+                    'for i in $(seq 1 30); do '
+                    '  if nc -z localhost 8000 2>/dev/null; then '
+                    '    echo "App port is open!"; '
+                    '    sleep 2; '
+                    '    if wget -q -O- --timeout=5 http://localhost:8000/ > /dev/null 2>&1; then '
+                    '      echo "App is responding! Starting NGINX..."; '
+                    '      break; '
+                    '    fi; '
+                    '  fi; '
+                    '  echo "Waiting... ($i/30)"; '
+                    '  sleep 2; '
+                    'done && '
+                    'nginx -g "daemon off;"'
+                ],
+                'logConfiguration': {
+                    'logDriver': 'awslogs',
+                    'options': {
+                        'awslogs-group': f'/ecs/{family}',
+                        'awslogs-region': self.client.meta.region_name,
+                        'awslogs-stream-prefix': 'nginx'
+                    }
+                }
+            })
+        
         response = self.client.register_task_definition(
             family=family,
             networkMode='awsvpc',
@@ -51,29 +116,77 @@ class ECSClient:
             cpu=cpu_str,
             memory=memory_str,
             executionRoleArn=execution_role_arn,
-            containerDefinitions=[{
-                'name': family,
-                'image': image,
-                'essential': True,
-                'environment': env_vars,
-                'portMappings': [{
-                    'containerPort': container_port,
-                    'protocol': 'tcp'
-                }],
-                'logConfiguration': {
-                    'logDriver': 'awslogs',
-                    'options': {
-                        'awslogs-group': f'/ecs/{family}',
-                        'awslogs-region': self.client.meta.region_name,
-                        'awslogs-stream-prefix': 'ecs'
-                    }
-                }
-            }]
+            containerDefinitions=container_definitions
         )
         return response['taskDefinition']['taskDefinitionArn']
     
+    def _generate_nginx_config(self, app_name, backend_port):
+        """Generate NGINX config with proper path rewriting for multi-app ALB"""
+        return f'''
+events {{
+    worker_connections 1024;
+}}
+http {{
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
+    
+    access_log /dev/stdout;
+    error_log /dev/stderr info;
+    
+    upstream backend {{
+        server localhost:{backend_port} max_fails=0 fail_timeout=0;
+    }}
+    
+    server {{
+        listen 80;
+        
+        # ALB health check - responds to root path only
+        location = / {{
+            access_log off;
+            return 200 "healthy\\n";
+            add_header Content-Type text/plain;
+        }}
+        
+        # App routes - strip prefix and proxy everything
+        location /{app_name} {{
+            rewrite ^/{app_name}/?(.*)$ /$1 break;
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+        }}
+    }}
+}}
+'''
+    
     def create_service(self, cluster_arn, service_name, task_definition_arn, target_group_arn, subnet_ids, security_group_ids, container_name, container_port=8000):
         try:
+            # Check if service already exists
+            try:
+                response = self.client.describe_services(
+                    cluster=cluster_arn,
+                    services=[service_name]
+                )
+                if response['services'] and response['services'][0]['status'] != 'INACTIVE':
+                    existing_service = response['services'][0]
+                    logger.info(f"Service {service_name} already exists, updating it")
+                    
+                    # Update existing service
+                    self.client.update_service(
+                        cluster=cluster_arn,
+                        service=service_name,
+                        taskDefinition=task_definition_arn,
+                        desiredCount=1
+                    )
+                    return existing_service['serviceArn']
+            except Exception as e:
+                logger.debug(f"Service doesn't exist, creating new: {e}")
+            
+            # Create new service
             response = self.client.create_service(
                 cluster=cluster_arn,
                 serviceName=service_name,
@@ -95,8 +208,8 @@ class ECSClient:
             )
             return response['service']['serviceArn']
         except Exception as e:
-            if 'already exists' in str(e).lower():
-                logger.warning(f"Service {service_name} already exists, fetching ARN")
+            if 'not idempotent' in str(e).lower() or 'already exists' in str(e).lower():
+                logger.warning(f"Service creation conflict, fetching existing service")
                 response = self.client.describe_services(
                     cluster=cluster_arn,
                     services=[service_name]
