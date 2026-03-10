@@ -59,9 +59,8 @@ class ApplicationDeploymentService:
             application.save()
             
             # Step 8: Wait for service to become stable
-            ecs = ECSClient(session)
             service_name = f"{application.name}-service"
-            ecs.wait_for_service_stable(environment.cluster_arn, service_name)
+            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
             logger.info(f"Service {service_name} is stable and running")
             
             # Step 9: Return Deployment URL
@@ -314,7 +313,6 @@ class ApplicationDeploymentService:
             logger.error(f"Failed to configure security groups: {e}")
             raise ValueError(f"Failed to configure security groups: {e}")
         
-        # Use NGINX sidecar container name and port 80
         service_arn = ecs.create_service(
             cluster_arn=environment.cluster_arn,
             service_name=f"{application.name}-service",
@@ -322,8 +320,9 @@ class ApplicationDeploymentService:
             target_group_arn=application.target_group_arn,
             subnet_ids=subnet_ids,
             security_group_ids=security_group_ids,
-            container_name=f"{application.name}-task-nginx",
-            container_port=80
+            container_name=f"{application.name}-task",
+            container_port=application.port,
+            use_nginx=True
         )
         
         logger.info(f"Created ECS service {service_arn}")
@@ -350,3 +349,43 @@ class ApplicationDeploymentService:
     
     def _generate_deployment_url(self, application: Application, environment: Environment):
         return f"http://{environment.alb_dns}/{application.name}"
+    
+    def _wait_for_service_stable_with_refresh(self, infrastructure, cluster_arn, service_name, timeout=300):
+        """Wait for ECS service with automatic credential refresh"""
+        import time
+        logger.info(f"Waiting for service {service_name} to become stable...")
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                # Refresh session on each iteration to handle credential expiry
+                session = self._create_aws_session(infrastructure)
+                ecs = ECSClient(session)
+                
+                response = ecs.client.describe_services(
+                    cluster=cluster_arn,
+                    services=[service_name]
+                )
+                
+                if not response['services']:
+                    raise Exception(f"Service {service_name} not found")
+                
+                service = response['services'][0]
+                running_count = service.get('runningCount', 0)
+                desired_count = service.get('desiredCount', 0)
+                
+                if running_count == desired_count and running_count > 0:
+                    logger.info(f"Service {service_name} is stable with {running_count} running tasks")
+                    return True
+                
+                logger.info(f"Service {service_name}: {running_count}/{desired_count} tasks running, waiting...")
+                time.sleep(10)
+                
+            except Exception as e:
+                if 'ExpiredToken' in str(e):
+                    logger.warning(f"Token expired during wait, will refresh on next iteration")
+                    time.sleep(2)
+                else:
+                    raise
+        
+        raise Exception(f"Service {service_name} did not become stable within {timeout} seconds")

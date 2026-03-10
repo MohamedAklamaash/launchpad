@@ -85,19 +85,23 @@ class ECSClient:
                     '/bin/sh', '-c',
                     'echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/nginx.conf && '
                     'echo "Waiting for app to be ready..." && '
-                    'for i in $(seq 1 30); do '
-                    '  if nc -z localhost 8000 2>/dev/null; then '
-                    '    echo "App port is open!"; '
-                    '    sleep 2; '
-                    '    if wget -q -O- --timeout=5 http://localhost:8000/ > /dev/null 2>&1; then '
-                    '      echo "App is responding! Starting NGINX..."; '
-                    '      break; '
-                    '    fi; '
+                    'APP_READY=0 && '
+                    'for i in $(seq 1 60); do '
+                    f'  if nc -z 127.0.0.1 {container_port} 2>/dev/null; then '
+                    '    echo "App port is open! Starting NGINX..."; '
+                    '    APP_READY=1; '
+                    '    break; '
                     '  fi; '
-                    '  echo "Waiting... ($i/30)"; '
-                    '  sleep 2; '
+                    '  echo "Waiting for port... ($i/60)"; '
+                    '  sleep 3; '
                     'done && '
-                    'nginx -g "daemon off;"'
+                    'if [ "$APP_READY" = "0" ]; then '
+                    f'  echo "ERROR: App never opened port {container_port} after 180 seconds"; '
+                    '  echo "Check application logs for startup errors"; '
+                    '  echo "Verify Dockerfile has: CMD [\\\"python\\\", \\\"-m\\\", \\\"uvicorn\\\", \\\"main:app\\\", \\\"--host\\\", \\\"0.0.0.0\\\", \\\"--port\\\", \\\"{container_port}\\\"]"; '
+                    '  exit 1; '
+                    'fi && '
+                    'nginx -t && nginx -g "daemon off;"'
                 ],
                 'logConfiguration': {
                     'logDriver': 'awslogs',
@@ -121,7 +125,7 @@ class ECSClient:
         return response['taskDefinition']['taskDefinitionArn']
     
     def _generate_nginx_config(self, app_name, backend_port):
-        """Generate NGINX config with proper path rewriting for multi-app ALB"""
+        """Generate NGINX config that strips path prefix"""
         return f'''
 events {{
     worker_connections 1024;
@@ -135,22 +139,27 @@ http {{
     error_log /dev/stderr info;
     
     upstream backend {{
-        server localhost:{backend_port} max_fails=0 fail_timeout=0;
+        server 127.0.0.1:{backend_port} max_fails=3 fail_timeout=30s;
     }}
     
     server {{
         listen 80;
         
-        # ALB health check - responds to root path only
+        # ALB health check
         location = / {{
             access_log off;
             return 200 "healthy\\n";
             add_header Content-Type text/plain;
         }}
         
-        # App routes - strip prefix and proxy everything
-        location /{app_name} {{
-            rewrite ^/{app_name}/?(.*)$ /$1 break;
+        # Redirect /app-name to /app-name/
+        location = /{app_name} {{
+            return 301 /{app_name}/;
+        }}
+        
+        # Strip prefix and proxy to backend
+        location /{app_name}/ {{
+            rewrite ^/{app_name}/(.*)$ /$1 break;
             proxy_pass http://backend;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -158,12 +167,13 @@ http {{
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_http_version 1.1;
             proxy_set_header Connection "";
+            proxy_buffering off;
         }}
     }}
 }}
 '''
     
-    def create_service(self, cluster_arn, service_name, task_definition_arn, target_group_arn, subnet_ids, security_group_ids, container_name, container_port=8000):
+    def create_service(self, cluster_arn, service_name, task_definition_arn, target_group_arn, subnet_ids, security_group_ids, container_name, container_port=8000, use_nginx=False):
         try:
             # Check if service already exists
             try:
@@ -186,6 +196,10 @@ http {{
             except Exception as e:
                 logger.debug(f"Service doesn't exist, creating new: {e}")
             
+            # Route ALB to NGINX container if using sidecar, otherwise to app
+            lb_container_name = f"{container_name}-nginx" if use_nginx else container_name
+            lb_container_port = 80 if use_nginx else container_port
+            
             # Create new service
             response = self.client.create_service(
                 cluster=cluster_arn,
@@ -202,9 +216,10 @@ http {{
                 },
                 loadBalancers=[{
                     'targetGroupArn': target_group_arn,
-                    'containerName': container_name,
-                    'containerPort': container_port
-                }]
+                    'containerName': lb_container_name,
+                    'containerPort': lb_container_port
+                }],
+                healthCheckGracePeriodSeconds=120  # Give app 2 minutes to start
             )
             return response['service']['serviceArn']
         except Exception as e:

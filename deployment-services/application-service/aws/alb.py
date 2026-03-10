@@ -7,7 +7,7 @@ class ALBClient:
     def __init__(self, session):
         self.client = session.client('elbv2')
     
-    def create_target_group(self, name, vpc_id, port=8000):
+    def create_target_group(self, name, vpc_id, port=80):
         try:
             response = self.client.create_target_group(
                 Name=name,
