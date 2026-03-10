@@ -54,7 +54,7 @@ Click **Next: Tags** (optional) → **Next: Review** → **Create user**
 - **Access Key ID**: `AKIA...`
 - **Secret Access Key**: `wJalr...`
 
-⚠️ **Never share these credentials or commit them to Git**
+IMPORTANT: Never share these credentials or commit them to Git
 
 ---
 
@@ -87,7 +87,7 @@ Attach the same policies as the IAM user:
 
 **Role name**: `LaunchpadDeploymentRole`
 
-⚠️ **This exact name is required** - Launchpad expects this role name.
+IMPORTANT: This exact name is required - Launchpad expects this role name.
 
 Click **Create role**
 
@@ -301,9 +301,9 @@ Example: If `max_cpu = 4`, you can run:
 
 ### 1. IAM Credentials
 
-- ✅ Create dedicated IAM user for Launchpad
-- ✅ Use cross-account role (AssumeRole)
-- ✅ Never share credentials
+- Create dedicated IAM user for Launchpad
+- Use cross-account role (AssumeRole)
+- Never share credentials
 - ✅ Rotate credentials regularly
 - ❌ Don't use root account credentials
 

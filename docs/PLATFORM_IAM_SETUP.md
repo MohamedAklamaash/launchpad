@@ -149,7 +149,7 @@ if [ -z "$KEYS" ]; then
   
   echo ""
   echo "=========================================="
-  echo "⚠️  SAVE THESE CREDENTIALS SECURELY"
+  echo "IMPORTANT: SAVE THESE CREDENTIALS SECURELY"
   echo "=========================================="
   cat access-key.json | jq -r '"Access Key ID: " + .AccessKey.AccessKeyId'
   cat access-key.json | jq -r '"Secret Access Key: " + .AccessKey.SecretAccessKey'
@@ -162,7 +162,7 @@ if [ -z "$KEYS" ]; then
   rm access-key.json
 else
   echo "✓ Access key already exists: $KEYS"
-  echo "⚠️  If you need new credentials, delete the old key first:"
+  echo "IMPORTANT: If you need new credentials, delete the old key first:"
   echo "   aws iam delete-access-key --user-name ${USER_NAME} --access-key-id $KEYS"
 fi
 
@@ -171,7 +171,7 @@ rm -f assume-role-policy.json
 
 echo ""
 echo "=========================================="
-echo "✅ Platform User Setup Complete"
+echo "Platform User Setup Complete"
 echo "=========================================="
 echo ""
 echo "User ARN: arn:aws:iam::${ACCOUNT_ID}:user/${USER_NAME}"
@@ -260,8 +260,8 @@ All AWS operations use the assumed role credentials:
 
 ### 1. Credential Management
 
-- ✅ Store credentials in environment variables (not code)
-- ✅ Use AWS Secrets Manager for production
+- Store credentials in environment variables (not code)
+- Use AWS Secrets Manager for production
 - ✅ Rotate credentials every 90 days
 - ✅ Never commit credentials to Git
 

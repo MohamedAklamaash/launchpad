@@ -505,13 +505,18 @@ aws logs tail /aws/codebuild/launchpad-build-{infra-id} --follow
 
 **Default Port**: 8080
 
-Applications must listen on the port specified in the `port` field (default: 8080).
+Applications can listen on any port. The platform automatically detects which port the application opens.
 
 **How It Works**:
 1. User specifies `port` when creating application (optional, defaults to 8080)
 2. Platform injects `PORT` environment variable into container
-3. Application reads `process.env.PORT` and listens on that port
-4. ALB health checks and routes traffic to that port
+3. NGINX sidecar auto-detects which port the application actually opens
+4. Supports apps that respect `PORT` env var OR hardcode their port
+
+**Port Detection Order**:
+- Tries configured port first (e.g., 8080)
+- Falls back to common ports: 8000, 3000, 5000
+- Waits up to 180 seconds for app to start
 
 **Example (Node.js)**:
 ```javascript
@@ -521,10 +526,17 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 ```
 
+**Example (Python/FastAPI)**:
+```python
+import os
+port = int(os.getenv("PORT", 8000))
+uvicorn.run(app, host="0.0.0.0", port=port)
+```
+
 **Important**:
-- Listen on `0.0.0.0`, not `localhost`
-- Respond to `GET /` for health checks
-- Use ECR Public Gallery for base images
+- Listen on `0.0.0.0`, not `localhost` or `127.0.0.1`
+- Respond to `GET /` for ALB health checks
+- Use ECR Public Gallery for base images to avoid rate limits
 
 ---
 
@@ -534,10 +546,10 @@ app.listen(PORT, '0.0.0.0', () => {
 Use ECR Public Gallery to avoid Docker Hub rate limits:
 
 ```dockerfile
-# ✅ Correct
+# Correct
 FROM public.ecr.aws/docker/library/node:21-alpine
 
-# ❌ Wrong (hits rate limits)
+# Wrong (hits rate limits)
 FROM node:21-alpine
 ```
 
@@ -554,10 +566,14 @@ Application must respond to `GET /` with 200-499 status code.
 # Edge Cases & Fixes
 
 **Fixed Issues**:
-1. ✅ Target group not attached to ALB → Added 5s wait + verification
-2. ✅ Invalid Fargate CPU/Memory → Auto-round to valid combinations
-3. ✅ Docker Hub rate limiting → Use ECR Public Gallery
-4. ✅ Queue dequeue errors → Handle None gracefully
+1. Target group not attached to ALB → Added 5s wait + verification
+2. Invalid Fargate CPU/Memory → Auto-round to valid combinations
+3. Docker Hub rate limiting → Use ECR Public Gallery
+4. Queue dequeue errors → Handle None gracefully
+5. Path-based routing issues → NGINX strips `/app-name` prefix before forwarding
+6. Static files 404 → NGINX proxy handles path rewriting correctly
+7. Port mismatch → NGINX auto-detects app port (8080, 8000, 3000, 5000)
+8. BASE_PATH conflicts → Removed automatic BASE_PATH injection (apps define routes at root)
 5. ✅ Duplicate resources → Idempotent creation
 6. ✅ Service not stable → Wait for running tasks
 7. ✅ Image tag mismatch → Use `{app-name}-latest` consistently
