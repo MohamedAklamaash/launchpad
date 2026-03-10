@@ -1,5 +1,6 @@
 import boto3
 import logging
+import base64
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,6 @@ class ECSClient:
         
         container_definitions = []
         
-        # Add application container FIRST
         container_definitions.append({
             'name': family,
             'image': image,
@@ -60,10 +60,7 @@ class ECSClient:
             }
         })
         
-        # Add NGINX sidecar if app_name provided (for path stripping)
         if nginx_config:
-            # Base64 encode to avoid shell escaping issues
-            import base64
             nginx_config_b64 = base64.b64encode(nginx_config.encode()).decode()
             
             container_definitions.append({

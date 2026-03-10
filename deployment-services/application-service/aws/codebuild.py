@@ -95,7 +95,7 @@ phases:
             {'name': 'DOCKERFILE_PATH', 'value': dockerfile_path, 'type': 'PLAINTEXT'},
         ]
         
-        # Add GitHub token if provided (for private repos)
+        # Add GitHub token (for private repos)
         if github_token:
             env_vars.append({'name': 'GITHUB_TOKEN', 'value': github_token, 'type': 'PLAINTEXT'})
         
@@ -172,15 +172,15 @@ phases:
                 if log_tail:
                     if '429 Too Many Requests' in log_tail or 'toomanyrequests' in log_tail.lower():
                         error_msg += (
-                            "\n\n❌ Docker Hub Rate Limit Exceeded!"
+                            "\n\n Docker Hub Rate Limit Exceeded!"
                             "\n\nYour Dockerfile is pulling from Docker Hub (docker.io) which has rate limits."
                             "\n\nFix: Update your Dockerfile to use ECR Public Gallery:"
-                            "\n  ❌ FROM python:3.11-slim"
-                            "\n  ✅ FROM public.ecr.aws/docker/library/python:3.11-slim"
-                            "\n\n  ❌ FROM node:21-alpine"
-                            "\n  ✅ FROM public.ecr.aws/docker/library/node:21-alpine"
-                            "\n\n  ❌ FROM nginx:alpine"
-                            "\n  ✅ FROM public.ecr.aws/docker/library/nginx:alpine"
+                            "\n  FROM python:3.11-slim"
+                            "\n FROM public.ecr.aws/docker/library/python:3.11-slim"
+                            "\n\n FROM node:21-alpine"
+                            "\n FROM public.ecr.aws/docker/library/node:21-alpine"
+                            "\n\n FROM nginx:alpine"
+                            "\n FROM public.ecr.aws/docker/library/nginx:alpine"
                         )
                 
                 logger.error(error_msg)

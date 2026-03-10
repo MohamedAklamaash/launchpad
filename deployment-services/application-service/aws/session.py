@@ -1,6 +1,7 @@
 import boto3
 import logging
 from datetime import datetime, timezone
+from api.common.envs.application import app_config
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,7 @@ def create_boto3_session(infrastructure):
     )
 
 def _refresh_credentials(infrastructure):
-    """Refresh expired AWS credentials by assuming role again."""
-    from api.common.envs.application import app_config
-    
+    """Refresh expired AWS credentials by assuming role again."""    
     target_account_id = infrastructure.code
     
     sts_client = boto3.client(

@@ -2,6 +2,9 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from api.services.application_service import ApplicationService
+from api.services.deployment_queue import DeploymentQueue
+from api.repositories.application import ApplicationRepository
+from api.services.application_cleanup_service import ApplicationCleanupService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -103,8 +106,6 @@ class ApplicationDeployView(APIView):
     def post(self, request, pk=None):
         """Deploy an application to AWS infrastructure."""
         try:
-            from api.services.deployment_queue import DeploymentQueue
-            from api.repositories.application import ApplicationRepository
             
             app_repo = ApplicationRepository()
             app = app_repo.get_by_id(pk)
@@ -135,9 +136,6 @@ class ApplicationRetryDeployView(APIView):
     def post(self, request, pk=None):
         """Retry deployment for a failed application."""
         try:
-            from api.services.deployment_queue import DeploymentQueue
-            from api.services.application_cleanup_service import ApplicationCleanupService
-            from api.repositories.application import ApplicationRepository
             
             user = request.user
             app_repo = ApplicationRepository()
@@ -149,7 +147,6 @@ class ApplicationRetryDeployView(APIView):
             if str(app.user_id) != str(user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
             
-            # Clean up any partial deployment resources
             cleanup_service = ApplicationCleanupService()
             try:
                 cleanup_service.cleanup_application(app)
