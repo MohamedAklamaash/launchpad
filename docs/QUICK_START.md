@@ -162,11 +162,11 @@ aws elbv2 describe-load-balancers
 
 ## Security Checklist
 
-- ✅ Use dedicated IAM role (not root)
-- ✅ Enable CloudTrail
-- ✅ Never commit AWS credentials
-- ✅ Rotate credentials regularly
-- ✅ Use environment variables for secrets
+- Use dedicated IAM role (not root)
+- Enable CloudTrail
+- Never commit AWS credentials
+- Rotate credentials regularly
+- Use environment variables for secrets
 - ✅ Review IAM policies quarterly
 
 ---

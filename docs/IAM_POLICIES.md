@@ -348,7 +348,7 @@ To revoke Launchpad's access:
    aws iam delete-policy --policy-arn arn:aws:iam::<YOUR_ACCOUNT_ID>:policy/LaunchpadDeploymentPolicy
    ```
 
-⚠️ **Warning**: This will prevent Launchpad from managing your infrastructure. Clean up resources first.
+WARNING: This will prevent Launchpad from managing your infrastructure. Clean up resources first.
 
 ---
 
