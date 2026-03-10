@@ -1,24 +1,40 @@
-from api.services.health_service import HealthService
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-from django.http import HttpRequest
+from django.http import JsonResponse
+from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
-
-healthService = HealthService()
+from django.db import connection
+from api.services.deployment_queue import DeploymentQueue
 
 @csrf_exempt
-@api_view(['GET'])
-def health(request: HttpRequest):
-    if request.method == 'GET':
-        return healthService.get_health()
+@require_http_methods(["GET"])
+def health_check(request):
+    """Basic health check endpoint"""
+    return JsonResponse({'status': 'healthy', 'service': 'application-service'})
 
-@api_view(['GET'])
-def liveness(request: HttpRequest):
-    if request.method == 'GET':
-        return healthService.get_liveness()
+@csrf_exempt
+@require_http_methods(["GET"])
+def readiness_check(request):
+    """Readiness check - verifies dependencies are available"""
+    try:
+        connection.ensure_connection()
+        DeploymentQueue.redis_client.ping()
+        
+        return JsonResponse({
+            'status': 'ready',
+            'service': 'application-service',
+            'checks': {
+                'database': 'ok',
+                'redis': 'ok'
+            }
+        })
+    except Exception as e:
+        return JsonResponse({
+            'status': 'not ready',
+            'service': 'application-service',
+            'error': str(e)
+        }, status=503)
 
-@api_view(['GET'])
-def readiness(request: HttpRequest):
-    if request.method == 'GET':
-        return healthService.get_readiness()
+@csrf_exempt
+@require_http_methods(["GET"])
+def liveness_check(request):
+    """Liveness check - verifies service is running"""
+    return JsonResponse({'status': 'alive', 'service': 'application-service'})

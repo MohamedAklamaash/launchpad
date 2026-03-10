@@ -1,11 +1,16 @@
 import boto3
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
 class ALBClient:
     def __init__(self, session):
         self.client = session.client('elbv2')
+        self.health_check_interval = int(os.environ.get('ALB_HEALTH_CHECK_INTERVAL', '30'))
+        self.health_check_timeout = int(os.environ.get('ALB_HEALTH_CHECK_TIMEOUT', '10'))
+        self.healthy_threshold = int(os.environ.get('ALB_HEALTHY_THRESHOLD', '2'))
+        self.unhealthy_threshold = int(os.environ.get('ALB_UNHEALTHY_THRESHOLD', '5'))
     
     def create_target_group(self, name, vpc_id, port=80):
         try:
@@ -17,11 +22,11 @@ class ALBClient:
                 TargetType='ip',
                 HealthCheckEnabled=True,
                 HealthCheckPath='/',
-                HealthCheckIntervalSeconds=30,
-                HealthCheckTimeoutSeconds=10,
-                HealthyThresholdCount=2,
-                UnhealthyThresholdCount=5,
-                Matcher={'HttpCode': '200-499'}  # Accept any non-5xx response
+                HealthCheckIntervalSeconds=self.health_check_interval,
+                HealthCheckTimeoutSeconds=self.health_check_timeout,
+                HealthyThresholdCount=self.healthy_threshold,
+                UnhealthyThresholdCount=self.unhealthy_threshold,
+                Matcher={'HttpCode': '200-499'}
             )
             return response['TargetGroups'][0]['TargetGroupArn']
         except self.client.exceptions.DuplicateTargetGroupNameException:
@@ -66,13 +71,18 @@ class ALBClient:
                 raise
         
         # Wait for AWS to propagate the attachment
-        logger.info("Waiting 5 seconds for listener rule to propagate...")
-        time.sleep(5)
+        propagation_delay = int(os.environ.get('ALB_RULE_PROPAGATION_DELAY', '5'))
+        logger.info(f"Waiting {propagation_delay} seconds for listener rule to propagate...")
+        time.sleep(propagation_delay)
         
         return rule_arn
     
-    def verify_target_group_attached(self, target_group_arn, listener_arn, max_retries=10, delay=2):
+    def verify_target_group_attached(self, target_group_arn, listener_arn, max_retries=None, delay=None):
         """Verify target group is attached via listener rule"""
+        if max_retries is None:
+            max_retries = int(os.environ.get('ALB_VERIFY_MAX_RETRIES', '10'))
+        if delay is None:
+            delay = int(os.environ.get('ALB_VERIFY_DELAY', '2'))
         import time
         for attempt in range(max_retries):
             try:

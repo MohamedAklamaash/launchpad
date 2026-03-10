@@ -8,12 +8,6 @@ The platform acts as a **control plane** that orchestrates infrastructure provis
 
 The compute, networking, and runtime workloads run entirely inside the **user's AWS account**.
 
-This architecture is similar to platforms like:
-
-- Porter
-- Flightcontrol
-- Qovery
-
 The platform does **not host user applications** itself. Instead, it manages and orchestrates deployments into the user's cloud environment.
 
 ---

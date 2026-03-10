@@ -4,6 +4,7 @@ import sys
 import django
 import logging
 import time
+import uuid
 
 # Setup Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
@@ -11,6 +12,7 @@ django.setup()
 
 from api.services.deployment_queue import DeploymentQueue
 from api.services.application_deployment_service import ApplicationDeploymentService
+from api.services.deployment_lock import DeploymentLock
 from api.repositories.application import ApplicationRepository
 
 logging.basicConfig(
@@ -19,10 +21,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+WORKER_ID = str(uuid.uuid4())[:8]
+
 def process_deployment(job):
     """Process a single deployment job"""
     app_id = job.get('app_id')
-    logger.info(f"Processing deployment for application {app_id}")
+    logger.info(f"Worker {WORKER_ID} processing deployment for application {app_id}")
+    
+    lock = DeploymentLock()
+    
+    # Acquire distributed lock
+    if not lock.acquire(app_id, WORKER_ID):
+        logger.warning(f"Another worker is deploying app {app_id}, skipping")
+        return
     
     try:
         app_repo = ApplicationRepository()
@@ -39,6 +50,8 @@ def process_deployment(job):
         
     except Exception as e:
         logger.error(f"Deployment failed for application {app_id}: {e}", exc_info=True)
+    finally:
+        lock.release(app_id, WORKER_ID)
 
 def main():
     logger.info("Starting deployment worker...")

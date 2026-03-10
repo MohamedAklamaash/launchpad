@@ -7,6 +7,8 @@ from aws.codebuild import CodeBuildClient
 from aws.ecs import ECSClient
 from aws.alb import ALBClient
 from aws.ecr import ECRClient
+from django.db import transaction
+from botocore.exceptions import ClientError
 import time
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,9 @@ class ApplicationDeploymentService:
         self.infra_repo = InfrastructureRepository()
     
     def deploy_application(self, application: Application):
+        created_resources = []
+        session = None
+        
         try:
             # Step 1: Validate Infrastructure
             environment = self._validate_infrastructure(application)
@@ -37,26 +42,30 @@ class ApplicationDeploymentService:
             application.task_definition_arn = task_def_arn
             application.status = 'DEPLOYING'
             application.save()
+            created_resources.append(('task_definition', task_def_arn))
             
             # Step 6: Create Target Group
             target_group_arn = self._create_target_group(session, application, environment)
             application.target_group_arn = target_group_arn
             application.save()
+            created_resources.append(('target_group', target_group_arn))
             
-            # Step 6.5: Configure ALB Routing (BEFORE creating ECS service)
+            # Step 6.5: Configure ALB Routing
             listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
             application.listener_rule_arn = listener_rule_arn
             application.save()
+            created_resources.append(('listener_rule', listener_rule_arn))
             
             # Step 6.6: Verify target group is attached to ALB
             alb = ALBClient(session)
             alb.verify_target_group_attached(application.target_group_arn, listener_arn)
             logger.info("Target group verified as attached to ALB")
             
-            # Step 7: Create ECS Service (AFTER target group is attached to ALB)
+            # Step 7: Create ECS Service
             service_arn = self._create_ecs_service(session, application, environment)
             application.service_arn = service_arn
             application.save()
+            created_resources.append(('ecs_service', service_arn))
             
             # Step 8: Wait for service to become stable
             service_name = f"{application.name}-service"
@@ -73,11 +82,46 @@ class ApplicationDeploymentService:
             return deployment_url
             
         except Exception as e:
-            logger.error(f"Deployment failed for application {application.name}: {str(e)}")
+            logger.error(f"Deployment failed for application {application.name}: {str(e)}", exc_info=True)
+            
+            # Cleanup created resources in reverse order
+            if session and created_resources:
+                logger.info(f"Cleaning up {len(created_resources)} resources")
+                for resource_type, resource_id in reversed(created_resources):
+                    try:
+                        self._cleanup_resource(session, resource_type, resource_id, environment)
+                        logger.info(f"Cleaned up {resource_type}: {resource_id}")
+                    except Exception as cleanup_error:
+                        logger.error(f"Failed to cleanup {resource_type} {resource_id}: {cleanup_error}")
+            
             application.status = 'FAILED'
             application.error_message = str(e)
             application.save()
             raise
+    
+    def _cleanup_resource(self, session, resource_type, resource_id, environment):
+        """Cleanup AWS resources on deployment failure"""
+        try:
+            if resource_type == 'ecs_service':
+                ecs = ECSClient(session)
+                service_name = resource_id.split('/')[-1]
+                ecs.client.delete_service(
+                    cluster=environment.cluster_arn,
+                    service=service_name,
+                    force=True
+                )
+            elif resource_type == 'listener_rule':
+                alb = ALBClient(session)
+                alb.client.delete_rule(RuleArn=resource_id)
+            elif resource_type == 'target_group':
+                alb = ALBClient(session)
+                alb.client.delete_target_group(TargetGroupArn=resource_id)
+            elif resource_type == 'task_definition':
+                ecs = ECSClient(session)
+                ecs.client.deregister_task_definition(taskDefinition=resource_id)
+        except ClientError as e:
+            if e.response['Error']['Code'] not in ['ResourceNotFoundException', 'TargetGroupNotFound']:
+                raise
     
     def _validate_infrastructure(self, application: Application):
         environment = Environment.objects.filter(
@@ -229,6 +273,17 @@ class ApplicationDeploymentService:
     
     def _create_target_group(self, session, application: Application, environment: Environment):
         alb = ALBClient(session)
+        
+        # Check if target group already exists
+        if application.target_group_arn:
+            try:
+                alb.client.describe_target_groups(TargetGroupArns=[application.target_group_arn])
+                logger.info(f"Target group {application.target_group_arn} already exists, reusing")
+                return application.target_group_arn
+            except ClientError as e:
+                if e.response['Error']['Code'] != 'TargetGroupNotFound':
+                    raise
+                logger.info("Target group ARN stored but resource doesn't exist, creating new one")
         
         tg_name = f"{application.name}-tg"[:32]
         # Use port 80 for NGINX sidecar

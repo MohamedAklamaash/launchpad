@@ -28,3 +28,5 @@ sqlparse==0.5.5
 typing_extensions==4.15.0
 urllib3==2.6.3
 uuid6==2024.7.10
+python-json-logger==3.2.1
+prometheus-client==0.21.1
