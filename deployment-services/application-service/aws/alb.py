@@ -7,7 +7,7 @@ class ALBClient:
     def __init__(self, session):
         self.client = session.client('elbv2')
     
-    def create_target_group(self, name, vpc_id, port=8000):
+    def create_target_group(self, name, vpc_id, port=80):
         try:
             response = self.client.create_target_group(
                 Name=name,
@@ -31,25 +31,45 @@ class ALBClient:
     
     def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority):
         import time
-        response = self.client.create_rule(
-            ListenerArn=listener_arn,
-            Conditions=[{
-                'Field': 'path-pattern',
-                'Values': [path_pattern]
-            }],
-            Actions=[{
-                'Type': 'forward',
-                'TargetGroupArn': target_group_arn
-            }],
-            Priority=priority
-        )
-        logger.info(f"Created listener rule with priority {priority}")
+        try:
+            response = self.client.create_rule(
+                ListenerArn=listener_arn,
+                Conditions=[{
+                    'Field': 'path-pattern',
+                    'Values': [path_pattern]
+                }],
+                Actions=[{
+                    'Type': 'forward',
+                    'TargetGroupArn': target_group_arn
+                }],
+                Priority=priority
+            )
+            logger.info(f"Created listener rule with priority {priority}")
+            rule_arn = response['Rules'][0]['RuleArn']
+        except self.client.exceptions.PriorityInUseException:
+            logger.warning(f"Priority {priority} already in use, checking for existing rule")
+            response = self.client.describe_rules(ListenerArn=listener_arn)
+            for rule in response['Rules']:
+                if rule.get('Priority') == str(priority):
+                    # Update existing rule to point to new target group
+                    rule_arn = rule['RuleArn']
+                    self.client.modify_rule(
+                        RuleArn=rule_arn,
+                        Actions=[{
+                            'Type': 'forward',
+                            'TargetGroupArn': target_group_arn
+                        }]
+                    )
+                    logger.info(f"Updated existing listener rule {rule_arn}")
+                    break
+            else:
+                raise
         
         # Wait for AWS to propagate the attachment
         logger.info("Waiting 5 seconds for listener rule to propagate...")
         time.sleep(5)
         
-        return response['Rules'][0]['RuleArn']
+        return rule_arn
     
     def verify_target_group_attached(self, target_group_arn, listener_arn, max_retries=10, delay=2):
         """Verify target group is attached via listener rule"""

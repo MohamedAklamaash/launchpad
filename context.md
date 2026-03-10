@@ -644,9 +644,4 @@ Comprehensive documentation available in `/docs`:
 - `USER_ONBOARDING_GUIDE.md` - Setup instructions
 - `IAM_POLICIES.md` - IAM configuration
 - `DEPLOYMENT_EDGE_CASES.md` - Known issues and fixes
-- `APPLICATION_LOGS.md` - Log locations and access
-- `APPLICATION_PORT_CONFIG.md` - Port configuration guide
-- `DOCKERFILE_REQUIREMENTS.md` - Dockerfile best practices
-- `DOCKER_HUB_RATE_LIMITS.md` - Rate limit solutions
-- `DEPLOYMENT_WORKER.md` - Worker documentation
 - `QUICK_START.md` - Quick reference

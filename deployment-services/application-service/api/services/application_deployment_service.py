@@ -59,9 +59,8 @@ class ApplicationDeploymentService:
             application.save()
             
             # Step 8: Wait for service to become stable
-            ecs = ECSClient(session)
             service_name = f"{application.name}-service"
-            ecs.wait_for_service_stable(environment.cluster_arn, service_name)
+            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
             logger.info(f"Service {service_name} is stable and running")
             
             # Step 9: Return Deployment URL
@@ -221,7 +220,8 @@ class ApplicationDeploymentService:
             memory=application.alloted_memory,
             envs=envs,
             execution_role_arn=environment.ecs_task_execution_role_arn,
-            container_port=application.port
+            container_port=application.port,
+            app_name=application.name
         )
         
         logger.info(f"Created task definition {task_def_arn}")
@@ -231,10 +231,11 @@ class ApplicationDeploymentService:
         alb = ALBClient(session)
         
         tg_name = f"{application.name}-tg"[:32]
+        # Use port 80 for NGINX sidecar
         target_group_arn = alb.create_target_group(
             name=tg_name,
             vpc_id=environment.vpc_id,
-            port=application.port
+            port=80
         )
         
         logger.info(f"Created target group {target_group_arn}")
@@ -288,22 +289,22 @@ class ApplicationDeploymentService:
             if not security_group_ids:
                 raise ValueError(f"No security groups found in VPC {environment.vpc_id}")
             
-            # Add ingress rule to allow traffic from ALB to container port
+            # Add ingress rule to allow traffic from ALB to NGINX port 80
             if alb_sg_id:
                 try:
                     ec2.authorize_security_group_ingress(
                         GroupId=alb_sg_id,
                         IpPermissions=[{
                             'IpProtocol': 'tcp',
-                            'FromPort': application.port,
-                            'ToPort': application.port,
+                            'FromPort': 80,
+                            'ToPort': 80,
                             'UserIdGroupPairs': [{'GroupId': alb_sg_id}]
                         }]
                     )
-                    logger.info(f"Added ingress rule for port {application.port} to security group {alb_sg_id}")
+                    logger.info(f"Added ingress rule for port 80 to security group {alb_sg_id}")
                 except ec2.exceptions.ClientError as e:
                     if 'InvalidPermission.Duplicate' in str(e):
-                        logger.info(f"Ingress rule for port {application.port} already exists")
+                        logger.info(f"Ingress rule for port 80 already exists")
                     else:
                         raise
             
@@ -320,7 +321,8 @@ class ApplicationDeploymentService:
             subnet_ids=subnet_ids,
             security_group_ids=security_group_ids,
             container_name=f"{application.name}-task",
-            container_port=application.port
+            container_port=application.port,
+            use_nginx=True
         )
         
         logger.info(f"Created ECS service {service_arn}")
@@ -347,3 +349,43 @@ class ApplicationDeploymentService:
     
     def _generate_deployment_url(self, application: Application, environment: Environment):
         return f"http://{environment.alb_dns}/{application.name}"
+    
+    def _wait_for_service_stable_with_refresh(self, infrastructure, cluster_arn, service_name, timeout=300):
+        """Wait for ECS service with automatic credential refresh"""
+        import time
+        logger.info(f"Waiting for service {service_name} to become stable...")
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                # Refresh session on each iteration to handle credential expiry
+                session = self._create_aws_session(infrastructure)
+                ecs = ECSClient(session)
+                
+                response = ecs.client.describe_services(
+                    cluster=cluster_arn,
+                    services=[service_name]
+                )
+                
+                if not response['services']:
+                    raise Exception(f"Service {service_name} not found")
+                
+                service = response['services'][0]
+                running_count = service.get('runningCount', 0)
+                desired_count = service.get('desiredCount', 0)
+                
+                if running_count == desired_count and running_count > 0:
+                    logger.info(f"Service {service_name} is stable with {running_count} running tasks")
+                    return True
+                
+                logger.info(f"Service {service_name}: {running_count}/{desired_count} tasks running, waiting...")
+                time.sleep(10)
+                
+            except Exception as e:
+                if 'ExpiredToken' in str(e):
+                    logger.warning(f"Token expired during wait, will refresh on next iteration")
+                    time.sleep(2)
+                else:
+                    raise
+        
+        raise Exception(f"Service {service_name} did not become stable within {timeout} seconds")
