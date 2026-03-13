@@ -71,6 +71,9 @@ See [docs/USER_ONBOARDING_GUIDE.md](docs/USER_ONBOARDING_GUIDE.md) for setup ins
 - [User Workflows](docs/USER_WORKFLOWS.md) - Step-by-step guides
 - [IAM Policies](docs/IAM_POLICIES.md) - AWS permissions setup
 - [Deployment Edge Cases](docs/DEPLOYMENT_EDGE_CASES.md) - Troubleshooting
+- [Update Endpoints](docs/UPDATE_ENDPOINTS.md) - Application and infrastructure updates
+- [Update Quick Reference](docs/UPDATE_QUICK_REFERENCE.md) - Quick API reference
+- [Sleep/Wake Feature](docs/SLEEP_WAKE_FEATURE.md) - Cost-saving sleep mode
 - [System Context](context.md) - Complete technical reference
 
 ## Support

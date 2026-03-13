@@ -70,6 +70,8 @@ class ApiConfig(AppConfig):
             return
 
         from api.messaging.consumer.consumer import AuthEventConsumer
+        from api.messaging.consumer.application_consumer import start_application_event_consumer
+        from api.common.envs.application import app_config
 
         def start_auth_consumer():
             # Small delay to ensure the main thread has completed app initialization,
@@ -82,7 +84,18 @@ class ApiConfig(AppConfig):
             except Exception as exc:
                 logger.error(f"Infrastructure Service AuthEventConsumer crashed: {exc}", exc_info=True)
 
+        def start_app_consumer():
+            time.sleep(2)
+            try:
+                if not _wait_for_db():
+                    return
+                logger.info("Initializing Infrastructure Service ApplicationEventConsumer…")
+                start_application_event_consumer(app_config.rabbitmq_url)
+            except Exception as exc:
+                logger.error(f"Infrastructure Service ApplicationEventConsumer crashed: {exc}", exc_info=True)
+
         threading.Thread(target=start_auth_consumer, name="InfraAuthConsumer", daemon=True).start()
+        threading.Thread(target=start_app_consumer, name="InfraAppConsumer", daemon=True).start()
         logger.info("Infrastructure Service messaging thread scheduled.")
 
         # Automatically setup the cron job for Rightsizing Enforcement

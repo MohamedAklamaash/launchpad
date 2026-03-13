@@ -2,6 +2,7 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from api.services.application_service import ApplicationService
+from api.services.application_sleep_service import ApplicationSleepService
 from api.services.deployment_queue import DeploymentQueue
 from api.repositories.application import ApplicationRepository
 from api.services.application_cleanup_service import ApplicationCleanupService
@@ -20,9 +21,9 @@ class ApplicationListCreateView(APIView):
         """List all applications for the authenticated user."""
         try:
             user = request.user
-            infra_id = request.data.get("infrastructure_id", "")
+            infra_id = request.query_params.get("infrastructure_id", "")
             if not infra_id:
-                raise Exception("Infrastructure ID is required in the request body")
+                raise Exception("Infrastructure ID is required as query parameter")
             apps = self.service.get_user_applications(user.id, infra_id)
             data = [
                 {
@@ -70,6 +71,7 @@ class ApplicationDetailDeleteView(APIView):
             "name": app.name,
             "description": app.description,
             "status": app.status,
+            "is_sleeping": app.is_sleeping,
             "cpu": app.alloted_cpu,
             "memory": app.alloted_memory,
             "storage": app.alloted_storage,
@@ -173,4 +175,109 @@ class ApplicationRetryDeployView(APIView):
             
         except Exception as e:
             logger.exception("Failed to retry deployment")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class ApplicationUpdateView(APIView):
+    """Handle updating application configuration."""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.service = ApplicationService()
+    
+    def patch(self, request, pk=None):
+        """Update application configuration (envs, description, resources)."""
+        try:
+            user = request.user
+            updated_app = self.service.update_application(user.id, pk, request.data)
+            
+            if not updated_app:
+                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            return Response({
+                "id": str(updated_app.id),
+                "name": updated_app.name,
+                "description": updated_app.description,
+                "envs": updated_app.envs,
+                "alloted_cpu": updated_app.alloted_cpu,
+                "alloted_memory": updated_app.alloted_memory,
+                "port": updated_app.port,
+                "updated_at": updated_app.updated_at.isoformat()
+            }, status=status.HTTP_200_OK)
+            
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Failed to update application")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ApplicationSleepView(APIView):
+    """Handle putting application to sleep."""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.sleep_service = ApplicationSleepService()
+        self.app_repo = ApplicationRepository()
+    
+    def post(self, request, pk=None):
+        """Put application to sleep (scale to 0 tasks)."""
+        try:
+            user = request.user
+            app = self.app_repo.get_by_id(pk)
+            
+            if not app:
+                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            if str(app.user_id) != str(user.id):
+                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            
+            self.sleep_service.sleep_application(app)
+            
+            return Response({
+                "message": "Application put to sleep successfully",
+                "application_id": str(pk),
+                "status": "SLEEPING"
+            }, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Failed to sleep application")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ApplicationWakeView(APIView):
+    """Handle waking application from sleep."""
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.sleep_service = ApplicationSleepService()
+        self.app_repo = ApplicationRepository()
+    
+    def post(self, request, pk=None):
+        """Wake application from sleep (restore desired count)."""
+        try:
+            user = request.user
+            app = self.app_repo.get_by_id(pk)
+            
+            if not app:
+                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+            if str(app.user_id) != str(user.id):
+                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            
+            self.sleep_service.wake_application(app)
+            
+            return Response({
+                "message": "Application woken up successfully",
+                "application_id": str(pk),
+                "status": "ACTIVE"
+            }, status=status.HTTP_200_OK)
+            
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Failed to wake application")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

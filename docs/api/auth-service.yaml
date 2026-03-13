@@ -1,0 +1,378 @@
+openapi: 3.0.3
+info:
+  title: Launchpad Auth Service API
+  description: |
+    Authentication service for Launchpad platform.
+    Handles GitHub OAuth, user management, and JWT token generation.
+  version: 1.0.0
+  contact:
+    name: Mohamed Aklamaash
+    email: support@launchpad.dev
+
+servers:
+  - url: http://localhost:5001/api/v1
+    description: Local development
+  - url: https://api.launchpad.dev/auth
+    description: Production
+
+tags:
+  - name: Authentication
+    description: GitHub OAuth and authentication
+  - name: Users
+    description: User management
+  - name: Health
+    description: Health check endpoints
+
+paths:
+  /user/login:
+    get:
+      tags:
+        - Authentication
+      summary: GitHub OAuth login
+      description: Redirect to GitHub OAuth authorization page
+      responses:
+        '302':
+          description: Redirect to GitHub OAuth
+          headers:
+            Location:
+              schema:
+                type: string
+                example: https://github.com/login/oauth/authorize?client_id=...
+
+  /user/callback:
+    get:
+      tags:
+        - Authentication
+      summary: GitHub OAuth callback
+      description: Handle GitHub OAuth callback and create/update user
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: OAuth authorization code from GitHub
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "GitHub login successful"
+                  access_token:
+                    type: string
+                    description: JWT access token
+                  refresh_token:
+                    type: string
+                    description: JWT refresh token
+                  user:
+                    $ref: '#/components/schemas/User'
+        '400':
+          description: Missing code parameter
+        '500':
+          description: Authentication failed
+
+  /user/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh access token
+      description: Get new access token using refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refresh_token
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  refresh_token:
+                    type: string
+        '401':
+          description: Invalid refresh token
+
+  /user/logout:
+    post:
+      tags:
+        - Authentication
+      summary: Logout user
+      description: Invalidate refresh token
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Logged out successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /user/me:
+    get:
+      tags:
+        - Users
+      summary: Get current user
+      description: Get authenticated user information
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /invited-users:
+    post:
+      tags:
+        - Users
+      summary: Invite user
+      description: Invite user to infrastructure (SUPER_ADMIN only)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - user_name
+                - infra_id
+                - role
+              properties:
+                email:
+                  type: string
+                  format: email
+                user_name:
+                  type: string
+                infra_id:
+                  type: string
+                  format: uuid
+                role:
+                  type: string
+                  enum: [admin, user, guest]
+      responses:
+        '201':
+          description: User invited successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "User invited successfully"
+                  user_id:
+                    type: string
+                    format: uuid
+        '400':
+          description: Validation error
+        '403':
+          description: Only SUPER_ADMIN can invite users
+
+  /invited-users/login:
+    post:
+      tags:
+        - Users
+      summary: Invited user login
+      description: Login for invited users (email + OTP)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - infra_id
+              properties:
+                email:
+                  type: string
+                  format: email
+                infra_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OTP sent to email
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "OTP sent to email"
+
+  /invited-users/verify-otp:
+    post:
+      tags:
+        - Users
+      summary: Verify OTP
+      description: Verify OTP and login invited user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - otp
+                - infra_id
+              properties:
+                email:
+                  type: string
+                  format: email
+                otp:
+                  type: string
+                infra_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  refresh_token:
+                    type: string
+                  user:
+                    $ref: '#/components/schemas/InvitedUser'
+        '401':
+          description: Invalid OTP
+
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        user_name:
+          type: string
+        role:
+          type: string
+          enum: [super_admin, admin, user, guest]
+          description: Global role (super_admin for GitHub users)
+        profile_url:
+          type: string
+          format: uri
+        infra_id:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: List of infrastructure IDs user has access to
+        metadata:
+          type: object
+          properties:
+            github:
+              type: object
+              properties:
+                id:
+                  type: string
+                username:
+                  type: string
+                token:
+                  type: string
+                  description: GitHub access token
+                profile_url:
+                  type: string
+                email:
+                  type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    InvitedUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        user_name:
+          type: string
+        role:
+          type: string
+          enum: [admin, user, guest]
+        infra_id:
+          type: array
+          items:
+            type: string
+            format: uuid
+        invited_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+
+  responses:
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Authentication required"

@@ -18,6 +18,13 @@ class Application(models.Model):
     project_remote_url = models.CharField(max_length=255)
     project_branch = models.CharField(max_length=255)
     project_commit_hash = models.CharField(max_length=255)
+    
+    class Meta:
+        unique_together = [('user', 'name')]  # App name unique per user
+        indexes = [
+            models.Index(fields=['user', 'infrastructure']),
+            models.Index(fields=['status']),
+        ]
     version = models.IntegerField(default=1)
 
     dockerfile_path = models.CharField(max_length=255, default="Dockerfile", blank=True)
@@ -37,6 +44,7 @@ class Application(models.Model):
             ('PUSHING_IMAGE', 'Pushing Image'),
             ('DEPLOYING', 'Deploying'),
             ('ACTIVE', 'Active'),
+            ('SLEEPING', 'Sleeping'),
             ('FAILED', 'Failed'),
         ],
         default='CREATED'
@@ -50,6 +58,10 @@ class Application(models.Model):
     deployment_url = models.CharField(max_length=512, null=True, blank=True)
     build_id = models.CharField(max_length=255, null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
+    
+    # Sleep/wake management
+    is_sleeping = models.BooleanField(default=False)
+    desired_count = models.IntegerField(default=1)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

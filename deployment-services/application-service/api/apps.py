@@ -52,7 +52,7 @@ class ApiConfig(AppConfig):
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 
-        from api.messaging.consumers.infrastructure import InfraEventConsumer
+        from api.messaging.consumers.infrastructure import InfraEventConsumer, InfraUpdatedEventConsumer
         from api.messaging.consumers.user import AuthEventConsumer
         from api.messaging.consumers.environment import EnvironmentEventConsumer
 
@@ -64,6 +64,15 @@ class ApiConfig(AppConfig):
                 InfraEventConsumer().start()
             except Exception as exc:
                 logger.error(f"InfraEventConsumer crashed: {exc}", exc_info=True)
+        
+        def start_infra_updated_consumer():
+            try:
+                if not _wait_for_db():
+                    return
+                logger.info("Initializing Application Service InfraUpdatedEventConsumer…")
+                InfraUpdatedEventConsumer().start()
+            except Exception as exc:
+                logger.error(f"InfraUpdatedEventConsumer crashed: {exc}", exc_info=True)
 
         def start_auth_consumer():
             try:
@@ -84,6 +93,7 @@ class ApiConfig(AppConfig):
                 logger.error(f"EnvironmentEventConsumer crashed: {exc}", exc_info=True)
 
         threading.Thread(target=start_infra_consumer, name="AppInfraConsumer", daemon=True).start()
+        threading.Thread(target=start_infra_updated_consumer, name="AppInfraUpdatedConsumer", daemon=True).start()
         threading.Thread(target=start_auth_consumer, name="AppAuthConsumer", daemon=True).start()
         threading.Thread(target=start_environment_consumer, name="AppEnvConsumer", daemon=True).start()
         logger.info("Application Service messaging threads scheduled.")

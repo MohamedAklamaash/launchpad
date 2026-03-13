@@ -32,12 +32,6 @@ def infrastructure_detail(request: HttpRequest, infra_id):
             return Response(infra)
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
     
-    elif request.method == 'PUT':
-        infra = infrastructure_service.update_infrastructure(user_id=request.user.id, infra_id=infra_id, update_data=request.data)
-        if infra:
-            return Response(infra)
-        return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
-    
     elif request.method == 'DELETE':
         try:
             success = infrastructure_service.delete_infrastructure(user_id=request.user.id, infra_id=infra_id)
@@ -46,3 +40,21 @@ def infrastructure_detail(request: HttpRequest, infra_id):
             return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_409_CONFLICT)
+
+@csrf_exempt
+@api_view(['PATCH'])
+def infrastructure_update(request: HttpRequest, infra_id):
+    """Update infrastructure configuration (name, max_cpu, max_memory)."""
+    try:
+        infra = infrastructure_service.update_infrastructure_config(
+            user_id=request.user.id, 
+            infra_id=infra_id, 
+            update_data=request.data
+        )
+        if infra:
+            return Response(infra)
+        return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

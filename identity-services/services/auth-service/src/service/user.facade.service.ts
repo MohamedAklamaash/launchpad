@@ -45,13 +45,13 @@ export class UserFacadeService extends BaseService {
     public async upsertUser(githubData: GithubUserUpsertInput) {
         return sequelize.transaction(async (transaction) => {
             let user = await User.findOne({
-                where: {
-                    metadata: {
-                        github: {
-                            id: githubData.github_id
-                        }
-                    }
-                } as any,
+                where: sequelize.where(
+                    sequelize.cast(
+                        sequelize.json("metadata.github.id"),
+                        'text'
+                    ),
+                    githubData.github_id
+                ),
                 transaction
             });
 
@@ -79,7 +79,7 @@ export class UserFacadeService extends BaseService {
                     user_name: githubData.username,
                     profile_url: githubData.avatar_url,
                     email: githubData.email ?? `${githubData.github_id}@github.com`,
-                    role: USER_ROLE.SUPER_ADMIN,
+                    role: USER_ROLE.SUPER_ADMIN,  // GitHub users are SUPER_ADMIN
                     infra_id: [],
                     metadata: {
                         github: githubMetadata
