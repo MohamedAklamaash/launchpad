@@ -64,6 +64,7 @@ class ApplicationDeploymentService:
             # Step 7: Create ECS Service
             service_arn = self._create_ecs_service(session, application, environment)
             application.service_arn = service_arn
+            application.desired_count = 1
             application.save()
             created_resources.append(('ecs_service', service_arn))
             

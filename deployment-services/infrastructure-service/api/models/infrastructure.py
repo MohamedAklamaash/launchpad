@@ -32,3 +32,9 @@ class Infrastructure(models.Model):
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        unique_together = [('user', 'name')]
+        indexes = [
+            models.Index(fields=['user', 'is_cloud_authenticated']),
+        ]

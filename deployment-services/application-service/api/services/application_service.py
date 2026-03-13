@@ -3,6 +3,7 @@ from api.repositories.infrastructure import InfrastructureRepository
 from api.repositories.user import UserRepository
 from api.services.application_deployment_service import ApplicationDeploymentService
 from api.services.application_cleanup_service import ApplicationCleanupService
+from api.services.infrastructure_permissions import InfrastructurePermissions
 from shared.resilience.http_client import ResilientHttpClient
 from django.db import transaction
 import os
@@ -39,12 +40,13 @@ class ApplicationService:
         if not infra_id:
             raise ValueError("Infrastructure ID is required")
 
-        if not self.infra_repo.is_user_authorized(infra_id, user.id):
-            raise PermissionError("User is not authorized for this infrastructure")
-
         infra = self.infra_repo.get_infrastructure(infra_id)
         if not infra:
             raise ValueError("Infrastructure not found")
+        
+        # Check permissions (SUPER_ADMIN or ADMIN can create)
+        if not InfrastructurePermissions.can_create_application(infra, user.id):
+            raise PermissionError("You don't have permission to create applications. Required role: SUPER_ADMIN or ADMIN")
 
         requested_cpu = float(data.get("alloted_cpu", 0))
         requested_mem = float(data.get("alloted_memory", 0))
@@ -109,7 +111,15 @@ class ApplicationService:
             else:
                 raise ValueError(f"User {user.email} has invited_by {user.invited_by} but inviter not found in DB")
         data["user"] = user
-        return self.app_repo.create(data)
+        app = self.app_repo.create(data)
+        
+        # Publish event
+        from api.messaging.producer.producer import ApplicationEventProducer
+        ApplicationEventProducer.publish_application_created(
+            app.id, app.infrastructure_id, app.name, user.id
+        )
+        
+        return app
 
     def get_user_applications(self, user_id: str, infra_id:str):
         """Get all applications belonging to a user."""
@@ -123,10 +133,18 @@ class ApplicationService:
         return None
 
     def delete_application(self, user_id: str, app_id: str):
-        """Delete an application if user owns it."""
+        """Delete an application if user has permission."""
         app = self.app_repo.get_by_id(app_id)
-        if not app or str(app.user_id) != str(user_id):
-            raise PermissionError("Application not found or unauthorized")
+        if not app:
+            raise PermissionError("Application not found")
+        
+        infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
+        if not infra:
+            raise ValueError("Infrastructure not found")
+        
+        # Check permissions (SUPER_ADMIN or ADMIN can delete)
+        if not InfrastructurePermissions.can_delete_application(infra, user_id):
+            raise PermissionError("You don't have permission to delete applications. Required role: SUPER_ADMIN or ADMIN")
         
         # Clean up AWS resources before deleting database record
         try:
@@ -135,7 +153,13 @@ class ApplicationService:
             logger.error(f"Failed to cleanup AWS resources for app {app_id}: {e}")
             # Continue with database deletion even if AWS cleanup fails
         
-        return self.app_repo.delete(app_id)
+        result = self.app_repo.delete(app_id)
+        
+        # Publish event
+        from api.messaging.producer.producer import ApplicationEventProducer
+        ApplicationEventProducer.publish_application_deleted(app_id)
+        
+        return result
     
     def deploy_application(self, app_id: str):
         """Deploy an application to AWS infrastructure."""
@@ -144,3 +168,72 @@ class ApplicationService:
             raise ValueError("Application not found")
         
         return self.deployment_service.deploy_application(app)
+    
+    def update_application(self, user_id: str, app_id: str, update_data: dict):
+        """Update application configuration."""
+        app = self.app_repo.get_by_id(app_id)
+        if not app:
+            raise PermissionError("Application not found")
+        
+        infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
+        if not infra:
+            raise ValueError("Infrastructure not found")
+        
+        # Check permissions (SUPER_ADMIN or ADMIN can update)
+        if not InfrastructurePermissions.can_update_application(infra, user_id):
+            raise PermissionError("You don't have permission to update applications. Required role: SUPER_ADMIN or ADMIN")
+        
+        # Validate updatable fields
+        allowed_fields = ['description', 'envs', 'alloted_cpu', 'alloted_memory', 'port']
+        update_fields = []
+        
+        if 'description' in update_data:
+            app.description = update_data['description']
+            update_fields.append('description')
+        
+        if 'envs' in update_data:
+            app.envs = update_data['envs']
+            update_fields.append('envs')
+        
+        if 'port' in update_data:
+            port = int(update_data['port'])
+            if not (1024 <= port <= 65535):
+                raise ValueError("Port must be between 1024 and 65535")
+            app.port = port
+            update_fields.append('port')
+        
+        # Resource updates require quota validation
+        if 'alloted_cpu' in update_data or 'alloted_memory' in update_data:
+            new_cpu = float(update_data.get('alloted_cpu', app.alloted_cpu))
+            new_mem = float(update_data.get('alloted_memory', app.alloted_memory))
+            
+            # Validate Fargate combinations
+            valid_combinations = {
+                0.25: (0.5, 2.0), 0.5: (1.0, 4.0), 1.0: (2.0, 8.0),
+                2.0: (4.0, 16.0), 4.0: (8.0, 30.0)
+            }
+            if new_cpu not in valid_combinations:
+                raise ValueError(f"Invalid CPU. Must be one of: {list(valid_combinations.keys())}")
+            min_mem, max_mem = valid_combinations[new_cpu]
+            if not (min_mem <= new_mem <= max_mem):
+                raise ValueError(f"For {new_cpu} vCPU, memory must be {min_mem}-{max_mem}GB")
+            
+            # Check infrastructure quota
+            infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
+            totals = self.app_repo.get_total_resources_for_infra(app.infrastructure_id)
+            current_cpu = (totals.get("total_cpu") or 0) - app.alloted_cpu
+            current_mem = (totals.get("total_memory") or 0) - app.alloted_memory
+            
+            if (current_cpu + new_cpu) > infra.max_cpu:
+                raise ValueError(f"CPU quota exceeded. Available: {infra.max_cpu - current_cpu}")
+            if (current_mem + new_mem) > infra.max_memory:
+                raise ValueError(f"Memory quota exceeded. Available: {infra.max_memory - current_mem}")
+            
+            app.alloted_cpu = new_cpu
+            app.alloted_memory = new_mem
+            update_fields.extend(['alloted_cpu', 'alloted_memory'])
+        
+        if update_fields:
+            app.save(update_fields=update_fields)
+        
+        return app

@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 class InfraEventProducer:
     EXCHANGE_NAME = "infrastructure.events"
     ROUTING_KEY_INFRA_CREATED = "infrastructure.created"
+    ROUTING_KEY_INFRA_UPDATED = "infrastructure.updated"
     ROUTING_KEY_ENV_UPDATED = "environment.updated"
 
     def __init__(self):
@@ -81,6 +82,45 @@ class InfraEventProducer:
         self.producer.publish(routing_key=self.ROUTING_KEY_INFRA_CREATED, body=event)
         logger.info(
             "Published infrastructure.created event",
+            extra={"correlation_id": cid, "infra_id": str(infra_id)},
+        )
+    
+    def publish_infrastructure_updated(
+        self,
+        user_id,
+        infra_id,
+        name=None,
+        max_cpu=0,
+        max_memory=0,
+        correlation_id=None,
+    ):
+        """Publish infrastructure.updated event."""
+        cid = correlation_id or str(uuid.uuid4())
+        event = {
+            "type": self.ROUTING_KEY_INFRA_UPDATED,
+            "payload": {
+                "id": str(infra_id),
+                "infra_id": str(infra_id),
+                "user_id": str(user_id),
+                "name": name,
+                "max_cpu": max_cpu,
+                "max_memory": max_memory,
+            },
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"version": 1, "correlation_id": cid},
+        }
+
+        logger.info(
+            "Publishing infrastructure.updated event",
+            extra={
+                "correlation_id": cid,
+                "infra_id": str(infra_id),
+                "user_id": str(user_id),
+            },
+        )
+        self.producer.publish(routing_key=self.ROUTING_KEY_INFRA_UPDATED, body=event)
+        logger.info(
+            "Published infrastructure.updated event",
             extra={"correlation_id": cid, "infra_id": str(infra_id)},
         )
     

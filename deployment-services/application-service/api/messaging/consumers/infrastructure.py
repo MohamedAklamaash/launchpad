@@ -130,3 +130,96 @@ class InfraEventConsumer:
     def close(self):
         """Close connection."""
         self.stop()
+
+
+class InfraUpdatedEventConsumer:
+    """Consume infrastructure.updated events from RabbitMQ and sync local database."""
+
+    EXCHANGE_NAME = "infrastructure.events"
+    ROUTING_KEY = "infrastructure.updated"
+    QUEUE_NAME = "application-service.infra-updated-events"
+
+    def __init__(self):
+        self.infra_repo = InfrastructureRepository()
+        self.consumer = ResilientPikaConsumer(
+            url=app_config.rabbitmq_url,
+            exchange=self.EXCHANGE_NAME,
+            queue=self.QUEUE_NAME,
+            routing_key=self.ROUTING_KEY,
+            name="application-service-infra-updated-consumer",
+            prefetch_count=1,
+        )
+
+    @staticmethod
+    def _is_transient(exc: Exception) -> bool:
+        return isinstance(exc, (ObjectDoesNotExist, ProgrammingError, OperationalError))
+
+    def callback(self, ch, method, properties, body):
+        """Process infrastructure.updated events."""
+        correlation_id = (
+            properties.correlation_id
+            if properties and properties.correlation_id
+            else str(uuid.uuid4())
+        )
+        log = logger.getChild("infra_updated_event")
+
+        try:
+            event = json.loads(body)
+        except json.JSONDecodeError as exc:
+            log.error("JSON decode failed", extra={"correlation_id": correlation_id})
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        payload = event.get("payload", {})
+        infra_id = payload.get("id") or payload.get("infra_id")
+
+        log.info(
+            "Received infrastructure.updated event",
+            extra={"correlation_id": correlation_id, "infra_id": infra_id},
+        )
+
+        if not infra_id:
+            log.warning("Missing infra_id — discarding")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        try:
+            with transaction.atomic():
+                infra = self.infra_repo.get_infrastructure(infra_id)
+                if infra:
+                    update_fields = []
+                    if "name" in payload:
+                        infra.name = payload["name"]
+                        update_fields.append("name")
+                    if "max_cpu" in payload:
+                        infra.max_cpu = payload["max_cpu"]
+                        update_fields.append("max_cpu")
+                    if "max_memory" in payload:
+                        infra.max_memory = payload["max_memory"]
+                        update_fields.append("max_memory")
+                    
+                    if update_fields:
+                        infra.save(update_fields=update_fields)
+                        log.info(f"Infrastructure {infra_id} updated")
+                else:
+                    log.warning(f"Infrastructure {infra_id} not found")
+
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        except Exception as exc:
+            transient = self._is_transient(exc)
+            log.error(
+                "Error processing infrastructure.updated event",
+                extra={"correlation_id": correlation_id, "infra_id": infra_id},
+                exc_info=True,
+            )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
+
+    def start(self):
+        self.consumer.start(self.callback)
+
+    def stop(self):
+        self.consumer.stop()
+
+    def close(self):
+        self.stop()
