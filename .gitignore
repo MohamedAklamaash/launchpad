@@ -14,3 +14,4 @@ volumes/
 *.terraform*
 *.backup*
 *.tfstate
+.kiro/

@@ -191,82 +191,347 @@ Frontend → Gateway (/payments)
 
 ---
 
-## Frontend Architecture Recommendations
+## Frontend Architecture
+
+### Technology Stack
+
+**Core Framework**
+- Next.js (App Router) with TypeScript
+- React 18+
+
+**Styling & UI**
+- Tailwind CSS (dark mode default)
+- shadcn/ui components
+- Radix UI primitives
+- Framer Motion animations
+- Lucide React icons
+
+**Data Visualization**
+- Recharts for metrics/graphs
+
+**Typography**
+- Inter (UI text)
+- JetBrains Mono (code/logs)
+
+**State Management**
+- React Context / Zustand
+
+---
+
+### Project Structure
+```
+launchpad-frontend/
+├── app/
+│   ├── (marketing)/
+│   │   ├── page.tsx                    # Landing page (Porter-style)
+│   │   ├── pricing/page.tsx
+│   │   ├── docs/page.tsx
+│   │   └── layout.tsx
+│   ├── (auth)/
+│   │   ├── login/page.tsx
+│   │   ├── register/page.tsx
+│   │   ├── callback/page.tsx           # OAuth callback
+│   │   └── layout.tsx
+│   ├── (dashboard)/
+│   │   ├── layout.tsx                  # Sidebar + Header
+│   │   ├── page.tsx                    # Dashboard home
+│   │   ├── infrastructures/
+│   │   │   ├── page.tsx                # List view
+│   │   │   ├── new/page.tsx            # Create form
+│   │   │   └── [id]/page.tsx           # Detail view
+│   │   ├── applications/
+│   │   │   ├── page.tsx
+│   │   │   ├── new/page.tsx
+│   │   │   └── [id]/
+│   │   │       ├── page.tsx
+│   │   │       ├── logs/page.tsx
+│   │   │       └── metrics/page.tsx
+│   │   ├── deployments/page.tsx
+│   │   ├── settings/page.tsx
+│   │   ├── billing/page.tsx
+│   │   └── notifications/page.tsx
+│   ├── api/                            # API routes (optional)
+│   ├── layout.tsx
+│   └── globals.css
+├── components/
+│   ├── ui/                             # shadcn/ui components
+│   │   ├── button.tsx
+│   │   ├── card.tsx
+│   │   ├── dialog.tsx
+│   │   ├── dropdown-menu.tsx
+│   │   ├── input.tsx
+│   │   ├── table.tsx
+│   │   ├── tabs.tsx
+│   │   ├── toast.tsx
+│   │   └── skeleton.tsx
+│   ├── layout/
+│   │   ├── sidebar.tsx
+│   │   ├── header.tsx
+│   │   └── page-container.tsx
+│   ├── dashboard/
+│   │   ├── metric-card.tsx
+│   │   ├── deployment-card.tsx
+│   │   ├── resource-table.tsx
+│   │   ├── log-viewer.tsx
+│   │   └── status-badge.tsx
+│   ├── charts/
+│   │   ├── cpu-chart.tsx
+│   │   ├── memory-chart.tsx
+│   │   └── request-chart.tsx
+│   ├── marketing/
+│   │   ├── hero.tsx
+│   │   ├── features.tsx
+│   │   ├── cta.tsx
+│   │   └── footer.tsx
+│   └── providers/
+│       ├── auth-provider.tsx
+│       ├── theme-provider.tsx
+│       └── toast-provider.tsx
+├── lib/
+│   ├── api/
+│   │   ├── client.ts
+│   │   ├── auth.ts
+│   │   ├── infrastructures.ts
+│   │   ├── applications.ts
+│   │   ├── notifications.ts
+│   │   └── payments.ts
+│   ├── hooks/
+│   │   ├── use-auth.ts
+│   │   ├── use-websocket.ts
+│   │   └── use-deployments.ts
+│   ├── utils.ts
+│   └── constants.ts
+├── types/
+│   ├── api.ts
+│   ├── auth.ts
+│   └── deployment.ts
+├── public/
+├── tailwind.config.ts
+├── next.config.js
+├── tsconfig.json
+└── package.json
+```
+
+---
 
 ### Pages/Routes
+
+**Marketing Site**
 ```
-/                          → Landing page
+/                          → Landing page (Porter-inspired)
+/pricing                   → Pricing plans
+/docs                      → Documentation
+```
+
+**Authentication**
+```
 /login                     → Login page
-/register                  → Registration page
-/dashboard                 → Main dashboard (protected)
-/profile                   → User profile (protected)
-/infrastructures           → Infrastructure list (protected)
-/infrastructures/new       → Create infrastructure (protected)
-/infrastructures/:id       → Infrastructure details (protected)
-/applications              → Application list (protected)
-/applications/new          → Deploy application (protected)
-/applications/:id          → Application details (protected)
-/payments                  → Payment history (protected)
-/notifications             → Notification center (protected)
+/register                  → Registration
+/callback                  → OAuth callback handler
 ```
+
+**Dashboard (Protected)**
+```
+/dashboard                 → Overview with metrics
+/infrastructures           → Infrastructure list
+/infrastructures/new       → Create infrastructure
+/infrastructures/[id]      → Infrastructure details
+/applications              → Application list
+/applications/new          → Deploy application
+/applications/[id]         → App details
+/applications/[id]/logs    → Live logs
+/applications/[id]/metrics → Metrics dashboard
+/deployments               → Deployment history
+/settings                  → User settings
+/billing                   → Payment & billing
+/notifications             → Notification center
+```
+
+---
+
+### Layout Structure
+
+**Dashboard Layout**
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Header: Search | Env Switcher | Notifications | Profile    │
+├──────┬──────────────────────────────────────────────────────┤
+│      │                                                       │
+│ Side │              Main Content Area                       │
+│ bar  │                                                       │
+│      │  ┌─────────┐ ┌─────────┐ ┌─────────┐               │
+│ Nav  │  │ Metric  │ │ Metric  │ │ Metric  │               │
+│      │  │  Card   │ │  Card   │ │  Card   │               │
+│ •    │  └─────────┘ └─────────┘ └─────────┘               │
+│ •    │                                                       │
+│ •    │  ┌───────────────────────────────────────────┐      │
+│      │  │     Deployments / Resources Table         │      │
+│      │  └───────────────────────────────────────────┘      │
+│      │                                                       │
+└──────┴───────────────────────────────────────────────────────┘
+```
+
+---
+
+### Visual Design System
+
+**Color Palette (Dark Theme)**
+```css
+Background:     #0a0a0a (near-black)
+Surface:        #141414 (card background)
+Border:         #262626 (subtle borders)
+Text Primary:   #ffffff
+Text Secondary: #a3a3a3
+Accent:         #8b5cf6 (purple) or #3b82f6 (blue)
+Success:        #10b981
+Warning:        #f59e0b
+Error:          #ef4444
+```
+
+**Typography**
+```
+UI Text:        Inter (400, 500, 600, 700)
+Code/Logs:      JetBrains Mono (400, 500)
+```
+
+**Spacing Scale**
+```
+xs:  4px
+sm:  8px
+md:  16px
+lg:  24px
+xl:  32px
+2xl: 48px
+```
+
+**Component Patterns**
+- Cards: `bg-[#141414] border border-[#262626] rounded-lg`
+- Hover: `hover:bg-[#1a1a1a] transition-colors`
+- Focus: `focus:ring-2 focus:ring-purple-500`
+
+---
+
+### Animation Patterns (Framer Motion)
+
+**Page Transitions**
+```tsx
+const pageVariants = {
+  initial: { opacity: 0, y: 20 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -20 }
+}
+```
+
+**Card Hover**
+```tsx
+<motion.div
+  whileHover={{ scale: 1.02, y: -4 }}
+  transition={{ duration: 0.2 }}
+/>
+```
+
+**Modal/Dialog**
+```tsx
+const modalVariants = {
+  hidden: { opacity: 0, scale: 0.95 },
+  visible: { opacity: 1, scale: 1 }
+}
+```
+
+**Skeleton Loaders**
+```tsx
+<Skeleton className="h-24 w-full animate-pulse" />
+```
+
+---
 
 ### State Management
+```typescript
+// Global State (Zustand)
+interface AppState {
+  auth: {
+    user: User | null
+    token: string | null
+    isAuthenticated: boolean
+  }
+  notifications: {
+    unread: number
+    items: Notification[]
+  }
+  deployments: {
+    active: Deployment[]
+    history: Deployment[]
+  }
+}
 ```
-┌─────────────────────────────────────┐
-│      Global State (Redux/Zustand)   │
-├─────────────────────────────────────┤
-│  • auth: { user, token, isAuth }    │
-│  • notifications: { unread, list }  │
-│  • infrastructures: { list, active }│
-│  • applications: { list, active }   │
-│  • payments: { history, pending }   │
-└─────────────────────────────────────┘
-```
+
+---
 
 ### API Client Structure
-```javascript
-// api/client.js
+```typescript
+// lib/api/client.ts
 const API_BASE = 'http://localhost:8000'
 
-// api/auth.js
-- login(credentials)
-- register(userData)
-- githubLogin()
-- logout()
+// lib/api/auth.ts
+export const authApi = {
+  login: (credentials: LoginDto) => Promise<AuthResponse>
+  githubLogin: () => void
+  logout: () => Promise<void>
+}
 
-// api/users.js
-- getUser(userId)
-- searchUsers(query)
-- updateProfile(userId, data)
+// lib/api/infrastructures.ts
+export const infraApi = {
+  list: () => Promise<Infrastructure[]>
+  create: (config: InfraConfig) => Promise<Infrastructure>
+  get: (id: string) => Promise<Infrastructure>
+  delete: (id: string) => Promise<void>
+}
 
-// api/infrastructures.js
-- listInfrastructures()
-- createInfrastructure(config)
-- getInfrastructure(id)
-- deleteInfrastructure(id)
+// lib/api/applications.ts
+export const appApi = {
+  list: () => Promise<Application[]>
+  deploy: (config: AppConfig) => Promise<Deployment>
+  get: (id: string) => Promise<Application>
+  getLogs: (id: string) => Promise<LogStream>
+  getMetrics: (id: string) => Promise<Metrics>
+}
 
-// api/applications.js
-- listApplications()
-- deployApplication(config)
-- getApplication(id)
-- deleteApplication(id)
-
-// api/notifications.js
-- getNotifications(userId)
-- markAsRead(notificationId)
-
-// api/payments.js
-- createPayment(details)
-- getPaymentHistory()
+// lib/api/notifications.ts
+export const notificationApi = {
+  list: (userId: string) => Promise<Notification[]>
+  markRead: (id: string) => Promise<void>
+}
 ```
+
+---
 
 ### Real-time Features
+```typescript
+// WebSocket connections
+useWebSocket('/ws/notifications')  // Real-time notifications
+useWebSocket('/ws/deployments')    // Live deployment status
+useWebSocket('/ws/logs')           // Streaming logs
+useWebSocket('/ws/metrics')        // Live metrics
 ```
-WebSocket Connection (optional)
-    │
-    ├─→ /ws/notifications → Real-time notifications
-    ├─→ /ws/deployments   → Live deployment logs
-    └─→ /ws/metrics       → Real-time monitoring data
+
+---
+
+### Landing Page Structure (Porter-inspired)
+
+**Sections**
+1. **Hero**: Bold headline + CTA + animated demo
+2. **Features**: 3-column grid with icons
+3. **How It Works**: Step-by-step deployment flow
+4. **Integrations**: Logos of supported platforms
+5. **Pricing**: Tiered pricing cards
+6. **CTA**: Final call-to-action
+7. **Footer**: Links + social
+
+**Hero Example**
+```
+Deploy production infrastructure in minutes
+[Get Started] [View Demo]
+[Animated terminal showing deployment]
 ```
 
 ---
@@ -306,6 +571,400 @@ WebSocket Connection (optional)
 5. Add real-time notifications
 6. Integrate payment flow
 7. Add monitoring dashboard (Grafana embed)
+
+---
+
+## Key Component Examples
+
+### 1. Metric Card Component
+```tsx
+// components/dashboard/metric-card.tsx
+import { motion } from 'framer-motion'
+import { Card } from '@/components/ui/card'
+import { LucideIcon } from 'lucide-react'
+
+interface MetricCardProps {
+  title: string
+  value: string
+  change: number
+  icon: LucideIcon
+}
+
+export function MetricCard({ title, value, change, icon: Icon }: MetricCardProps) {
+  return (
+    <motion.div whileHover={{ y: -4 }} transition={{ duration: 0.2 }}>
+      <Card className="bg-[#141414] border-[#262626] p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-[#a3a3a3]">{title}</p>
+            <h3 className="text-2xl font-semibold mt-2">{value}</h3>
+            <p className={`text-sm mt-1 ${change >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              {change >= 0 ? '+' : ''}{change}% from last week
+            </p>
+          </div>
+          <Icon className="w-8 h-8 text-purple-500" />
+        </div>
+      </Card>
+    </motion.div>
+  )
+}
+```
+
+### 2. Deployment Card Component
+```tsx
+// components/dashboard/deployment-card.tsx
+import { motion } from 'framer-motion'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Activity, GitBranch } from 'lucide-react'
+
+interface DeploymentCardProps {
+  name: string
+  status: 'running' | 'deploying' | 'failed'
+  branch: string
+  lastDeploy: string
+}
+
+export function DeploymentCard({ name, status, branch, lastDeploy }: DeploymentCardProps) {
+  const statusColors = {
+    running: 'bg-green-500/10 text-green-500',
+    deploying: 'bg-yellow-500/10 text-yellow-500',
+    failed: 'bg-red-500/10 text-red-500'
+  }
+
+  return (
+    <motion.div
+      whileHover={{ scale: 1.02 }}
+      transition={{ duration: 0.2 }}
+    >
+      <Card className="bg-[#141414] border-[#262626] p-4 cursor-pointer hover:bg-[#1a1a1a]">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="font-semibold">{name}</h4>
+          <Badge className={statusColors[status]}>{status}</Badge>
+        </div>
+        <div className="flex items-center gap-4 text-sm text-[#a3a3a3]">
+          <div className="flex items-center gap-1">
+            <GitBranch className="w-4 h-4" />
+            <span>{branch}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <Activity className="w-4 h-4" />
+            <span>{lastDeploy}</span>
+          </div>
+        </div>
+      </Card>
+    </motion.div>
+  )
+}
+```
+
+### 3. Log Viewer Component
+```tsx
+// components/dashboard/log-viewer.tsx
+import { Card } from '@/components/ui/card'
+import { useEffect, useRef } from 'react'
+
+interface LogViewerProps {
+  logs: string[]
+  isStreaming?: boolean
+}
+
+export function LogViewer({ logs, isStreaming }: LogViewerProps) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [logs])
+
+  return (
+    <Card className="bg-[#0a0a0a] border-[#262626] p-4">
+      <div
+        ref={scrollRef}
+        className="h-96 overflow-y-auto font-mono text-sm text-[#a3a3a3] space-y-1"
+      >
+        {logs.map((log, i) => (
+          <div key={i} className="hover:bg-[#141414] px-2 py-1 rounded">
+            <span className="text-[#666] mr-3">{i + 1}</span>
+            {log}
+          </div>
+        ))}
+        {isStreaming && (
+          <div className="flex items-center gap-2 px-2 py-1">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+            <span className="text-green-500">Streaming...</span>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+```
+
+### 4. Sidebar Navigation
+```tsx
+// components/layout/sidebar.tsx
+'use client'
+import { motion } from 'framer-motion'
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
+import { Home, Server, Rocket, Settings, CreditCard } from 'lucide-react'
+
+const navItems = [
+  { href: '/dashboard', icon: Home, label: 'Dashboard' },
+  { href: '/infrastructures', icon: Server, label: 'Infrastructure' },
+  { href: '/applications', icon: Rocket, label: 'Applications' },
+  { href: '/billing', icon: CreditCard, label: 'Billing' },
+  { href: '/settings', icon: Settings, label: 'Settings' },
+]
+
+export function Sidebar() {
+  const pathname = usePathname()
+
+  return (
+    <aside className="w-64 bg-[#0a0a0a] border-r border-[#262626] h-screen sticky top-0">
+      <div className="p-6">
+        <h1 className="text-xl font-bold bg-gradient-to-r from-purple-500 to-blue-500 bg-clip-text text-transparent">
+          Launchpad
+        </h1>
+      </div>
+      <nav className="px-3">
+        {navItems.map((item) => {
+          const isActive = pathname === item.href
+          return (
+            <Link key={item.href} href={item.href}>
+              <motion.div
+                whileHover={{ x: 4 }}
+                className={`flex items-center gap-3 px-3 py-2 rounded-lg mb-1 transition-colors ${
+                  isActive
+                    ? 'bg-purple-500/10 text-purple-500'
+                    : 'text-[#a3a3a3] hover:bg-[#141414] hover:text-white'
+                }`}
+              >
+                <item.icon className="w-5 h-5" />
+                <span className="font-medium">{item.label}</span>
+              </motion.div>
+            </Link>
+          )
+        })}
+      </nav>
+    </aside>
+  )
+}
+```
+
+### 5. Header Component
+```tsx
+// components/layout/header.tsx
+'use client'
+import { Search, Bell, User } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+
+export function Header() {
+  return (
+    <header className="h-16 border-b border-[#262626] bg-[#0a0a0a] sticky top-0 z-50">
+      <div className="flex items-center justify-between h-full px-6">
+        <div className="flex items-center gap-4 flex-1 max-w-xl">
+          <Search className="w-5 h-5 text-[#a3a3a3]" />
+          <Input
+            placeholder="Search services, deployments..."
+            className="bg-[#141414] border-[#262626] focus:border-purple-500"
+          />
+        </div>
+        
+        <div className="flex items-center gap-4">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-[#a3a3a3]">
+                Production
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem>Production</DropdownMenuItem>
+              <DropdownMenuItem>Staging</DropdownMenuItem>
+              <DropdownMenuItem>Development</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <Button variant="ghost" size="icon" className="relative">
+            <Bell className="w-5 h-5" />
+            <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
+          </Button>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon">
+                <User className="w-5 h-5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem>Profile</DropdownMenuItem>
+              <DropdownMenuItem>Settings</DropdownMenuItem>
+              <DropdownMenuItem>Logout</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    </header>
+  )
+}
+```
+
+### 6. Landing Page Hero
+```tsx
+// components/marketing/hero.tsx
+'use client'
+import { motion } from 'framer-motion'
+import { Button } from '@/components/ui/button'
+import { ArrowRight, Play } from 'lucide-react'
+import Link from 'next/link'
+
+export function Hero() {
+  return (
+    <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+      {/* Gradient background */}
+      <div className="absolute inset-0 bg-gradient-to-br from-purple-900/20 via-transparent to-blue-900/20" />
+      
+      <div className="container mx-auto px-6 relative z-10">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="text-center max-w-4xl mx-auto"
+        >
+          <h1 className="text-6xl font-bold mb-6 bg-gradient-to-r from-white via-purple-200 to-blue-200 bg-clip-text text-transparent">
+            Deploy production infrastructure in minutes
+          </h1>
+          <p className="text-xl text-[#a3a3a3] mb-8 max-w-2xl mx-auto">
+            Build, deploy, and scale your applications with zero DevOps overhead.
+            From code to production in one click.
+          </p>
+          
+          <div className="flex items-center justify-center gap-4">
+            <Link href="/register">
+              <Button size="lg" className="bg-purple-600 hover:bg-purple-700">
+                Get Started <ArrowRight className="ml-2 w-4 h-4" />
+              </Button>
+            </Link>
+            <Button size="lg" variant="outline" className="border-[#262626]">
+              <Play className="mr-2 w-4 h-4" /> View Demo
+            </Button>
+          </div>
+        </motion.div>
+
+        {/* Animated terminal demo */}
+        <motion.div
+          initial={{ opacity: 0, y: 40 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8, delay: 0.2 }}
+          className="mt-16 max-w-4xl mx-auto"
+        >
+          <div className="bg-[#0a0a0a] border border-[#262626] rounded-lg overflow-hidden">
+            <div className="bg-[#141414] px-4 py-2 flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full bg-red-500" />
+              <div className="w-3 h-3 rounded-full bg-yellow-500" />
+              <div className="w-3 h-3 rounded-full bg-green-500" />
+            </div>
+            <div className="p-6 font-mono text-sm">
+              <div className="text-green-500">$ launchpad deploy</div>
+              <div className="text-[#a3a3a3] mt-2">→ Building application...</div>
+              <div className="text-[#a3a3a3]">→ Provisioning infrastructure...</div>
+              <div className="text-[#a3a3a3]">→ Deploying to production...</div>
+              <div className="text-green-500 mt-2">✓ Deployed successfully!</div>
+              <div className="text-purple-500">https://your-app.launchpad.dev</div>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    </section>
+  )
+}
+```
+
+---
+
+## Setup Instructions
+
+### 1. Initialize Next.js Project
+```bash
+npx create-next-app@latest launchpad-frontend --typescript --tailwind --app
+cd launchpad-frontend
+```
+
+### 2. Install Dependencies
+```bash
+# UI Components
+npx shadcn-ui@latest init
+npx shadcn-ui@latest add button card input table dialog dropdown-menu tabs toast skeleton badge
+
+# Additional packages
+npm install framer-motion lucide-react recharts zustand
+npm install @radix-ui/react-dropdown-menu @radix-ui/react-dialog
+npm install axios date-fns clsx tailwind-merge
+```
+
+### 3. Configure Fonts (app/layout.tsx)
+```tsx
+import { Inter } from 'next/font/google'
+import localFont from 'next/font/local'
+
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter' })
+const jetbrainsMono = localFont({
+  src: '../public/fonts/JetBrainsMono-Regular.woff2',
+  variable: '--font-jetbrains-mono'
+})
+```
+
+### 4. Tailwind Config
+```js
+// tailwind.config.ts
+module.exports = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        background: '#0a0a0a',
+        surface: '#141414',
+        border: '#262626',
+      },
+      fontFamily: {
+        sans: ['var(--font-inter)'],
+        mono: ['var(--font-jetbrains-mono)'],
+      },
+    },
+  },
+}
+```
+
+### 5. Environment Variables
+```bash
+# .env.local
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_WS_URL=ws://localhost:8000
+```
+
+---
+
+## Implementation Roadmap
+
+1. **Setup Project**: Initialize Next.js with TypeScript + Tailwind
+2. **Install shadcn/ui**: Add all required UI components
+3. **Build Landing Page**: Porter-inspired hero, features, pricing
+4. **Implement Auth**: Login/register pages with GitHub OAuth
+5. **Create Dashboard Layout**: Sidebar + header + protected routes
+6. **Build Core Pages**: Infrastructure, applications, deployments
+7. **Add Real-time Features**: WebSocket for logs/metrics/notifications
+8. **Integrate API**: Connect all pages to gateway service
+9. **Add Animations**: Framer Motion page transitions and interactions
+10. **Testing & Deploy**: E2E tests, deploy to Vercel
 
 
 ### 2. Dashboard - View Infrastructures
