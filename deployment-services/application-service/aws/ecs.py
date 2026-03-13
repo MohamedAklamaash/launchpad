@@ -40,7 +40,6 @@ class ECSClient:
         
         memory_str = str(int(memory * 1024))
         
-        # Create NGINX config for path stripping
         nginx_config = self._generate_nginx_config(app_name, container_port) if app_name else None
         
         container_definitions = []
