@@ -58,7 +58,7 @@ def main():
             # Acquire lock
             if not InfraQueue.acquire_db_lock(infra_id, WORKER_ID):
                 logger.warning(f"Could not acquire lock for {infra_id}, skipping")
-                InfraQueue.release_lock(infra_id)
+                # Don't release Redis lock - let it expire naturally to prevent race condition
                 continue
             
             try:
@@ -92,8 +92,8 @@ def main():
                         infra.name,
                         str(e)
                     )
-                except:
-                    pass
+                except Exception as notify_error:
+                    logger.error(f"Failed to send failure notification: {notify_error}")
             finally:
                 InfraQueue.release_db_lock(infra_id)
                 InfraQueue.release_lock(infra_id)
@@ -144,8 +144,8 @@ def main():
                         infra.name,
                         str(e)
                     )
-                except:
-                    pass
+                except Exception as notify_error:
+                    logger.error(f"Failed to send failure notification: {notify_error}")
     
     logger.info(f"Worker {WORKER_ID} stopped")
 

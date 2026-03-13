@@ -1,9 +1,21 @@
 import boto3
+from botocore.config import Config
 import logging
+import os
 from datetime import datetime, timezone
 from api.common.envs.application import app_config
 
 logger = logging.getLogger(__name__)
+
+# Boto3 retry configuration
+BOTO3_CONFIG = Config(
+    retries={
+        'max_attempts': int(os.environ.get('AWS_MAX_RETRY_ATTEMPTS', '10')),
+        'mode': os.environ.get('AWS_RETRY_MODE', 'adaptive')
+    },
+    connect_timeout=int(os.environ.get('AWS_CONNECT_TIMEOUT', '10')),
+    read_timeout=int(os.environ.get('AWS_READ_TIMEOUT', '60'))
+)
 
 def create_boto3_session(infrastructure):
     metadata = infrastructure.metadata or {}
@@ -28,6 +40,10 @@ def create_boto3_session(infrastructure):
         aws_session_token=metadata.get('aws_session_token'),
         region_name=metadata.get('aws_region', 'us-west-2')
     )
+
+def get_boto3_config():
+    """Get boto3 configuration with retry logic"""
+    return BOTO3_CONFIG
 
 def _refresh_credentials(infrastructure):
     """Refresh expired AWS credentials by assuming role again."""    

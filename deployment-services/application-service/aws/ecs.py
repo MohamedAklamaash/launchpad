@@ -1,12 +1,16 @@
 import boto3
 import logging
 import base64
+import os
 
 logger = logging.getLogger(__name__)
 
 class ECSClient:
     def __init__(self, session):
         self.client = session.client('ecs')
+        self.health_check_grace_period = int(os.environ.get('ECS_HEALTH_CHECK_GRACE_PERIOD', '120'))
+        self.service_stable_timeout = int(os.environ.get('ECS_SERVICE_STABLE_TIMEOUT', '300'))
+        self.service_stable_poll_interval = int(os.environ.get('ECS_SERVICE_STABLE_POLL_INTERVAL', '10'))
     
     def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None):
         env_vars = [{'name': k, 'value': str(v)} for k, v in (envs or {}).items()]
@@ -36,7 +40,6 @@ class ECSClient:
         
         memory_str = str(int(memory * 1024))
         
-        # Create NGINX config for path stripping
         nginx_config = self._generate_nginx_config(app_name, container_port) if app_name else None
         
         container_definitions = []
@@ -218,7 +221,7 @@ http {{
                     'containerName': lb_container_name,
                     'containerPort': lb_container_port
                 }],
-                healthCheckGracePeriodSeconds=120  # Give app 2 minutes to start
+                healthCheckGracePeriodSeconds=self.health_check_grace_period
             )
             return response['service']['serviceArn']
         except Exception as e:
@@ -232,9 +235,12 @@ http {{
                     return response['services'][0]['serviceArn']
             raise
     
-    def wait_for_service_stable(self, cluster_arn, service_name, timeout=300):
+    def wait_for_service_stable(self, cluster_arn, service_name, timeout=None):
         """Wait for ECS service to become stable"""
         import time
+        if timeout is None:
+            timeout = self.service_stable_timeout
+        
         logger.info(f"Waiting for service {service_name} to become stable...")
         start_time = time.time()
         
@@ -258,6 +264,6 @@ http {{
                 return True
             
             logger.info(f"Service {service_name}: {running_count}/{desired_count} tasks running, waiting...")
-            time.sleep(10)
+            time.sleep(self.service_stable_poll_interval)
         
         raise Exception(f"Service {service_name} did not become stable within {timeout} seconds")
