@@ -6,6 +6,9 @@ from api.services.application_cleanup_service import ApplicationCleanupService
 from api.services.infrastructure_permissions import InfrastructurePermissions
 from shared.resilience.http_client import ResilientHttpClient
 from django.db import transaction
+from django.db import transaction
+from api.services.deployment_queue import DeploymentQueue
+
 import os
 
 import logging
@@ -113,6 +116,9 @@ class ApplicationService:
         data["user"] = user
         app = self.app_repo.create(data)
         
+        app_id_str = str(app.id)
+        transaction.on_commit(lambda: DeploymentQueue.enqueue_deployment(app_id_str))
+
         # Publish event
         from api.messaging.producer.producer import ApplicationEventProducer
         ApplicationEventProducer.publish_application_created(
@@ -128,9 +134,12 @@ class ApplicationService:
     def get_application_details(self, user_id: str, app_id: str):
         """Get details of a specific application if user is authorized."""
         app = self.app_repo.get_by_id(app_id)
-        if app and str(app.user_id) == str(user_id):
-            return app
-        return None
+        if not app:
+            return None
+        infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
+        if not infra or not InfrastructurePermissions.can_view_application(infra, user_id):
+            return None
+        return app
 
     def delete_application(self, user_id: str, app_id: str):
         """Delete an application if user has permission."""
@@ -184,9 +193,16 @@ class ApplicationService:
             raise PermissionError("You don't have permission to update applications. Required role: SUPER_ADMIN or ADMIN")
         
         # Validate updatable fields
-        allowed_fields = ['description', 'envs', 'alloted_cpu', 'alloted_memory', 'port']
+        allowed_fields = ['name', 'description', 'envs', 'alloted_cpu', 'alloted_memory', 'port']
         update_fields = []
-        
+
+        if 'name' in update_data:
+            new_name = update_data['name'].strip()
+            if not new_name:
+                raise ValueError("Name cannot be empty")
+            app.name = new_name
+            update_fields.append('name')
+
         if 'description' in update_data:
             app.description = update_data['description']
             update_fields.append('description')
@@ -233,7 +249,17 @@ class ApplicationService:
             app.alloted_memory = new_mem
             update_fields.extend(['alloted_cpu', 'alloted_memory'])
         
+        if 'project_branch' in update_data:
+            app.project_branch = update_data['project_branch'].strip() or app.project_branch
+            update_fields.append('project_branch')
+
+        if 'dockerfile_path' in update_data:
+            app.dockerfile_path = update_data['dockerfile_path'].strip() or app.dockerfile_path
+            update_fields.append('dockerfile_path')
+
         if update_fields:
             app.save(update_fields=update_fields)
-        
+            from api.messaging.producer.producer import ApplicationEventProducer
+            ApplicationEventProducer.publish_application_updated(app)
+
         return app

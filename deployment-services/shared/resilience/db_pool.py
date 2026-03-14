@@ -4,11 +4,13 @@ from typing import Dict, Any
 def get_db_pool_config(db_config: Any, conn_max_age: int = None) -> Dict[str, Any]:
     """
     Returns a Django DATABASE configuration dictionary with pooling enabled.
+    conn_max_age=0 for worker processes (close after each use),
+    conn_max_age=600 for web processes (persistent connections).
     """
     if conn_max_age is None:
-        conn_max_age = int(os.environ.get("DB_CONN_MAX_AGE", 600))
-        
-    return {
+        conn_max_age = int(os.environ.get("DB_CONN_MAX_AGE", 0))
+
+    config: Dict[str, Any] = {
         "ENGINE": "django.db.backends.postgresql",
         "NAME": db_config.name,
         "USER": db_config.user_name,
@@ -16,8 +18,12 @@ def get_db_pool_config(db_config: Any, conn_max_age: int = None) -> Dict[str, An
         "HOST": db_config.host,
         "PORT": db_config.port,
         "CONN_MAX_AGE": conn_max_age,
+        "CONN_HEALTH_CHECKS": True,
         "OPTIONS": {
             "sslmode": "require" if getattr(db_config, 'ssl', False) else "disable",
             "connect_timeout": 10,
+            # Limit connections at the psycopg2 level
+            "options": "-c statement_timeout=30000",
         },
     }
+    return config

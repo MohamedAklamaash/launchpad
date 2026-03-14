@@ -1,16 +1,18 @@
 #!/usr/bin/env python
 import os
 import sys
-import django
 import logging
 import signal
 import uuid
 
-# Setup Django
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
+os.environ['DB_CONN_MAX_AGE'] = '0'
+
+import django
 django.setup()
 
+from django.db import connections
 from api.services.infra_queue import InfraQueue
 from api.services.terraform_worker import TerraformWorker
 from api.services.notification import NotificationService
@@ -28,6 +30,11 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
+
+def close_db():
+    for conn in connections.all():
+        conn.close()
 
 
 def main():
@@ -97,6 +104,7 @@ def main():
             finally:
                 InfraQueue.release_db_lock(infra_id)
                 InfraQueue.release_lock(infra_id)
+                close_db()
         
         # Check destroy queue
         job = InfraQueue.dequeue_destroy(timeout=1)
@@ -146,6 +154,8 @@ def main():
                     )
                 except Exception as notify_error:
                     logger.error(f"Failed to send failure notification: {notify_error}")
+            finally:
+                close_db()
     
     logger.info(f"Worker {WORKER_ID} stopped")
 

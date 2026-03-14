@@ -1,8 +1,8 @@
 import logging
 from api.models.application import Application
+from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from aws.session import create_boto3_session
-import boto3
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,13 @@ class ApplicationSleepService:
     
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
-    
+
+    def _get_cluster_arn(self, infra):
+        env = Environment.objects.filter(infrastructure=infra).first()
+        if not env or not env.cluster_arn:
+            raise ValueError("Infrastructure environment not found or cluster_arn missing")
+        return env.cluster_arn
+
     def sleep_application(self, application: Application):
         """Put application to sleep by scaling ECS service to 0 tasks."""
         if application.status != 'ACTIVE':
@@ -28,12 +34,13 @@ class ApplicationSleepService:
         if not infra:
             raise ValueError("Infrastructure not found")
         
+        cluster_arn = self._get_cluster_arn(infra)
         session = create_boto3_session(infra)
         ecs = session.client('ecs')
         
         try:
             response = ecs.describe_services(
-                cluster=infra.metadata['cluster_arn'],
+                cluster=cluster_arn,
                 services=[application.service_arn]
             )
             
@@ -43,7 +50,7 @@ class ApplicationSleepService:
             current_count = response['services'][0]['desiredCount']
             
             ecs.update_service(
-                cluster=infra.metadata['cluster_arn'],
+                cluster=cluster_arn,
                 service=application.service_arn,
                 desiredCount=0
             )
@@ -71,6 +78,7 @@ class ApplicationSleepService:
         if not infra:
             raise ValueError("Infrastructure not found")
         
+        cluster_arn = self._get_cluster_arn(infra)
         session = create_boto3_session(infra)
         ecs = session.client('ecs')
         
@@ -78,7 +86,7 @@ class ApplicationSleepService:
             restore_count = application.desired_count if application.desired_count > 0 else 1
             
             ecs.update_service(
-                cluster=infra.metadata['cluster_arn'],
+                cluster=cluster_arn,
                 service=application.service_arn,
                 desiredCount=restore_count
             )

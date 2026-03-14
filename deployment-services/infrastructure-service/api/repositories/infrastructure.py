@@ -14,10 +14,10 @@ class InfrastructureRepository:
         ).distinct()
 
     def get_by_id(self, user_id, infra_id) -> Optional[Infrastructure]:
-        try:
-            return Infrastructure.objects.get(user_id=user_id, id=infra_id)
-        except Infrastructure.DoesNotExist:
-            return None
+        return Infrastructure.objects.filter(
+            Q(user_id=user_id) | Q(invited_users__id=user_id),
+            id=infra_id
+        ).distinct().first()
 
     def create(self, user_id, infra_data) -> Infrastructure:
         try:

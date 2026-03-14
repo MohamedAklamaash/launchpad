@@ -33,7 +33,7 @@ class InfrastructureResponse:
     metadata: Optional[Dict[str, Any]]
     created_at: datetime
     updated_at: datetime
-    invited_users: List[UUID]
+    invited_users: List[Any]  # list of dicts with id, email, user_name, role
 
     def to_dict(self):
         data = asdict(self)
@@ -41,7 +41,7 @@ class InfrastructureResponse:
         data['user_id'] = str(self.user_id)
         data['created_at'] = self.created_at.isoformat()
         data['updated_at'] = self.updated_at.isoformat()
-        data['invited_users'] = [str(uid) for uid in self.invited_users]
+        data['invited_users'] = self.invited_users  # already serialized dicts
         data['metadata'] = self.metadata
         data['max_cpu'] = self.max_cpu
         data['max_memory'] = self.max_memory

@@ -192,7 +192,8 @@ http {{
                         cluster=cluster_arn,
                         service=service_name,
                         taskDefinition=task_definition_arn,
-                        desiredCount=1
+                        desiredCount=1,
+                        forceNewDeployment=True,
                     )
                     return existing_service['serviceArn']
             except Exception as e:

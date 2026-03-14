@@ -124,7 +124,23 @@ class InfrastructureService:
         
         return self.repo.delete(user_id, infra_id)
 
-    def update_infrastructure(self, user_id, infra_id, update_data):
+    def remove_invited_user(self, owner_id, infra_id, target_user_id):
+        """Remove an invited user from an infrastructure. Delete user if they belong to no other infra."""
+        from api.models.user import User
+        infra = self.repo.get_by_id(owner_id, infra_id)
+        if not infra:
+            return False
+        if str(infra.user_id) != str(owner_id):
+            raise PermissionError("Only the infrastructure owner can remove users")
+        try:
+            target_user = User.objects.get(id=target_user_id)
+        except User.DoesNotExist:
+            return False
+        infra.invited_users.remove(target_user)
+        # Delete user if they no longer belong to any infrastructure
+        if not target_user.invited_infrastructures.exists():
+            target_user.delete()
+        return True
         infra = self.repo.update(user_id, infra_id, update_data)
         if infra:
             return InfrastructureSerializer.serialize_instance(infra)

@@ -58,3 +58,21 @@ def infrastructure_update(request: HttpRequest, infra_id):
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@csrf_exempt
+@api_view(['DELETE'])
+def infrastructure_remove_user(request: HttpRequest, infra_id, user_id):
+    """Remove an invited user from an infrastructure (owner only)."""
+    try:
+        success = infrastructure_service.remove_invited_user(
+            owner_id=request.user.id,
+            infra_id=infra_id,
+            target_user_id=user_id,
+        )
+        if success:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+    except PermissionError as e:
+        return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

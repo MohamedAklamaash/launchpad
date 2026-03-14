@@ -5,6 +5,15 @@ from api.types.infrastructure import InfrastructureResponse
 class InfrastructureSerializer:
     @staticmethod
     def serialize_instance(instance: Infrastructure) -> Dict[str, Any]:
+        invited_users_details = [
+            {
+                'id': str(u.id),
+                'email': u.email,
+                'user_name': u.user_name,
+                'role': u.role,
+            }
+            for u in instance.invited_users.all()
+        ]
         response = InfrastructureResponse(
             id=instance.id,
             name=instance.name,
@@ -16,7 +25,7 @@ class InfrastructureSerializer:
             metadata=instance.metadata,
             created_at=instance.created_at,
             updated_at=instance.updated_at,
-            invited_users=list(instance.invited_users.values_list('id', flat=True))
+            invited_users=invited_users_details,
         )
         return response.to_dict()
 

@@ -6,6 +6,7 @@ logger = logging.getLogger(__name__)
 
 class CodeBuildClient:
     def __init__(self, session):
+        self._session = session
         self.client = session.client('codebuild')
     
     def ensure_project_exists(self, project_name, service_role_arn, region):
@@ -53,31 +54,27 @@ class CodeBuildClient:
 phases:
   pre_build:
     commands:
-      - echo "Build started on $(date)"
-      - echo "Logging in to Amazon ECR..."
-      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $(echo $ECR_URL | cut -d'/' -f1)
-      - echo "Cloning repository $REPO_URL..."
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$(echo "$ECR_URL" | cut -d'/' -f1)"
       - |
         if [ -n "$GITHUB_TOKEN" ]; then
-          git clone https://$GITHUB_TOKEN@$(echo $REPO_URL | sed 's|https://||') repo
+          git clone "https://$GITHUB_TOKEN@$(echo "$REPO_URL" | sed 's|https://||')" repo
         else
-          git clone $REPO_URL repo
+          git clone "$REPO_URL" repo
         fi
       - cd repo
-      - echo "Checking out $BRANCH at $COMMIT_HASH..."
-      - git checkout $COMMIT_HASH || git checkout $BRANCH
-      - ls -la
+      - |
+        if [ -n "$COMMIT_HASH" ] && [ "$COMMIT_HASH" != "None" ] && [ "$COMMIT_HASH" != "null" ]; then
+          git checkout "$COMMIT_HASH" || { echo "ERROR: Commit $COMMIT_HASH not found"; exit 1; }
+        else
+          git checkout "$BRANCH" || { echo "ERROR: Branch '$BRANCH' not found in repository"; exit 1; }
+        fi
   build:
     commands:
-      - echo "Building Docker image from $DOCKERFILE_PATH..."
-      - docker build -f $DOCKERFILE_PATH -t $APP_NAME:latest . || exit 1
-      - echo "Tagging image..."
-      - docker tag $APP_NAME:latest $ECR_URL:$APP_NAME-latest || exit 1
+      - docker build -f "$DOCKERFILE_PATH" -t "$APP_NAME:latest" .
+      - docker tag "$APP_NAME:latest" "$ECR_URL:$APP_NAME-latest"
   post_build:
     commands:
-      - echo "Build completed on $(date)"
-      - echo "Pushing Docker image to ECR..."
-      - docker push $ECR_URL:$APP_NAME-latest || exit 1
+      - docker push "$ECR_URL:$APP_NAME-latest"
       - echo "Image pushed successfully"
 '''
     
@@ -122,34 +119,38 @@ phases:
         if not response['builds']:
             return None
         build = response['builds'][0]
-        
-        # Try to fetch recent logs to detect specific errors
-        log_tail = None
-        try:
-            logs_info = build.get('logs', {})
-            if logs_info.get('groupName') and logs_info.get('streamName'):
-                logs_client = self.client._client_config.__dict__.get('_user_provided_options', {}).get('region_name')
-                import boto3
-                logs = boto3.client('logs', region_name=self.client.meta.region_name)
-                
-                log_response = logs.get_log_events(
-                    logGroupName=logs_info['groupName'],
-                    logStreamName=logs_info['streamName'],
-                    limit=50,
-                    startFromHead=False
-                )
-                
-                if log_response.get('events'):
-                    log_tail = '\n'.join([e['message'] for e in log_response['events'][-10:]])
-        except Exception as e:
-            logger.debug(f"Could not fetch log tail: {e}")
-        
         return {
             'status': build['buildStatus'],
             'phase': build.get('currentPhase', ''),
-            'logs': build.get('logs', {}).get('deepLink', ''),
-            'log_tail': log_tail
+            'logs': build.get('logs', {}),
         }
+
+    def _get_build_error(self, logs_info):
+        """Fetch logs and return the most relevant error lines."""
+        try:
+            if not (logs_info.get('groupName') and logs_info.get('streamName')):
+                return None
+            logs = self._session.client('logs')
+            paginator = logs.get_paginator('filter_log_events')
+            all_messages = []
+            for page in paginator.paginate(
+                logGroupName=logs_info['groupName'],
+                logStreamNames=[logs_info['streamName']],
+            ):
+                all_messages.extend(e['message'] for e in page.get('events', []))
+
+            # Find error lines
+            error_lines = [l for l in all_messages if any(
+                kw in l.lower() for kw in ('error', 'fatal', 'failed', 'not found', 'exit status')
+            )]
+            if error_lines:
+                return '\n'.join(error_lines[-10:])
+            # Fallback: last 10 non-empty lines
+            non_empty = [l for l in all_messages if l.strip()]
+            return '\n'.join(non_empty[-10:]) if non_empty else None
+        except Exception as e:
+            logger.debug(f"Could not fetch build logs: {e}")
+            return None
     
     def wait_for_build(self, build_id, timeout=1800):
         start_time = time.time()
@@ -163,26 +164,25 @@ phases:
             if status['status'] == 'SUCCEEDED':
                 return True
             elif status['status'] in ['FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED']:
+                log_tail = self._get_build_error(status['logs'])
                 error_msg = f"Build failed with status: {status['status']}"
-                if status.get('logs'):
-                    error_msg += f"\nLogs: {status['logs']}"
-                
-                # Check log content for specific errors
-                log_tail = status.get('log_tail', '')
+
                 if log_tail:
-                    if '429 Too Many Requests' in log_tail or 'toomanyrequests' in log_tail.lower():
-                        error_msg += (
-                            "\n\n Docker Hub Rate Limit Exceeded!"
-                            "\n\nYour Dockerfile is pulling from Docker Hub (docker.io) which has rate limits."
-                            "\n\nFix: Update your Dockerfile to use ECR Public Gallery:"
-                            "\n  FROM python:3.11-slim"
-                            "\n FROM public.ecr.aws/docker/library/python:3.11-slim"
-                            "\n\n FROM node:21-alpine"
-                            "\n FROM public.ecr.aws/docker/library/node:21-alpine"
-                            "\n\n FROM nginx:alpine"
-                            "\n FROM public.ecr.aws/docker/library/nginx:alpine"
+                    if 'toomanyrequests' in log_tail.lower() or '429' in log_tail:
+                        error_msg = (
+                            "Docker Hub rate limit exceeded. "
+                            "Update your Dockerfile to use ECR Public Gallery images "
+                            "(e.g. public.ecr.aws/docker/library/python:3.11-slim)."
                         )
-                
+                    else:
+                        # Surface the last meaningful error lines
+                        error_lines = [l for l in log_tail.splitlines() if l.strip()]
+                        error_msg += "\n\n" + '\n'.join(error_lines[-10:])
+
+                deep_link = status['logs'].get('deepLink', '')
+                if deep_link:
+                    error_msg += f"\n\nFull logs: {deep_link}"
+
                 logger.error(error_msg)
                 raise Exception(error_msg)
             

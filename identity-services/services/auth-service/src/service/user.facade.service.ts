@@ -6,6 +6,7 @@ import { GithubCallbackInput, GithubUserUpsertInput } from "@/types/auth.user.ty
 import { PublishUserRegistered } from "@/messaging/producer/user-created.message";
 import { BaseService } from "@/service/invited-users/invited-user.base.service";
 import { USER_ROLE } from "@/types/auth.invited_user.types";
+import { verifyAccessToken } from "@/utils/handle-token";
 
 export class UserFacadeService extends BaseService {
     private clientId = env.GITHUB_CLIENT_ID;
@@ -14,6 +15,27 @@ export class UserFacadeService extends BaseService {
 
     public getAuthUrl(): string {
         return `https://github.com/login/oauth/authorize?client_id=${this.clientId}&redirect_uri=${this.redirectUri}&scope=repo%20read:org`;
+    }
+
+    public async getUserFromToken(token: string) {
+        const payload = verifyAccessToken(token);
+        const user = await User.findByPk(payload.sub);
+        
+        if (!user) {
+            throw new Error("User not found");
+        }
+
+        return {
+            id: user.id,
+            email: user.email,
+            user_name: user.user_name,
+            role: user.role,
+            profile_url: user.profile_url,
+            infra_id: user.infra_id || [],
+            metadata: user.metadata,
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+        };
     }
 
     public async handleCallback(input: GithubCallbackInput) {

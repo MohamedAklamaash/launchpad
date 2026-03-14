@@ -17,7 +17,7 @@ export interface InvitedUserRegisterInput {
 export interface InvitedUserLoginInput {
     email: string;
     password: string;
-    infra_id: string; // a user can belong to multiple infras but they can join into an infra one by one
+    infra_id?: string;
 }
 
 export interface AuthenticateUserInput {
@@ -41,6 +41,9 @@ export interface AuthTokens {
 
 export interface AuthResponse extends AuthTokens {
     user: UserData;
+    // snake_case aliases for frontend compatibility
+    access_token?: string;
+    refresh_token?: string;
 }
 
 export interface InvitedUserForgotPasswordInput {

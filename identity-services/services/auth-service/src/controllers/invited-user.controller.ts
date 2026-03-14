@@ -34,8 +34,8 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
 
 export const LoginUser = async (req: Request, res: Response) => {
     try {
-        const { email, password, infra_id } = req.body;
-        const authRes = await invitedUserFacade.login({ email, password, infra_id });
+        const { email, password } = req.body;
+        const authRes = await invitedUserFacade.login({ email, password });
         return res.status(200).json(authRes);
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
