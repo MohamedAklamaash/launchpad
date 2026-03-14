@@ -2,7 +2,7 @@
 
 ## Demo
 
-[![Launchpad Demo](https://cdn.loom.com/sessions/thumbnails/881f6c048cf342b6901eef9c8e7aa68a-with-play.gif)](https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a)
+▶️ **[Watch the demo](https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a)**
 
 **Deploy applications to your AWS infrastructure in minutes, not hours.**
 
