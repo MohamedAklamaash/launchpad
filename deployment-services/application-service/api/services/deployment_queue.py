@@ -1,3 +1,4 @@
+import socket
 import redis
 import json
 import logging
@@ -16,9 +17,9 @@ _pool = redis.ConnectionPool(
     socket_connect_timeout=5,
     socket_keepalive=True,
     socket_keepalive_options={
-        "TCP_KEEPIDLE": 60,
-        "TCP_KEEPINTVL": 10,
-        "TCP_KEEPCNT": 5,
+        socket.TCP_KEEPIDLE: 60,
+        socket.TCP_KEEPINTVL: 10,
+        socket.TCP_KEEPCNT: 5,
     },
     retry_on_timeout=True,
     health_check_interval=30,
