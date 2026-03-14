@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,7 +23,7 @@ const CPU_MEMORY_MAP: Record<number, number[]> = {
 const inputCls = "bg-transparent border-0 h-9 text-sm text-white placeholder:text-[#333] focus-visible:ring-0 pl-3";
 const monoInputCls = inputCls + " font-mono";
 
-export default function NewApplicationPage() {
+function NewApplicationPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const infraId = searchParams.get('infra');
@@ -204,6 +204,14 @@ export default function NewApplicationPage() {
       </form>
     </div>
     </div>
+  );
+}
+
+export default function NewApplicationPage() {
+  return (
+    <Suspense>
+      <NewApplicationPageInner />
+    </Suspense>
   );
 }
 

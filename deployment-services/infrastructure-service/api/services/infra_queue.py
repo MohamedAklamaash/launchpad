@@ -14,7 +14,17 @@ _pool = redis.ConnectionPool(
     password=settings.REDIS_PASSWORD,
     db=settings.REDIS_DB,
     decode_responses=True,
-    max_connections=10,
+    max_connections=20,
+    socket_timeout=5,
+    socket_connect_timeout=5,
+    socket_keepalive=True,
+    socket_keepalive_options={
+        "TCP_KEEPIDLE": 60,
+        "TCP_KEEPINTVL": 10,
+        "TCP_KEEPCNT": 5,
+    },
+    retry_on_timeout=True,
+    health_check_interval=30,
 )
 
 def _redis():

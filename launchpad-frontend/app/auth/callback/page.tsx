@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuthStore } from '@/lib/store/auth';
 import { authApi } from '@/lib/api/auth';
 
-export default function AuthCallback() {
+function AuthCallbackInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const setAuth = useAuthStore((state) => state.setAuth);
@@ -23,17 +23,12 @@ export default function AuthCallback() {
 
       if (accessToken && refreshToken) {
         try {
-          // Store tokens temporarily
           localStorage.setItem('access_token', accessToken);
           localStorage.setItem('refresh_token', refreshToken);
 
-          // Fetch user data
           const user = await authApi.getCurrentUser();
-          
-          // Set auth state
           setAuth(user, accessToken, refreshToken);
 
-          // Redirect to dashboard
           router.push('/dashboard');
         } catch (err) {
           console.error('Auth callback error:', err);
@@ -54,5 +49,13 @@ export default function AuthCallback() {
         <p className="text-[#a3a3a3]">Completing authentication...</p>
       </div>
     </div>
+  );
+}
+
+export default function AuthCallback() {
+  return (
+    <Suspense>
+      <AuthCallbackInner />
+    </Suspense>
   );
 }

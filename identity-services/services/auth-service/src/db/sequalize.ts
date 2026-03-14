@@ -8,7 +8,12 @@ export const sequelize = new Sequelize(
     `${env.DATABASE_HOST}:${env.DATABASE_PORT}/${env.DATABASE_NAME}`,
     {
         dialect: "postgres",
-        dialectOptions: {},
+        dialectOptions: {
+            connectTimeout: 10_000,
+            keepAlive: true,
+            statement_timeout: 60_000,
+            idle_in_transaction_session_timeout: 30_000,
+        },
         logging:
             env.NODE_ENV === "development"
                 ? (msg: string) => logger.info({ sequelize: msg })
@@ -22,6 +27,7 @@ export const sequelize = new Sequelize(
             min: env.DB_POOL_MIN,
             acquire: env.DB_POOL_ACQUIRE_MS,
             idle: env.DB_POOL_IDLE_MS,
+            evict: 1_000,        // check for idle connections every 1s
         },
     }
 );

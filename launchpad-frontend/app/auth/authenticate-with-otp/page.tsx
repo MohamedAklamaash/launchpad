@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuthStore } from '@/lib/store/auth';
 import { authApi } from '@/lib/api/auth';
 import { toast } from 'sonner';
 
-export default function AuthenticateWithOtpPage() {
+function AuthenticateWithOtpInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const setAuth = useAuthStore((s) => s.setAuth);
@@ -45,5 +45,13 @@ export default function AuthenticateWithOtpPage() {
         <p className="text-[#666] text-sm font-mono">Authenticating…</p>
       </div>
     </div>
+  );
+}
+
+export default function AuthenticateWithOtpPage() {
+  return (
+    <Suspense>
+      <AuthenticateWithOtpInner />
+    </Suspense>
   );
 }
