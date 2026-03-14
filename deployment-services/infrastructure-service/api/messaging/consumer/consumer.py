@@ -1,10 +1,11 @@
 import logging
 import json
-from django.db import transaction
+from django.db import transaction, connection
 from api.models.infrastructure import Infrastructure
 from api.repositories.user import UserRepository
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaConsumer
+from django.db.utils import OperationalError, ProgrammingError
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class AuthEventConsumer:
             return
 
         try:
+            connection.close()  # Force fresh connection — avoids stale/idle-timeout connections
             with transaction.atomic():
                 user, created = self.user_repo.upsert_user({
                     "id": user_id,
@@ -100,12 +102,14 @@ class AuthEventConsumer:
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as exc:
+            requeue = isinstance(exc, (OperationalError, ProgrammingError))
             logger.error(
-                "AuthEventConsumer: error processing auth event — NACKing with requeue",
+                "AuthEventConsumer: error processing auth event — NACKing %s",
+                "with requeue (transient)" if requeue else "without requeue (permanent)",
                 extra={"user_id": user_id, "email": email, "error": str(exc)},
                 exc_info=True,
             )
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=requeue)
 
     def start(self):
         self.consumer.start(self.callback)
