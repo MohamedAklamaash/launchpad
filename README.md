@@ -2,8 +2,7 @@
 
 ## Demo
 
-
-**Demo**: https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a
+https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a
 
 **Deploy applications to your AWS infrastructure in minutes, not hours.**
 
