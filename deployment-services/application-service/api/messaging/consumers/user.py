@@ -64,6 +64,7 @@ class AuthEventConsumer:
         role = payload.get("role")
         invited_by = payload.get("invited_by")
         metadata = payload.get("metadata", {})
+        infra_id = payload.get("infra_id", [])
 
         log.info(
             "Received auth.user.registered event",
@@ -95,6 +96,7 @@ class AuthEventConsumer:
                         "is_active": True,
                         "metadata": metadata,
                         "invited_by": invited_by,
+                        "infra_id": infra_id if isinstance(infra_id, list) else [infra_id] if infra_id else [],
                     }
                 )
 

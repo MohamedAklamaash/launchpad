@@ -16,7 +16,7 @@ const envSchema = z.object({
 
     AUTH_DB_URL: z.url(),
 
-    DB_POOL_MAX: z.coerce.number().default(10),
+    DB_POOL_MAX: z.coerce.number().default(25),
     DB_POOL_MIN: z.coerce.number().default(2),
     DB_POOL_ACQUIRE_MS: z.coerce.number().default(30_000),
     DB_POOL_IDLE_MS: z.coerce.number().default(10_000),

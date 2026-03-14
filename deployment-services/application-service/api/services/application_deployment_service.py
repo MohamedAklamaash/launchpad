@@ -255,8 +255,7 @@ class ApplicationDeploymentService:
         image_tag = f"{application.name}-latest"
         image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
         
-        envs = application.envs or {}
-        envs['PORT'] = str(application.port)
+        envs = {**(application.envs or {}), 'PORT': str(application.port)}
         
         task_def_arn = ecs.create_task_definition(
             family=f"{application.name}-task",

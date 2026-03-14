@@ -1,3 +1,4 @@
+import socket
 import redis
 import json
 import logging
@@ -8,13 +9,27 @@ from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
-redis_client = redis.Redis(
+_pool = redis.ConnectionPool(
     host=settings.REDIS_HOST,
     port=settings.REDIS_PORT,
     password=settings.REDIS_PASSWORD,
     db=settings.REDIS_DB,
-    decode_responses=True
+    decode_responses=True,
+    max_connections=20,
+    socket_timeout=5,
+    socket_connect_timeout=5,
+    socket_keepalive=True,
+    socket_keepalive_options={
+        socket.TCP_KEEPIDLE: 60,
+        socket.TCP_KEEPINTVL: 10,
+        socket.TCP_KEEPCNT: 5,
+    },
+    retry_on_timeout=True,
+    health_check_interval=30,
 )
+
+def _redis():
+    return redis.Redis(connection_pool=_pool)
 
 PROVISION_QUEUE = "infra:provision"
 DESTROY_QUEUE = "infra:destroy"
@@ -30,13 +45,13 @@ class InfraQueue:
         """Add provision job to queue (deduplicated)"""
         # Check if already in queue
         lock_key = f"{LOCK_PREFIX}{infra_id}"
-        if redis_client.exists(lock_key):
+        if _redis().exists(lock_key):
             logger.warning(f"Job {infra_id} already queued or processing, skipping")
             return False
         
         job = {"infra_id": infra_id, "action": "provision", "priority": priority}
-        redis_client.rpush(PROVISION_QUEUE, json.dumps(job))
-        redis_client.setex(lock_key, LOCK_TTL, "queued")
+        _redis().rpush(PROVISION_QUEUE, json.dumps(job))
+        _redis().setex(lock_key, LOCK_TTL, "queued")
         logger.info(f"Enqueued provision job for {infra_id}")
         return True
     
@@ -44,13 +59,13 @@ class InfraQueue:
     def enqueue_destroy(infra_id: str):
         """Add destroy job to queue"""
         job = {"infra_id": infra_id, "action": "destroy"}
-        redis_client.rpush(DESTROY_QUEUE, json.dumps(job))
+        _redis().rpush(DESTROY_QUEUE, json.dumps(job))
         logger.info(f"Enqueued destroy job for {infra_id}")
     
     @staticmethod
     def dequeue_provision(timeout: int = 5):
         """Get next provision job (blocking)"""
-        result = redis_client.blpop(PROVISION_QUEUE, timeout=timeout)
+        result = _redis().blpop(PROVISION_QUEUE, timeout=timeout)
         if result:
             _, job_data = result
             return json.loads(job_data)
@@ -59,7 +74,7 @@ class InfraQueue:
     @staticmethod
     def dequeue_destroy(timeout: int = 5):
         """Get next destroy job (blocking)"""
-        result = redis_client.blpop(DESTROY_QUEUE, timeout=timeout)
+        result = _redis().blpop(DESTROY_QUEUE, timeout=timeout)
         if result:
             _, job_data = result
             return json.loads(job_data)
@@ -69,7 +84,7 @@ class InfraQueue:
     def release_lock(infra_id: str):
         """Release job lock"""
         lock_key = f"{LOCK_PREFIX}{infra_id}"
-        redis_client.delete(lock_key)
+        _redis().delete(lock_key)
         logger.info(f"Released lock for {infra_id}")
     
     @staticmethod

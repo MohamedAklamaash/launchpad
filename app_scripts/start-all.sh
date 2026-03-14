@@ -39,7 +39,7 @@ sleep 10
 echo "Starting Gateway Service..."
 (
   cd "$ROOT_DIR/gateway-service" || exit 1
-  "$ROOT_DIR/gateway-service/venv/bin/python" app.py
+  "$ROOT_DIR/gateway-service/venv/bin/python" main.py
 ) &
 
 ########################################

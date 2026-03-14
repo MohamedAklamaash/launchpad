@@ -5,6 +5,10 @@ import { logger } from "@/utils/logger";
 
 export const sequelize = new Sequelize(env.USER_DB_URL, {
     dialect: "mysql",
+    dialectOptions: {
+        connectTimeout: 10_000,
+        keepAlive: true,
+    },
     logging: env.NODE_ENV === "development" ? (msg: unknown) => {
         logger.info({ sequelize: msg })
     } : false,
@@ -17,6 +21,7 @@ export const sequelize = new Sequelize(env.USER_DB_URL, {
         min: env.DB_POOL_MIN,
         acquire: env.DB_POOL_ACQUIRE_MS,
         idle: env.DB_POOL_IDLE_MS,
+        evict: 1_000,
     },
 })
 

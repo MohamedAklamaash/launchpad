@@ -26,7 +26,11 @@ export const createApp = (): Express => {
             "/api/v1/readiness",
             "/api/v1/healthz",
             "/api/v1/user/callback",
+            "/api/v1/user/login",
+            "/api/v1/user/me",
             "/api/user/callback",
+            "/api/user/login",
+            "/api/user/me",
             "/favicon.ico"
         ],
     }))

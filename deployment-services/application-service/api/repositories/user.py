@@ -20,7 +20,7 @@ class UserRepository:
         if not user_id:
             raise ValueError("User ID is required for upsert operation")
 
-        defaults = {k: v for k, v in user_data.items() if k != "id"}
+        defaults = {k: v for k, v in user_data.items() if k not in ("id", "infra_id")}
 
         try:
             with transaction.atomic():
@@ -28,6 +28,15 @@ class UserRepository:
                     id=user_id,
                     defaults=defaults,
                 )
+                infra_ids = user_data.get("infra_id", [])
+                if infra_ids and user_data.get("invited_by"):
+                    from api.models.infrastructure import Infrastructure
+                    for iid in infra_ids:
+                        try:
+                            infra = Infrastructure.objects.get(id=iid)
+                            infra.invited_users.add(user)
+                        except Infrastructure.DoesNotExist:
+                            pass
             action = "created" if created else "updated"
             logger.info(
                 f"User {action} in local DB",

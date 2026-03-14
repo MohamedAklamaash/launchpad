@@ -35,6 +35,13 @@ export abstract class BaseService {
                 role: user.role
             }),
             refreshToken: signRefreshToken({ sub: user.id, tokenId: refreshTokenId }),
+            access_token: signAccessToken({
+                sub: user.id,
+                email: user.email,
+                user_name: user.user_name,
+                role: user.role
+            }),
+            refresh_token: signRefreshToken({ sub: user.id, tokenId: refreshTokenId }),
         };
     }
 

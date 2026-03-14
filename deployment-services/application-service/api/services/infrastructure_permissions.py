@@ -21,7 +21,22 @@ class InfrastructurePermissions:
             )
             return role_obj.role
         except InfrastructureUserRole.DoesNotExist:
-            return None
+            pass
+
+        # Check invited_users M2M (populated for new invites via event consumer)
+        if infrastructure.invited_users.filter(id=user_id).exists():
+            return UserRole.USER
+
+        # Fallback for existing invited users: check if user was invited by the infra owner
+        from api.models.user import User
+        try:
+            user = User.objects.get(id=user_id)
+            if user.invited_by and str(user.invited_by) == str(infrastructure.user_id):
+                return UserRole.USER
+        except User.DoesNotExist:
+            pass
+
+        return None
     
     @staticmethod
     def can_create_application(infrastructure, user_id):

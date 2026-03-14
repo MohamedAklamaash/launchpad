@@ -1,5 +1,9 @@
 # Launchpad
 
+## Demo
+
+[![Launchpad Demo](https://cdn.loom.com/sessions/thumbnails/881f6c048cf342b6901eef9c8e7aa68a-with-play.gif)](https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a)
+
 **Deploy applications to your AWS infrastructure in minutes, not hours.**
 
 Launchpad is a cloud deployment platform that transforms GitHub repositories into production-ready applications running in your own AWS account. No vendor lock-in. No shared infrastructure. Complete control.
