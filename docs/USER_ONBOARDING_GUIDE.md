@@ -4,6 +4,8 @@
 
 Launchpad is a cloud deployment platform that deploys your applications into **your own AWS account**. You maintain full control and ownership of your infrastructure and data.
 
+**Demo**: [Watch the demo](https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a)
+
 ---
 
 ## Prerequisites
