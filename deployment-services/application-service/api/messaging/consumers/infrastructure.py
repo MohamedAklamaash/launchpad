@@ -1,7 +1,7 @@
 import json
 import uuid
 import logging
-from django.db import transaction, ProgrammingError, OperationalError
+from django.db import transaction, connection, ProgrammingError, OperationalError
 from django.core.exceptions import ObjectDoesNotExist
 from api.repositories.infrastructure import InfrastructureRepository
 from api.common.envs.application import app_config
@@ -81,6 +81,7 @@ class InfraEventConsumer:
             return
 
         try:
+            connection.close()
             with transaction.atomic():
                 self.infra_repo.upsert_infrastructure(
                     {
@@ -90,6 +91,8 @@ class InfraEventConsumer:
                         "cloud_provider": payload.get("cloud_provider") or "",
                         "max_cpu": payload.get("max_cpu", 0),
                         "max_memory": payload.get("max_memory", 0),
+                        "code": payload.get("code"),
+                        "is_cloud_authenticated": payload.get("is_cloud_authenticated", False),
                         "metadata": payload.get("metadata"),
                     }
                 )
@@ -184,6 +187,7 @@ class InfraUpdatedEventConsumer:
             return
 
         try:
+            connection.close()
             with transaction.atomic():
                 infra = self.infra_repo.get_infrastructure(infra_id)
                 if infra:

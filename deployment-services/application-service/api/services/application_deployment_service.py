@@ -1,5 +1,6 @@
 import logging
 import json
+import re
 from api.models import Application, Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from aws.session import create_boto3_session
@@ -12,6 +13,10 @@ from botocore.exceptions import ClientError
 import time
 
 logger = logging.getLogger(__name__)
+
+def _slug(name: str) -> str:
+    """Sanitize an app name for use in AWS resource names / Docker tags."""
+    return re.sub(r'[^a-z0-9._-]', '-', name.lower()).strip('-')
 
 class ApplicationDeploymentService:
     def __init__(self):
@@ -69,7 +74,7 @@ class ApplicationDeploymentService:
             created_resources.append(('ecs_service', service_arn))
             
             # Step 8: Wait for service to become stable
-            service_name = f"{application.name}-service"
+            service_name = f"{_slug(application.name)}-service"
             self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
             logger.info(f"Service {service_name} is stable and running")
             
@@ -77,6 +82,7 @@ class ApplicationDeploymentService:
             deployment_url = self._generate_deployment_url(application, environment)
             application.deployment_url = deployment_url
             application.status = 'ACTIVE'
+            application.error_message = None
             application.save()
             
             logger.info(f"Application {application.name} deployed successfully at {deployment_url}")
@@ -207,7 +213,7 @@ class ApplicationDeploymentService:
         # Ensure CodeBuild project exists
         codebuild.ensure_project_exists(project_name, service_role_arn, session.region_name)
         
-        image_tag = f"{application.name}-{application.version}"
+        image_tag = f"{_slug(application.name)}-latest"
         dockerfile_path = application.dockerfile_path or "Dockerfile"
         
         github_token = None
@@ -225,7 +231,7 @@ class ApplicationDeploymentService:
             branch=application.project_branch,
             commit_hash=application.project_commit_hash,
             ecr_url=environment.ecr_repository_url,
-            app_name=application.name,
+            app_name=_slug(application.name),
             dockerfile_path=dockerfile_path,
             github_token=github_token
         )
@@ -245,27 +251,27 @@ class ApplicationDeploymentService:
         logs = session.client('logs')
         
         # Create CloudWatch log group
-        log_group_name = f"/ecs/{application.name}-task"
+        log_group_name = f"/ecs/{_slug(application.name)}-task"
         try:
             logs.create_log_group(logGroupName=log_group_name)
             logger.info(f"Created log group {log_group_name}")
         except logs.exceptions.ResourceAlreadyExistsException:
             logger.info(f"Log group {log_group_name} already exists")
         
-        image_tag = f"{application.name}-latest"
+        image_tag = f"{_slug(application.name)}-latest"
         image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
         
         envs = {**(application.envs or {}), 'PORT': str(application.port)}
         
         task_def_arn = ecs.create_task_definition(
-            family=f"{application.name}-task",
+            family=f"{_slug(application.name)}-task",
             image=image_uri,
             cpu=application.alloted_cpu,
             memory=application.alloted_memory,
             envs=envs,
             execution_role_arn=environment.ecs_task_execution_role_arn,
             container_port=application.port,
-            app_name=application.name
+            app_name=_slug(application.name)
         )
         
         logger.info(f"Created task definition {task_def_arn}")
@@ -273,26 +279,26 @@ class ApplicationDeploymentService:
     
     def _create_target_group(self, session, application: Application, environment: Environment):
         alb = ALBClient(session)
-        
-        # Check if target group already exists
+
+        # Check if stored TG still exists AND is in the correct VPC
         if application.target_group_arn:
             try:
-                alb.client.describe_target_groups(TargetGroupArns=[application.target_group_arn])
-                logger.info(f"Target group {application.target_group_arn} already exists, reusing")
-                return application.target_group_arn
+                resp = alb.client.describe_target_groups(TargetGroupArns=[application.target_group_arn])
+                tg = resp['TargetGroups'][0]
+                if tg['VpcId'] == environment.vpc_id:
+                    logger.info(f"Reusing existing target group {application.target_group_arn}")
+                    return application.target_group_arn
+                else:
+                    logger.warning(f"Stored TG is in wrong VPC ({tg['VpcId']} != {environment.vpc_id}), creating new one")
             except ClientError as e:
                 if e.response['Error']['Code'] != 'TargetGroupNotFound':
                     raise
-                logger.info("Target group ARN stored but resource doesn't exist, creating new one")
-        
-        tg_name = f"{application.name}-tg"[:32]
-        # Use port 80 for NGINX sidecar
-        target_group_arn = alb.create_target_group(
-            name=tg_name,
-            vpc_id=environment.vpc_id,
-            port=80
-        )
-        
+                logger.info("Stored TG ARN no longer exists, creating new one")
+
+        # Include infra ID suffix to prevent name collisions across infrastructures
+        infra_suffix = str(application.infrastructure_id)[:8]
+        tg_name = f"{_slug(application.name)}-{infra_suffix}-tg"[:32]
+        target_group_arn = alb.create_target_group(name=tg_name, vpc_id=environment.vpc_id, port=80)
         logger.info(f"Created target group {target_group_arn}")
         return target_group_arn
     
@@ -326,29 +332,40 @@ class ApplicationDeploymentService:
             raise ValueError(f"Failed to get subnets from VPC: {e}")
         
         try:
+            # Find the ECS task security group (tagged as ecs-sg or app-sg by Terraform)
+            ecs_sg_response = ec2.describe_security_groups(
+                Filters=[
+                    {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
+                    {'Name': 'group-name', 'Values': ['*ecs*']}
+                ]
+            )
+            if not ecs_sg_response['SecurityGroups']:
+                # Fall back to any SG in the VPC that isn't the ALB SG
+                all_sgs = ec2.describe_security_groups(
+                    Filters=[{'Name': 'vpc-id', 'Values': [environment.vpc_id]}]
+                )['SecurityGroups']
+                # Prefer non-ALB SGs; fall back to all if needed
+                ecs_sgs = [sg for sg in all_sgs if 'alb' not in sg['GroupName'].lower()]
+                ecs_sg_response['SecurityGroups'] = ecs_sgs or all_sgs
+
+            security_group_ids = [sg['GroupId'] for sg in ecs_sg_response['SecurityGroups']]
+            if not security_group_ids:
+                raise ValueError(f"No security groups found in VPC {environment.vpc_id}")
+
+            # Also find ALB SG to allow ingress from ALB → ECS tasks on port 80
             alb_sg_response = ec2.describe_security_groups(
                 Filters=[
                     {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
-                    {'Name': 'group-name', 'Values': ['*alb-sg*']}
+                    {'Name': 'group-name', 'Values': ['*alb*']}
                 ]
             )
-            
-            if not alb_sg_response['SecurityGroups']:
-                alb_sg_response = ec2.describe_security_groups(
-                    Filters=[{'Name': 'vpc-id', 'Values': [environment.vpc_id]}]
-                )
-            
-            security_group_ids = [sg['GroupId'] for sg in alb_sg_response['SecurityGroups']]
-            alb_sg_id = security_group_ids[0] if security_group_ids else None
-            
-            if not security_group_ids:
-                raise ValueError(f"No security groups found in VPC {environment.vpc_id}")
-            
-            # Add ingress rule to allow traffic from ALB to NGINX port 80
-            if alb_sg_id:
+            alb_sg_id = alb_sg_response['SecurityGroups'][0]['GroupId'] if alb_sg_response['SecurityGroups'] else security_group_ids[0]
+
+            # Allow ALB → ECS tasks on port 80
+            for ecs_sg_id in security_group_ids:
                 try:
                     ec2.authorize_security_group_ingress(
-                        GroupId=alb_sg_id,
+                        GroupId=ecs_sg_id,
                         IpPermissions=[{
                             'IpProtocol': 'tcp',
                             'FromPort': 80,
@@ -356,26 +373,26 @@ class ApplicationDeploymentService:
                             'UserIdGroupPairs': [{'GroupId': alb_sg_id}]
                         }]
                     )
-                    logger.info(f"Added ingress rule for port 80 to security group {alb_sg_id}")
-                except ec2.exceptions.ClientError as e:
+                    logger.info(f"Added ingress rule: ALB SG {alb_sg_id} → ECS SG {ecs_sg_id} port 80")
+                except ClientError as e:
                     if 'InvalidPermission.Duplicate' in str(e):
-                        logger.info(f"Ingress rule for port 80 already exists")
+                        logger.info("Ingress rule already exists")
                     else:
                         raise
-            
-            logger.info(f"Using security groups: {security_group_ids}")
+
+            logger.info(f"Using ECS security groups: {security_group_ids}")
         except Exception as e:
             logger.error(f"Failed to configure security groups: {e}")
             raise ValueError(f"Failed to configure security groups: {e}")
         
         service_arn = ecs.create_service(
             cluster_arn=environment.cluster_arn,
-            service_name=f"{application.name}-service",
+            service_name=f"{_slug(application.name)}-service",
             task_definition_arn=application.task_definition_arn,
             target_group_arn=application.target_group_arn,
             subnet_ids=subnet_ids,
             security_group_ids=security_group_ids,
-            container_name=f"{application.name}-task",
+            container_name=f"{_slug(application.name)}-task",
             container_port=application.port,
             use_nginx=True
         )
@@ -395,7 +412,7 @@ class ApplicationDeploymentService:
         listener_rule_arn = alb.create_listener_rule(
             listener_arn=listener_arn,
             target_group_arn=application.target_group_arn,
-            path_pattern=f"/{application.name}*",
+            path_pattern=f"/{_slug(application.name)}*",
             priority=priority
         )
         
@@ -403,7 +420,7 @@ class ApplicationDeploymentService:
         return listener_rule_arn, listener_arn
     
     def _generate_deployment_url(self, application: Application, environment: Environment):
-        return f"http://{environment.alb_dns}/{application.name}"
+        return f"http://{environment.alb_dns}/{_slug(application.name)}"
     
     def _wait_for_service_stable_with_refresh(self, infrastructure, cluster_arn, service_name, timeout=300):
         """Wait for ECS service with automatic credential refresh"""

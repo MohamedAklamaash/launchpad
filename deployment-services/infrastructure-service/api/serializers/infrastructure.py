@@ -14,6 +14,13 @@ class InfrastructureSerializer:
             }
             for u in instance.invited_users.all()
         ]
+        # Pull status from the related environment row
+        try:
+            env = instance.environments.latest('created_at')
+            status = env.status
+        except Exception:
+            status = "UNKNOWN"
+
         response = InfrastructureResponse(
             id=instance.id,
             name=instance.name,
@@ -26,6 +33,7 @@ class InfrastructureSerializer:
             created_at=instance.created_at,
             updated_at=instance.updated_at,
             invited_users=invited_users_details,
+            status=status,
         )
         return response.to_dict()
 

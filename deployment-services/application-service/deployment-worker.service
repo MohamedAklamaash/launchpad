@@ -7,7 +7,7 @@ Type=simple
 User=aklamaash
 WorkingDirectory=/home/aklamaash/Desktop/launchpad/deployment-services/application-service
 Environment="PATH=/home/aklamaash/Desktop/launchpad/deployment-services/venv/bin:/usr/bin"
-ExecStart=/home/aklamaash/Desktop/launchpad/deployment-services/venv/bin/python deployment_worker.py
+ExecStart=/home/aklamaash/Desktop/launchpad/deployment-services/venv/bin/python manage.py run_worker
 Restart=always
 RestartSec=10
 

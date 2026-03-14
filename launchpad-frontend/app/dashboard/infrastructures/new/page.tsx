@@ -15,7 +15,7 @@ export default function NewInfrastructurePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [formData, setFormData] = useState({ name: '', cloud_provider: 'AWS' as const, max_cpu: 4, max_memory: 8, code: '' });
+  const [formData, setFormData] = useState({ name: '', cloud_provider: 'aws' as const, max_cpu: 4, max_memory: 8, code: '' });
 
   const set = (k: string, v: any) => setFormData((p) => ({ ...p, [k]: v }));
 

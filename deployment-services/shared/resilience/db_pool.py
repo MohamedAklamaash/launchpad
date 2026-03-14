@@ -17,7 +17,7 @@ def get_db_pool_config(db_config: Any, conn_max_age: int = None) -> Dict[str, An
       + worker processes (short-lived) = well under 500.
     """
     if conn_max_age is None:
-        conn_max_age = int(os.environ.get("DB_CONN_MAX_AGE", 0))
+        conn_max_age = int(os.environ.get("DB_CONN_MAX_AGE", 60))
 
     ssl = getattr(db_config, "ssl", False)
 

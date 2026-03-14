@@ -30,6 +30,10 @@ export const infrastructureApi = {
     return data;
   },
 
+  reprovision: async (id: string): Promise<void> => {
+    await apiClient.post(`/api/infrastructures/${id}/reprovision/`);
+  },
+
   validate: async (id: string): Promise<{ can_delete: boolean; app_count: number }> => {
     const { data } = await apiClient.get(`/api/infrastructures/${id}/validation/`);
     return data;

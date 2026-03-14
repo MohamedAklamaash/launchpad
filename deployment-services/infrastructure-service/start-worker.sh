@@ -28,7 +28,7 @@ python manage.py migrate
 
 # Start worker in background
 echo "👷 Starting worker..."
-python worker.py &
+python manage.py run_worker &
 WORKER_PID=$!
 
 echo "✅ Worker started (PID: $WORKER_PID)"

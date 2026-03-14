@@ -32,7 +32,14 @@ class ALBClient:
         except self.client.exceptions.DuplicateTargetGroupNameException:
             logger.warning(f"Target group {name} already exists, fetching ARN")
             response = self.client.describe_target_groups(Names=[name])
-            return response['TargetGroups'][0]['TargetGroupArn']
+            tg = response['TargetGroups'][0]
+            # If the existing TG is in a different VPC, it cannot be reused — create with unique suffix
+            if tg['VpcId'] != vpc_id:
+                logger.warning(f"Existing TG {name} is in VPC {tg['VpcId']}, not {vpc_id} — creating with unique name")
+                import time
+                unique_name = f"{name[:24]}-{int(time.time()) % 10000}"
+                return self.create_target_group(unique_name, vpc_id, port)
+            return tg['TargetGroupArn']
     
     def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority):
         import time

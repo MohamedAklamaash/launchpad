@@ -95,29 +95,34 @@ class TerraformWorker:
         return bucket, table
     
     @staticmethod
-    def _exec_tf(cmd: list, env_vars: dict, credentials: dict, infra_id: str, region: str, account_id: str) -> dict:
+    def _exec_tf(cmd: list, env_vars: dict, credentials: dict, infra_id: str, region: str, account_id: str,
+                 ensure_backend: bool = True) -> dict:
         """Execute terraform with proper logging and cleanup"""
-        bucket, table = TerraformWorker._ensure_backend(credentials, region, account_id)
-        
-        # Generate config
+        bucket = f"launchpad-tf-state-{account_id}"
+        table = f"launchpad-tf-locks-{account_id}"
+        if ensure_backend:
+            bucket, table = TerraformWorker._ensure_backend(credentials, region, account_id)
+
         unique_suffix = TerraformWorker._generate_unique_suffix(infra_id)
         tf_config = TerraformWorker._generate_config(env_vars, infra_id, bucket, table, region, unique_suffix)
-        
-        # Use /dev/shm for ephemeral storage
+
         work_dir = Path(f"/dev/shm/tf-{infra_id}")
         work_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Persistent provider cache — survives work_dir cleanup, avoids re-downloading ~200MB provider
+        plugin_cache_dir = Path("/tmp/tf-plugin-cache")
+        plugin_cache_dir.mkdir(parents=True, exist_ok=True)
+
         logs = []
-        
+
         try:
             (work_dir / "main.tf").write_text(tf_config)
-            
-            # Copy modules
+
             import shutil
             for module in TF_MODULES_DIR.glob("modules/*"):
                 if module.is_dir():
                     shutil.copytree(module, work_dir / "modules" / module.name, dirs_exist_ok=True)
-            
+
             env = {
                 **os.environ,
                 "AWS_ACCESS_KEY_ID": credentials.get("aws_access_key_id", ""),
@@ -125,7 +130,8 @@ class TerraformWorker:
                 "AWS_SESSION_TOKEN": credentials.get("aws_session_token", ""),
                 "AWS_DEFAULT_REGION": region,
                 "TF_IN_AUTOMATION": "1",
-                "TF_INPUT": "0"
+                "TF_INPUT": "0",
+                "TF_PLUGIN_CACHE_DIR": str(plugin_cache_dir),
             }
             
             # Init
@@ -392,6 +398,8 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                     cloud_provider=infra.cloud_provider,
                     max_cpu=infra.max_cpu,
                     max_memory=infra.max_memory,
+                    code=infra.code,
+                    is_cloud_authenticated=infra.is_cloud_authenticated,
                     metadata=infra.metadata,
                     correlation_id=None
                 ))
@@ -411,6 +419,60 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 ))
     
     @staticmethod
+    def _pre_destroy_cleanup(credentials: dict, region: str, infra_id: str):
+        """Pre-clean resources that block Terraform destroy:
+        - Detach/delete ENIs attached to ECS task security groups (causes SG DependencyViolation)
+        - Force-delete all ECR images (ECR repo must be empty)
+        """
+        import boto3
+        boto_kwargs = {
+            "region_name": region,
+            "aws_access_key_id": credentials.get("aws_access_key_id"),
+            "aws_secret_access_key": credentials.get("aws_secret_access_key"),
+            "aws_session_token": credentials.get("aws_session_token"),
+        }
+        suffix = TerraformWorker._generate_unique_suffix(infra_id)
+        env_name = f"infra-{infra_id[:8]}-{suffix}"
+
+        # 1. Force-delete all images in the ECR repo
+        try:
+            ecr = boto3.client("ecr", **boto_kwargs)
+            repo_name = f"{env_name}-repo"
+            paginator = ecr.get_paginator("list_images")
+            image_ids = []
+            for page in paginator.paginate(repositoryName=repo_name):
+                image_ids.extend(page.get("imageIds", []))
+            if image_ids:
+                ecr.batch_delete_image(repositoryName=repo_name, imageIds=image_ids)
+                logger.info(f"Deleted {len(image_ids)} ECR images from {repo_name}")
+        except Exception as e:
+            logger.warning(f"ECR pre-clean failed (non-fatal): {e}")
+
+        # 2. Delete any lingering ENIs in the VPC tagged to this infra (unblocks SG deletion)
+        try:
+            ec2 = boto3.client("ec2", **boto_kwargs)
+            enis = ec2.describe_network_interfaces(
+                Filters=[{"Name": "tag:InfraID", "Values": [str(infra_id)]}]
+            )["NetworkInterfaces"]
+            for eni in enis:
+                eni_id = eni["NetworkInterfaceId"]
+                # Detach first if attached
+                attachment = eni.get("Attachment", {})
+                if attachment.get("AttachmentId") and attachment.get("Status") != "detached":
+                    try:
+                        ec2.detach_network_interface(AttachmentId=attachment["AttachmentId"], Force=True)
+                        import time; time.sleep(2)
+                    except Exception:
+                        pass
+                try:
+                    ec2.delete_network_interface(NetworkInterfaceId=eni_id)
+                    logger.info(f"Deleted ENI {eni_id}")
+                except Exception as e:
+                    logger.warning(f"Could not delete ENI {eni_id}: {e}")
+        except Exception as e:
+            logger.warning(f"ENI pre-clean failed (non-fatal): {e}")
+
+    @staticmethod
     def destroy(infra_id: str):
         """Destroy infrastructure"""
         try:
@@ -428,13 +490,25 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             
             region = metadata.get("aws_region", "us-west-2")
             account_id = infra.code or "default"
-            
+
+            # Re-authenticate to get fresh STS credentials — stored ones may have expired
+            try:
+                authenticate_infrastructure(infra)
+                infra.refresh_from_db()
+                metadata = infra.metadata or {}
+                logger.info(f"Re-authenticated infrastructure {infra_id} for destroy")
+            except Exception as e:
+                logger.warning(f"Re-auth failed for {infra_id}: {e} — proceeding with stored credentials")
+
             credentials = {
                 "aws_access_key_id": metadata.get("aws_access_key_id", ""),
                 "aws_secret_access_key": metadata.get("aws_secret_access_key", ""),
                 "aws_session_token": metadata.get("aws_session_token", "")
             }
-            
+
+            # Pre-clean resources Terraform can't delete on its own
+            TerraformWorker._pre_destroy_cleanup(credentials, region, infra_id)
+
             tf_vars = {
                 "environment": f"cli-{infra_id}",
                 "owner": str(infra.user_id),
@@ -442,10 +516,11 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 "aws_region": region,
                 "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16")
             }
-            
+
             result = TerraformWorker._exec_tf(
                 ["terraform", "destroy", "-auto-approve", "-no-color", "-input=false"],
-                tf_vars, credentials, str(infra_id), region, account_id
+                tf_vars, credentials, str(infra_id), region, account_id,
+                ensure_backend=False  # bucket already exists from provision; skip HeadBucket with potentially stale creds
             )
             
             with transaction.atomic():

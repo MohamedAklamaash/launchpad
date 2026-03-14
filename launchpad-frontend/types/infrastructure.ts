@@ -40,7 +40,7 @@ export interface Environment {
 
 export interface InfrastructureCreate {
   name: string;
-  cloud_provider: 'AWS';
+  cloud_provider: 'aws';
   max_cpu: number;
   max_memory: number;
   code: string;

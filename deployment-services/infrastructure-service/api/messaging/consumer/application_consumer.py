@@ -16,12 +16,11 @@ class ApplicationEventConsumer:
         self.connection = pika.BlockingConnection(pika.URLParameters(self.rabbitmq_url))
         self.channel = self.connection.channel()
         self.channel.exchange_declare(exchange='application_events', exchange_type='topic', durable=True)
-        result = self.channel.queue_declare(queue='', exclusive=True)
-        queue_name = result.method.queue
-        
+        queue_name = 'infrastructure-service.application-events'
+        self.channel.queue_declare(queue=queue_name, durable=True)
         self.channel.queue_bind(exchange='application_events', queue=queue_name, routing_key='application.created')
         self.channel.queue_bind(exchange='application_events', queue=queue_name, routing_key='application.deleted')
-        
+        self.channel.basic_qos(prefetch_count=1)
         self.channel.basic_consume(queue=queue_name, on_message_callback=self.callback, auto_ack=True)
     
     def callback(self, ch, method, properties, body):

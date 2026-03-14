@@ -30,3 +30,4 @@ urllib3==2.6.3
 uuid6==2024.7.10
 python-json-logger==3.2.1
 prometheus-client==0.21.1
+drf-spectacular==0.28.0

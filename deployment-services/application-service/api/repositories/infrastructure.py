@@ -54,6 +54,10 @@ class InfrastructureRepository:
         }
         if "metadata" in infra_data:
             defaults["metadata"] = infra_data["metadata"]
+        if "code" in infra_data:
+            defaults["code"] = infra_data["code"]
+        if "is_cloud_authenticated" in infra_data:
+            defaults["is_cloud_authenticated"] = infra_data["is_cloud_authenticated"]
 
         try:
             with transaction.atomic():

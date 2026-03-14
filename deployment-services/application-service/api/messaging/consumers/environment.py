@@ -1,7 +1,7 @@
 import json
 import uuid
 import logging
-from django.db import transaction
+from django.db import transaction, connection
 from api.models import Environment
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaConsumer
@@ -69,6 +69,7 @@ class EnvironmentEventConsumer:
             return
 
         try:
+            connection.close()
             with transaction.atomic():
                 env, created = Environment.objects.update_or_create(
                     id=env_id,

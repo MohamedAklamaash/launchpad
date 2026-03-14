@@ -1,6 +1,7 @@
 import boto3
 import time
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,8 @@ phases:
 '''
     
     def start_build(self, project_name, repo_url, branch, commit_hash, ecr_url, app_name, dockerfile_path="Dockerfile", github_token=None):
-        import time
+        # Sanitize app_name for use as a Docker image tag: lowercase, replace non-[a-z0-9._-] with '-'
+        safe_app_name = re.sub(r'[^a-z0-9._-]', '-', app_name.lower()).strip('-')
         max_retries = 3
         retry_delay = 5
         
@@ -88,7 +90,7 @@ phases:
             {'name': 'BRANCH', 'value': branch, 'type': 'PLAINTEXT'},
             {'name': 'COMMIT_HASH', 'value': commit_hash, 'type': 'PLAINTEXT'},
             {'name': 'ECR_URL', 'value': ecr_url, 'type': 'PLAINTEXT'},
-            {'name': 'APP_NAME', 'value': app_name, 'type': 'PLAINTEXT'},
+            {'name': 'APP_NAME', 'value': safe_app_name, 'type': 'PLAINTEXT'},
             {'name': 'DOCKERFILE_PATH', 'value': dockerfile_path, 'type': 'PLAINTEXT'},
         ]
         

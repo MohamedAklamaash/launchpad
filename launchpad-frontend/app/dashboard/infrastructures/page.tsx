@@ -69,9 +69,6 @@ export default function InfrastructuresPage() {
               </div>
               <div className="space-y-2 text-sm text-[#a3a3a3]">
                 <div className="flex items-center gap-2">
-                  <Server className="w-4 h-4" /><span>{infra.cloud_provider.toUpperCase()}</span>
-                </div>
-                <div className="flex items-center gap-2">
                   <Cpu className="w-4 h-4" /><span>{infra.max_cpu} vCPU</span>
                 </div>
                 <div className="flex items-center gap-2">

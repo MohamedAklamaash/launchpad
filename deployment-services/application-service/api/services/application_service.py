@@ -142,32 +142,44 @@ class ApplicationService:
         return app
 
     def delete_application(self, user_id: str, app_id: str):
-        """Delete an application if user has permission."""
+        """Delete application DB record immediately; enqueue AWS cleanup async."""
         app = self.app_repo.get_by_id(app_id)
         if not app:
             raise PermissionError("Application not found")
-        
+
         infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
         if not infra:
             raise ValueError("Infrastructure not found")
-        
-        # Check permissions (SUPER_ADMIN or ADMIN can delete)
+
         if not InfrastructurePermissions.can_delete_application(infra, user_id):
             raise PermissionError("You don't have permission to delete applications. Required role: SUPER_ADMIN or ADMIN")
-        
-        # Clean up AWS resources before deleting database record
-        try:
-            self.cleanup_service.cleanup_application(app)
-        except Exception as e:
-            logger.error(f"Failed to cleanup AWS resources for app {app_id}: {e}")
-            # Continue with database deletion even if AWS cleanup fails
-        
+
+        # Snapshot ARNs before deleting the record
+        infrastructure_id = str(app.infrastructure_id)
+        service_arn = app.service_arn
+        listener_rule_arn = app.listener_rule_arn
+        target_group_arn = app.target_group_arn
+        task_definition_arn = app.task_definition_arn
+
         result = self.app_repo.delete(app_id)
-        
-        # Publish event
+
+        # Enqueue AWS resource cleanup — worker handles it async, doesn't block deletion
+        if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn]):
+            try:
+                DeploymentQueue.enqueue_cleanup(
+                    app_id=app_id,
+                    infrastructure_id=infrastructure_id,
+                    service_arn=service_arn,
+                    listener_rule_arn=listener_rule_arn,
+                    target_group_arn=target_group_arn,
+                    task_definition_arn=task_definition_arn,
+                )
+            except Exception as e:
+                logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")
+
         from api.messaging.producer.producer import ApplicationEventProducer
         ApplicationEventProducer.publish_application_deleted(app_id)
-        
+
         return result
     
     def deploy_application(self, app_id: str):

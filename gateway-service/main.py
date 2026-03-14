@@ -43,6 +43,10 @@ from app.core.rate_limiter import RateLimiter
 
 rate_limiter = RateLimiter()
 
+@app.on_event("shutdown")
+async def shutdown():
+    await rate_limiter.close()
+
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     if request.url.path not in EXEMPT_PATHS:

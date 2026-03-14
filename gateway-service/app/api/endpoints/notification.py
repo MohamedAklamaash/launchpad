@@ -1,13 +1,24 @@
 from fastapi import APIRouter, Request
+from pydantic import BaseModel
+from typing import Optional
 from app.services.proxy import proxy_request
 from app.core.config import settings
 
-router = APIRouter(prefix="/notifications", tags=["notifications"])
+router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
-@router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def notification_proxy(request: Request, path: str):
-    if path.rstrip('/') in ["healthz", "liveness", "readiness"]:
-        url = f"{settings.NOTIFICATION_SERVICE_URL}/{path}"
-    else:
-        url = f"{settings.NOTIFICATION_SERVICE_URL}/notifications/{path}"
-    return await proxy_request(url, request)
+
+class NotificationResponse(BaseModel):
+    id: str = None
+    user_id: str
+    user_name: str
+    email: str
+    infra_id: str
+    source: str = None
+    metadata: dict = {}
+    created_at: int = None
+
+
+@router.get("/user/{user_id}", summary="Get all notifications for a user",
+            response_model=list[NotificationResponse])
+async def notification_list(user_id: str, request: Request):
+    return await proxy_request(f"{settings.NOTIFICATION_SERVICE_URL}/api/v1/notifications/user/{user_id}", request)

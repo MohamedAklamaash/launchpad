@@ -1,6 +1,9 @@
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema, OpenApiParameter, inline_serializer
+from drf_spectacular.types import OpenApiTypes
+from rest_framework import serializers
 from api.services.application_service import ApplicationService
 from api.services.application_sleep_service import ApplicationSleepService
 from api.services.deployment_queue import DeploymentQueue
@@ -10,200 +13,210 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+# ── Reusable inline serializers for Swagger ──────────────────────────────────
+
+class AppListItemSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    cpu = serializers.FloatField()
+    memory = serializers.FloatField()
+    port = serializers.IntegerField()
+
+class AppDetailSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    description = serializers.CharField(allow_null=True)
+    status = serializers.ChoiceField(choices=["CREATED","BUILDING","DEPLOYING","ACTIVE","SLEEPING","FAILED"])
+    is_sleeping = serializers.BooleanField()
+    cpu = serializers.FloatField()
+    memory = serializers.FloatField()
+    storage = serializers.FloatField()
+    port = serializers.IntegerField()
+    url = serializers.CharField(help_text="GitHub repo URL")
+    branch = serializers.CharField()
+    dockerfile_path = serializers.CharField()
+    envs = serializers.DictField(child=serializers.CharField())
+    deployment_url = serializers.CharField(allow_null=True)
+    build_id = serializers.CharField(allow_null=True)
+    error_message = serializers.CharField(allow_null=True)
+    created_at = serializers.DateTimeField()
+    updated_at = serializers.DateTimeField()
+
+class AppCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(help_text="Application name")
+    infrastructure_id = serializers.UUIDField(help_text="Target infrastructure UUID")
+    project_remote_url = serializers.CharField(help_text="GitHub repo URL, e.g. https://github.com/user/repo")
+    project_branch = serializers.CharField(help_text="Branch to deploy, e.g. main")
+    description = serializers.CharField(required=False)
+    project_commit_hash = serializers.CharField(required=False, help_text="Specific commit SHA (optional)")
+    dockerfile_path = serializers.CharField(required=False, default="Dockerfile")
+    port = serializers.IntegerField(required=False, default=8080)
+    alloted_cpu = serializers.FloatField(required=False, default=256, help_text="CPU units: 256=0.25vCPU, 512=0.5vCPU, 1024=1vCPU")
+    alloted_memory = serializers.FloatField(required=False, default=512, help_text="Memory in MB")
+    envs = serializers.DictField(child=serializers.CharField(), required=False, help_text='e.g. {"NODE_ENV":"production"}')
+
+class AppCreateResponseSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+
+class AppUpdateSerializer(serializers.Serializer):
+    description = serializers.CharField(required=False)
+    envs = serializers.DictField(child=serializers.CharField(), required=False, help_text='e.g. {"NODE_ENV":"production"}')
+    alloted_cpu = serializers.FloatField(required=False, help_text="CPU units: 256=0.25vCPU, 512=0.5vCPU, 1024=1vCPU")
+    alloted_memory = serializers.FloatField(required=False, help_text="Memory in MB")
+    port = serializers.IntegerField(required=False)
+    project_branch = serializers.CharField(required=False)
+    dockerfile_path = serializers.CharField(required=False)
+
+class AppUpdateResponseSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    description = serializers.CharField(allow_null=True)
+    envs = serializers.DictField(child=serializers.CharField())
+    alloted_cpu = serializers.FloatField()
+    alloted_memory = serializers.FloatField()
+    port = serializers.IntegerField()
+    updated_at = serializers.DateTimeField()
+
+class QueuedResponseSerializer(serializers.Serializer):
+    message = serializers.CharField()
+    application_id = serializers.UUIDField()
+    status = serializers.CharField(help_text="Always 'QUEUED'")
+
+class SleepResponseSerializer(serializers.Serializer):
+    message = serializers.CharField()
+    application_id = serializers.UUIDField()
+    status = serializers.CharField(help_text="Always 'SLEEPING'")
+
+class WakeResponseSerializer(serializers.Serializer):
+    message = serializers.CharField()
+    application_id = serializers.UUIDField()
+    status = serializers.CharField(help_text="Always 'ACTIVE'")
+
+class ErrorSerializer(serializers.Serializer):
+    error = serializers.CharField()
+
+
+# ── Views ─────────────────────────────────────────────────────────────────────
+
 class ApplicationListCreateView(APIView):
-    """Handle listing user applications and creating new ones."""
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.service = ApplicationService()
 
+    @extend_schema(
+        summary="List applications for an infrastructure",
+        parameters=[
+            OpenApiParameter(
+                name="infrastructure_id",
+                type=OpenApiTypes.UUID,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="UUID of the infrastructure whose applications to list",
+            )
+        ],
+        responses={200: AppListItemSerializer(many=True), 400: ErrorSerializer},
+    )
     def get(self, request):
-        """List all applications for the authenticated user."""
         try:
-            user = request.user
             infra_id = request.query_params.get("infrastructure_id", "")
             if not infra_id:
-                raise Exception("Infrastructure ID is required as query parameter")
-            apps = self.service.get_user_applications(user.id, infra_id)
-            data = [
-                {
-                    "id": str(app.id),
-                    "name": app.name,
-                    "cpu": app.alloted_cpu,
-                    "memory": app.alloted_memory,
-                    "port": app.port
-                } for app in apps
-            ]
-            return Response(data)
+                raise Exception("infrastructure_id query parameter is required")
+            apps = self.service.get_user_applications(request.user.id, infra_id)
+            return Response([{"id": str(a.id), "name": a.name, "cpu": a.alloted_cpu,
+                               "memory": a.alloted_memory, "port": a.port} for a in apps])
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        summary="Create a new application",
+        request=AppCreateSerializer,
+        responses={201: AppCreateResponseSerializer, 400: ErrorSerializer, 403: ErrorSerializer, 500: ErrorSerializer},
+    )
     def post(self, request):
-        """Create a new application."""
         try:
-            user = request.user
-            app = self.service.create_application(user, request.data)
+            app = self.service.create_application(request.user, request.data)
             return Response({"id": str(app.id), "name": app.name}, status=status.HTTP_201_CREATED)
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
+            from django.db import IntegrityError
+            if isinstance(e, IntegrityError) and 'unique' in str(e).lower():
+                return Response({"error": "An application with this name already exists in this infrastructure."}, status=status.HTTP_409_CONFLICT)
             logger.exception("Failed to create application")
             return Response({"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 class ApplicationDetailDeleteView(APIView):
-    """Handle retrieving details and deleting a specific application."""
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.service = ApplicationService()
 
+    @extend_schema(
+        summary="Get application details",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        responses={200: AppDetailSerializer, 404: ErrorSerializer},
+    )
     def get(self, request, pk=None):
-        """Get details of a specific application."""
-        user = request.user
-        app = self.service.get_application_details(user.id, pk)
+        app = self.service.get_application_details(request.user.id, pk)
         if not app:
             return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
-        
         return Response({
-            "id": str(app.id),
-            "name": app.name,
-            "description": app.description,
-            "status": app.status,
-            "is_sleeping": app.is_sleeping,
-            "cpu": app.alloted_cpu,
-            "memory": app.alloted_memory,
-            "storage": app.alloted_storage,
-            "port": app.port,
-            "url": app.project_remote_url,
-            "branch": app.project_branch,
-            "dockerfile_path": app.dockerfile_path,
-            "envs": app.envs,
-            "deployment_url": app.deployment_url,
-            "build_id": app.build_id,
-            "error_message": app.error_message,
+            "id": str(app.id), "name": app.name, "description": app.description,
+            "status": app.status, "is_sleeping": app.is_sleeping,
+            "cpu": app.alloted_cpu, "memory": app.alloted_memory, "storage": app.alloted_storage,
+            "port": app.port, "url": app.project_remote_url, "branch": app.project_branch,
+            "dockerfile_path": app.dockerfile_path, "envs": app.envs,
+            "deployment_url": app.deployment_url, "build_id": app.build_id,
+            "error_message": app.error_message if app.status not in ('ACTIVE', 'SLEEPING') else None,
             "created_at": app.created_at.isoformat() if app.created_at else None,
-            "updated_at": app.updated_at.isoformat() if app.updated_at else None
+            "updated_at": app.updated_at.isoformat() if app.updated_at else None,
         })
 
+    @extend_schema(
+        summary="Delete an application",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        responses={204: None, 403: ErrorSerializer, 400: ErrorSerializer},
+    )
     def delete(self, request, pk=None):
-        """Delete an application."""
         try:
-            user = request.user
-            self.service.delete_application(user.id, pk)
+            self.service.delete_application(request.user.id, pk)
             return Response(status=status.HTTP_204_NO_CONTENT)
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-class ApplicationDeployView(APIView):
-    """Handle application deployment."""
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.service = ApplicationService()
-    
-    def post(self, request, pk=None):
-        """Deploy an application to AWS infrastructure."""
-        try:
-            
-            app_repo = ApplicationRepository()
-            app = app_repo.get_by_id(pk)
-            if not app:
-                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            
-            DeploymentQueue.enqueue_deployment(pk)
-            
-            return Response({
-                "message": "Deployment queued successfully",
-                "application_id": str(pk),
-                "status": "QUEUED"
-            }, status=status.HTTP_202_ACCEPTED)
-            
-        except ValueError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            logger.exception("Failed to queue deployment")
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-class ApplicationRetryDeployView(APIView):
-    """Handle retrying failed deployments."""
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.service = ApplicationService()
-    
-    def post(self, request, pk=None):
-        """Retry deployment for a failed application."""
-        try:
-            
-            user = request.user
-            app_repo = ApplicationRepository()
-            app = app_repo.get_by_id(pk)
-            
-            if not app:
-                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            
-            if str(app.user_id) != str(user.id):
-                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
-            
-            cleanup_service = ApplicationCleanupService()
-            try:
-                cleanup_service.cleanup_application(app)
-                logger.info(f"Cleaned up partial deployment for {app.name}")
-            except Exception as e:
-                logger.warning(f"Cleanup failed (may not exist): {e}")
-            
-            # Reset application state
-            app.status = 'CREATED'
-            app.error_message = None
-            app.service_arn = None
-            app.task_definition_arn = None
-            app.target_group_arn = None
-            app.listener_rule_arn = None
-            app.save(update_fields=['status', 'error_message', 'service_arn', 'task_definition_arn', 'target_group_arn', 'listener_rule_arn'])
-            
-            DeploymentQueue.enqueue_deployment(pk)
-            
-            return Response({
-                "message": "Deployment retry queued successfully",
-                "application_id": str(pk),
-                "status": "QUEUED"
-            }, status=status.HTTP_202_ACCEPTED)
-            
-        except Exception as e:
-            logger.exception("Failed to retry deployment")
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ApplicationUpdateView(APIView):
-    """Handle updating application configuration."""
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.service = ApplicationService()
-    
+
+    @extend_schema(
+        summary="Update application configuration",
+        description="Partial update — only send fields you want to change. Does not trigger redeployment.",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        request=AppUpdateSerializer,
+        responses={200: AppUpdateResponseSerializer, 400: ErrorSerializer, 403: ErrorSerializer, 404: ErrorSerializer, 500: ErrorSerializer},
+    )
     def patch(self, request, pk=None):
-        """Update application configuration (envs, description, resources)."""
         try:
-            user = request.user
-            updated_app = self.service.update_application(user.id, pk, request.data)
-            
-            if not updated_app:
+            updated = self.service.update_application(request.user.id, pk, request.data)
+            if not updated:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            
             return Response({
-                "id": str(updated_app.id),
-                "name": updated_app.name,
-                "description": updated_app.description,
-                "envs": updated_app.envs,
-                "alloted_cpu": updated_app.alloted_cpu,
-                "alloted_memory": updated_app.alloted_memory,
-                "port": updated_app.port,
-                "updated_at": updated_app.updated_at.isoformat()
-            }, status=status.HTTP_200_OK)
-            
+                "id": str(updated.id), "name": updated.name, "description": updated.description,
+                "envs": updated.envs, "alloted_cpu": updated.alloted_cpu,
+                "alloted_memory": updated.alloted_memory, "port": updated.port,
+                "updated_at": updated.updated_at.isoformat(),
+            })
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except ValueError as e:
@@ -213,34 +226,98 @@ class ApplicationUpdateView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class ApplicationDeployView(APIView):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.service = ApplicationService()
+
+    @extend_schema(
+        summary="Queue application for deployment",
+        description="No request body. Pushes the application onto the Redis deployment queue. The worker picks it up and runs CodeBuild + ECS deploy.",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        request=None,
+        responses={202: QueuedResponseSerializer, 400: ErrorSerializer, 404: ErrorSerializer, 500: ErrorSerializer},
+    )
+    def post(self, request, pk=None):
+        try:
+            app = ApplicationRepository().get_by_id(pk)
+            if not app:
+                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            DeploymentQueue.enqueue_deployment(pk)
+            return Response({"message": "Deployment queued successfully",
+                             "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Failed to queue deployment")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ApplicationRetryDeployView(APIView):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.service = ApplicationService()
+
+    @extend_schema(
+        summary="Retry a failed deployment",
+        description="No request body. Cleans up partial AWS resources, resets status to CREATED, then re-queues for deployment.",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        request=None,
+        responses={202: QueuedResponseSerializer, 403: ErrorSerializer, 404: ErrorSerializer, 500: ErrorSerializer},
+    )
+    def post(self, request, pk=None):
+        try:
+            app = ApplicationRepository().get_by_id(pk)
+            if not app:
+                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            if str(app.user_id) != str(request.user.id):
+                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            try:
+                ApplicationCleanupService().cleanup_application(app)
+            except Exception as e:
+                logger.warning(f"Cleanup failed (may not exist): {e}")
+            app.status = 'CREATED'
+            app.error_message = None
+            app.service_arn = None
+            app.task_definition_arn = None
+            app.target_group_arn = None
+            app.listener_rule_arn = None
+            app.save(update_fields=['status', 'error_message', 'service_arn',
+                                    'task_definition_arn', 'target_group_arn', 'listener_rule_arn'])
+            DeploymentQueue.enqueue_deployment(pk)
+            return Response({"message": "Deployment retry queued successfully",
+                             "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
+        except Exception as e:
+            logger.exception("Failed to retry deployment")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 class ApplicationSleepView(APIView):
-    """Handle putting application to sleep."""
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.sleep_service = ApplicationSleepService()
         self.app_repo = ApplicationRepository()
-    
+
+    @extend_schema(
+        summary="Put application to sleep",
+        description="No request body. Scales ECS desired task count to 0. URL stays registered but stops serving traffic.",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        request=None,
+        responses={200: SleepResponseSerializer, 400: ErrorSerializer, 403: ErrorSerializer, 404: ErrorSerializer, 500: ErrorSerializer},
+    )
     def post(self, request, pk=None):
-        """Put application to sleep (scale to 0 tasks)."""
         try:
-            user = request.user
             app = self.app_repo.get_by_id(pk)
-            
             if not app:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            
-            if str(app.user_id) != str(user.id):
+            if str(app.user_id) != str(request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
-            
             self.sleep_service.sleep_application(app)
-            
-            return Response({
-                "message": "Application put to sleep successfully",
-                "application_id": str(pk),
-                "status": "SLEEPING"
-            }, status=status.HTTP_200_OK)
-            
+            return Response({"message": "Application put to sleep successfully",
+                             "application_id": str(pk), "status": "SLEEPING"})
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
@@ -249,33 +326,29 @@ class ApplicationSleepView(APIView):
 
 
 class ApplicationWakeView(APIView):
-    """Handle waking application from sleep."""
-    
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.sleep_service = ApplicationSleepService()
         self.app_repo = ApplicationRepository()
-    
+
+    @extend_schema(
+        summary="Wake application from sleep",
+        description="No request body. Restores ECS desired task count to the previously configured value.",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        request=None,
+        responses={200: WakeResponseSerializer, 400: ErrorSerializer, 403: ErrorSerializer, 404: ErrorSerializer, 500: ErrorSerializer},
+    )
     def post(self, request, pk=None):
-        """Wake application from sleep (restore desired count)."""
         try:
-            user = request.user
             app = self.app_repo.get_by_id(pk)
-            
             if not app:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            
-            if str(app.user_id) != str(user.id):
+            if str(app.user_id) != str(request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
-            
             self.sleep_service.wake_application(app)
-            
-            return Response({
-                "message": "Application woken up successfully",
-                "application_id": str(pk),
-                "status": "ACTIVE"
-            }, status=status.HTTP_200_OK)
-            
+            return Response({"message": "Application woken up successfully",
+                             "application_id": str(pk), "status": "ACTIVE"})
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:

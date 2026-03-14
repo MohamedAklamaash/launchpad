@@ -93,10 +93,7 @@ class ApplicationCleanupService:
             logger.error(f"Failed to deregister task definition: {e}")
     
     def _delete_log_group(self, session, app_name):
-        """Don't delete log groups - keep them for debugging"""
-        try:
-            logger.info(f"Keeping log group /ecs/{app_name}-task for debugging")
-        except logs.exceptions.ResourceNotFoundException:
-            logger.info(f"Log group /ecs/{app_name}-task not found")
-        except Exception as e:
-            logger.error(f"Failed to delete log group: {e}")
+        """Keep log groups for debugging — just log and skip."""
+        import re
+        slug = re.sub(r'[^a-z0-9._-]', '-', app_name.lower()).strip('-')
+        logger.info(f"Keeping log group /ecs/{slug}-task for debugging")
