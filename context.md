@@ -10,8 +10,6 @@ The compute, networking, and runtime workloads run entirely inside the **user's 
 
 The platform does **not host user applications** itself. Instead, it manages and orchestrates deployments into the user's cloud environment.
 
-**Demo**: https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a
-
 ---
 
 # Core Idea

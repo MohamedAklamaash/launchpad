@@ -1,7 +1,5 @@
 # Launchpad Quick Start
 
-**Demo**: [Watch the demo](https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a)
-
 ## 5-Minute Setup
 
 ### 1. AWS Setup (2 minutes)
