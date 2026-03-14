@@ -2,9 +2,8 @@
 
 ## Demo
 
-<video src="demo/demo.mp4" controls width="720"></video>
 
-▶️ **[Watch the demo on Loom](https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a)**
+**Demo**: https://www.loom.com/share/881f6c048cf342b6901eef9c8e7aa68a
 
 **Deploy applications to your AWS infrastructure in minutes, not hours.**
 
