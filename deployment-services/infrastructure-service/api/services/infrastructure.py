@@ -107,7 +107,6 @@ class InfrastructureService:
                     raise ValueError("Infrastructure is already being destroyed.")
 
                 if env.status == 'ACTIVE':
-                    # Enqueue async destroy — worker deletes DB records after Terraform succeeds
                     env.status = 'DESTROYING'
                     env.save(update_fields=['status'])
                     InfraQueue.enqueue_destroy(str(infra_id))

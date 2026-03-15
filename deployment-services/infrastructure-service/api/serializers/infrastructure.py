@@ -14,7 +14,6 @@ class InfrastructureSerializer:
             }
             for u in instance.invited_users.all()
         ]
-        # Pull status from the related environment row
         try:
             env = instance.environments.latest('created_at')
             status = env.status

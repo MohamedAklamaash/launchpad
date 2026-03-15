@@ -332,7 +332,6 @@ class ApplicationDeploymentService:
             raise ValueError(f"Failed to get subnets from VPC: {e}")
         
         try:
-            # Find the ECS task security group (tagged as ecs-sg or app-sg by Terraform)
             ecs_sg_response = ec2.describe_security_groups(
                 Filters=[
                     {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
@@ -340,11 +339,9 @@ class ApplicationDeploymentService:
                 ]
             )
             if not ecs_sg_response['SecurityGroups']:
-                # Fall back to any SG in the VPC that isn't the ALB SG
                 all_sgs = ec2.describe_security_groups(
                     Filters=[{'Name': 'vpc-id', 'Values': [environment.vpc_id]}]
                 )['SecurityGroups']
-                # Prefer non-ALB SGs; fall back to all if needed
                 ecs_sgs = [sg for sg in all_sgs if 'alb' not in sg['GroupName'].lower()]
                 ecs_sg_response['SecurityGroups'] = ecs_sgs or all_sgs
 
@@ -352,7 +349,6 @@ class ApplicationDeploymentService:
             if not security_group_ids:
                 raise ValueError(f"No security groups found in VPC {environment.vpc_id}")
 
-            # Also find ALB SG to allow ingress from ALB → ECS tasks on port 80
             alb_sg_response = ec2.describe_security_groups(
                 Filters=[
                     {'Name': 'vpc-id', 'Values': [environment.vpc_id]},

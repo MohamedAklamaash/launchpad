@@ -154,7 +154,6 @@ class ApplicationService:
         if not InfrastructurePermissions.can_delete_application(infra, user_id):
             raise PermissionError("You don't have permission to delete applications. Required role: SUPER_ADMIN or ADMIN")
 
-        # Snapshot ARNs before deleting the record
         infrastructure_id = str(app.infrastructure_id)
         service_arn = app.service_arn
         listener_rule_arn = app.listener_rule_arn
@@ -163,7 +162,6 @@ class ApplicationService:
 
         result = self.app_repo.delete(app_id)
 
-        # Enqueue AWS resource cleanup — worker handles it async, doesn't block deletion
         if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn]):
             try:
                 DeploymentQueue.enqueue_cleanup(

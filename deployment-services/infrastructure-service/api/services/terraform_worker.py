@@ -491,7 +491,6 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             region = metadata.get("aws_region", "us-west-2")
             account_id = infra.code or "default"
 
-            # Re-authenticate to get fresh STS credentials — stored ones may have expired
             try:
                 authenticate_infrastructure(infra)
                 infra.refresh_from_db()

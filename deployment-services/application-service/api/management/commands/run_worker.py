@@ -33,7 +33,6 @@ class Command(BaseCommand):
             app_id = job.get('app_id')
 
             if action == 'cleanup':
-                # App DB record is already deleted — use ARNs from the job payload
                 from api.models.infrastructure import Infrastructure
                 from aws.session import create_boto3_session
                 try:

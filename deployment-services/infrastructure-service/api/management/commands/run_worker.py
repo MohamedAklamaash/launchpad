@@ -37,7 +37,6 @@ class Command(BaseCommand):
 
         logger.info(f"Infrastructure worker {worker_id} started")
 
-        # Re-enqueue any stuck pending/provisioning jobs on startup
         pending = Environment.objects.filter(status__in=['PENDING', 'PROVISIONING']).select_related('infrastructure')
         for env in pending:
             InfraQueue.release_lock(str(env.infrastructure_id))
