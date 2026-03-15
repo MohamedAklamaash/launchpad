@@ -43,6 +43,13 @@ class InfrastructureService:
         """Create infrastructure and enqueue provisioning job"""
         correlation_id = str(uuid.uuid4())
         
+        # Normalize cloud_provider to lowercase to match enum values ("AWS" -> "aws")
+        if isinstance(infra_data, dict):
+            infra_data = dict(infra_data)
+        else:
+            infra_data = dict(infra_data)
+        if infra_data.get("cloud_provider"):
+            infra_data["cloud_provider"] = infra_data["cloud_provider"].lower()
         cloud_provider = infra_data.get("cloud_provider")
         if cloud_provider == CloudProvider.AWS and not infra_data.get("code"):
             raise ValueError("AWS Account ID is required in the 'code' field for AWS infrastructure.")
@@ -76,52 +83,43 @@ class InfrastructureService:
         return serialized_infra
 
     def delete_infrastructure(self, user_id, infra_id):
-        """Delete infrastructure and enqueue destroy job"""
-        
+        """Delete infrastructure — enqueues async destroy for ACTIVE infra, immediate delete otherwise."""
         infra = self.repo.get_by_id(user_id, infra_id)
         if not infra:
             return False
-        
+
         if not InfrastructurePermissions.can_delete_infrastructure(infra, user_id):
             raise PermissionError("Only the infrastructure owner can delete it")
-        
-        # Check for existing applications
+
         from api.models import Application
         app_count = Application.objects.filter(infrastructure_id=infra_id).count()
         if app_count > 0:
             raise ValueError(f"Cannot delete infrastructure. {app_count} application(s) still exist. Delete all applications first.")
-        
+
         if infra.cloud_provider == CloudProvider.AWS:
-            # Check environment status
             try:
                 env = Environment.objects.get(infrastructure_id=infra_id)
-                
-                # Prevent deletion if still provisioning
+
                 if env.status in ['PENDING', 'PROVISIONING']:
-                    raise ValueError(
-                        f"Cannot delete infrastructure. Status: {env.status}. "
-                        "Please wait for provisioning to complete or fail before deleting."
-                    )
-                
-                # Prevent deletion if already destroying
+                    raise ValueError(f"Cannot delete while status is {env.status}. Wait for provisioning to complete.")
+
                 if env.status == 'DESTROYING':
                     raise ValueError("Infrastructure is already being destroyed.")
-                
-                # Only destroy if ACTIVE (successfully provisioned)
+
                 if env.status == 'ACTIVE':
                     env.status = 'DESTROYING'
                     env.save(update_fields=['status'])
                     InfraQueue.enqueue_destroy(str(infra_id))
                     logger.info(f"Infrastructure {infra_id} destroy enqueued")
-                
-                # For ERROR or DESTROYED status, just delete the records
-                elif env.status in ['ERROR', 'DESTROYED']:
-                    logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records only")
-                    env.delete()
-                
+                    return True  # Don't delete DB records yet — worker handles that
+
+                # ERROR or DESTROYED — no live AWS resources, delete immediately
+                logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records")
+                env.delete()
+
             except Environment.DoesNotExist:
-                logger.warning(f"No environment found for infrastructure {infra_id}")
-        
+                logger.warning(f"No environment found for infrastructure {infra_id}, deleting record")
+
         return self.repo.delete(user_id, infra_id)
 
     def remove_invited_user(self, owner_id, infra_id, target_user_id):

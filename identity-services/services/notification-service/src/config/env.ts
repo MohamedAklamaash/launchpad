@@ -19,6 +19,7 @@ const envSchema = z.object({
     REDIS_USERNAME: z.string().optional().default("default"),
 
     MONGODB_URL: z.string(),
+    JWT_SECRET: z.string(),
 
     MONGO_POOL_SIZE: z.coerce.number().default(10),
     MONGO_CONNECT_TIMEOUT_MS: z.coerce.number().default(30000),

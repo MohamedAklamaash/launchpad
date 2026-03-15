@@ -1,7 +1,7 @@
 import json
 import uuid
 import logging
-from django.db import transaction, ProgrammingError, OperationalError
+from django.db import transaction, connection, ProgrammingError, OperationalError
 from api.repositories.infrastructure import InfrastructureRepository
 from api.common.env.application import app_config
 from shared.resilience import ResilientPikaConsumer
@@ -73,6 +73,7 @@ class InfraEventConsumer:
             return
 
         try:
+            connection.close()
             with transaction.atomic():
                 self.infra_repo.upsert_infrastructure(
                     {"id": infra_id, "user_id": user_id, "name": name, "status": status}

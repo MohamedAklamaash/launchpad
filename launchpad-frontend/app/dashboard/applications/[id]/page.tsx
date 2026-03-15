@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil } from 'lucide-react';
+import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff } from 'lucide-react';
 import { Application } from '@/types/application';
 import { applicationApi } from '@/lib/api/applications';
 import { useAuthStore } from '@/lib/store/auth';
@@ -23,6 +23,7 @@ export default function ApplicationDetailPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [revealedEnvs, setRevealedEnvs] = useState<Set<string>>(new Set());
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const user = useAuthStore((s) => s.user);
   const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
@@ -194,13 +195,30 @@ export default function ApplicationDetailPage() {
         <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4">
           <p className="text-[10px] uppercase tracking-widest text-[#666] font-mono mb-3">Environment Variables</p>
           <div className="space-y-1.5 font-mono">
-            {Object.entries(app.envs).map(([key, value]) => (
-              <div key={key} className="flex gap-2 text-xs">
-                <span className="text-violet-400 shrink-0">{key}</span>
-                <span className="text-[#666]">=</span>
-                <span className="text-[#ccc] break-all">{value}</span>
-              </div>
-            ))}
+            {Object.entries(app.envs).map(([key, value]) => {
+              const revealed = revealedEnvs.has(key);
+              const masked = value.length <= 4
+                ? '*'.repeat(value.length)
+                : `${value.slice(0, Math.ceil(value.length * 0.2))}${'*'.repeat(Math.max(1, value.length - Math.ceil(value.length * 0.4)))}${value.slice(-Math.ceil(value.length * 0.2))}`;
+              return (
+                <div key={key} className="flex items-center gap-2 text-xs">
+                  <span className="text-violet-400 shrink-0">{key}</span>
+                  <span className="text-[#666]">=</span>
+                  <span className="text-[#ccc] break-all flex-1">{revealed ? value : masked}</span>
+                  <button
+                    onClick={() => setRevealedEnvs(prev => {
+                      const next = new Set(prev);
+                      revealed ? next.delete(key) : next.add(key);
+                      return next;
+                    })}
+                    className="shrink-0 text-[#444] hover:text-[#aaa] transition-colors ml-1"
+                    title={revealed ? 'Hide' : 'Reveal'}
+                  >
+                    {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

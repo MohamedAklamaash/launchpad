@@ -9,6 +9,8 @@ from datetime import timedelta
 
 logger = logging.getLogger(__name__)
 
+_BLPOP_TIMEOUT = 5
+
 _pool = redis.ConnectionPool(
     host=settings.REDIS_HOST,
     port=settings.REDIS_PORT,
@@ -25,6 +27,24 @@ _pool = redis.ConnectionPool(
         socket.TCP_KEEPCNT: 5,
     },
     retry_on_timeout=True,
+    health_check_interval=30,
+)
+
+_blocking_pool = redis.ConnectionPool(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    password=settings.REDIS_PASSWORD,
+    db=settings.REDIS_DB,
+    decode_responses=True,
+    max_connections=5,
+    socket_timeout=_BLPOP_TIMEOUT + 5,
+    socket_connect_timeout=5,
+    socket_keepalive=True,
+    socket_keepalive_options={
+        socket.TCP_KEEPIDLE: 60,
+        socket.TCP_KEEPINTVL: 10,
+        socket.TCP_KEEPCNT: 5,
+    },
     health_check_interval=30,
 )
 
@@ -63,18 +83,18 @@ class InfraQueue:
         logger.info(f"Enqueued destroy job for {infra_id}")
     
     @staticmethod
-    def dequeue_provision(timeout: int = 5):
+    def dequeue_provision(timeout: int = _BLPOP_TIMEOUT):
         """Get next provision job (blocking)"""
-        result = _redis().blpop(PROVISION_QUEUE, timeout=timeout)
+        result = redis.Redis(connection_pool=_blocking_pool).blpop(PROVISION_QUEUE, timeout=timeout)
         if result:
             _, job_data = result
             return json.loads(job_data)
         return None
-    
+
     @staticmethod
-    def dequeue_destroy(timeout: int = 5):
+    def dequeue_destroy(timeout: int = _BLPOP_TIMEOUT):
         """Get next destroy job (blocking)"""
-        result = _redis().blpop(DESTROY_QUEUE, timeout=timeout)
+        result = redis.Redis(connection_pool=_blocking_pool).blpop(DESTROY_QUEUE, timeout=timeout)
         if result:
             _, job_data = result
             return json.loads(job_data)

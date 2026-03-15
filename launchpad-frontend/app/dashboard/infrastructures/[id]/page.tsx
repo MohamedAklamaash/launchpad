@@ -26,7 +26,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil } from 'lucide-react';
+import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw } from 'lucide-react';
 import { Infrastructure, InvitedUserSummary } from '@/types/infrastructure';
 import { ApplicationSummary } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
@@ -56,6 +56,9 @@ export default function InfrastructureDetailPage() {
   const [editingName, setEditingName] = useState(false);
   const [infraName, setInfraName] = useState('');
   const [savingName, setSavingName] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [reprovisioning, setReprovisioning] = useState(false);
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -148,6 +151,34 @@ export default function InfrastructureDetailPage() {
     setInviteForm({ email: '', password: '', user_name: '', role: 'user' });
   };
 
+  const handleDeleteInfra = async () => {
+    setDeleting(true);
+    try {
+      await infrastructureApi.delete(id);
+      const wasActive = infra?.status === 'ACTIVE';
+      toast.success(wasActive ? 'Destroy queued — We are tearing down your AWS resources' : 'Infrastructure deleted');
+      router.push('/dashboard/infrastructures');
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to delete infrastructure');
+    } finally {
+      setDeleting(false);
+      setDeleteOpen(false);
+    }
+  };
+
+  const handleReprovision = async () => {
+    setReprovisioning(true);
+    try {
+      await infrastructureApi.reprovision(id);
+      toast.success('Re-provisioning queued');
+      await loadData();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to queue re-provisioning');
+    } finally {
+      setReprovisioning(false);
+    }
+  };
+
   const getStatusDot = (status: string) => {
     switch (status) {
       case 'ACTIVE': return 'bg-emerald-500';
@@ -196,9 +227,14 @@ export default function InfrastructureDetailPage() {
               {infra.status}
             </span>
           </div>
-          <p className="text-xs text-[#444] font-mono">{infra.cloud_provider} · {infra.id.slice(0, 8)}…</p>
         </div>
         <div className="flex items-center gap-2">
+          {isSuperAdmin && (infra.status === 'ERROR' || infra.status === 'DESTROYED' || infra.status === 'PENDING') && (
+            <Button variant="outline" onClick={handleReprovision} disabled={reprovisioning}
+              className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-amber-400 hover:text-amber-300 h-8 text-xs gap-1.5">
+              <RefreshCw className={`w-3.5 h-3.5 ${reprovisioning ? 'animate-spin' : ''}`} /> Reprovision
+            </Button>
+          )}
           {isSuperAdmin && (
             <Button variant="outline" onClick={() => setInviteOpen(true)}
               className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-[#888] hover:text-white h-8 text-xs gap-1.5">
@@ -211,6 +247,27 @@ export default function InfrastructureDetailPage() {
           </Button>
         </div>
       </div>
+
+      {/* Provisioning status banner */}
+      {(infra.status === 'PROVISIONING' || infra.status === 'PENDING') && (
+        <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl px-4 py-3 flex items-center gap-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
+          <p className="text-xs text-blue-400">
+            {infra.status === 'PROVISIONING' ? 'Terraform is provisioning your AWS infrastructure…' : 'Provisioning queued — waiting to start…'}
+          </p>
+        </div>
+      )}
+      {infra.status === 'ERROR' && (
+        <div className="bg-red-500/5 border border-red-500/20 rounded-xl px-4 py-3 flex items-center justify-between">
+          <p className="text-xs text-red-400">Provisioning failed. Click <span className="font-medium">Reprovision</span> to retry.</p>
+        </div>
+      )}
+      {infra.status === 'DESTROYING' && (
+        <div className="bg-orange-500/5 border border-orange-500/20 rounded-xl px-4 py-3 flex items-center gap-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse shrink-0" />
+          <p className="text-xs text-orange-400">Terraform is destroying your AWS infrastructure…</p>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-3">
@@ -373,9 +430,51 @@ export default function InfrastructureDetailPage() {
                 </div>
               )}
             </div>
+
+            {/* Danger Zone */}
+            {isOwner && (
+              <div className="space-y-2">
+                <p className="text-[10px] uppercase tracking-widest text-red-500/60 font-mono px-1">Danger Zone</p>
+                <div className="bg-red-500/5 border border-red-500/20 rounded-xl px-4 py-3 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-white">Delete Infrastructure</p>
+                    <p className="text-[11px] text-[#555] mt-0.5">Tears down all AWS resources. Cannot be undone.</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => setDeleteOpen(true)}
+                    className="border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-400 h-8 text-xs gap-1.5 shrink-0 ml-4"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Delete
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </SheetContent>
       </Sheet>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="bg-[#090909] border-[#1a1a1a] max-w-sm shadow-2xl shadow-black/60">
+          <DialogHeader>
+            <DialogTitle className="text-base font-semibold">Delete Infrastructure</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-[#555]">
+            Delete <span className="text-[#aaa] font-mono">{infra.name}</span>? This will trigger Terraform destroy and remove all AWS resources (VPC, ECS, ALB, ECR). This cannot be undone.
+          </p>
+          <div className="flex gap-2 justify-end mt-2">
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}
+              className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-[#888] h-9 text-sm">
+              Cancel
+            </Button>
+            <Button onClick={handleDeleteInfra} disabled={deleting}
+              className="bg-red-500/90 hover:bg-red-500 h-9 text-sm">
+              {deleting ? 'Deleting…' : 'Delete'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Invite User Dialog */}
       <Dialog open={inviteOpen} onOpenChange={(o) => { if (!o) closeInviteDialog(); else setInviteOpen(true); }}>

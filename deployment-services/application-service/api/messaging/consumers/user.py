@@ -1,7 +1,7 @@
 import json
 import uuid
 import logging
-from django.db import transaction, ProgrammingError, OperationalError
+from django.db import transaction, connection, ProgrammingError, OperationalError
 from api.repositories.user import UserRepository
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaConsumer
@@ -86,6 +86,7 @@ class AuthEventConsumer:
             return
 
         try:
+            connection.close()
             with transaction.atomic():
                 self.user_repo.upsert_user(
                     {

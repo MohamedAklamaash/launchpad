@@ -20,7 +20,7 @@ class Application(models.Model):
     project_commit_hash = models.CharField(max_length=255)
     
     class Meta:
-        unique_together = [('user', 'name')]  # App name unique per user
+        unique_together = [('user', 'infrastructure', 'name')]  # App name unique per infra
         indexes = [
             models.Index(fields=['user', 'infrastructure']),
             models.Index(fields=['status']),

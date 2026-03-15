@@ -8,6 +8,7 @@ const envSchema = z.object({
 
     USER_DB_URL: z.string(),
     RABBITMQ_URL: z.string(),
+    JWT_SECRET: z.string(),
 
     // DB Pool
     DB_POOL_MAX: z.coerce.number().default(25),

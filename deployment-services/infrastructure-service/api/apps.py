@@ -38,6 +38,8 @@ def _wait_for_db(max_wait: int = 60, interval: int = 3) -> bool:
         except Exception as exc:
             logger.warning(f"Unexpected error waiting for DB: {exc}")
             time.sleep(interval)
+        finally:
+            conn.close()
 
     logger.error(
         f"DB did not become ready within {max_wait}s — consumers will NOT start. "
