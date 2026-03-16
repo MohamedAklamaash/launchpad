@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -12,6 +12,7 @@ import { Infrastructure } from '@/types/infrastructure';
 import { applicationApi } from '@/lib/api/applications';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { toast } from 'sonner';
+import { Suspense } from 'react';
 
 const statusColor: Record<string, string> = {
   ACTIVE: 'bg-green-500/10 text-green-500',
@@ -24,9 +25,18 @@ const statusColor: Record<string, string> = {
 };
 
 export default function ApplicationsPage() {
+  return (
+    <Suspense>
+      <ApplicationsPageInner />
+    </Suspense>
+  );
+}
+
+function ApplicationsPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [infrastructures, setInfrastructures] = useState<Infrastructure[]>([]);
-  const [selectedInfra, setSelectedInfra] = useState<string>('');
+  const [selectedInfra, setSelectedInfra] = useState<string>(searchParams.get('infra') || '');
   const [apps, setApps] = useState<ApplicationSummary[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -34,10 +44,18 @@ export default function ApplicationsPage() {
     infrastructureApi.list()
       .then((data) => {
         setInfrastructures(data);
-        if (data.length > 0) setSelectedInfra(data[0].id);
+        if (!searchParams.get('infra') && data.length > 0) {
+          setSelectedInfra(data[0].id);
+          router.replace(`/dashboard/applications?infra=${data[0].id}`);
+        }
       })
       .catch(() => toast.error('Failed to load infrastructures'));
   }, []);
+
+  const handleInfraChange = (id: string) => {
+    setSelectedInfra(id);
+    router.replace(`/dashboard/applications?infra=${id}`);
+  };
 
   useEffect(() => {
     if (!selectedInfra) return;
@@ -62,7 +80,7 @@ export default function ApplicationsPage() {
 
       {infrastructures.length > 0 && (
         <div className="mb-6 max-w-xs">
-          <Select value={selectedInfra} onValueChange={(v) => v && setSelectedInfra(v)}>
+          <Select value={selectedInfra} onValueChange={(v) => v && handleInfraChange(v)}>
             <SelectTrigger className="bg-[#141414] border-[#262626]">
               <SelectValue placeholder="Select infrastructure" />
             </SelectTrigger>

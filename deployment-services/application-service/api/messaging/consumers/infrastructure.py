@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 import logging
 from django.db import transaction, connection, ProgrammingError, OperationalError
@@ -16,9 +17,11 @@ class InfraEventConsumer:
     EXCHANGE_NAME = "infrastructure.events"
     ROUTING_KEY = "infrastructure.created"
     QUEUE_NAME = "application-service.infra-events"
+    MAX_RETRIES = 10
 
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
+        self._retry_counts: dict = {}
         self.consumer = ResilientPikaConsumer(
             url=app_config.rabbitmq_url,
             exchange=self.EXCHANGE_NAME,
@@ -101,26 +104,39 @@ class InfraEventConsumer:
                 "infrastructure upserted successfully — ACKing",
                 extra={"correlation_id": correlation_id, "infra_id": infra_id},
             )
+            self._retry_counts.pop(infra_id, None)
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as exc:
             transient = self._is_transient(exc)
-            log.error(
-                "Error persisting infrastructure event — %s",
-                "NACKing with requeue (transient)" if transient else "NACKing without requeue (permanent)",
-                extra={
-                    "correlation_id": correlation_id,
-                    "infra_id": infra_id,
-                    "user_id": user_id,
-                    "error": str(exc),
-                    "exc_type": type(exc).__name__,
-                },
-                exc_info=True,
-            )
-            ch.basic_nack(
-                delivery_tag=method.delivery_tag,
-                requeue=transient,
-            )
+            if transient:
+                retry_count = self._retry_counts.get(infra_id, 0)
+                if retry_count >= self.MAX_RETRIES:
+                    log.error(
+                        "Error persisting infrastructure event — max retries exceeded, discarding",
+                        extra={"correlation_id": correlation_id, "infra_id": infra_id, "error": str(exc)},
+                        exc_info=True,
+                    )
+                    self._retry_counts.pop(infra_id, None)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                else:
+                    self._retry_counts[infra_id] = retry_count + 1
+                    delay = min(2 ** retry_count, 30)
+                    log.error(
+                        "Error persisting infrastructure event — NACKing with requeue (attempt %d/%d, delay %ds)",
+                        retry_count + 1, self.MAX_RETRIES, delay,
+                        extra={"correlation_id": correlation_id, "infra_id": infra_id, "error": str(exc)},
+                        exc_info=True,
+                    )
+                    time.sleep(delay)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            else:
+                log.error(
+                    "Error persisting infrastructure event — NACKing without requeue (permanent)",
+                    extra={"correlation_id": correlation_id, "infra_id": infra_id, "error": str(exc)},
+                    exc_info=True,
+                )
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     def start(self):
         """Start consuming messages."""

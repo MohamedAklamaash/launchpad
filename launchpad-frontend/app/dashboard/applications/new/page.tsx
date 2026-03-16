@@ -129,14 +129,14 @@ function NewApplicationPageInner() {
             <Input type="number" value={form.port} onChange={(e) => set('port', parseInt(e.target.value))}
               min={1024} max={65535} className={monoInputCls} />
           </Row>
-          <Row label="CPU" icon={<Cpu className="w-3.5 h-3.5" />}>
+          <Row label="CPU" icon={<Cpu className="w-3.5 h-3.5" />} wide>
             <Select value={String(form.alloted_cpu)} onValueChange={(v) => {
               if (!v) return;
               const cpu = parseFloat(v);
               set('alloted_cpu', cpu);
               set('alloted_memory', CPU_MEMORY_MAP[cpu][0]);
             }}>
-              <SelectTrigger className="bg-transparent border-0 h-9 text-sm text-white focus:ring-0 px-0 shadow-none">
+              <SelectTrigger className="bg-[#111] border border-[#1a1a1a] h-9 text-sm text-white focus:ring-0 px-3 shadow-none w-40 rounded-lg">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="bg-[#0f0f0f] border-[#1a1a1a]">
@@ -146,9 +146,9 @@ function NewApplicationPageInner() {
               </SelectContent>
             </Select>
           </Row>
-          <Row label="Memory" icon={<HardDrive className="w-3.5 h-3.5" />} last>
+          <Row label="Memory" icon={<HardDrive className="w-3.5 h-3.5" />} last wide>
             <Select value={String(form.alloted_memory)} onValueChange={(v) => v && set('alloted_memory', parseFloat(v))}>
-              <SelectTrigger className="bg-transparent border-0 h-9 text-sm text-white focus:ring-0 px-0 shadow-none">
+              <SelectTrigger className="bg-[#111] border border-[#1a1a1a] h-9 text-sm text-white focus:ring-0 px-3 shadow-none w-40 rounded-lg">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="bg-[#0f0f0f] border-[#1a1a1a]">
@@ -229,12 +229,12 @@ function Section({ label, children, action }: { label: string; children: React.R
   );
 }
 
-function Row({ label, icon, hint, children, last }: {
-  label: string; icon: React.ReactNode; hint?: string; children: React.ReactNode; last?: boolean;
+function Row({ label, icon, hint, children, last, wide }: {
+  label: string; icon: React.ReactNode; hint?: string; children: React.ReactNode; last?: boolean; wide?: boolean;
 }) {
   return (
     <div className="flex items-start gap-3 px-4 py-2.5">
-      <div className="flex items-center gap-2 w-32 shrink-0 pt-2">
+      <div className={`flex items-center gap-2 ${wide ? 'w-40' : 'w-32'} shrink-0 pt-2`}>
         <span className="text-[#444]">{icon}</span>
         <span className="text-xs text-[#555]">{label}</span>
         {hint && <span className="text-[10px] text-[#333] hidden xl:block">{hint}</span>}
