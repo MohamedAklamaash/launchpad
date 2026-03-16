@@ -15,3 +15,5 @@ volumes/
 *.backup*
 *.tfstate
 .kiro/
+*.log*
+logs/

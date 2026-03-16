@@ -163,7 +163,7 @@ class ResilientPikaConsumer:
         self.channel.exchange_declare(
             exchange=self.exchange,
             exchange_type="topic",
-            durable=True,       # survives broker restart
+            durable=True,
         )
 
         self.channel.queue_declare(

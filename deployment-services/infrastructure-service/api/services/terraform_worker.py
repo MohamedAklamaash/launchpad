@@ -1,4 +1,6 @@
 import os
+import time
+import threading
 import subprocess
 import logging
 import boto3
@@ -403,11 +405,13 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                     metadata=infra.metadata,
                     correlation_id=None
                 ))
-                
-                # Publish environment.updated event
-                transaction.on_commit(lambda: infra_producer.publish_environment_updated(
+
+                # Publish environment.updated after a short delay so the application-service
+                # has time to process and commit the infrastructure.created event first.
+                _env_id = env.id
+                _env_kwargs = dict(
                     infra_id=infra_id,
-                    environment_id=env.id,
+                    environment_id=_env_id,
                     status="ACTIVE",
                     vpc_id=env.vpc_id,
                     cluster_arn=env.cluster_arn,
@@ -415,8 +419,14 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                     alb_dns=env.alb_dns,
                     target_group_arn=env.target_group_arn,
                     ecr_repository_url=env.ecr_repository_url,
-                    ecs_task_execution_role_arn=env.ecs_task_execution_role_arn
-                ))
+                    ecs_task_execution_role_arn=env.ecs_task_execution_role_arn,
+                )
+                def _publish_env_delayed(**kwargs):
+                    time.sleep(3)
+                    infra_producer.publish_environment_updated(**kwargs)
+                transaction.on_commit(lambda: threading.Thread(
+                    target=_publish_env_delayed, kwargs=_env_kwargs, daemon=True
+                ).start())
     
     @staticmethod
     def _pre_destroy_cleanup(credentials: dict, region: str, infra_id: str):

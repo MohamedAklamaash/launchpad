@@ -1,8 +1,9 @@
 import json
+import time
 import uuid
 import logging
 from django.db import transaction, connection
-from api.models import Environment
+from api.models import Environment, Infrastructure
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaConsumer
 
@@ -16,7 +17,10 @@ class EnvironmentEventConsumer:
     ROUTING_KEY = "environment.updated"
     QUEUE_NAME = "application-service.environment-events"
 
+    MAX_RETRIES = 10
+
     def __init__(self):
+        self._retry_counts: dict = {}
         self.consumer = ResilientPikaConsumer(
             url=app_config.rabbitmq_url,
             exchange=self.EXCHANGE_NAME,
@@ -70,6 +74,29 @@ class EnvironmentEventConsumer:
 
         try:
             connection.close()
+
+            if not Infrastructure.objects.filter(id=infra_id).exists():
+                retry_count = self._retry_counts.get(env_id, 0)
+
+                if retry_count >= self.MAX_RETRIES:
+                    log.error(
+                        "Infrastructure still not found after max retries — discarding",
+                        extra={"correlation_id": correlation_id, "infrastructure_id": infra_id, "retries": retry_count},
+                    )
+                    self._retry_counts.pop(env_id, None)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                else:
+                    self._retry_counts[env_id] = retry_count + 1
+                    delay = min(2 ** retry_count, 30)
+                    log.warning(
+                        "Infrastructure not found yet — NACKing with requeue (attempt %d/%d, delay %ds)",
+                        retry_count + 1, self.MAX_RETRIES, delay,
+                        extra={"correlation_id": correlation_id, "infrastructure_id": infra_id},
+                    )
+                    time.sleep(delay)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                return
+
             with transaction.atomic():
                 env, created = Environment.objects.update_or_create(
                     id=env_id,
@@ -90,6 +117,7 @@ class EnvironmentEventConsumer:
                 f"Environment {'created' if created else 'updated'} successfully — ACKing",
                 extra={"correlation_id": correlation_id, "environment_id": env_id},
             )
+            self._retry_counts.pop(env_id, None)
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as exc:
