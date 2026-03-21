@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
-from typing import Optional
 from app.services.proxy import proxy_request
 from app.core.config import settings
 

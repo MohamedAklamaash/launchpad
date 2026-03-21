@@ -26,5 +26,5 @@ COPY --from=build /app/packages/common/dist ./packages/common/dist
 COPY --from=build /app/services/auth-service/dist ./services/auth-service/dist
 
 WORKDIR /app/services/auth-service
-EXPOSE 3001
+EXPOSE 5001
 CMD ["node", "dist/index.js"]

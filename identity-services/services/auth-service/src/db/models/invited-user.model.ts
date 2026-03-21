@@ -1,26 +1,26 @@
-import { sequelize } from "@/db/sequalize";
-import { USER_ROLE } from "@/types/auth.invited_user.types";
-import { DataTypes, Model, type Optional } from "sequelize";
-import { v7 as uuidv7 } from "uuid";
+import { sequelize } from '@/db/sequalize';
+import { USER_ROLE } from '@/types/auth.invited_user.types';
+import { DataTypes, Model, type Optional } from 'sequelize';
+import { v7 as uuidv7 } from 'uuid';
 
 export interface InvitedUserAttributes {
-    id: string,
-    infra_id: string[],
-    invited_by: string,
-    email: string,
-    user_name: string,
-    password_hash: string,
-    role: USER_ROLE,
-    forgot_password: boolean,
-    is_authenticated: boolean,
-    opt_id: string,
-    created_at: Date,
-    updated_at: Date,
+    id: string;
+    infra_id: string[];
+    invited_by: string;
+    email: string;
+    user_name: string;
+    password_hash: string;
+    role: USER_ROLE;
+    forgot_password: boolean;
+    is_authenticated: boolean;
+    opt_id: string;
+    created_at: Date;
+    updated_at: Date;
 }
 
 export type InvitedUserCreationAttributes = Optional<
     InvitedUserAttributes,
-    "id" | "created_at" | "updated_at" | "forgot_password" | "is_authenticated" | "opt_id"
+    'id' | 'created_at' | 'updated_at' | 'forgot_password' | 'is_authenticated' | 'opt_id'
 >;
 
 export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreationAttributes> {
@@ -51,7 +51,7 @@ InvitedUser.init(
         },
         invited_by: {
             type: DataTypes.UUID,
-            allowNull: false
+            allowNull: false,
         },
         email: {
             type: DataTypes.STRING,
@@ -97,7 +97,7 @@ InvitedUser.init(
     },
     {
         sequelize,
-        tableName: "invited_users",
+        tableName: 'invited_users',
         indexes: [
             // {
             //     name: "invited_users_user_name_idx", // we can use gin_trgm_ops for partial matching later to handle type tolerance
@@ -105,5 +105,5 @@ InvitedUser.init(
             //     using: "BTREE",
             // },
         ],
-    }
-)
+    },
+);

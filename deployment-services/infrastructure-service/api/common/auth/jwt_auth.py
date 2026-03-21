@@ -1,5 +1,4 @@
 from rest_framework import authentication
-from rest_framework import exceptions
 import logging
 from django.conf import settings
 

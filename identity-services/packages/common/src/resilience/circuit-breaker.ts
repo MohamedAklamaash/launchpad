@@ -1,8 +1,8 @@
-import { CreateLogger } from "../utils/logger.js";
+import { CreateLogger } from '../utils/logger.js';
 
-const rootLogger = CreateLogger({ name: "resilience" });
+const rootLogger = CreateLogger({ name: 'resilience' });
 
-export type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
+export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 
 export interface CircuitBreakerOptions {
     /** Number of consecutive failures before opening the circuit */
@@ -29,12 +29,12 @@ export interface CircuitMetrics {
 export class CircuitBreakerOpenError extends Error {
     constructor(name: string) {
         super(`Circuit breaker [${name}] is OPEN – call rejected`);
-        this.name = "CircuitBreakerOpenError";
+        this.name = 'CircuitBreakerOpenError';
     }
 }
 
 export class CircuitBreaker {
-    private state: CircuitState = "CLOSED";
+    private state: CircuitState = 'CLOSED';
     private failures = 0;
     private successes = 0;
     private totalCalls = 0;
@@ -51,7 +51,7 @@ export class CircuitBreaker {
 
     constructor(
         private readonly name: string,
-        options: CircuitBreakerOptions = {}
+        options: CircuitBreakerOptions = {},
     ) {
         this.failureThreshold = options.failureThreshold ?? 5;
         this.successThreshold = options.successThreshold ?? 2;
@@ -65,15 +65,15 @@ export class CircuitBreaker {
         this.totalCalls++;
         this.maybeTransitionFromOpen();
 
-        if (this.state === "OPEN") {
-            this.log.warn({ state: this.state }, "Circuit OPEN – rejecting call");
+        if (this.state === 'OPEN') {
+            this.log.warn({ state: this.state }, 'Circuit OPEN – rejecting call');
             if (this.fallback) return this.fallback<T>();
             throw new CircuitBreakerOpenError(this.name);
         }
 
-        if (this.state === "HALF_OPEN") {
+        if (this.state === 'HALF_OPEN') {
             if (this.halfOpenCalls >= this.halfOpenMaxCalls) {
-                this.log.warn("Circuit HALF_OPEN – max probe calls reached, rejecting");
+                this.log.warn('Circuit HALF_OPEN – max probe calls reached, rejecting');
                 if (this.fallback) return this.fallback<T>();
                 throw new CircuitBreakerOpenError(this.name);
             }
@@ -107,7 +107,7 @@ export class CircuitBreaker {
     }
 
     reset() {
-        this.transitionTo("CLOSED");
+        this.transitionTo('CLOSED');
         this.failures = 0;
         this.successes = 0;
         this.halfOpenCalls = 0;
@@ -115,10 +115,10 @@ export class CircuitBreaker {
 
     private onSuccess() {
         this.failures = 0;
-        if (this.state === "HALF_OPEN") {
+        if (this.state === 'HALF_OPEN') {
             this.successes++;
             if (this.successes >= this.successThreshold) {
-                this.transitionTo("CLOSED");
+                this.transitionTo('CLOSED');
             }
         }
     }
@@ -128,35 +128,35 @@ export class CircuitBreaker {
         this.successes = 0;
         this.failures++;
 
-        if (this.state === "HALF_OPEN") {
-            this.transitionTo("OPEN");
+        if (this.state === 'HALF_OPEN') {
+            this.transitionTo('OPEN');
             return;
         }
 
-        if (this.state === "CLOSED" && this.failures >= this.failureThreshold) {
-            this.transitionTo("OPEN");
+        if (this.state === 'CLOSED' && this.failures >= this.failureThreshold) {
+            this.transitionTo('OPEN');
         }
 
-        this.log.error({ err, failures: this.failures }, "Circuit breaker recorded failure");
+        this.log.error({ err, failures: this.failures }, 'Circuit breaker recorded failure');
     }
 
     private maybeTransitionFromOpen() {
         if (
-            this.state === "OPEN" &&
+            this.state === 'OPEN' &&
             this.lastFailureTime !== null &&
             Date.now() - this.lastFailureTime >= this.timeout
         ) {
-            this.transitionTo("HALF_OPEN");
+            this.transitionTo('HALF_OPEN');
         }
     }
 
     private transitionTo(next: CircuitState) {
         if (this.state === next) return;
-        this.log.info({ from: this.state, to: next }, "Circuit breaker state transition");
+        this.log.info({ from: this.state, to: next }, 'Circuit breaker state transition');
         this.state = next;
         this.lastStateChange = Date.now();
         this.halfOpenCalls = 0;
         this.successes = 0;
-        if (next === "CLOSED") this.failures = 0;
+        if (next === 'CLOSED') this.failures = 0;
     }
 }

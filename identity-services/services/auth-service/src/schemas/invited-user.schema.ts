@@ -7,7 +7,7 @@ export const registerSchema = z.object({
         password: z.string().min(6),
         user_name: z.string().min(3),
         infra_id: z.uuid(),
-        role: z.enum(USER_ROLE)
+        role: z.enum(USER_ROLE),
     }),
 });
 

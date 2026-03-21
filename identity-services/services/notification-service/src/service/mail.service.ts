@@ -16,9 +16,9 @@ const transporter = nodemailer.createTransport({
 
 transporter.verify((error, success) => {
     if (error) {
-        logger.error({ error }, "Mail server connection failed");
+        logger.error({ error }, 'Mail server connection failed');
     } else {
-        logger.info("Mail server is ready to take our messages");
+        logger.info('Mail server is ready to take our messages');
     }
 });
 
@@ -31,8 +31,8 @@ export const sendMail = async (to: string, subject: string, html: string) => {
             html,
         });
 
-        logger.info({ messageId: info.messageId }, "Email sent successfully");
+        logger.info({ messageId: info.messageId }, 'Email sent successfully');
     } catch (error) {
-        logger.error({ error }, "Failed to send email");
+        logger.error({ error }, 'Failed to send email');
     }
-}
+};

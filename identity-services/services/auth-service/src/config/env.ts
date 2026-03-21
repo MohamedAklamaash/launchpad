@@ -1,8 +1,8 @@
-import "dotenv/config";
-import { createEnv, z } from "@launchpad/common";
+import 'dotenv/config';
+import { createEnv, z } from '@launchpad/common';
 
 const envSchema = z.object({
-    NODE_ENV: z.enum(["development", "test", "staging", "production"]),
+    NODE_ENV: z.enum(['development', 'test', 'staging', 'production']),
     AUTH_SERVICE_PORT: z.coerce.number().default(3000),
     INTERNAL_API_TOKEN: z.string(),
 
@@ -35,7 +35,7 @@ const envSchema = z.object({
     REDIS_PORT: z.coerce.number().default(6379),
     REDIS_PASSWORD: z.string(),
     REDIS_DB: z.coerce.number().default(0),
-    REDIS_USERNAME: z.string().optional().default("default"),
+    REDIS_USERNAME: z.string().optional().default('default'),
 
     RABBITMQ_URL: z.string(),
 
@@ -50,7 +50,7 @@ const envSchema = z.object({
 });
 
 export const env = createEnv(envSchema, {
-    serviceName: "auth-service",
+    serviceName: 'auth-service',
     source: process.env,
 });
 

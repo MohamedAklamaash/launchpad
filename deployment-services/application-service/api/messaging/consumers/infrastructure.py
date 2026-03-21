@@ -184,7 +184,7 @@ class InfraUpdatedEventConsumer:
 
         try:
             event = json.loads(body)
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             log.error("JSON decode failed", extra={"correlation_id": correlation_id})
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return

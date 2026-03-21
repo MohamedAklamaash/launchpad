@@ -17,3 +17,4 @@ volumes/
 .kiro/
 *.log*
 logs/
+.ruff_cache/

@@ -1,16 +1,16 @@
-import { Router } from "express";
-import { authRouter } from "@/router/invited-user.routes";
-import { userRouter } from "@/router/user.router";
+import { Router } from 'express';
+import { authRouter } from '@/router/invited-user.routes';
+import { userRouter } from '@/router/user.router';
 export { userRouter };
-import { healthRouter } from "@/router/health.routes";
+import { healthRouter } from '@/router/health.routes';
 
 export const registerRoutes = (): Router => {
     const app = Router();
 
-    app.use("/", healthRouter);
+    app.use('/', healthRouter);
 
-    app.use("/auth", authRouter);
-    app.use("/user", userRouter);
+    app.use('/auth', authRouter);
+    app.use('/user', userRouter);
 
     return app;
-}
+};

@@ -140,7 +140,6 @@ def infrastructure_update(request: HttpRequest, infra_id):
 def infrastructure_reprovision(request: HttpRequest, infra_id):
     from api.models.environment import Environment
     from api.services.infra_queue import InfraQueue
-    from django.db import transaction
 
     infra = infrastructure_service.get_infrastructure(user_id=request.user.id, infra_id=infra_id)
     if not infra:

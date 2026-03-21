@@ -6,7 +6,7 @@ export const GetUserById = async (req: Request, res: Response, next: NextFunctio
     try {
         const userId = req.params.userId as string;
         if (!userId) {
-            throw new HttpError(400, "User ID is required");
+            throw new HttpError(400, 'User ID is required');
         }
         const user = await userService.getUserById(userId);
         res.status(200).json(user);

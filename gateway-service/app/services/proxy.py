@@ -51,9 +51,10 @@ async def proxy_request(url: str, request: Request) -> Response:
             return Response(content=exc.response.content, status_code=exc.response.status_code)
         except Exception as exc:
             import logging
+            import json
             logging.error(f"Error forwarding request to {url}: {exc}", exc_info=True)
             return Response(
-                content={"message": "Error forwarding request", "details": str(exc)},
+                content=json.dumps({"message": "Error forwarding request", "details": str(exc)}),
                 status_code=502,
                 media_type="application/json"
             )

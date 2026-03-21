@@ -11,6 +11,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check-python:
+    name: Lint & Syntax (python services)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - gateway-service
+          - payment-service
+          - deployment-services
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Syntax check
+        run: python -m compileall ${{ matrix.service }} -q
+
+      - name: Ruff lint
+        run: ruff check ${{ matrix.service }}
+
   check-identity:
     name: Lint & Typecheck (identity-services)
     runs-on: ubuntu-latest

@@ -1,7 +1,6 @@
 import logging
 from api.models import Application, Environment
 from aws.session import create_boto3_session
-from aws.ecs import ECSClient
 from aws.alb import ALBClient
 
 logger = logging.getLogger(__name__)
@@ -47,7 +46,6 @@ class ApplicationCleanupService:
     
     def _delete_ecs_service(self, session, cluster_arn, service_arn):
         try:
-            ecs = ECSClient(session)
             ecs_client = session.client('ecs')
             
             # Scale service to 0 tasks

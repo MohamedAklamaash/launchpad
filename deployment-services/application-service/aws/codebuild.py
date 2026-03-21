@@ -1,4 +1,3 @@
-import boto3
 import time
 import logging
 import re
@@ -105,7 +104,7 @@ phases:
                     environmentVariablesOverride=env_vars
                 )
                 return response['build']['id']
-            except self.client.exceptions.ResourceNotFoundException as e:
+            except self.client.exceptions.ResourceNotFoundException:
                 if attempt < max_retries - 1:
                     logger.warning(f"CodeBuild project not found (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay}s...")
                     time.sleep(retry_delay)

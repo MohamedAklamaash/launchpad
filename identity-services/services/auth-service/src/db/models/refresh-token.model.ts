@@ -1,6 +1,6 @@
-import { DataTypes, Model, type Optional } from "sequelize";
-import { sequelize } from "@/db/sequalize";
-import { v7 as uuidv7 } from "uuid";
+import { DataTypes, Model, type Optional } from 'sequelize';
+import { sequelize } from '@/db/sequalize';
+import { v7 as uuidv7 } from 'uuid';
 
 export interface RefreshTokenAttributes {
     id: string;
@@ -11,7 +11,10 @@ export interface RefreshTokenAttributes {
     updated_at: Date;
 }
 
-export type RefreshTokenCreationAttributes = Optional<RefreshTokenAttributes, "id" | "created_at" | "updated_at">;
+export type RefreshTokenCreationAttributes = Optional<
+    RefreshTokenAttributes,
+    'id' | 'created_at' | 'updated_at'
+>;
 
 export class RefreshToken extends Model<RefreshTokenAttributes, RefreshTokenCreationAttributes> {
     declare id: string;
@@ -55,9 +58,9 @@ RefreshToken.init(
     },
     {
         sequelize,
-        tableName: "refresh_tokens",
-    }
-)
+        tableName: 'refresh_tokens',
+    },
+);
 
 // InvitedUser.hasMany(RefreshToken, { foreignKey: "user_id", as: "refresh_tokens", onDelete: "CASCADE", constraints: false });
 // RefreshToken.belongsTo(InvitedUser, { foreignKey: "user_id", as: "invited_user", constraints: false });

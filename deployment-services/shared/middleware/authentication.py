@@ -1,5 +1,5 @@
 from django.conf import settings
-from shared.utils.jwt import JWTUser, decode_jwt
+from shared.utils.jwt import decode_jwt
 from shared.errors.exception import HttpError
 import logging
 from django.http import JsonResponse
@@ -10,7 +10,7 @@ def my_view(request):
     
 logger = logging.getLogger(__name__)
 
-EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/api/v1/healthz", "/api/v1/liveness", "/api/v1/readiness", "/api/v1/docs", "/api/v1/schema"]
+EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/health", "/api/v1/healthz", "/api/v1/liveness", "/api/v1/readiness", "/api/v1/docs", "/api/v1/schema"]
 
 class JWTAuthMiddleware:
     def __init__(self, get_response):

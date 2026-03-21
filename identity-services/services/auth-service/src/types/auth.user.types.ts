@@ -1,4 +1,3 @@
-
 export interface GithubCallbackInput {
     code: string;
 }
@@ -11,7 +10,7 @@ export interface GithubUserUpsertInput {
     email: string;
 }
 
-import { AuthTokens } from "./auth.invited_user.types";
+import { AuthTokens } from './auth.invited_user.types';
 
 export interface GithubAuthResponse extends AuthTokens {
     message: string;

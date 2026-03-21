@@ -1,4 +1,3 @@
-
 export const getAuthEmailTemplate = (url: string, userName: string) => {
     return `
 <!DOCTYPE html>

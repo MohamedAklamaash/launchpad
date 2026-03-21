@@ -8,7 +8,6 @@ import json
 import hashlib
 from pathlib import Path
 from django.db import transaction
-from django.utils import timezone
 from api.models.infrastructure import Infrastructure
 from api.models.environment import Environment
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure

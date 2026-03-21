@@ -1,9 +1,9 @@
 import { Op, type WhereOptions } from 'sequelize';
 import { InfraCreatedPayload } from '@launchpad/common';
 
-import type { AuthUserRegisteredPayload } from '@launchpad/common'
-import { User as UserModel } from "@/db";
-import type { User as IUser, CreateUserInput } from "@/types/user.type";
+import type { AuthUserRegisteredPayload } from '@launchpad/common';
+import { User as UserModel } from '@/db';
+import type { User as IUser, CreateUserInput } from '@/types/user.type';
 
 const toUserSignature = (user: UserModel): IUser => {
     return {
@@ -17,13 +17,13 @@ const toUserSignature = (user: UserModel): IUser => {
         user_name: user.user_name,
         profile_url: user.profile_url,
         invited_by: user.invited_by,
-    }
-}
+    };
+};
 
 export class UserRepository {
     async findbyid(id: string): Promise<IUser | null> {
-        const user = await UserModel.findByPk(id)
-        return user ? toUserSignature(user) : null
+        const user = await UserModel.findByPk(id);
+        return user ? toUserSignature(user) : null;
     }
 
     async findAll(): Promise<IUser[]> {
@@ -74,7 +74,7 @@ export class UserRepository {
             metadata: input.metadata,
             invited_by: input.invited_by,
             created_at: new Date(),
-            updated_at: new Date()
+            updated_at: new Date(),
         });
         return toUserSignature(user);
     }
@@ -106,4 +106,4 @@ export class UserRepository {
     }
 }
 
-export const userRepository = new UserRepository()
+export const userRepository = new UserRepository();

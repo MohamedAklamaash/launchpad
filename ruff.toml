@@ -1,0 +1,7 @@
+[lint]
+ignore = [
+    "E402",   # module-level import not at top — required by Django settings
+    "E701",   # multiple statements on one line
+    "E702",   # statement ends with semicolon
+    "E741",   # ambiguous variable name
+]

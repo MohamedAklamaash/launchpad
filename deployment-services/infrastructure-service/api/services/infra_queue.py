@@ -2,7 +2,6 @@ import socket
 import redis
 import json
 import logging
-import uuid
 from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta

@@ -1,5 +1,4 @@
 from django.db import models
-from api.models.user import User
 
 class Infrastructure(models.Model):
     id = models.UUIDField(primary_key=True, editable=False)

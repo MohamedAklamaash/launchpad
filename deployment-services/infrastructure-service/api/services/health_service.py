@@ -2,7 +2,6 @@ from django.http import JsonResponse
 from django.db import connection as db_connection
 from django.db.utils import OperationalError
 from api.messaging.producer.producer import infra_producer
-from api.messaging.consumer.consumer import AuthEventConsumer
 import logging
 
 logger = logging.getLogger(__name__)

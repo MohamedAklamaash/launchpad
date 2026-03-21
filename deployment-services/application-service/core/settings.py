@@ -40,7 +40,7 @@ JWT_SECRET = app_config.jwt_secret
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') + ['infrastructure-service', 'application-service', 'payment-service']
 
 
 # Application definition
@@ -100,6 +100,7 @@ AUTH_USER_MODEL = "api.User"
 INTERNAL_AUTH_TOKEN=app_config.internal_api_token
 
 INTERNAL_AUTH_EXEMPT_PATHS = [
+    "/health",
     "/api/v1/healthz",
     "/api/v1/liveness",
     "/api/v1/readiness",

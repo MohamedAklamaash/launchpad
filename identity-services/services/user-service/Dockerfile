@@ -26,5 +26,5 @@ COPY --from=build /app/packages/common/dist ./packages/common/dist
 COPY --from=build /app/services/user-service/dist ./services/user-service/dist
 
 WORKDIR /app/services/user-service
-EXPOSE 3002
+EXPOSE 5002
 CMD ["node", "dist/index.js"]

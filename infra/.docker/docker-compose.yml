@@ -18,7 +18,7 @@ services:
     networks:
       - backend
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d postgres" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -156,7 +156,7 @@ services:
       REDIS_HOST: redis
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     ports:
-      - "13001:3001"
+      - "5001:5001"
     networks:
       - backend
     depends_on:
@@ -181,7 +181,7 @@ services:
       DB_PORT: "3306"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     ports:
-      - "3002:3002"
+      - "5002:5002"
     networks:
       - backend
     depends_on:
@@ -203,7 +203,7 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
     ports:
-      - "3003:3003"
+      - "5003:5003"
     networks:
       - backend
     depends_on:
@@ -256,6 +256,12 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   application-worker:
     image: mohamedaklamaash/launchpad-application-worker:${TAG:-latest}
@@ -274,9 +280,7 @@ services:
     networks:
       - backend
     depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
+      application-service:
         condition: service_healthy
 
   infrastructure-service:
@@ -302,6 +306,12 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   infrastructure-worker:
     image: mohamedaklamaash/launchpad-infrastructure-worker:${TAG:-latest}
@@ -320,9 +330,7 @@ services:
     networks:
       - backend
     depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
+      infrastructure-service:
         condition: service_healthy
 
   frontend:

@@ -1,8 +1,8 @@
-import "dotenv/config"
-import { createEnv, z } from "@launchpad/common";
+import 'dotenv/config';
+import { createEnv, z } from '@launchpad/common';
 
 const envSchema = z.object({
-    NODE_ENV: z.enum(["development", "test", "staging", "production"]),
+    NODE_ENV: z.enum(['development', 'test', 'staging', 'production']),
     USER_SERVICE_PORT: z.coerce.number().default(3000),
     INTERNAL_API_TOKEN: z.string(),
 
@@ -28,13 +28,11 @@ const envSchema = z.object({
 
     // HTTP Client
     HTTP_REQUEST_TIMEOUT_MS: z.coerce.number().default(5000),
-})
+});
 
-export const env = createEnv(envSchema,
-    {
-        serviceName: "user-service",
-        source: process.env
-    }
-)
+export const env = createEnv(envSchema, {
+    serviceName: 'user-service',
+    source: process.env,
+});
 
 export type Env = typeof env;

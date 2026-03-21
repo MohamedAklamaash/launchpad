@@ -1,8 +1,12 @@
-import axios, { type AxiosInstance, type AxiosRequestConfig, type AxiosResponse } from "axios";
-import { CircuitBreaker, type CircuitBreakerOptions, type CircuitMetrics } from "./circuit-breaker.js";
-import { CreateLogger } from "../utils/logger.js";
+import axios, { type AxiosInstance, type AxiosRequestConfig, type AxiosResponse } from 'axios';
+import {
+    CircuitBreaker,
+    type CircuitBreakerOptions,
+    type CircuitMetrics,
+} from './circuit-breaker.js';
+import { CreateLogger } from '../utils/logger.js';
 
-const rootLogger = CreateLogger({ name: "resilience" });
+const rootLogger = CreateLogger({ name: 'resilience' });
 
 export interface ResilientHttpClientOptions {
     /** Base URL for all requests */
@@ -35,52 +39,36 @@ export class ResilientHttpClient {
         this.breaker = new CircuitBreaker(options.name, options.circuitBreaker);
     }
 
-    async get<T = unknown>(
-        url: string,
-        config?: AxiosRequestConfig
-    ): Promise<AxiosResponse<T>> {
-        return this.execute<T>(() =>
-            this.client.get<T>(url, this.withTimeout(config))
-        );
+    async get<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
+        return this.execute<T>(() => this.client.get<T>(url, this.withTimeout(config)));
     }
 
     async post<T = unknown>(
         url: string,
         data?: unknown,
-        config?: AxiosRequestConfig
+        config?: AxiosRequestConfig,
     ): Promise<AxiosResponse<T>> {
-        return this.execute<T>(() =>
-            this.client.post<T>(url, data, this.withTimeout(config))
-        );
+        return this.execute<T>(() => this.client.post<T>(url, data, this.withTimeout(config)));
     }
 
     async put<T = unknown>(
         url: string,
         data?: unknown,
-        config?: AxiosRequestConfig
+        config?: AxiosRequestConfig,
     ): Promise<AxiosResponse<T>> {
-        return this.execute<T>(() =>
-            this.client.put<T>(url, data, this.withTimeout(config))
-        );
+        return this.execute<T>(() => this.client.put<T>(url, data, this.withTimeout(config)));
     }
 
     async patch<T = unknown>(
         url: string,
         data?: unknown,
-        config?: AxiosRequestConfig
+        config?: AxiosRequestConfig,
     ): Promise<AxiosResponse<T>> {
-        return this.execute<T>(() =>
-            this.client.patch<T>(url, data, this.withTimeout(config))
-        );
+        return this.execute<T>(() => this.client.patch<T>(url, data, this.withTimeout(config)));
     }
 
-    async delete<T = unknown>(
-        url: string,
-        config?: AxiosRequestConfig
-    ): Promise<AxiosResponse<T>> {
-        return this.execute<T>(() =>
-            this.client.delete<T>(url, this.withTimeout(config))
-        );
+    async delete<T = unknown>(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
+        return this.execute<T>(() => this.client.delete<T>(url, this.withTimeout(config)));
     }
 
     getCircuitMetrics(): CircuitMetrics {
@@ -94,14 +82,11 @@ export class ResilientHttpClient {
                 const res = await fn();
                 this.log.info(
                     { status: res.status, durationMs: Date.now() - start },
-                    "HTTP request succeeded"
+                    'HTTP request succeeded',
                 );
                 return res;
             } catch (err) {
-                this.log.error(
-                    { err, durationMs: Date.now() - start },
-                    "HTTP request failed"
-                );
+                this.log.error({ err, durationMs: Date.now() - start }, 'HTTP request failed');
                 throw err;
             }
         });

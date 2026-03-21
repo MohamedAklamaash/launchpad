@@ -8,7 +8,6 @@ from aws.codebuild import CodeBuildClient
 from aws.ecs import ECSClient
 from aws.alb import ALBClient
 from aws.ecr import ECRClient
-from django.db import transaction
 from botocore.exceptions import ClientError
 import time
 
@@ -168,7 +167,6 @@ class ApplicationDeploymentService:
     
     def _trigger_build(self, session, application: Application, environment: Environment):
         codebuild = CodeBuildClient(session)
-        ecr = ECRClient(session)
         iam = session.client('iam')
         
         project_name = f"launchpad-build-{application.infrastructure.id}"
@@ -213,7 +211,6 @@ class ApplicationDeploymentService:
         # Ensure CodeBuild project exists
         codebuild.ensure_project_exists(project_name, service_role_arn, session.region_name)
         
-        image_tag = f"{_slug(application.name)}-latest"
         dockerfile_path = application.dockerfile_path or "Dockerfile"
         
         github_token = None
@@ -451,7 +448,7 @@ class ApplicationDeploymentService:
                 
             except Exception as e:
                 if 'ExpiredToken' in str(e):
-                    logger.warning(f"Token expired during wait, will refresh on next iteration")
+                    logger.warning("Token expired during wait, will refresh on next iteration")
                     time.sleep(2)
                 else:
                     raise
