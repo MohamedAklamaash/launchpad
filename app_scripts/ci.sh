@@ -29,6 +29,7 @@ echo ""
 echo "=== Identity Services ==="
 cd "$ROOT/identity-services"
 run "pnpm install"   pnpm install --frozen-lockfile
+run "build common"   pnpm --filter @launchpad/common build
 run "prettier"       pnpm format
 run "eslint"         pnpm lint
 run "tsc"            pnpm -r --workspace-root=false exec tsc --noEmit

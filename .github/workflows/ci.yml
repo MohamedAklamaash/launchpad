@@ -57,6 +57,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Build common
+        run: pnpm --filter @launchpad/common build
+
       - name: Prettier
         run: pnpm format
 
