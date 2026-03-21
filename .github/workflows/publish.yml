@@ -77,7 +77,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: mohamedaklamaash/${{ matrix.service }}
+          images: mohamedaklamaash/launchpad-${{ matrix.service }}
           tags: |
             type=sha,prefix=,format=short
             type=raw,value=latest
@@ -97,6 +97,6 @@ jobs:
       - name: Generate artifact attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: index.docker.io/mohamedaklamaash/${{ matrix.service }}
+          subject-name: index.docker.io/mohamedaklamaash/launchpad-${{ matrix.service }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true

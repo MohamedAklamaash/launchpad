@@ -123,7 +123,7 @@ services:
 
   # ── Application Services ──────────────────────────────────────────────────────
   gateway-service:
-    image: mohamedaklamaash/gateway-service:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-gateway-service:${TAG:-latest}
     build:
       context: ../../gateway-service
       dockerfile: Dockerfile
@@ -139,7 +139,7 @@ services:
         condition: service_healthy
 
   auth-service:
-    image: mohamedaklamaash/auth-service:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-auth-service:${TAG:-latest}
     build:
       context: ../../identity-services
       dockerfile: services/auth-service/Dockerfile
@@ -159,7 +159,7 @@ services:
         condition: service_healthy
 
   user-service:
-    image: mohamedaklamaash/user-service:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-user-service:${TAG:-latest}
     build:
       context: ../../identity-services
       dockerfile: services/user-service/Dockerfile
@@ -177,7 +177,7 @@ services:
         condition: service_healthy
 
   notification-service:
-    image: mohamedaklamaash/notification-service:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-notification-service:${TAG:-latest}
     build:
       context: ../../identity-services
       dockerfile: services/notification-service/Dockerfile
@@ -193,7 +193,7 @@ services:
         condition: service_healthy
 
   payment-service:
-    image: mohamedaklamaash/payment-service:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-payment-service:${TAG:-latest}
     build:
       context: ../../
       dockerfile: payment-service/Dockerfile
@@ -211,7 +211,7 @@ services:
         condition: service_healthy
 
   application-service:
-    image: mohamedaklamaash/application-service:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-application-service:${TAG:-latest}
     build:
       context: ../../
       dockerfile: deployment-services/application-service/Dockerfile
@@ -229,7 +229,7 @@ services:
         condition: service_healthy
 
   application-worker:
-    image: mohamedaklamaash/application-worker:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-application-worker:${TAG:-latest}
     build:
       context: ../../
       dockerfile: deployment-services/application-service/Dockerfile.worker
@@ -245,7 +245,7 @@ services:
         condition: service_healthy
 
   infrastructure-service:
-    image: mohamedaklamaash/infrastructure-service:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-infrastructure-service:${TAG:-latest}
     build:
       context: ../../
       dockerfile: deployment-services/infrastructure-service/Dockerfile
@@ -263,7 +263,7 @@ services:
         condition: service_healthy
 
   infrastructure-worker:
-    image: mohamedaklamaash/infrastructure-worker:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-infrastructure-worker:${TAG:-latest}
     build:
       context: ../../
       dockerfile: deployment-services/infrastructure-service/Dockerfile.worker
@@ -279,7 +279,7 @@ services:
         condition: service_healthy
 
   frontend:
-    image: mohamedaklamaash/frontend:${TAG:-latest}
+    image: mohamedaklamaash/launchpad-frontend:${TAG:-latest}
     build:
       context: ../../launchpad-frontend
       dockerfile: Dockerfile
