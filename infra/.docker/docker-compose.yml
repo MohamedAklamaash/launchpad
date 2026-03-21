@@ -124,6 +124,7 @@ services:
   # ── Application Services ──────────────────────────────────────────────────────
   gateway-service:
     image: mohamedaklamaash/launchpad-gateway-service:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../gateway-service
       dockerfile: Dockerfile
@@ -140,6 +141,7 @@ services:
 
   auth-service:
     image: mohamedaklamaash/launchpad-auth-service:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../identity-services
       dockerfile: services/auth-service/Dockerfile
@@ -160,6 +162,7 @@ services:
 
   user-service:
     image: mohamedaklamaash/launchpad-user-service:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../identity-services
       dockerfile: services/user-service/Dockerfile
@@ -178,6 +181,7 @@ services:
 
   notification-service:
     image: mohamedaklamaash/launchpad-notification-service:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../identity-services
       dockerfile: services/notification-service/Dockerfile
@@ -194,6 +198,7 @@ services:
 
   payment-service:
     image: mohamedaklamaash/launchpad-payment-service:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../
       dockerfile: payment-service/Dockerfile
@@ -212,6 +217,7 @@ services:
 
   application-service:
     image: mohamedaklamaash/launchpad-application-service:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../
       dockerfile: deployment-services/application-service/Dockerfile
@@ -230,6 +236,7 @@ services:
 
   application-worker:
     image: mohamedaklamaash/launchpad-application-worker:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../
       dockerfile: deployment-services/application-service/Dockerfile.worker
@@ -246,6 +253,7 @@ services:
 
   infrastructure-service:
     image: mohamedaklamaash/launchpad-infrastructure-service:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../
       dockerfile: deployment-services/infrastructure-service/Dockerfile
@@ -264,6 +272,7 @@ services:
 
   infrastructure-worker:
     image: mohamedaklamaash/launchpad-infrastructure-worker:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../
       dockerfile: deployment-services/infrastructure-service/Dockerfile.worker
@@ -280,6 +289,7 @@ services:
 
   frontend:
     image: mohamedaklamaash/launchpad-frontend:${TAG:-latest}
+    pull_policy: build
     build:
       context: ../../launchpad-frontend
       dockerfile: Dockerfile
