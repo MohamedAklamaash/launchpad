@@ -10,7 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 FROM base AS final
 COPY deployment-services/shared ./shared
-COPY payment-service .
+COPY payment-service/api ./api
+COPY payment-service/core ./core
+COPY payment-service/manage.py ./manage.py
 
 ENV PYTHONPATH=/app
 EXPOSE 8004

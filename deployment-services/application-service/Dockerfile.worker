@@ -10,7 +10,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 FROM base AS final
 COPY deployment-services/shared ./shared
-COPY deployment-services/application-service .
+COPY deployment-services/application-service/api ./api
+COPY deployment-services/application-service/core ./core
+COPY deployment-services/application-service/aws ./aws
+COPY deployment-services/application-service/manage.py \
+     deployment-services/application-service/__init__.py \
+     ./
 
 ENV PYTHONPATH=/app
 CMD ["python", "manage.py", "run_worker"]
