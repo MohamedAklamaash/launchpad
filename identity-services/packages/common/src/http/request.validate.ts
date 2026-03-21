@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { ZodError, ZodTypeAny } from "zod";
-import { HttpError } from "../errors/http.error";
+import { HttpError } from "../errors/http.error.js";
 
 type Schema = ZodTypeAny;
 type ParamsRecord = Record<string, string>;

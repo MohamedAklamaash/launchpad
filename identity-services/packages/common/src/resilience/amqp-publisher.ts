@@ -1,5 +1,5 @@
 import { connect, type Channel, type ChannelModel, type Options } from "amqplib";
-import { CreateLogger } from "../utils/logger";
+import { CreateLogger } from "../utils/logger.js";
 
 const rootLogger = CreateLogger({ name: "resilience" });
 

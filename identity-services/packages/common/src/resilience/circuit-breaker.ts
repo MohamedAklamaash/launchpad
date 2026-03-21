@@ -1,4 +1,4 @@
-import { CreateLogger } from "../utils/logger";
+import { CreateLogger } from "../utils/logger.js";
 
 const rootLogger = CreateLogger({ name: "resilience" });
 

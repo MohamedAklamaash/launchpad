@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { HttpError } from "../errors/http.error";
+import { HttpError } from "../errors/http.error.js";
 import { type RequestHandler } from "express"
 
 const DEFAULT_HEADER_NAME = 'X-INTERNAL-TOKEN'

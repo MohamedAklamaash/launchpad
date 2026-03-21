@@ -1,6 +1,6 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig, type AxiosResponse } from "axios";
-import { CircuitBreaker, type CircuitBreakerOptions, type CircuitMetrics } from "./circuit-breaker";
-import { CreateLogger } from "../utils/logger";
+import { CircuitBreaker, type CircuitBreakerOptions, type CircuitMetrics } from "./circuit-breaker.js";
+import { CreateLogger } from "../utils/logger.js";
 
 const rootLogger = CreateLogger({ name: "resilience" });
 

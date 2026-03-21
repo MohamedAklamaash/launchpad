@@ -1,15 +1,15 @@
-export * from "./errors/http.error";
+export * from "./errors/http.error.js";
 
-export * from "./events/auth.events";
-export * from "./events/infra.events";
-export * from "./events/event.types";
+export * from "./events/auth.events.js";
+export * from "./events/infra.events.js";
+export * from "./events/event.types.js";
 
-export * from "./http/request.authenticate";
-export * from "./http/request.validate";
+export * from "./http/request.authenticate.js";
+export * from "./http/request.validate.js";
 
-export * from "./utils/env";
-export * from "./utils/logger";
+export * from "./utils/env.js";
+export * from "./utils/logger.js";
 
-export * from "./resilience";
+export * from "./resilience.js";
 
 export { z } from "zod";

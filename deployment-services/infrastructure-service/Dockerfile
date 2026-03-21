@@ -15,6 +15,7 @@ COPY deployment-services/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 FROM base AS final
+RUN mkdir -p /logs/infrastructure-service
 COPY deployment-services/shared ./shared
 COPY deployment-services/infrastructure-service/api ./api
 COPY deployment-services/infrastructure-service/core ./core
