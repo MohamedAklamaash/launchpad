@@ -13,9 +13,7 @@ COPY deployment-services/shared ./shared
 COPY deployment-services/application-service/api ./api
 COPY deployment-services/application-service/core ./core
 COPY deployment-services/application-service/aws ./aws
-COPY deployment-services/application-service/manage.py \
-     deployment-services/application-service/__init__.py \
-     ./
+COPY deployment-services/application-service/manage.py ./manage.py
 
 ENV PYTHONPATH=/app
 EXPOSE 8002
