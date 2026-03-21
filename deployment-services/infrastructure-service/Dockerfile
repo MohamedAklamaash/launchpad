@@ -20,4 +20,5 @@ COPY deployment-services/shared ./shared
 COPY deployment-services/infrastructure-service .
 
 ENV PYTHONPATH=/app
-CMD ["python", "manage.py", "run_worker"]
+EXPOSE 8003
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8003"]
