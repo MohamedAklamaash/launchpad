@@ -7,6 +7,7 @@ COPY services/notification-service/package.json ./services/notification-service/
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
+COPY tsconfig.json tsconfig.base.json ./
 COPY packages/common ./packages/common
 RUN pnpm --filter @launchpad/common build
 

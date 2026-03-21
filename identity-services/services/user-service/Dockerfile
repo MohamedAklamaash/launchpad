@@ -7,6 +7,7 @@ COPY services/user-service/package.json ./services/user-service/
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
+COPY tsconfig.json tsconfig.base.json ./
 COPY packages/common ./packages/common
 RUN pnpm --filter @launchpad/common build
 
