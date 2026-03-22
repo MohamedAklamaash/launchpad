@@ -103,7 +103,7 @@ You'll need your AWS Account ID for Launchpad:
 
 ## Step 3: Sign Up for Launchpad
 
-1. Go to [Launchpad Platform](https://launchpad.example.com)
+1. Go to [Launchpad Platform](https://launchpad-five-lilac.vercel.app/)
 2. Click **Sign in with GitHub**
 3. Authorize Launchpad to access your GitHub repositories
 
@@ -187,24 +187,6 @@ git push origin main
 
 1. In Launchpad, click **Create Application**
 2. Fill in details:
-
-```json
-{
-    "name": "my-api",
-    "infrastructure_id": "<your-infrastructure-id>",
-    "project_remote_url": "https://github.com/yourusername/your-repo",
-    "project_branch": "main",
-    "project_commit_hash": "HEAD",
-    "dockerfile_path": "Dockerfile",
-    "alloted_cpu": 0.5,
-    "alloted_memory": 1.0,
-    "alloted_storage": 0.5,
-    "envs": {
-        "NODE_ENV": "production",
-        "PORT": "8000"
-    }
-}
-```
 
 **Field Descriptions**:
 - `name`: Application name (used in URL)
@@ -429,17 +411,12 @@ Resources deleted:
 ## Support
 
 ### Documentation
-- [API Reference](https://docs.launchpad.example.com)
-- [GitHub Examples](https://github.com/launchpad/examples)
+- [API Reference](https://launchpad-five-lilac.vercel.app/) (check /docs in the api gateway's endpoint)
+- [GitHub Examples](https://github.com/MohamedAklamaash/launchpad/tree/main/docs) (for developers)
 
-### Community
-- [Discord](https://discord.gg/launchpad)
-- [GitHub Discussions](https://github.com/launchpad/discussions)
 
 ### Contact
-- Email: support@launchpad.example.com
-- Status: status.launchpad.example.com
-
+- Email: [EMAIL_ADDRESS](aklamaash78@gmail.com)
 ---
 
 ## Next Steps
@@ -447,10 +424,9 @@ Resources deleted:
 1. ✅ Set up AWS IAM user and role
 2. ✅ Create infrastructure
 3. ✅ Deploy first application
-4. 🚀 Deploy more applications
-5. 🚀 Set up custom domain (coming soon)
-6. 🚀 Enable HTTPS (coming soon)
-7. 🚀 Configure auto-scaling (coming soon)
+4. 🚀 Set up custom domain (coming soon)
+5. 🚀 Enable HTTPS (coming soon)
+6. 🚀 Configure auto-scaling (coming soon)
 
 ---
 
@@ -463,7 +439,7 @@ A: We store temporary session credentials obtained via AssumeRole. These expire 
 A: Not currently. Launchpad creates a dedicated VPC for isolation.
 
 **Q: What regions are supported?**
-A: All AWS regions. Specify during infrastructure creation.
+A: All AWS regions. Specify during infrastructure creation. This is restricted in UI as of now to us-west-2, will fix it later.
 
 **Q: Can I SSH into containers?**
 A: No. Use CloudWatch Logs for debugging. ECS Exec coming soon.
@@ -478,10 +454,10 @@ A: Yes. Launchpad uses your GitHub OAuth token to access private repos.
 A: Increase `max_cpu` and `max_memory` in infrastructure settings, or delete unused applications.
 
 **Q: Can I deploy databases?**
-A: Yes, but we recommend using AWS RDS for production databases.
+A: Not supported right now, please use AWS RDS for production databases.
 
 **Q: Is there a free tier?**
 A: Launchpad platform is free. You pay only for AWS resources in your account.
 
 **Q: Can I export my infrastructure?**
-A: Yes. All infrastructure is defined in Terraform. Contact support for export.
+A: Yes. All infrastructure is defined in Terraform. Check your s3 for terraform logs, contact support for terraform export.
