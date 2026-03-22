@@ -1,5 +1,5 @@
-import { CreateLogger, AppLogger } from "@launchpad/common";
+import { CreateLogger, AppLogger } from '@launchpad/common';
 
 export const logger: AppLogger = CreateLogger({
-    name: "auth-service"
-})
+    name: 'auth-service',
+});

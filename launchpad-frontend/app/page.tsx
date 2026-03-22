@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import Link from 'next/link';
 import { LogoMark } from '@/components/logo-mark';
 import {
@@ -74,7 +74,17 @@ const STACK = [
   ['RabbitMQ', 'Events'],
 ];
 
-const PLANS = [
+interface Plan {
+  name: string;
+  price: string;
+  sub: string;
+  features: string[];
+  cta: string;
+  highlight: boolean;
+  href?: string;
+}
+
+const PLANS: Plan[] = [
   {
     name: 'Starter',
     price: 'Free',
@@ -374,7 +384,7 @@ export default function LandingPage() {
                     </li>
                   ))}
                 </ul>
-                <a href={(p as any).href ?? '/login'}
+                <a href={p.href ?? '/login'}
                   className={`h-9 rounded-lg text-xs font-medium flex items-center justify-center transition-colors ${p.highlight ? 'bg-violet-600 hover:bg-violet-700 text-white' : 'border border-[#1a1a1a] hover:border-[#333] text-[#aaa] hover:text-white'}`}>
                   {p.cta}
                 </a>

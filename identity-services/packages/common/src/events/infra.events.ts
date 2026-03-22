@@ -1,4 +1,4 @@
-import { EventPayload, OutboundEvent } from './event.types';
+import { EventPayload, OutboundEvent } from './event.types.js';
 
 export const INFRA_EVENT_EXCHANGE = 'infrastructure.events';
 export const INFRA_CREATED_ROUTING_KEY = 'infrastructure.created';

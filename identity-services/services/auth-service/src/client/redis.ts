@@ -1,5 +1,5 @@
-import { RedisOptions } from "ioredis";
-import { env } from "@/config/env";
+import { RedisOptions } from 'ioredis';
+import { env } from '@/config/env';
 
 export const redisConfig: RedisOptions = {
     host: env.REDIS_HOST,
@@ -16,6 +16,6 @@ export const redisConfig: RedisOptions = {
         return Math.min(times * 200, 3_000);
     },
     reconnectOnError: (err: Error) => {
-        return err.message.includes("READONLY");
+        return err.message.includes('READONLY');
     },
 };

@@ -6,7 +6,6 @@ from api.services.application_cleanup_service import ApplicationCleanupService
 from api.services.infrastructure_permissions import InfrastructurePermissions
 from shared.resilience.http_client import ResilientHttpClient
 from django.db import transaction
-from django.db import transaction
 from api.services.deployment_queue import DeploymentQueue
 
 import os
@@ -53,7 +52,6 @@ class ApplicationService:
 
         requested_cpu = float(data.get("alloted_cpu", 0))
         requested_mem = float(data.get("alloted_memory", 0))
-        requested_storage = float(data.get("alloted_storage", 0))
 
         if requested_cpu > infra.max_cpu or requested_mem > infra.max_memory:
             raise ValueError("Requested resources exceed infrastructure absolute limits")
@@ -69,7 +67,7 @@ class ApplicationService:
 
         project_remote_url = data.get("project_remote_url", "")
         if not project_remote_url:
-            raise ValueError(f"Project remote url is required")
+            raise ValueError("Project remote url is required")
         
         if user.invited_by:
             inviter = self.user_repo.get_user(user.invited_by)
@@ -203,7 +201,6 @@ class ApplicationService:
             raise PermissionError("You don't have permission to update applications. Required role: SUPER_ADMIN or ADMIN")
         
         # Validate updatable fields
-        allowed_fields = ['name', 'description', 'envs', 'alloted_cpu', 'alloted_memory', 'port']
         update_fields = []
 
         if 'name' in update_data:

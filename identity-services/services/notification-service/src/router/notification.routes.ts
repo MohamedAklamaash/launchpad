@@ -1,5 +1,5 @@
-import { Router } from "express";
-import { GetUserNotifications } from "@/controllers/notification.controller";
+import { Router } from 'express';
+import { GetUserNotifications } from '@/controllers/notification.controller';
 
 export const notificationRouter: Router = Router();
 
@@ -41,4 +41,4 @@ export const notificationRouter: Router = Router();
  *       400: { description: User ID is required }
  *       500: { description: Internal server error }
  */
-notificationRouter.get("/user/:userId", GetUserNotifications);
+notificationRouter.get('/user/:userId', GetUserNotifications);

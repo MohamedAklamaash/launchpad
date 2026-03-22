@@ -1,13 +1,13 @@
-import { Sequelize } from "sequelize";
-import { env } from "@/config/env"
-import { logger } from "@/utils/logger";
+import { Sequelize } from 'sequelize';
+import { env } from '@/config/env';
+import { logger } from '@/utils/logger';
 
 export const sequelize = new Sequelize(
     `postgres://${encodeURIComponent(env.DATABASE_USER_NAME)}:` +
-    `${encodeURIComponent(env.DATABASE_PASSWORD)}@` +
-    `${env.DATABASE_HOST}:${env.DATABASE_PORT}/${env.DATABASE_NAME}`,
+        `${encodeURIComponent(env.DATABASE_PASSWORD)}@` +
+        `${env.DATABASE_HOST}:${env.DATABASE_PORT}/${env.DATABASE_NAME}`,
     {
-        dialect: "postgres",
+        dialect: 'postgres',
         dialectOptions: {
             connectTimeout: 10_000,
             keepAlive: true,
@@ -15,7 +15,7 @@ export const sequelize = new Sequelize(
             idle_in_transaction_session_timeout: 30_000,
         },
         logging:
-            env.NODE_ENV === "development"
+            env.NODE_ENV === 'development'
                 ? (msg: string) => logger.info({ sequelize: msg })
                 : false,
         define: {
@@ -27,27 +27,27 @@ export const sequelize = new Sequelize(
             min: env.DB_POOL_MIN,
             acquire: env.DB_POOL_ACQUIRE_MS,
             idle: env.DB_POOL_IDLE_MS,
-            evict: 1_000,        // check for idle connections every 1s
+            evict: 1_000, // check for idle connections every 1s
         },
-    }
+    },
 );
 
 export const connectToDatabase = async () => {
     try {
-        await sequelize.authenticate()
-        logger.info("Auth Database is connected successfully")
+        await sequelize.authenticate();
+        logger.info('Auth Database is connected successfully');
     } catch (error: unknown) {
-        logger.error(error)
-        return
+        logger.error(error);
+        return;
     }
-}
+};
 
 export const closeDatabase = async () => {
     try {
-        await sequelize.close()
-        logger.info("Auth Database connection is closed")
+        await sequelize.close();
+        logger.info('Auth Database connection is closed');
     } catch (error: unknown) {
-        logger.error(error)
-        return
+        logger.error(error);
+        return;
     }
-}
+};

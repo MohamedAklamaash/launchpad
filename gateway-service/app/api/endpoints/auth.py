@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 from app.services.proxy import proxy_request

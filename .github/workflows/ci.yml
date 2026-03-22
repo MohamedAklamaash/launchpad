@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-python:
+    name: Lint & Syntax (python services)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - gateway-service
+          - payment-service
+          - deployment-services
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Syntax check
+        run: python -m compileall ${{ matrix.service }} -q
+
+      - name: Ruff lint
+        run: ruff check ${{ matrix.service }}
+
+  check-identity:
+    name: Lint & Typecheck (identity-services)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: identity-services
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: identity-services/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: identity-services/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build common
+        run: pnpm --filter @launchpad/common build
+
+      - name: Prettier
+        run: pnpm format
+
+      - name: ESLint
+        run: pnpm lint
+
+      - name: TypeScript
+        run: pnpm -r --workspace-root=false exec tsc --noEmit
+
+  check-frontend:
+    name: Lint & Typecheck (frontend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: launchpad-frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: launchpad-frontend/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: ESLint
+        run: pnpm lint
+
+      - name: TypeScript
+        run: npx tsc --noEmit

@@ -1,40 +1,34 @@
 services:
+  # ── Infrastructure ────────────────────────────────────────────────────────────
   postgres:
     image: postgres:17
     container_name: postgres
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: postgres
     command: >
-      postgres
-      -c max_connections=500
-      -c shared_buffers=256MB
-      -c effective_cache_size=768MB
-      -c work_mem=4MB
-      -c maintenance_work_mem=64MB
-      -c idle_in_transaction_session_timeout=30000
-      -c statement_timeout=60000
-      -c tcp_keepalives_idle=60
-      -c tcp_keepalives_interval=10
-      -c tcp_keepalives_count=6
+      postgres -c max_connections=500 -c shared_buffers=256MB -c effective_cache_size=768MB -c work_mem=4MB -c maintenance_work_mem=64MB -c idle_in_transaction_session_timeout=30000 -c statement_timeout=60000 -c tcp_keepalives_idle=60 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=6
     ports:
       - "${POSTGRES_PORT}:5432"
     volumes:
-      # - ./volumes/postgres:/var/lib/postgresql/data
       - ./init:/docker-entrypoint-initdb.d
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - backend
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   mysql:
     image: mysql:8
     container_name: mysql
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: .env
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -42,23 +36,28 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
       - "${MYSQL_PORT}:3306"
-    # volumes:
-    #   - ./volumes/mysql:/var/lib/mysql
+    volumes:
+      - mysql_data:/var/lib/mysql
     networks:
       - backend
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   mongo:
     image: mongo:7
     container_name: mongo
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: .env
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
     ports:
       - "${MONGO_PORT}:27017"
-    # volumes:
-    #   - ./volumes/mongo:/data/db
+    volumes:
+      - mongo_data:/data/db
     networks:
       - backend
 
@@ -69,27 +68,36 @@ services:
     command: redis-server --requirepass ${REDIS_PASSWORD}
     ports:
       - "${REDIS_PORT}:6379"
-    # volumes:
-    #   - ./volumes/redis:/data
+    volumes:
+      - redis_data:/data
     networks:
       - backend
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   rabbitmq:
     image: rabbitmq:4-management
     container_name: rabbitmq
     restart: unless-stopped
-    env_file:
-      - .env
+    env_file: .env
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
       - "${RABBITMQ_PORT}:5672"
       - "${RABBITMQ_MANAGEMENT_PORT}:15672"
-    # volumes:
-    #   - ./volumes/rabbitmq:/var/lib/rabbitmq
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
     networks:
       - backend
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   prometheus:
     image: prom/prometheus:latest
@@ -122,6 +130,263 @@ services:
     depends_on:
       - prometheus
 
+  # ── Application Services ──────────────────────────────────────────────────────
+  gateway-service:
+    image: mohamedaklamaash/launchpad-gateway-service:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../gateway-service
+      dockerfile: Dockerfile
+    container_name: gateway-service
+    restart: unless-stopped
+    env_file: ../../gateway-service/.env
+    environment:
+      REDIS_HOST: redis
+    ports:
+      - "8000:8000"
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  auth-service:
+    image: mohamedaklamaash/launchpad-auth-service:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../identity-services
+      dockerfile: services/auth-service/Dockerfile
+    container_name: auth-service
+    restart: unless-stopped
+    env_file: ../../identity-services/services/auth-service/.env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_HOST: redis
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "5001:5001"
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  user-service:
+    image: mohamedaklamaash/launchpad-user-service:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../identity-services
+      dockerfile: services/user-service/Dockerfile
+    container_name: user-service
+    restart: unless-stopped
+    env_file: ../../identity-services/services/user-service/.env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "5002:5002"
+    networks:
+      - backend
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  notification-service:
+    image: mohamedaklamaash/launchpad-notification-service:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../identity-services
+      dockerfile: services/notification-service/Dockerfile
+    container_name: notification-service
+    restart: unless-stopped
+    env_file: ../../identity-services/services/notification-service/.env
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_HOST: redis
+    ports:
+      - "5003:5003"
+    networks:
+      - backend
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  payment-service:
+    image: mohamedaklamaash/launchpad-payment-service:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../
+      dockerfile: payment-service/Dockerfile
+    container_name: payment-service
+    restart: unless-stopped
+    env_file: ../../payment-service/.env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    ports:
+      - "8004:8004"
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  application-service:
+    image: mohamedaklamaash/launchpad-application-service:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../
+      dockerfile: deployment-services/application-service/Dockerfile
+    container_name: application-service
+    restart: unless-stopped
+    env_file: ../../deployment-services/application-service/.env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_HOST: redis
+    ports:
+      - "8002:8002"
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  application-worker:
+    image: mohamedaklamaash/launchpad-application-worker:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../
+      dockerfile: deployment-services/application-service/Dockerfile.worker
+    container_name: application-worker
+    restart: unless-stopped
+    env_file: ../../deployment-services/application-service/.env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_HOST: redis
+    networks:
+      - backend
+    depends_on:
+      application-service:
+        condition: service_healthy
+
+  infrastructure-service:
+    image: mohamedaklamaash/launchpad-infrastructure-service:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../
+      dockerfile: deployment-services/infrastructure-service/Dockerfile
+    container_name: infrastructure-service
+    restart: unless-stopped
+    env_file: ../../deployment-services/infrastructure-service/.env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_HOST: redis
+    ports:
+      - "8003:8003"
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8003/health')\""]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  infrastructure-worker:
+    image: mohamedaklamaash/launchpad-infrastructure-worker:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../
+      dockerfile: deployment-services/infrastructure-service/Dockerfile.worker
+    container_name: infrastructure-worker
+    restart: unless-stopped
+    env_file: ../../deployment-services/infrastructure-service/.env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_HOST: redis
+    networks:
+      - backend
+    depends_on:
+      infrastructure-service:
+        condition: service_healthy
+
+  frontend:
+    image: mohamedaklamaash/launchpad-frontend:${TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../../launchpad-frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    networks:
+      - backend
+
 networks:
   backend:
     driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/postgres
+  mysql_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/mysql
+  mongo_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/mongo
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/redis
+  rabbitmq_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/rabbitmq

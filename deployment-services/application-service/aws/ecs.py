@@ -1,4 +1,3 @@
-import boto3
 import logging
 import base64
 import os
@@ -227,7 +226,7 @@ http {{
             return response['service']['serviceArn']
         except Exception as e:
             if 'not idempotent' in str(e).lower() or 'already exists' in str(e).lower():
-                logger.warning(f"Service creation conflict, fetching existing service")
+                logger.warning("Service creation conflict, fetching existing service")
                 response = self.client.describe_services(
                     cluster=cluster_arn,
                     services=[service_name]

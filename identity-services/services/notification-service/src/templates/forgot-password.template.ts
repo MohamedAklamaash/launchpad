@@ -1,4 +1,3 @@
-
 export const getForgotPasswordTemplate = (otp: string, userName: string) => {
     return `
 <!DOCTYPE html>

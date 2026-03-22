@@ -1,6 +1,6 @@
 'use client';
 
-import { User, LogOut, Settings } from 'lucide-react';
+import { User, LogOut } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,12 +10,13 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuthStore } from '@/lib/store/auth';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image'
 
 const ROLE_LABELS: Record<string, { label: string; color: string }> = {
   super_admin: { label: 'Super Admin', color: 'text-purple-400' },
-  admin:       { label: 'Admin',       color: 'text-blue-400' },
-  user:        { label: 'User',        color: 'text-green-400' },
-  guest:       { label: 'Guest',       color: 'text-[#666]' },
+  admin: { label: 'Admin', color: 'text-blue-400' },
+  user: { label: 'User', color: 'text-green-400' },
+  guest: { label: 'Guest', color: 'text-[#666]' },
 };
 
 export function Header() {
@@ -34,17 +35,16 @@ export function Header() {
       <div className="flex-1" />
       <div className="flex items-center gap-3">
         <div className="flex items-center gap-2 mr-1">
-          <span className={`text-xs font-mono px-2 py-0.5 rounded-full border ${
-            roleInfo.color === 'text-purple-400' ? 'border-violet-500/30 bg-violet-500/10 text-violet-400' :
+          <span className={`text-xs font-mono px-2 py-0.5 rounded-full border ${roleInfo.color === 'text-purple-400' ? 'border-violet-500/30 bg-violet-500/10 text-violet-400' :
             roleInfo.color === 'text-blue-400' ? 'border-blue-500/30 bg-blue-500/10 text-blue-400' :
-            roleInfo.color === 'text-green-400' ? 'border-green-500/30 bg-green-500/10 text-green-400' :
-            'border-[#2a2a2a] bg-[#111] text-[#666]'
-          }`}>{roleInfo.label}</span>
+              roleInfo.color === 'text-green-400' ? 'border-green-500/30 bg-green-500/10 text-green-400' :
+                'border-[#2a2a2a] bg-[#111] text-[#666]'
+            }`}>{roleInfo.label}</span>
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger className="rounded-full w-8 h-8 flex items-center justify-center hover:bg-[#141414] transition-colors ring-1 ring-[#222] overflow-hidden">
             {user?.profile_url ? (
-              <img src={user.profile_url} alt={user.user_name} className="w-8 h-8 rounded-full object-cover" />
+              <Image src={user.profile_url} alt={user.user_name} className="w-8 h-8 rounded-full object-cover" />
             ) : (
               <User className="w-4 h-4 text-[#666]" />
             )}

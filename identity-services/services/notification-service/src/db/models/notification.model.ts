@@ -1,4 +1,4 @@
-import { ObjectId } from "mongodb";
+import { ObjectId } from 'mongodb';
 
 export interface INotification {
     _id?: ObjectId;
@@ -7,6 +7,6 @@ export interface INotification {
     email: string;
     infra_id: string;
     source: string;
-    metadata: Record<string, any>;
+    metadata: Record<string, unknown>;
     created_at: number;
 }

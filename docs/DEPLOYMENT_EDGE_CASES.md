@@ -34,26 +34,6 @@ uvicorn.run(app, host="0.0.0.0", port=port)
 
 ---
 
-## Path-Based Routing Issues
-
-### Issue: Static files return 404
-
-**Symptom**: HTML loads but CSS/JS files return 404
-
-**Cause**: Application uses absolute paths like `/static/app.js` instead of relative paths
-
-**Solution**: NGINX strips `/app-name` prefix before forwarding to app
-
-**How it works**:
-- Browser requests: `http://alb/app-name/static/app.js`
-- ALB routes to: NGINX container
-- NGINX strips prefix and forwards: `/static/app.js` → App container
-- App serves: `/static/app.js`
-
-**Best Practice**: Use relative paths in HTML or configure app with base path awareness
-
----
-
 ### Issue: API endpoints return 404
 
 **Symptom**: App loads but API calls fail with 404

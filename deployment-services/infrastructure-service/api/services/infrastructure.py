@@ -6,14 +6,10 @@ from api.repositories.infrastructure import InfrastructureRepository
 from api.serializers.infrastructure import InfrastructureSerializer
 from api.services.infrastructure_permissions import InfrastructurePermissions
 from shared.resilience.circuit_breaker import CircuitBreaker
-from api.messaging.producer.producer import infra_producer
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from shared.enums.cloud_provider import CloudProvider
 from api.models.environment import Environment
 from api.services.infra_queue import InfraQueue
-from api.models.environment import Environment
-import requests
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +61,7 @@ class InfrastructureService:
                     raise ValueError(f"Cloud authentication failed: {str(e)}")
                 infra.refresh_from_db()
 
-            env = Environment.objects.create(
+            Environment.objects.create(
                 infrastructure=infra,
                 status='PENDING'
             )
@@ -139,10 +135,6 @@ class InfrastructureService:
         if not target_user.invited_infrastructures.exists():
             target_user.delete()
         return True
-        infra = self.repo.update(user_id, infra_id, update_data)
-        if infra:
-            return InfrastructureSerializer.serialize_instance(infra)
-        return None
     
     def update_infrastructure_config(self, user_id, infra_id, update_data):
         """Update infrastructure configuration and publish event."""
@@ -155,7 +147,6 @@ class InfrastructureService:
             raise PermissionError("Only the infrastructure owner can update it")
         
         # Validate updatable fields
-        allowed_fields = ['name', 'max_cpu', 'max_memory']
         update_fields = []
         
         if 'name' in update_data:

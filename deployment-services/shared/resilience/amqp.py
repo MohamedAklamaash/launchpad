@@ -25,6 +25,8 @@ class ResilientPikaProducer:
             return
 
         parameters = pika.URLParameters(self.url)
+        parameters.heartbeat = 600
+        parameters.blocked_connection_timeout = 300
         self.connection = pika.BlockingConnection(parameters)
         self.channel = self.connection.channel()
 
@@ -157,6 +159,8 @@ class ResilientPikaConsumer:
 
     def _connect_and_consume(self, callback: Callable):
         parameters = pika.URLParameters(self.url)
+        parameters.heartbeat = 600
+        parameters.blocked_connection_timeout = 300
         self.connection = pika.BlockingConnection(parameters)
         self.channel = self.connection.channel()
 

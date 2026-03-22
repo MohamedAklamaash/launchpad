@@ -1,12 +1,17 @@
-import { githubHttpClient } from "@/utils/http-client";
-import { User } from "@/db";
-import { sequelize } from "@/db/sequalize";
-import { env } from "@/config/env";
-import { GithubCallbackInput, GithubUserUpsertInput } from "@/types/auth.user.types";
-import { PublishUserRegistered } from "@/messaging/producer/user-created.message";
-import { BaseService } from "@/service/invited-users/invited-user.base.service";
-import { USER_ROLE } from "@/types/auth.invited_user.types";
-import { verifyAccessToken } from "@/utils/handle-token";
+import { githubHttpClient } from '@/utils/http-client';
+import { User } from '@/db';
+import { sequelize } from '@/db/sequalize';
+import { env } from '@/config/env';
+import {
+    GithubCallbackInput,
+    GithubUserUpsertInput,
+    GithubTokenResponse,
+    GithubUserResponse,
+} from '@/types/auth.user.types';
+import { PublishUserRegistered } from '@/messaging/producer/user-created.message';
+import { BaseService } from '@/service/invited-users/invited-user.base.service';
+import { USER_ROLE } from '@/types/auth.invited_user.types';
+import { verifyAccessToken } from '@/utils/handle-token';
 
 export class UserFacadeService extends BaseService {
     private clientId = env.GITHUB_CLIENT_ID;
@@ -20,9 +25,9 @@ export class UserFacadeService extends BaseService {
     public async getUserFromToken(token: string) {
         const payload = verifyAccessToken(token);
         const user = await User.findByPk(payload.sub);
-        
+
         if (!user) {
-            throw new Error("User not found");
+            throw new Error('User not found');
         }
 
         return {
@@ -41,24 +46,29 @@ export class UserFacadeService extends BaseService {
     public async handleCallback(input: GithubCallbackInput) {
         const { code } = input;
         const tokenRes = await githubHttpClient.post(
-            "https://github.com/login/oauth/access_token",
+            'https://github.com/login/oauth/access_token',
             {
                 client_id: this.clientId,
                 client_secret: this.clientSecret,
                 code,
                 redirect_uri: this.redirectUri,
             },
-            { headers: { Accept: "application/json" } }
+            { headers: { Accept: 'application/json' } },
         );
 
-        const token = (tokenRes.data as any).access_token;
-        if (!token) throw new Error("Failed to get GitHub token");
+        const token = (tokenRes.data as GithubTokenResponse).access_token;
+        if (!token) throw new Error('Failed to get GitHub token');
 
-        const userRes = await githubHttpClient.get("https://api.github.com/user", {
+        const userRes = await githubHttpClient.get('https://api.github.com/user', {
             headers: { Authorization: `Bearer ${token}` },
         });
 
-        const { login: username, id: github_id, avatar_url, email } = userRes.data as any;
+        const {
+            login: username,
+            id: github_id,
+            avatar_url,
+            email,
+        } = userRes.data as GithubUserResponse;
         const githubIdStr = String(github_id);
 
         return { token, username, github_id: githubIdStr, avatar_url, email };
@@ -68,13 +78,10 @@ export class UserFacadeService extends BaseService {
         return sequelize.transaction(async (transaction) => {
             let user = await User.findOne({
                 where: sequelize.where(
-                    sequelize.cast(
-                        sequelize.json("metadata.github.id"),
-                        'text'
-                    ),
-                    githubData.github_id
+                    sequelize.cast(sequelize.json('metadata.github.id'), 'text'),
+                    githubData.github_id,
                 ),
-                transaction
+                transaction,
             });
 
             if (!user && githubData.email) {
@@ -92,22 +99,24 @@ export class UserFacadeService extends BaseService {
             if (user) {
                 user.metadata = {
                     ...(user.metadata || {}),
-                    github: githubMetadata
+                    github: githubMetadata,
                 };
                 user.profile_url = githubData.avatar_url;
                 await user.save({ transaction });
             } else {
-                user = await User.create({
-                    user_name: githubData.username,
-                    profile_url: githubData.avatar_url,
-                    email: githubData.email ?? `${githubData.github_id}@github.com`,
-                    role: USER_ROLE.SUPER_ADMIN,  // GitHub users are SUPER_ADMIN
-                    infra_id: [],
-                    metadata: {
-                        github: githubMetadata
-                    }
-                }, { transaction });
-
+                user = await User.create(
+                    {
+                        user_name: githubData.username,
+                        profile_url: githubData.avatar_url,
+                        email: githubData.email ?? `${githubData.github_id}@github.com`,
+                        role: USER_ROLE.SUPER_ADMIN, // GitHub users are SUPER_ADMIN
+                        infra_id: [],
+                        metadata: {
+                            github: githubMetadata,
+                        },
+                    },
+                    { transaction },
+                );
             }
 
             PublishUserRegistered({
@@ -119,7 +128,7 @@ export class UserFacadeService extends BaseService {
                 role: user.role,
                 updated_at: user.updated_at,
                 metadata: user.metadata || {},
-                invited_by: user.id
+                invited_by: user.id,
             });
 
             const refreshTokenRecord = await this.createRefreshToken(user.id, transaction);

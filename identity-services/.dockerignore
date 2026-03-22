@@ -1,0 +1,8 @@
+services/*/node_modules/
+packages/*/node_modules/
+node_modules/
+services/*/dist/
+packages/*/dist/
+**/.env
+*.log
+.git/

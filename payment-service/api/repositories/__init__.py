@@ -1,3 +1,3 @@
-from .user import UserRepository
-from .billing import BillingRepository
-from .infrastructure import InfrastructureRepository
+from .user import UserRepository as UserRepository
+from .billing import BillingRepository as BillingRepository
+from .infrastructure import InfrastructureRepository as InfrastructureRepository

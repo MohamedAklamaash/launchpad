@@ -1,11 +1,11 @@
-import { userRepository, type UserRepository } from "@/repositories/user.repositories";
+import { userRepository, type UserRepository } from '@/repositories/user.repositories';
 import { AuthUserRegisteredPayload, HttpError, InfraCreatedPayload } from '@launchpad/common';
 import { UniqueConstraintError } from 'sequelize';
-import { publishUserCreatedEvent } from "@/messaging/consumer/user.consumer";
-import { User, CreateUserInput } from "@/types/user.type";
+import { publishUserCreatedEvent } from '@/messaging/consumer/user.consumer';
+import { User, CreateUserInput } from '@/types/user.type';
 
 class UserService {
-    constructor(private readonly repository: UserRepository) { }
+    constructor(private readonly repository: UserRepository) {}
 
     async getUserById(id: string): Promise<User> {
         const user = await this.repository.findbyid(id);
@@ -33,7 +33,7 @@ class UserService {
                 profile_url: user.profile_url,
                 metadata: user.metadata,
                 updated_at: user.updated_at,
-                invited_by: user.invited_by
+                invited_by: user.invited_by,
             });
 
             return user;

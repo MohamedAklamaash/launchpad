@@ -1,6 +1,6 @@
-import { InvitedUserService } from "@/service/invited-users/inviter-user.crud.service";
-import { PasswordService } from "@/service/invited-users/invited-user.password.crud.service";
-import { InvitedUserAuthService } from "@/service/invited-users/invited-user.auth.service";
+import { InvitedUserService } from '@/service/invited-users/inviter-user.crud.service';
+import { PasswordService } from '@/service/invited-users/invited-user.password.crud.service';
+import { InvitedUserAuthService } from '@/service/invited-users/invited-user.auth.service';
 import {
     InvitedUserRegisterInput,
     InvitedUserLoginInput,
@@ -8,8 +8,8 @@ import {
     InvitedUserForgotPasswordInput,
     InvitedUserVerifyResetOtpInput,
     InvitedUserResetPasswordInput,
-    InvitedUserUpdatePasswordInput
-} from "@/types/auth.invited_user.types";
+    InvitedUserUpdatePasswordInput,
+} from '@/types/auth.invited_user.types';
 
 export class InvitedUserFacade {
     private userService = new InvitedUserService();

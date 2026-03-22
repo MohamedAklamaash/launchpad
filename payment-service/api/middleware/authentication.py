@@ -1,5 +1,5 @@
 from rest_framework.authentication import BaseAuthentication
-from api.common.utils.jwt import JWTUser, decode_jwt
+from api.common.utils.jwt import decode_jwt
 from api.common.env.application import app_config
 from api.common.errors.exception import HttpError
 import logging

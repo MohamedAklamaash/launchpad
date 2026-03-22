@@ -1,6 +1,5 @@
 import logging
 import boto3
-from django.core.management.base import BaseCommand
 from api.repositories.infrastructure import InfrastructureRepository
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 

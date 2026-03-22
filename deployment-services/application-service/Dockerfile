@@ -1,0 +1,21 @@
+FROM python:3.11-slim AS base
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY deployment-services/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+FROM base AS final
+RUN mkdir -p /logs/application-service
+COPY deployment-services/shared ./shared
+COPY deployment-services/application-service/api ./api
+COPY deployment-services/application-service/core ./core
+COPY deployment-services/application-service/aws ./aws
+COPY deployment-services/application-service/manage.py ./manage.py
+
+ENV PYTHONPATH=/app
+EXPOSE 8002
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8002"]

@@ -9,7 +9,7 @@ import {
     ResetPassword,
     UpdatePassword,
     RefreshTokenForUser,
-    RevokeRefreshToken
+    RevokeRefreshToken,
 } from '@/controllers/invited-user.controller';
 import {
     registerSchema,
@@ -20,7 +20,7 @@ import {
     resetPasswordSchema,
     updatePasswordSchema,
     refreshSchema,
-    revokeSchema
+    revokeSchema,
 } from '@/schemas/invited-user.schema';
 
 export const authRouter: Router = Router();
@@ -70,7 +70,11 @@ export const authRouter: Router = Router();
  *       401: { description: Unauthorized — caller is not a super admin or not authorized for this infra }
  *       400: { description: Validation error }
  */
-authRouter.post('/register', validateRequest({ body: registerSchema.shape.body }), RegisterInvitedUser);
+authRouter.post(
+    '/register',
+    validateRequest({ body: registerSchema.shape.body }),
+    RegisterInvitedUser,
+);
 
 /**
  * @swagger
@@ -123,7 +127,11 @@ authRouter.post('/login', validateRequest({ body: loginSchema.shape.body }), Log
  *             schema: { $ref: '#/components/schemas/AuthTokens' }
  *       401: { description: Invalid or expired OTP }
  */
-authRouter.get('/authenticate-with-otp', validateRequest({ query: otpSchema.shape.query }), AuthenticateOTP);
+authRouter.get(
+    '/authenticate-with-otp',
+    validateRequest({ query: otpSchema.shape.query }),
+    AuthenticateOTP,
+);
 
 /**
  * @swagger
@@ -150,7 +158,11 @@ authRouter.get('/authenticate-with-otp', validateRequest({ query: otpSchema.shap
  *               properties:
  *                 otp: { type: string, example: "482910" }
  */
-authRouter.post('/forgot-password', validateRequest({ body: forgotPasswordSchema.shape.body }), ForgotPassword);
+authRouter.post(
+    '/forgot-password',
+    validateRequest({ body: forgotPasswordSchema.shape.body }),
+    ForgotPassword,
+);
 
 /**
  * @swagger
@@ -176,7 +188,11 @@ authRouter.post('/forgot-password', validateRequest({ body: forgotPasswordSchema
  *             schema: { $ref: '#/components/schemas/SuccessBoolean' }
  *       401: { description: Invalid OTP }
  */
-authRouter.post('/verify-reset-otp', validateRequest({ body: verifyResetSchema.shape.body }), VerifyResetOTP);
+authRouter.post(
+    '/verify-reset-otp',
+    validateRequest({ body: verifyResetSchema.shape.body }),
+    VerifyResetOTP,
+);
 
 /**
  * @swagger
@@ -201,7 +217,11 @@ authRouter.post('/verify-reset-otp', validateRequest({ body: verifyResetSchema.s
  *           application/json:
  *             schema: { $ref: '#/components/schemas/SuccessBoolean' }
  */
-authRouter.post('/reset-password', validateRequest({ body: resetPasswordSchema.shape.body }), ResetPassword);
+authRouter.post(
+    '/reset-password',
+    validateRequest({ body: resetPasswordSchema.shape.body }),
+    ResetPassword,
+);
 
 /**
  * @swagger
@@ -229,7 +249,11 @@ authRouter.post('/reset-password', validateRequest({ body: resetPasswordSchema.s
  *             schema: { $ref: '#/components/schemas/SuccessBoolean' }
  *       401: { description: Wrong old password }
  */
-authRouter.post('/update-password', validateRequest({ body: updatePasswordSchema.shape.body }), UpdatePassword);
+authRouter.post(
+    '/update-password',
+    validateRequest({ body: updatePasswordSchema.shape.body }),
+    UpdatePassword,
+);
 
 /**
  * @swagger
@@ -254,7 +278,11 @@ authRouter.post('/update-password', validateRequest({ body: updatePasswordSchema
  *             schema: { $ref: '#/components/schemas/AuthTokens' }
  *       401: { description: Invalid or expired refresh token }
  */
-authRouter.post('/refresh', validateRequest({ body: refreshSchema.shape.body }), RefreshTokenForUser);
+authRouter.post(
+    '/refresh',
+    validateRequest({ body: refreshSchema.shape.body }),
+    RefreshTokenForUser,
+);
 
 /**
  * @swagger

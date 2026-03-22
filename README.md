@@ -82,9 +82,7 @@ For issues, questions, or feature requests, see [docs/](docs/).
 
 ## License
 
-This software is proprietary and confidential. See [LICENSE](LICENSE) for details.
-
-For commercial licensing inquiries, contact Mohamed Aklamaash.
+MIT — see [LICENSE](LICENSE) for details.
 
 ---
 

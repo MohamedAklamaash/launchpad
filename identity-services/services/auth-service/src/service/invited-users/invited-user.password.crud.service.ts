@@ -1,23 +1,27 @@
-import { BaseService } from "@/service/invited-users/invited-user.base.service";
-import { InvitedUser, UserOTP, PasswordSettings } from "@/db";
-import { sequelize } from "@/db/sequalize";
-import { hashPassword, comparePassword } from "@/utils/handle-password";
-import { signAccessToken, verifyAccessToken } from "@/utils/handle-token";
-import { Op } from "sequelize";
-import { HttpError, FORGOT_PASSWORD_EVENT } from "@launchpad/common";
-import { InvitedUserForgotPasswordInput, InvitedUserVerifyResetOtpInput, InvitedUserResetPasswordInput, InvitedUserUpdatePasswordInput } from "@/types/auth.invited_user.types";
-import { userAuthenticationQueue } from "@/messaging/producer/user-created.message";
+import { BaseService } from '@/service/invited-users/invited-user.base.service';
+import { InvitedUser, UserOTP, PasswordSettings } from '@/db';
+import { sequelize } from '@/db/sequalize';
+import { hashPassword, comparePassword } from '@/utils/handle-password';
+import { signAccessToken, verifyAccessToken } from '@/utils/handle-token';
+import { Op } from 'sequelize';
+import { HttpError, FORGOT_PASSWORD_EVENT } from '@launchpad/common';
+import {
+    InvitedUserForgotPasswordInput,
+    InvitedUserVerifyResetOtpInput,
+    InvitedUserResetPasswordInput,
+    InvitedUserUpdatePasswordInput,
+} from '@/types/auth.invited_user.types';
+import { userAuthenticationQueue } from '@/messaging/producer/user-created.message';
 
 export class PasswordService extends BaseService {
-
     public async requestPasswordReset(input: InvitedUserForgotPasswordInput) {
         const { email, infra_id } = input;
         return sequelize.transaction(async (transaction) => {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
-            if (!user) throw new HttpError(404, "User not found");
+            if (!user) throw new HttpError(404, 'User not found');
 
             const targetInfraId = infra_id || user.infra_id[0];
-            if (!targetInfraId) throw new HttpError(400, "User belongs to no infra");
+            if (!targetInfraId) throw new HttpError(400, 'User belongs to no infra');
 
             const otp = await this.createOTP(user.id, targetInfraId, transaction);
 
@@ -26,7 +30,7 @@ export class PasswordService extends BaseService {
                 email,
                 otp: otp.otp,
                 infra_id: targetInfraId,
-                source: "forgot-password",
+                source: 'forgot-password',
                 user_name: user.user_name,
             });
 
@@ -38,18 +42,27 @@ export class PasswordService extends BaseService {
         const { email, otp } = input;
         return sequelize.transaction(async (transaction) => {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
-            if (!user) throw new HttpError(404, "User not found");
+            if (!user) throw new HttpError(404, 'User not found');
 
             const otpRecord = await UserOTP.findOne({
                 where: { invited_user_id: user.id, otp, expires_at: { [Op.gt]: new Date() } },
-                transaction
+                transaction,
             });
-            if (!otpRecord) throw new HttpError(400, "Invalid or expired OTP");
+            if (!otpRecord) throw new HttpError(400, 'Invalid or expired OTP');
 
             await otpRecord.destroy({ transaction });
 
             // Return a short-lived reset token specifically for password reset
-            return signAccessToken({ sub: user.id, email: user.email, scope: "password_reset", user_name: user.user_name, role: user.role }, "5m");
+            return signAccessToken(
+                {
+                    sub: user.id,
+                    email: user.email,
+                    scope: 'password_reset',
+                    user_name: user.user_name,
+                    role: user.role,
+                },
+                '5m',
+            );
         });
     }
 
@@ -57,11 +70,12 @@ export class PasswordService extends BaseService {
         const { reset_token: resetToken, new_password: newPassword } = input;
 
         const payload = verifyAccessToken(resetToken);
-        if (!payload || payload.scope !== "password_reset") throw new HttpError(401, "Invalid reset token");
+        if (!payload || payload.scope !== 'password_reset')
+            throw new HttpError(401, 'Invalid reset token');
 
         return sequelize.transaction(async (transaction) => {
             const user = await InvitedUser.findByPk(payload.sub, { transaction });
-            if (!user) throw new HttpError(404, "User not found");
+            if (!user) throw new HttpError(404, 'User not found');
 
             user.password_hash = await hashPassword(newPassword);
             user.forgot_password = false;
@@ -69,7 +83,10 @@ export class PasswordService extends BaseService {
 
             const expiresAt = new Date();
             expiresAt.setDate(expiresAt.getDate() + 30);
-            await PasswordSettings.upsert({ invited_user_id: user.id, expires_at: expiresAt }, { transaction });
+            await PasswordSettings.upsert(
+                { invited_user_id: user.id, expires_at: expiresAt },
+                { transaction },
+            );
 
             return true;
         });
@@ -79,17 +96,20 @@ export class PasswordService extends BaseService {
         const { email, old_password: oldPassword, new_password: newPassword } = input;
         return sequelize.transaction(async (transaction) => {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
-            if (!user) throw new HttpError(404, "User not found");
+            if (!user) throw new HttpError(404, 'User not found');
 
             const valid = await comparePassword(oldPassword, user.password_hash);
-            if (!valid) throw new HttpError(401, "Invalid current password");
+            if (!valid) throw new HttpError(401, 'Invalid current password');
 
             user.password_hash = await hashPassword(newPassword);
             await user.save({ transaction });
 
             const expiresAt = new Date();
             expiresAt.setDate(expiresAt.getDate() + 30);
-            await PasswordSettings.upsert({ invited_user_id: user.id, expires_at: expiresAt }, { transaction });
+            await PasswordSettings.upsert(
+                { invited_user_id: user.id, expires_at: expiresAt },
+                { transaction },
+            );
 
             return true;
         });

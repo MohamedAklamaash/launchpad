@@ -1,9 +1,8 @@
-
 export enum USER_ROLE {
-    ADMIN = "admin",
-    USER = "user",
-    GUEST = "guest",
-    SUPER_ADMIN = "super_admin"
+    ADMIN = 'admin',
+    USER = 'user',
+    GUEST = 'guest',
+    SUPER_ADMIN = 'super_admin',
 }
 
 export interface InvitedUserRegisterInput {
@@ -32,6 +31,7 @@ export interface UserData {
     role: USER_ROLE;
     infra_id: string[];
     createdAt: string;
+    profile_url?: string;
 }
 
 export interface AuthTokens {

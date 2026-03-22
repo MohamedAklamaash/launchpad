@@ -1,5 +1,5 @@
-import { Router } from "express";
-import { LoginWithGitHub, GitHubCallback, GetCurrentUser } from "@/controllers/user.controller";
+import { Router } from 'express';
+import { LoginWithGitHub, GitHubCallback, GetCurrentUser } from '@/controllers/user.controller';
 
 export const userRouter: Router = Router();
 
@@ -24,7 +24,7 @@ export const userRouter: Router = Router();
  *     responses:
  *       302: { description: Redirect to GitHub authorization page }
  */
-userRouter.get("/login", LoginWithGitHub);
+userRouter.get('/login', LoginWithGitHub);
 
 /**
  * @swagger
@@ -43,7 +43,7 @@ userRouter.get("/login", LoginWithGitHub);
  *         description: Redirects to frontend with access_token and refresh_token as query params
  *       400: { description: Missing code }
  */
-userRouter.get("/callback", GitHubCallback);
+userRouter.get('/callback', GitHubCallback);
 
 /**
  * @swagger
@@ -60,4 +60,4 @@ userRouter.get("/callback", GitHubCallback);
  *             schema: { $ref: '#/components/schemas/GitHubUser' }
  *       401: { description: No token or invalid token }
  */
-userRouter.get("/me", GetCurrentUser);
+userRouter.get('/me', GetCurrentUser);

@@ -1,7 +1,7 @@
-import { sequelize } from "@/db/sequalize";
-import { DataTypes, Model } from "sequelize";
+import { sequelize } from '@/db/sequalize';
+import { DataTypes, Model } from 'sequelize';
 
-import { InvitedUser } from "@/db/models/invited-user.model";
+import { InvitedUser } from '@/db/models/invited-user.model';
 
 export interface PasswordSettingsAttributes {
     invited_user_id: string;
@@ -19,20 +19,24 @@ PasswordSettings.init(
             type: DataTypes.UUID,
             allowNull: false,
             references: {
-                model: "invited_users",
-                key: "id",
+                model: 'invited_users',
+                key: 'id',
             },
         },
         expires_at: {
             type: DataTypes.DATE,
             allowNull: false,
             defaultValue: sequelize.literal("NOW() + INTERVAL '7 days'"),
-        }
+        },
     },
     {
         sequelize,
-        tableName: "password_settings",
-    }
-)
+        tableName: 'password_settings',
+    },
+);
 
-PasswordSettings.hasOne(InvitedUser, { foreignKey: "invited_user_id", as: "invited_user", onDelete: "CASCADE" });
+PasswordSettings.hasOne(InvitedUser, {
+    foreignKey: 'invited_user_id',
+    as: 'invited_user',
+    onDelete: 'CASCADE',
+});
