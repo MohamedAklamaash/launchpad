@@ -26,7 +26,7 @@ export interface AccessTokenPayload {
 
 export const signAccessToken = (payload: AccessTokenPayload, expiresIn?: string): string => {
     const options: SignOptions = expiresIn
-        ? { ...ACCESS_OPTIONS, expiresIn: expiresIn as any }
+        ? { ...ACCESS_OPTIONS, expiresIn: expiresIn as SignOptions['expiresIn'] }
         : ACCESS_OPTIONS;
     return jwt.sign(payload, ACCESS_TOKEN, options);
 };
@@ -34,7 +34,7 @@ export const signAccessToken = (payload: AccessTokenPayload, expiresIn?: string)
 export const verifyAccessToken = (token: string): AccessTokenPayload => {
     try {
         return jwt.verify(token, ACCESS_TOKEN) as AccessTokenPayload;
-    } catch (error) {
+    } catch {
         throw new HttpError(401, 'Invalid access token');
     }
 };

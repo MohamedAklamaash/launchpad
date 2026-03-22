@@ -11,7 +11,7 @@ export class User extends Model<Usermodel> implements Usermodel {
     declare profile_url?: string;
     declare created_at: Date;
     declare updated_at: Date;
-    declare metadata?: Record<string, any>;
+    declare metadata?: Record<string, unknown>;
     declare infra_id: string[];
     declare invited_by?: string;
 }

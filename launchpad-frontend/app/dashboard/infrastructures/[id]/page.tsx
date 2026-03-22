@@ -1,10 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -69,6 +67,22 @@ export default function InfrastructureDetailPage() {
 
   const isSuperAdmin = user?.role === 'super_admin';
   const canDeploy = isSuperAdmin || user?.role === 'admin';
+  const loadData = useCallback(async () => {
+    try {
+      const [infraData, appsData] = await Promise.all([
+        infrastructureApi.get(id),
+        applicationApi.list(id),
+      ]);
+      setInfra(infraData);
+      setApps(appsData);
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
+      toast.error(err.response?.data?.error || 'Failed to load data');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
   const isOwner = isSuperAdmin && infra?.user_id === user?.id;
 
   useEffect(() => {
@@ -77,22 +91,7 @@ export default function InfrastructureDetailPage() {
       if (infra?.status === 'PENDING' || infra?.status === 'PROVISIONING') loadData();
     }, 5000);
     return () => clearInterval(interval);
-  }, [id, infra?.status]);
-
-  const loadData = async () => {
-    try {
-      const [infraData, appsData] = await Promise.all([
-        infrastructureApi.get(id),
-        applicationApi.list(id),
-      ]);
-      setInfra(infraData);
-      setApps(appsData);
-    } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Failed to load data');
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [id, infra?.status, loadData]);
 
   const handleRenameInfra = async () => {
     if (!infraName.trim() || infraName === infra?.name) { setEditingName(false); return; }
@@ -102,7 +101,8 @@ export default function InfrastructureDetailPage() {
       toast.success('Infrastructure renamed');
       await loadData();
       setEditingName(false);
-    } catch (err: any) {
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
       toast.error(err.response?.data?.error || 'Failed to rename');
     } finally {
       setSavingName(false);
@@ -115,7 +115,8 @@ export default function InfrastructureDetailPage() {
       await infrastructureApi.removeUser(id, targetUser.id);
       toast.success(`${targetUser.user_name} removed`);
       await loadData();
-    } catch (err: any) {
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
       toast.error(err.response?.data?.error || 'Failed to remove user');
     } finally {
       setRemovingUserId(null);
@@ -131,7 +132,8 @@ export default function InfrastructureDetailPage() {
       setInviteUrl(url);
       toast.success('User invited successfully');
       await loadData();
-    } catch (err: any) {
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
       toast.error(err.response?.data?.error || 'Failed to invite user');
     } finally {
       setInviting(false);
@@ -158,7 +160,8 @@ export default function InfrastructureDetailPage() {
       const wasActive = infra?.status === 'ACTIVE';
       toast.success(wasActive ? 'Destroy queued — We are tearing down your AWS resources' : 'Infrastructure deleted');
       router.push('/dashboard/infrastructures');
-    } catch (err: any) {
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
       toast.error(err.response?.data?.error || 'Failed to delete infrastructure');
     } finally {
       setDeleting(false);
@@ -172,7 +175,8 @@ export default function InfrastructureDetailPage() {
       await infrastructureApi.reprovision(id);
       toast.success('Re-provisioning queued');
       await loadData();
-    } catch (err: any) {
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
       toast.error(err.response?.data?.error || 'Failed to queue re-provisioning');
     } finally {
       setReprovisioning(false);
@@ -505,7 +509,7 @@ export default function InfrastructureDetailPage() {
                 <div key={key} className="space-y-1.5">
                   <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">{label}</Label>
                   <Input type={type} placeholder={placeholder}
-                    value={(inviteForm as any)[key]}
+                    value={inviteForm[key as keyof typeof inviteForm]}
                     onChange={(e) => setInviteForm({ ...inviteForm, [key]: e.target.value })}
                     required minLength={key === 'password' ? 6 : undefined}
                     className="bg-[#050505] border-[#1a1a1a] focus:border-violet-500 h-9 text-sm" />

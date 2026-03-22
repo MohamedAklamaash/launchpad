@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff } from 'lucide-react';
@@ -28,21 +28,22 @@ export default function ApplicationDetailPage() {
   const user = useAuthStore((s) => s.user);
   const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
 
-  const loadApp = async () => {
+  const loadApp = useCallback(async () => {
     try {
       const data = await applicationApi.get(id);
       setApp(data);
       return data;
-    } catch (e: any) {
-      toast.error(e.response?.data?.error || 'Failed to load application');
+    } catch (e: unknown) {
+      const error = e as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Failed to load application');
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
 
   useEffect(() => {
     loadApp();
-  }, [id]);
+  }, [id, loadApp]);
 
   useEffect(() => {
     if (!app) return;
@@ -52,7 +53,7 @@ export default function ApplicationDetailPage() {
       if (intervalRef.current) clearInterval(intervalRef.current);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [app?.status]);
+  }, [app, app?.status, loadApp]);
 
   const action = async (fn: () => Promise<void>, successMsg: string) => {
     setActionLoading(true);
@@ -60,8 +61,9 @@ export default function ApplicationDetailPage() {
       await fn();
       toast.success(successMsg);
       loadApp();
-    } catch (e: any) {
-      toast.error(e.response?.data?.error || 'Action failed');
+    } catch (e: unknown) {
+      const error = e as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Action failed');
     } finally {
       setActionLoading(false);
     }
@@ -208,7 +210,8 @@ export default function ApplicationDetailPage() {
                   <button
                     onClick={() => setRevealedEnvs(prev => {
                       const next = new Set(prev);
-                      revealed ? next.delete(key) : next.add(key);
+                      if (revealed) next.delete(key);
+                      else next.add(key);
                       return next;
                     })}
                     className="shrink-0 text-[#444] hover:text-[#aaa] transition-colors ml-1"

@@ -7,6 +7,6 @@ export interface INotification {
     email: string;
     infra_id: string;
     source: string;
-    metadata: Record<string, any>;
+    metadata: Record<string, unknown>;
     created_at: number;
 }

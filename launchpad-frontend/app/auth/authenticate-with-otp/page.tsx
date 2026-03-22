@@ -36,7 +36,7 @@ function AuthenticateWithOtpInner() {
         toast.error(msg);
         router.replace(`/login?email=${encodeURIComponent(email)}`);
       });
-  }, []);
+  }, [router, searchParams, setAuth]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a]">

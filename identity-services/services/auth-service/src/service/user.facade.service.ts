@@ -2,7 +2,12 @@ import { githubHttpClient } from '@/utils/http-client';
 import { User } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { env } from '@/config/env';
-import { GithubCallbackInput, GithubUserUpsertInput } from '@/types/auth.user.types';
+import {
+    GithubCallbackInput,
+    GithubUserUpsertInput,
+    GithubTokenResponse,
+    GithubUserResponse,
+} from '@/types/auth.user.types';
 import { PublishUserRegistered } from '@/messaging/producer/user-created.message';
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
 import { USER_ROLE } from '@/types/auth.invited_user.types';
@@ -51,14 +56,19 @@ export class UserFacadeService extends BaseService {
             { headers: { Accept: 'application/json' } },
         );
 
-        const token = (tokenRes.data as any).access_token;
+        const token = (tokenRes.data as GithubTokenResponse).access_token;
         if (!token) throw new Error('Failed to get GitHub token');
 
         const userRes = await githubHttpClient.get('https://api.github.com/user', {
             headers: { Authorization: `Bearer ${token}` },
         });
 
-        const { login: username, id: github_id, avatar_url, email } = userRes.data as any;
+        const {
+            login: username,
+            id: github_id,
+            avatar_url,
+            email,
+        } = userRes.data as GithubUserResponse;
         const githubIdStr = String(github_id);
 
         return { token, username, github_id: githubIdStr, avatar_url, email };

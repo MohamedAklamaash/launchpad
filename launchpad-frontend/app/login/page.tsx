@@ -43,8 +43,9 @@ function LoginPageInner() {
       const res = await authApi.credentialsLogin(email, password);
       setAuth(res.user, res.access_token, res.refresh_token);
       router.push('/dashboard');
-    } catch (err: any) {
-      const msg: string = err.response?.data?.error || err.response?.data?.message || '';
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string; message?: string } } };
+      const msg: string = error.response?.data?.error || error.response?.data?.message || '';
       if (msg.toLowerCase().includes('otp pending')) {
         toast.info('Verify your email OTP to continue');
         setStep('otp');
@@ -63,8 +64,9 @@ function LoginPageInner() {
       const res = await authApi.verifyOtp(email, otp);
       setAuth(res.user, res.access_token, res.refresh_token);
       router.push('/dashboard');
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Invalid or expired OTP');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Invalid or expired OTP');
     } finally {
       setLoading(false);
     }
@@ -77,8 +79,9 @@ function LoginPageInner() {
       await authApi.forgotPassword(email);
       toast.success('Reset OTP sent to your email');
       setStep('verify-reset');
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Failed to send reset OTP');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Failed to send reset OTP');
     } finally {
       setLoading(false);
     }
@@ -92,8 +95,9 @@ function LoginPageInner() {
       setResetToken(token);
       setOtp('');
       setStep('reset-done');
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Invalid OTP');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Invalid OTP');
     } finally {
       setLoading(false);
     }
@@ -107,8 +111,9 @@ function LoginPageInner() {
       toast.success('Password reset! Please log in.');
       setStep('login');
       setNewPassword('');
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Failed to reset password');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Failed to reset password');
     } finally {
       setLoading(false);
     }
@@ -228,9 +233,8 @@ function LoginPageInner() {
           <div className="flex border-b border-[#1a1a1a]">
             {(['github', 'creds'] as const).map((t) => (
               <button key={t} onClick={() => { setTab(t); setStep('login'); }}
-                className={`flex-1 py-3 text-xs font-medium transition-all ${
-                  tab === t ? 'text-white border-b border-violet-500 bg-violet-500/5' : 'text-[#444] hover:text-[#888]'
-                }`}>
+                className={`flex-1 py-3 text-xs font-medium transition-all ${tab === t ? 'text-white border-b border-violet-500 bg-violet-500/5' : 'text-[#444] hover:text-[#888]'
+                  }`}>
                 {t === 'github' ? 'GitHub' : 'Credentials'}
               </button>
             ))}

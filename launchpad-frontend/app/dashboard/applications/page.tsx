@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Plus, Rocket } from 'lucide-react';
 import { ApplicationSummary } from '@/types/application';
@@ -13,16 +12,6 @@ import { applicationApi } from '@/lib/api/applications';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { toast } from 'sonner';
 import { Suspense } from 'react';
-
-const statusColor: Record<string, string> = {
-  ACTIVE: 'bg-green-500/10 text-green-500',
-  BUILDING: 'bg-blue-500/10 text-blue-500',
-  DEPLOYING: 'bg-blue-500/10 text-blue-500',
-  PUSHING_IMAGE: 'bg-blue-500/10 text-blue-500',
-  SLEEPING: 'bg-yellow-500/10 text-yellow-500',
-  FAILED: 'bg-red-500/10 text-red-500',
-  CREATED: 'bg-[#262626] text-[#a3a3a3]',
-};
 
 export default function ApplicationsPage() {
   return (
@@ -50,7 +39,7 @@ function ApplicationsPageInner() {
         }
       })
       .catch(() => toast.error('Failed to load infrastructures'));
-  }, []);
+  }, [router, searchParams]);
 
   const handleInfraChange = (id: string) => {
     setSelectedInfra(id);
@@ -59,11 +48,22 @@ function ApplicationsPageInner() {
 
   useEffect(() => {
     if (!selectedInfra) return;
-    setLoading(true);
-    applicationApi.list(selectedInfra)
-      .then(setApps)
-      .catch((e) => toast.error(e.response?.data?.error || 'Failed to load applications'))
-      .finally(() => setLoading(false));
+    let isActive = true;
+    const fetchApps = async () => {
+      await Promise.resolve();
+      if (isActive) setLoading(true);
+      try {
+        const data = await applicationApi.list(selectedInfra);
+        if (isActive) setApps(data);
+      } catch (err: unknown) {
+        const error = err as { response?: { data?: { error?: string } } };
+        if (isActive) toast.error(error.response?.data?.error || 'Failed to load applications');
+      } finally {
+        if (isActive) setLoading(false);
+      }
+    };
+    fetchApps();
+    return () => { isActive = false; };
   }, [selectedInfra]);
 
   return (

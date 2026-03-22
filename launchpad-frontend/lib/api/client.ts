@@ -25,17 +25,17 @@ apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
-    
+
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
-      
+
       try {
         const refreshToken = localStorage.getItem('refresh_token');
         if (!refreshToken) {
           throw new Error('No refresh token');
         }
-        
-        let data: any;
+
+        let data: { access_token?: string; accessToken?: string; refresh_token?: string; refreshToken?: string };
         try {
           const res = await axios.post(`${API_GATEWAY}/api/user/refresh`, { refresh_token: refreshToken });
           data = res.data;
@@ -45,6 +45,7 @@ apiClient.interceptors.response.use(
         }
         const newAccess = data.access_token || data.accessToken;
         const newRefresh = data.refresh_token || data.refreshToken;
+        if (!newAccess || !newRefresh) throw new Error('Refresh failed');
         localStorage.setItem('access_token', newAccess);
         localStorage.setItem('refresh_token', newRefresh);
 
@@ -58,7 +59,7 @@ apiClient.interceptors.response.use(
         return Promise.reject(refreshError);
       }
     }
-    
+
     return Promise.reject(error);
   }
 );

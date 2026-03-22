@@ -39,7 +39,7 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
   const [envs, setEnvs] = useState<[string, string][]>(Object.entries(app.envs ?? {}));
   const [saving, setSaving] = useState(false);
 
-  const set = (k: string, v: any) => setForm((p) => ({ ...p, [k]: v }));
+  const set = (k: string, v: string | number) => setForm((p) => ({ ...p, [k]: v }));
   const [minMem, maxMem] = MEM_RANGES[form.alloted_cpu] ?? [0.5, 2];
 
   const handleSave = async () => {
@@ -59,8 +59,9 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
       toast.success('Application updated');
       onSaved(updated);
       onClose();
-    } catch (e: any) {
-      toast.error(e.response?.data?.error || 'Update failed');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Update failed');
     } finally {
       setSaving(false);
     }

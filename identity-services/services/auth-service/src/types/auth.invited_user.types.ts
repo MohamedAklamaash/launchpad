@@ -31,6 +31,7 @@ export interface UserData {
     role: USER_ROLE;
     infra_id: string[];
     createdAt: string;
+    profile_url?: string;
 }
 
 export interface AuthTokens {

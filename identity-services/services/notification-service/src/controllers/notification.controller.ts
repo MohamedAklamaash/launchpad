@@ -10,7 +10,7 @@ export const GetUserNotifications = async (req: Request, res: Response) => {
         const notifications = await notificationService.getByUser(userId);
 
         return res.status(200).json(notifications);
-    } catch (error: any) {
+    } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
         console.error('Error fetching notifications', error);
         throw new HttpError(500, 'Internal Server Error');

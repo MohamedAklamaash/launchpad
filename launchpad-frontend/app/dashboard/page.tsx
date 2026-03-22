@@ -25,8 +25,9 @@ export default function DashboardPage() {
     try {
       const data = await infrastructureApi.list();
       setInfrastructures(data);
-    } catch (error: any) {
-      toast.error(error.response?.data?.error || 'Failed to load infrastructures');
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
+      toast.error(err.response?.data?.error || 'Failed to load infrastructures');
     } finally {
       setLoading(false);
     }
@@ -80,7 +81,7 @@ export default function DashboardPage() {
               </Button>
             </>
           ) : (
-            <p className="text-xs text-[#333]">You haven't been added to any infrastructure yet.</p>
+            <p className="text-xs text-[#333]">You haven&apos;t been added to any infrastructure yet.</p>
           )}
         </div>
       ) : (

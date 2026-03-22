@@ -20,10 +20,15 @@ export const GitHubCallback = async (req: Request, res: Response) => {
         const redirectUrl = `${frontendUrl}/auth/callback?access_token=${authResponse.accessToken}&refresh_token=${authResponse.refreshToken}`;
 
         return res.redirect(redirectUrl);
-    } catch (err: any) {
+    } catch (err: unknown) {
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        if (err instanceof Error) {
+            return res.redirect(
+                `${frontendUrl}/auth/callback?error=${encodeURIComponent(err.message)}`,
+            );
+        }
         return res.redirect(
-            `${frontendUrl}/auth/callback?error=${encodeURIComponent(err.message)}`,
+            `${frontendUrl}/auth/callback?error=${encodeURIComponent('Invalid token')}`,
         );
     }
 };
@@ -37,7 +42,10 @@ export const GetCurrentUser = async (req: Request, res: Response) => {
 
         const user = await userService.getUserFromToken(token);
         return res.status(200).json(user);
-    } catch (err: any) {
-        return res.status(401).json({ error: err.message || 'Invalid token' });
+    } catch (err: unknown) {
+        if (err instanceof Error) {
+            return res.status(401).json({ error: err.message || 'Invalid token' });
+        }
+        return res.status(401).json({ error: 'Invalid token' });
     }
 };
