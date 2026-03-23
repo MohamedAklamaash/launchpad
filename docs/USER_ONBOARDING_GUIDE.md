@@ -416,7 +416,7 @@ Resources deleted:
 
 
 ### Contact
-- Email: [EMAIL_ADDRESS](aklamaash78@gmail.com)
+- Email: [EMAIL_ADDRESS](https://mail.google.com/mail/u/0/?fs=1&to=aklamaash78@gmail.com&su=Hello!&tf=cm)
 ---
 
 ## Next Steps
