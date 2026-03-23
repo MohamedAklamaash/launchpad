@@ -649,9 +649,6 @@ The system treats cloud infrastructure as a **runtime for applications**, transf
 
 Comprehensive documentation available in `/docs`:
 
-- `SYSTEM_ARCHITECTURE.md` - Architecture diagrams
-- `USER_WORKFLOWS.md` - User journey flows
 - `USER_ONBOARDING_GUIDE.md` - Setup instructions
 - `IAM_POLICIES.md` - IAM configuration
 - `DEPLOYMENT_EDGE_CASES.md` - Known issues and fixes
-- `QUICK_START.md` - Quick reference
