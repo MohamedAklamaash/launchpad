@@ -302,5 +302,4 @@ If you encounter an issue not covered here:
 
 1. Check application logs in CloudWatch
 2. Verify AWS resources are created correctly
-3. Review [System Architecture](SYSTEM_ARCHITECTURE.md) for expected setup
-4. Check [context.md](../context.md) for technical details
+3. Check [context.md](../context.md) for technical details

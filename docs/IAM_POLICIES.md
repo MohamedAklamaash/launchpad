@@ -355,8 +355,7 @@ WARNING: This will prevent Launchpad from managing your infrastructure. Clean up
 ## Updates
 
 This policy may be updated as Launchpad adds features. Check for updates:
-- [GitHub](https://github.com/launchpad/iam-policies)
-- [Documentation](https://docs.launchpad.example.com/iam)
+- [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
 **Version**: 1.0.0  
-**Last Updated**: 2026-03-08
+**Last Updated**: 2026-03-23
