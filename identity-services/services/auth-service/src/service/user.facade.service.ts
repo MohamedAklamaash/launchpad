@@ -85,8 +85,7 @@ export class UserFacadeService extends BaseService {
                     'X-GitHub-Api-Version': '2026-03-10',
                 },
             });
-            const primary = (emailsRes.data as GithubEmail[])
-                .find((e) => e.primary && e.verified);
+            const primary = (emailsRes.data as GithubEmail[]).find((e) => e.primary && e.verified);
             resolvedEmail = primary?.email ?? null;
         }
 
@@ -131,7 +130,8 @@ export class UserFacadeService extends BaseService {
                     {
                         user_name: githubData.username,
                         profile_url: githubData.avatar_url,
-                        email: githubData.email ?? `${githubData.github_id}@users.noreply.github.com`,
+                        email:
+                            githubData.email ?? `${githubData.github_id}@users.noreply.github.com`,
                         role: USER_ROLE.SUPER_ADMIN, // GitHub users are SUPER_ADMIN
                         infra_id: [],
                         metadata: {
