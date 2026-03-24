@@ -44,4 +44,5 @@ export interface InfrastructureCreate {
   max_cpu: number;
   max_memory: number;
   code: string;
+  metadata?: { aws_region?: string;[key: string]: string | undefined };
 }

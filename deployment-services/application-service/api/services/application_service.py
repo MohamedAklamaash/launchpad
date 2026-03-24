@@ -7,6 +7,7 @@ from api.services.infrastructure_permissions import InfrastructurePermissions
 from shared.resilience.http_client import ResilientHttpClient
 from django.db import transaction
 from api.services.deployment_queue import DeploymentQueue
+from api.messaging.producer.producer import ApplicationEventProducer
 
 import os
 
@@ -117,8 +118,6 @@ class ApplicationService:
         app_id_str = str(app.id)
         transaction.on_commit(lambda: DeploymentQueue.enqueue_deployment(app_id_str))
 
-        # Publish event
-        from api.messaging.producer.producer import ApplicationEventProducer
         ApplicationEventProducer.publish_application_created(
             app.id, app.infrastructure_id, app.name, user.id
         )
@@ -173,7 +172,6 @@ class ApplicationService:
             except Exception as e:
                 logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")
 
-        from api.messaging.producer.producer import ApplicationEventProducer
         ApplicationEventProducer.publish_application_deleted(app_id)
 
         return result
@@ -196,11 +194,9 @@ class ApplicationService:
         if not infra:
             raise ValueError("Infrastructure not found")
         
-        # Check permissions (SUPER_ADMIN or ADMIN can update)
         if not InfrastructurePermissions.can_update_application(infra, user_id):
             raise PermissionError("You don't have permission to update applications. Required role: SUPER_ADMIN or ADMIN")
         
-        # Validate updatable fields
         update_fields = []
 
         if 'name' in update_data:
@@ -225,12 +221,10 @@ class ApplicationService:
             app.port = port
             update_fields.append('port')
         
-        # Resource updates require quota validation
         if 'alloted_cpu' in update_data or 'alloted_memory' in update_data:
             new_cpu = float(update_data.get('alloted_cpu', app.alloted_cpu))
             new_mem = float(update_data.get('alloted_memory', app.alloted_memory))
             
-            # Validate Fargate combinations
             valid_combinations = {
                 0.25: (0.5, 2.0), 0.5: (1.0, 4.0), 1.0: (2.0, 8.0),
                 2.0: (4.0, 16.0), 4.0: (8.0, 30.0)
@@ -266,7 +260,6 @@ class ApplicationService:
 
         if update_fields:
             app.save(update_fields=update_fields)
-            from api.messaging.producer.producer import ApplicationEventProducer
             ApplicationEventProducer.publish_application_updated(app)
 
         return app

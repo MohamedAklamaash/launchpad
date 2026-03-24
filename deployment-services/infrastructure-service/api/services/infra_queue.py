@@ -62,7 +62,6 @@ class InfraQueue:
     @staticmethod
     def enqueue_provision(infra_id: str, priority: int = 0):
         """Add provision job to queue (deduplicated)"""
-        # Check if already in queue
         lock_key = f"{LOCK_PREFIX}{infra_id}"
         if _redis().exists(lock_key):
             logger.warning(f"Job {infra_id} already queued or processing, skipping")

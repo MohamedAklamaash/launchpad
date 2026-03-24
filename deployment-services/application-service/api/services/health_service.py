@@ -25,7 +25,6 @@ class HealthService:
 
     def get_readiness(self):
         errors = {}
-        # Check Database
         try:
             with db_connection.cursor() as cursor:
                 cursor.execute("SELECT 1;")
@@ -34,7 +33,6 @@ class HealthService:
             logger.exception("Database readiness check failed")
             errors["database"] = str(e)
 
-        # Check RabbitMQ
         try:
             parameters = pika.URLParameters(app_config.rabbitmq_url)
             rabbit_connection = pika.BlockingConnection(parameters)

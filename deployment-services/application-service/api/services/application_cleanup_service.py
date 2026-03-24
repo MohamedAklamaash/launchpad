@@ -1,4 +1,5 @@
 import logging
+import re
 from api.models import Application, Environment
 from aws.session import create_boto3_session
 from aws.alb import ALBClient
@@ -27,7 +28,7 @@ class ApplicationCleanupService:
             if application.listener_rule_arn:
                 self._delete_listener_rule(session, application.listener_rule_arn)
             
-            # Step 3: Delete Target Group
+            # Stimport reep 3: Delete Target Group
             if application.target_group_arn:
                 self._delete_target_group(session, application.target_group_arn)
             
@@ -92,6 +93,5 @@ class ApplicationCleanupService:
     
     def _delete_log_group(self, session, app_name):
         """Keep log groups for debugging — just log and skip."""
-        import re
         slug = re.sub(r'[^a-z0-9._-]', '-', app_name.lower()).strip('-')
         logger.info(f"Keeping log group /ecs/{slug}-task for debugging")

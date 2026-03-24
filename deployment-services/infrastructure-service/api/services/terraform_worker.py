@@ -29,8 +29,8 @@ class TerraformWorker:
     @staticmethod
     def _ensure_backend(credentials: dict, region: str, account_id: str) -> tuple[str, str]:
         """Ensure S3 backend and DynamoDB lock table exist"""
-        bucket = f"launchpad-tf-state-{account_id}"
-        table = f"launchpad-tf-locks-{account_id}"
+        bucket = f"launchpad-tf-state-{account_id}-{region}"
+        table = f"launchpad-tf-locks-{account_id}-{region}"
         
         s3 = boto3.client("s3", region_name=region, **credentials)
         dynamodb = boto3.client("dynamodb", region_name=region, **credentials)
@@ -67,7 +67,6 @@ class TerraformWorker:
                     logger.info(f"S3 bucket {bucket} already owned by you")
                 except Exception as create_error:
                     logger.error(f"Failed to create S3 bucket {bucket}: {create_error}")
-                    # Only raise if it's not a "bucket already exists" type error
                     if "BucketAlreadyExists" not in str(create_error) and "BucketAlreadyOwnedByYou" not in str(create_error):
                         raise
             else:
@@ -99,8 +98,8 @@ class TerraformWorker:
     def _exec_tf(cmd: list, env_vars: dict, credentials: dict, infra_id: str, region: str, account_id: str,
                  ensure_backend: bool = True) -> dict:
         """Execute terraform with proper logging and cleanup"""
-        bucket = f"launchpad-tf-state-{account_id}"
-        table = f"launchpad-tf-locks-{account_id}"
+        bucket = f"launchpad-tf-state-{account_id}-{region}"
+        table = f"launchpad-tf-locks-{account_id}-{region}"
         if ensure_backend:
             bucket, table = TerraformWorker._ensure_backend(credentials, region, account_id)
 
@@ -110,7 +109,7 @@ class TerraformWorker:
         work_dir = Path(f"/dev/shm/tf-{infra_id}")
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        # Persistent provider cache — survives work_dir cleanup, avoids re-downloading ~200MB provider
+        # Persistent provider cache avoids re-downloading ~200MB provider
         plugin_cache_dir = Path("/tmp/tf-plugin-cache")
         plugin_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -135,7 +134,6 @@ class TerraformWorker:
                 "TF_PLUGIN_CACHE_DIR": str(plugin_cache_dir),
             }
             
-            # Init
             init_result = subprocess.run(
                 ["terraform", "init", "-no-color", "-input=false"],
                 cwd=work_dir,
@@ -148,7 +146,6 @@ class TerraformWorker:
             if init_result.returncode != 0:
                 return {"success": False, "error": init_result.stderr, "logs": "\n".join(logs)}
             
-            # Execute command
             result = subprocess.run(
                 cmd,
                 cwd=work_dir,
@@ -169,7 +166,6 @@ class TerraformWorker:
             return {"success": False, "error": error_msg, "logs": "\n".join(logs)}
         
         finally:
-            # Always cleanup
             import shutil
             shutil.rmtree(work_dir, ignore_errors=True)
     
@@ -301,7 +297,6 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16")
             }
             
-            # Apply
             logger.info(f"Running terraform apply for {infra_id}")
             result = TerraformWorker._exec_tf(
                 ["terraform", "apply", "-auto-approve", "-no-color", "-input=false"],
@@ -312,7 +307,6 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 TerraformWorker._handle_provision_failure(infra_id, result, tf_vars, credentials, region, account_id, retry_count)
                 return
             
-            # Get outputs and mark as ACTIVE
             TerraformWorker._save_outputs(infra_id, result, tf_vars, credentials, region, account_id)
             logger.info(f"Infrastructure {infra_id} provisioned successfully")
         
@@ -342,7 +336,6 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             InfraQueue.enqueue_provision(str(infra_id))
             return
         
-        # Rollback on permanent failure
         logger.error(f"Permanent failure, triggering destroy for {infra_id}")
         destroy_result = TerraformWorker._exec_tf(
             ["terraform", "destroy", "-auto-approve", "-no-color", "-input=false"],
@@ -387,10 +380,8 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 env.logs = combined_logs
                 env.save()
                 
-                # Get infrastructure for publishing
                 infra = Infrastructure.objects.get(id=infra_id)
                 
-                # Publish infrastructure.created event (now that it's fully provisioned)
                 from api.messaging.producer.producer import infra_producer
                 transaction.on_commit(lambda: infra_producer.publish_infra_created(
                     user_id=infra.user_id,
@@ -465,7 +456,6 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             )["NetworkInterfaces"]
             for eni in enis:
                 eni_id = eni["NetworkInterfaceId"]
-                # Detach first if attached
                 attachment = eni.get("Attachment", {})
                 if attachment.get("AttachmentId") and attachment.get("Status") != "detached":
                     try:
@@ -514,7 +504,6 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 "aws_session_token": metadata.get("aws_session_token", "")
             }
 
-            # Pre-clean resources Terraform can't delete on its own
             TerraformWorker._pre_destroy_cleanup(credentials, region, infra_id)
 
             tf_vars = {
@@ -528,7 +517,7 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             result = TerraformWorker._exec_tf(
                 ["terraform", "destroy", "-auto-approve", "-no-color", "-input=false"],
                 tf_vars, credentials, str(infra_id), region, account_id,
-                ensure_backend=False  # bucket already exists from provision; skip HeadBucket with potentially stale creds
+                ensure_backend=False  # bucket already exists from provision
             )
             
             with transaction.atomic():

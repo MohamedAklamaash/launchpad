@@ -76,7 +76,6 @@ class ALBClient:
             else:
                 raise
         
-        # Wait for AWS to propagate the attachment
         propagation_delay = int(os.environ.get('ALB_RULE_PROPAGATION_DELAY', '5'))
         logger.info(f"Waiting {propagation_delay} seconds for listener rule to propagate...")
         time.sleep(propagation_delay)
@@ -92,7 +91,6 @@ class ALBClient:
         import time
         for attempt in range(max_retries):
             try:
-                # Check if any listener rule forwards to this target group
                 response = self.client.describe_rules(ListenerArn=listener_arn)
                 for rule in response.get('Rules', []):
                     for action in rule.get('Actions', []):
