@@ -71,7 +71,6 @@ See [docs/USER_ONBOARDING_GUIDE.md](docs/USER_ONBOARDING_GUIDE.md) for setup ins
 
 ## Documentation
 
-- [System Architecture](docs/SYSTEM_ARCHITECTURE.md) - Technical deep dive
 - [User Workflows](docs/USER_WORKFLOWS.md) - Step-by-step guides
 - [IAM Policies](docs/IAM_POLICIES.md) - AWS permissions setup
 - [Deployment Edge Cases](docs/DEPLOYMENT_EDGE_CASES.md) - Troubleshooting

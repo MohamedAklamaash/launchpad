@@ -90,7 +90,6 @@ class ApplicationDeploymentService:
         except Exception as e:
             logger.error(f"Deployment failed for application {application.name}: {str(e)}", exc_info=True)
             
-            # Cleanup created resources in reverse order
             if session and created_resources:
                 logger.info(f"Cleaning up {len(created_resources)} resources")
                 for resource_type, resource_id in reversed(created_resources):
@@ -140,7 +139,6 @@ class ApplicationDeploymentService:
         if environment.status != 'ACTIVE':
             raise ValueError(f"Infrastructure is not active. Current status: {environment.status}")
         
-        # Validate required environment fields
         required_fields = {
             'vpc_id': environment.vpc_id,
             'cluster_arn': environment.cluster_arn,
@@ -171,7 +169,6 @@ class ApplicationDeploymentService:
         
         project_name = f"launchpad-build-{application.infrastructure.id}"
         
-        # Get or create CodeBuild service role
         role_name = f"launchpad-codebuild-role-{application.infrastructure.id}"
         try:
             role_response = iam.get_role(RoleName=role_name)
@@ -194,7 +191,6 @@ class ApplicationDeploymentService:
             )
             service_role_arn = role_response['Role']['Arn']
             
-            # Attach necessary policies
             iam.attach_role_policy(
                 RoleName=role_name,
                 PolicyArn='arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser'
@@ -208,7 +204,6 @@ class ApplicationDeploymentService:
             time.sleep(10)
             logger.info(f"Created CodeBuild role: {service_role_arn}")
         
-        # Ensure CodeBuild project exists
         codebuild.ensure_project_exists(project_name, service_role_arn, session.region_name)
         
         dockerfile_path = application.dockerfile_path or "Dockerfile"
@@ -247,7 +242,6 @@ class ApplicationDeploymentService:
         ecr = ECRClient(session)
         logs = session.client('logs')
         
-        # Create CloudWatch log group
         log_group_name = f"/ecs/{_slug(application.name)}-task"
         try:
             logs.create_log_group(logGroupName=log_group_name)
@@ -277,7 +271,6 @@ class ApplicationDeploymentService:
     def _create_target_group(self, session, application: Application, environment: Environment):
         alb = ALBClient(session)
 
-        # Check if stored TG still exists AND is in the correct VPC
         if application.target_group_arn:
             try:
                 resp = alb.client.describe_target_groups(TargetGroupArns=[application.target_group_arn])

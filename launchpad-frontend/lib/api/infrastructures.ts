@@ -1,6 +1,11 @@
 import { apiClient } from './client';
 import { Infrastructure, InfrastructureCreate } from '@/types/infrastructure';
 
+export interface AwsRegion {
+  value: string;
+  label: string;
+}
+
 export const infrastructureApi = {
   list: async (): Promise<Infrastructure[]> => {
     const { data } = await apiClient.get('/api/infrastructures/');
@@ -36,6 +41,11 @@ export const infrastructureApi = {
 
   validate: async (id: string): Promise<{ can_delete: boolean; app_count: number }> => {
     const { data } = await apiClient.get(`/api/infrastructures/${id}/validation/`);
+    return data;
+  },
+
+  listRegions: async (): Promise<AwsRegion[]> => {
+    const { data } = await apiClient.get('/api/aws/regions');
     return data;
   },
 };

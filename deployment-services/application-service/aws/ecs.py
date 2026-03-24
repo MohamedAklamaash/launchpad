@@ -15,7 +15,6 @@ class ECSClient:
         env_vars = [{'name': k, 'value': str(v)} for k, v in (envs or {}).items()]
         logger.info(f"Creating task definition with {len(env_vars)} environment variables: {list(envs.keys()) if envs else []}")
         
-        # Convert CPU and memory to valid Fargate values
         if cpu <= 0.25:
             cpu_str = "256"
             memory = max(0.5, memory)
@@ -176,7 +175,6 @@ http {{
     
     def create_service(self, cluster_arn, service_name, task_definition_arn, target_group_arn, subnet_ids, security_group_ids, container_name, container_port=8000, use_nginx=False):
         try:
-            # Check if service already exists
             try:
                 response = self.client.describe_services(
                     cluster=cluster_arn,
@@ -186,7 +184,6 @@ http {{
                     existing_service = response['services'][0]
                     logger.info(f"Service {service_name} already exists, updating it")
                     
-                    # Update existing service
                     self.client.update_service(
                         cluster=cluster_arn,
                         service=service_name,
@@ -198,11 +195,9 @@ http {{
             except Exception as e:
                 logger.debug(f"Service doesn't exist, creating new: {e}")
             
-            # Route ALB to NGINX container if using sidecar, otherwise to app
             lb_container_name = f"{container_name}-nginx" if use_nginx else container_name
             lb_container_port = 80 if use_nginx else container_port
             
-            # Create new service
             response = self.client.create_service(
                 cluster=cluster_arn,
                 serviceName=service_name,
@@ -255,7 +250,6 @@ http {{
             
             service = response['services'][0]
             
-            # Check if service is stable (running tasks == desired tasks)
             running_count = service.get('runningCount', 0)
             desired_count = service.get('desiredCount', 0)
             

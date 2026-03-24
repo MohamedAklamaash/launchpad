@@ -1,5 +1,6 @@
 from shared.enums.user_role import UserRole
 import logging
+from api.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +12,6 @@ class InfrastructurePermissions:
             return UserRole.SUPER_ADMIN
         if infrastructure.invited_users.filter(id=user_id).exists():
             return UserRole.USER
-        # Fallback: user was invited by the infra owner
-        from api.models.user import User
         try:
             user = User.objects.get(id=user_id)
             if user.invited_by and str(user.invited_by) == str(infrastructure.user_id):

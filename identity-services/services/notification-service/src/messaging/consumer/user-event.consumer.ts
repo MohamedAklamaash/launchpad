@@ -3,9 +3,11 @@ import {
     AUTHENTICATE_INVITED_USER_EVENT,
     NOTIFICATION_EVENT_QUEUE,
     FORGOT_PASSWORD_EVENT,
+    INFRA_NOTIFICATION_EVENT,
 } from '@launchpad/common';
 import { getAuthEmailTemplate } from '@/templates/auth-email.template';
 import { getForgotPasswordTemplate } from '@/templates/forgot-password.template';
+import { getInfraEmailTemplate } from '@/templates/infra-email.template';
 import { sendMail } from '@/service/mail.service';
 import { notificationService } from '@/service/notification.service';
 import { env } from '@/config/env';
@@ -60,6 +62,31 @@ export const userEventsWorker = new Worker(
                 const fpEmailHtml = getForgotPasswordTemplate(fpOtp, fpUserName);
                 logger.info({ job_id: job.id, email: fpEmail }, 'Sending forgot-password email');
                 await sendMail(fpEmail, 'Reset Your Launchpad Password', fpEmailHtml);
+                break;
+            }
+
+            case INFRA_NOTIFICATION_EVENT: {
+                const { user_id, user_name, email, infra_id, infra_name, event, error } = job.data;
+
+                if (!email || !event) {
+                    throw new UnrecoverableError(
+                        `Job ${job.id} (${job.name}): missing required fields email or event`,
+                    );
+                }
+
+                const html = getInfraEmailTemplate(event, infra_name, infra_id, user_name, error);
+                const subject = `Launchpad — Infrastructure ${event.replace(/_/g, ' ')}`;
+
+                logger.info({ job_id: job.id, email, event }, 'Sending infra notification email');
+                await sendMail(email, subject, html);
+
+                await notificationService.save({
+                    user_id,
+                    email,
+                    user_name,
+                    infra_id,
+                    source: event,
+                });
                 break;
             }
 

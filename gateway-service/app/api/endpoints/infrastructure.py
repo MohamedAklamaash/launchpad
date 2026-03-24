@@ -84,3 +84,11 @@ async def infrastructure_reprovision(infra_id: str, request: Request):
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/reprovision/", request
     )
+
+
+aws_router = APIRouter(prefix="/aws", tags=["AWS"])
+
+
+@aws_router.get("/regions", summary="List all available AWS regions")
+async def list_aws_regions(request: Request):
+    return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/aws/regions/", request)

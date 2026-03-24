@@ -14,7 +14,6 @@ class Environment(models.Model):
         related_name='environments',
     )
     
-    # Terraform outputs
     vpc_id = models.CharField(max_length=255, null=True, blank=True)
     cluster_arn = models.CharField(max_length=512, null=True, blank=True)
     alb_arn = models.CharField(max_length=512, null=True, blank=True)

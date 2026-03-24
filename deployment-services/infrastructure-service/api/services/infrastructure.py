@@ -39,7 +39,6 @@ class InfrastructureService:
         """Create infrastructure and enqueue provisioning job"""
         correlation_id = str(uuid.uuid4())
         
-        # Normalize cloud_provider to lowercase to match enum values ("AWS" -> "aws")
         if isinstance(infra_data, dict):
             infra_data = dict(infra_data)
         else:
@@ -69,7 +68,6 @@ class InfrastructureService:
             serialized_infra = InfrastructureSerializer.serialize_instance(infra)
             infra_id = serialized_infra["id"]
 
-        # Enqueue async provisioning
         transaction.on_commit(lambda: InfraQueue.enqueue_provision(infra_id))
 
         logger.info(

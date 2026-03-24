@@ -1,6 +1,7 @@
 from django.urls import path
 from api.views.infrastructure import infrastructure_list_create, infrastructure_detail, infrastructure_update, infrastructure_remove_user, infrastructure_reprovision
 from api.views.health import health, liveness, readiness
+from api.views.aws import list_aws_regions
 
 urlpatterns = [
     path('infrastructures/', infrastructure_list_create, name='infrastructure-list-create'),
@@ -11,4 +12,5 @@ urlpatterns = [
     path('healthz/', health, name='health'),
     path('liveness/', liveness, name='liveness'),
     path('readiness/', readiness, name='readiness'),
+    path('aws/regions/', list_aws_regions, name='aws-regions'),
 ]

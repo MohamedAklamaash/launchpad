@@ -7,6 +7,7 @@ import {
     GithubUserUpsertInput,
     GithubTokenResponse,
     GithubUserResponse,
+    GithubEmail,
 } from '@/types/auth.user.types';
 import { PublishUserRegistered } from '@/messaging/producer/user-created.message';
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
@@ -19,7 +20,7 @@ export class UserFacadeService extends BaseService {
     private redirectUri = env.GITHUB_REDIRECT_URI;
 
     public getAuthUrl(): string {
-        return `https://github.com/login/oauth/authorize?client_id=${this.clientId}&redirect_uri=${this.redirectUri}&scope=repo%20read:org`;
+        return `https://github.com/login/oauth/authorize?client_id=${this.clientId}&redirect_uri=${this.redirectUri}&scope=repo%20read:org%20user:email`;
     }
 
     public async getUserFromToken(token: string) {
@@ -60,7 +61,11 @@ export class UserFacadeService extends BaseService {
         if (!token) throw new Error('Failed to get GitHub token');
 
         const userRes = await githubHttpClient.get('https://api.github.com/user', {
-            headers: { Authorization: `Bearer ${token}` },
+            headers: {
+                Authorization: `Bearer ${token}`,
+                Accept: 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2026-03-10',
+            },
         });
 
         const {
@@ -71,7 +76,20 @@ export class UserFacadeService extends BaseService {
         } = userRes.data as GithubUserResponse;
         const githubIdStr = String(github_id);
 
-        return { token, username, github_id: githubIdStr, avatar_url, email };
+        let resolvedEmail = email;
+        if (!resolvedEmail) {
+            const emailsRes = await githubHttpClient.get('https://api.github.com/user/emails', {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: 'application/vnd.github+json',
+                    'X-GitHub-Api-Version': '2026-03-10',
+                },
+            });
+            const primary = (emailsRes.data as GithubEmail[]).find((e) => e.primary && e.verified);
+            resolvedEmail = primary?.email ?? null;
+        }
+
+        return { token, username, github_id: githubIdStr, avatar_url, email: resolvedEmail };
     }
 
     public async upsertUser(githubData: GithubUserUpsertInput) {
@@ -102,13 +120,18 @@ export class UserFacadeService extends BaseService {
                     github: githubMetadata,
                 };
                 user.profile_url = githubData.avatar_url;
+                // Backfill real email if stored email is the github.com placeholder
+                if (githubData.email && user.email.endsWith('@github.com')) {
+                    user.email = githubData.email;
+                }
                 await user.save({ transaction });
             } else {
                 user = await User.create(
                     {
                         user_name: githubData.username,
                         profile_url: githubData.avatar_url,
-                        email: githubData.email ?? `${githubData.github_id}@github.com`,
+                        email:
+                            githubData.email ?? `${githubData.github_id}@users.noreply.github.com`,
                         role: USER_ROLE.SUPER_ADMIN, // GitHub users are SUPER_ADMIN
                         infra_id: [],
                         metadata: {

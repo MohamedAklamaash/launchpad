@@ -176,7 +176,6 @@ phases:
                             "(e.g. public.ecr.aws/docker/library/python:3.11-slim)."
                         )
                     else:
-                        # Surface the last meaningful error lines
                         error_lines = [l for l in log_tail.splitlines() if l.strip()]
                         error_msg += "\n\n" + '\n'.join(error_lines[-10:])
 
