@@ -471,6 +471,40 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
         except Exception as e:
             logger.warning(f"ENI pre-clean failed (non-fatal): {e}")
 
+        # 3. Remove inbound rules in OTHER security groups that reference our SGs as source.
+        #    AWS blocks SG deletion if any foreign SG rule still points to it.
+        try:
+            ec2 = boto3.client("ec2", **boto_kwargs)
+            # Find all SGs belonging to this infra
+            our_sgs = ec2.describe_security_groups(
+                Filters=[{"Name": "tag:InfraID", "Values": [str(infra_id)]}]
+            )["SecurityGroups"]
+            our_sg_ids = {sg["GroupId"] for sg in our_sgs}
+
+            for sg_id in our_sg_ids:
+                # Find every OTHER SG that has an inbound rule sourced from sg_id
+                referencing = ec2.describe_security_groups(
+                    Filters=[{"Name": "ip-permission.group-id", "Values": [sg_id]}]
+                )["SecurityGroups"]
+                for ref_sg in referencing:
+                    if ref_sg["GroupId"] in our_sg_ids:
+                        continue  # Terraform will handle intra-infra rules itself
+                    rules_to_revoke = [
+                        perm for perm in ref_sg.get("IpPermissions", [])
+                        if any(pair.get("GroupId") == sg_id for pair in perm.get("UserIdGroupPairs", []))
+                    ]
+                    if rules_to_revoke:
+                        ec2.revoke_security_group_ingress(
+                            GroupId=ref_sg["GroupId"],
+                            IpPermissions=rules_to_revoke,
+                        )
+                        logger.info(
+                            f"Revoked {len(rules_to_revoke)} inbound rule(s) in {ref_sg['GroupId']} "
+                            f"that referenced {sg_id}"
+                        )
+        except Exception as e:
+            logger.warning(f"Cross-SG rule cleanup failed (non-fatal): {e}")
+
     @staticmethod
     def destroy(infra_id: str):
         """Destroy infrastructure"""
