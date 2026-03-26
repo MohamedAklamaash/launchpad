@@ -53,7 +53,7 @@ export default function ApplicationDetailPage() {
       if (intervalRef.current) clearInterval(intervalRef.current);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [app?.status, app?.is_sleeping, loadApp]);
+  }, [app, app?.status, app?.is_sleeping, loadApp]);
 
   const action = async (fn: () => Promise<void>, successMsg: string) => {
     setActionLoading(true);

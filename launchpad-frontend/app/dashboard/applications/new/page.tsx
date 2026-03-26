@@ -69,8 +69,8 @@ function NewApplicationPageInner() {
     }
   };
 
-  const updateEnv = (i: number, field: 'key' | 'value', val: string) =>
-    setEnvVars((prev) => prev.map((e, idx) => idx === i ? { ...e, [field]: val } : e));
+  // const updateEnv = (i: number, field: 'key' | 'value', val: string) =>
+  //   setEnvVars((prev) => prev.map((e, idx) => idx === i ? { ...e, [field]: val } : e));
 
   return (
     <div className="flex justify-center">
@@ -167,7 +167,7 @@ function NewApplicationPageInner() {
             </Row>
           </Section>
 
-          <EnvEditor envs={envVars.map(({key, value}) => [key, value] as [string,string])} onChange={(rows) => setEnvVars(rows.map(([key, value]) => ({ key, value })))} />
+          <EnvEditor envs={envVars.map(({ key, value }) => [key, value] as [string, string])} onChange={(rows) => setEnvVars(rows.map(([key, value]) => ({ key, value })))} />
 
           <div className="flex gap-2 pt-1">
             <Button type="submit" disabled={loading}

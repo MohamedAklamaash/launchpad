@@ -8,7 +8,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Application, ApplicationUpdate } from '@/types/application';
 import { applicationApi } from '@/lib/api/applications';
 import { toast } from 'sonner';
-import { Plus, X } from 'lucide-react';
 import { EnvEditor } from '@/components/env-editor';
 
 const CPU_OPTIONS = [0.25, 0.5, 1.0, 2.0, 4.0];
@@ -68,8 +67,8 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
     }
   };
 
-  const setEnvRow = (i: number, k: string, v: string) =>
-    setEnvs((prev) => prev.map((row, idx) => (idx === i ? [k, v] : row)));
+  // const setEnvRow = (i: number, k: string, v: string) =>
+  //   setEnvs((prev) => prev.map((row, idx) => (idx === i ? [k, v] : row)));
 
   return (
     <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
