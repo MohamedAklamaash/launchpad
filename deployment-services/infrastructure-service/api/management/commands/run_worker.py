@@ -155,7 +155,7 @@ class Command(BaseCommand):
             with _infra_lock(InfraQueue, infra_id, worker_id) as acquired:
                 if not acquired:
                     logger.warning(f"Could not acquire destroy lock for {infra_id}, skipping")
-                    return True
+                    return False
                 try:
                     future: Future = destroy_pool.submit(run_destroy, infra_id)
                     future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'destroy'))
