@@ -10,22 +10,24 @@ class CodeBuildClient:
         self.client = session.client('codebuild')
     
     def ensure_project_exists(self, project_name, service_role_arn, region):
+        buildspec = self._get_buildspec()
         try:
             response = self.client.batch_get_projects(names=[project_name])
             if response.get('projects'):
-                logger.info(f"CodeBuild project {project_name} already exists")
+                self.client.update_project(
+                    name=project_name,
+                    source={'type': 'NO_SOURCE', 'buildspec': buildspec}
+                )
+                logger.info(f"Updated buildspec for CodeBuild project {project_name}")
                 return
         except Exception as e:
             logger.info(f"CodeBuild project {project_name} does not exist, will create: {e}")
-        
+
         logger.info(f"Creating CodeBuild project {project_name}")
         try:
             self.client.create_project(
                 name=project_name,
-                source={
-                    'type': 'NO_SOURCE',
-                    'buildspec': self._get_buildspec()
-                },
+                source={'type': 'NO_SOURCE', 'buildspec': buildspec},
                 artifacts={'type': 'NO_ARTIFACTS'},
                 environment={
                     'type': 'LINUX_CONTAINER',
@@ -57,20 +59,35 @@ phases:
       - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$(echo "$ECR_URL" | cut -d'/' -f1)"
       - |
         if [ -n "$GITHUB_TOKEN" ]; then
-          git clone "https://$GITHUB_TOKEN@$(echo "$REPO_URL" | sed 's|https://||')" repo
+          git clone --depth 1 "https://$GITHUB_TOKEN@$(echo "$REPO_URL" | sed 's|https://||')" repo
         else
-          git clone "$REPO_URL" repo
+          git clone --depth 1 "$REPO_URL" repo
         fi
       - cd repo
       - |
         if [ -n "$COMMIT_HASH" ] && [ "$COMMIT_HASH" != "None" ] && [ "$COMMIT_HASH" != "null" ]; then
+          git fetch --depth 1 origin "$COMMIT_HASH" || git fetch origin
           git checkout "$COMMIT_HASH" || { echo "ERROR: Commit $COMMIT_HASH not found"; exit 1; }
         else
           git checkout "$BRANCH" || { echo "ERROR: Branch '$BRANCH' not found in repository"; exit 1; }
         fi
   build:
     commands:
-      - docker build -f "$DOCKERFILE_PATH" -t "$APP_NAME:latest" .
+      - |
+        if [ -n "$BUILD_CONTEXT" ]; then
+          CTX="$BUILD_CONTEXT"
+          # If DOCKERFILE_PATH doesn't start with the context, prepend it
+          case "$DOCKERFILE_PATH" in
+            "$BUILD_CONTEXT"*) FULL_DOCKERFILE="$DOCKERFILE_PATH" ;;
+            *) FULL_DOCKERFILE="$BUILD_CONTEXT/$DOCKERFILE_PATH" ;;
+          esac
+        else
+          CTX=$(dirname "$DOCKERFILE_PATH")
+          FULL_DOCKERFILE="$DOCKERFILE_PATH"
+        fi
+        [ "$CTX" = "." ] && CTX="."
+        echo "Building with Dockerfile=$FULL_DOCKERFILE context=$CTX"
+        docker build -f "$FULL_DOCKERFILE" -t "$APP_NAME:latest" "$CTX"
       - docker tag "$APP_NAME:latest" "$ECR_URL:$APP_NAME-latest"
   post_build:
     commands:
@@ -78,7 +95,7 @@ phases:
       - echo "Image pushed successfully"
 '''
     
-    def start_build(self, project_name, repo_url, branch, commit_hash, ecr_url, app_name, dockerfile_path="Dockerfile", github_token=None):
+    def start_build(self, project_name, repo_url, branch, commit_hash, ecr_url, app_name, dockerfile_path="Dockerfile", build_context="", github_token=None):
         # Sanitize app_name for use as a Docker image tag: lowercase, replace non-[a-z0-9._-] with '-'
         safe_app_name = re.sub(r'[^a-z0-9._-]', '-', app_name.lower()).strip('-')
         max_retries = 3
@@ -91,6 +108,7 @@ phases:
             {'name': 'ECR_URL', 'value': ecr_url, 'type': 'PLAINTEXT'},
             {'name': 'APP_NAME', 'value': safe_app_name, 'type': 'PLAINTEXT'},
             {'name': 'DOCKERFILE_PATH', 'value': dockerfile_path, 'type': 'PLAINTEXT'},
+            {'name': 'BUILD_CONTEXT', 'value': build_context or '', 'type': 'PLAINTEXT'},
         ]
         
         # Add GitHub token (for private repos)

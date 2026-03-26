@@ -28,6 +28,7 @@ class Application(models.Model):
     version = models.IntegerField(default=1)
 
     dockerfile_path = models.CharField(max_length=255, default="Dockerfile", blank=True)
+    build_context = models.CharField(max_length=255, default="", blank=True, null=True)
     port = models.IntegerField(default=8080)  # Container port
     build_command = models.CharField(max_length=255, blank=True, null=True)
     start_command = models.CharField(max_length=255, blank=True, null=True)

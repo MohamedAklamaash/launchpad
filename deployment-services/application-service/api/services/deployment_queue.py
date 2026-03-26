@@ -54,9 +54,11 @@ class DeploymentQueue:
         return redis.Redis(connection_pool=_pool)
 
     @staticmethod
-    def enqueue_deployment(app_id: str):
+    def enqueue_deployment(app_id: str, infrastructure_id: str = None):
         try:
             job = {"app_id": str(app_id), "action": "deploy"}
+            if infrastructure_id:
+                job["infrastructure_id"] = str(infrastructure_id)
             DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
             logger.info(f"Enqueued deployment for application {app_id}")
         except Exception as e:

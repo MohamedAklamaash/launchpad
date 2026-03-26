@@ -30,6 +30,8 @@ class ApplicationCreateSerializer(serializers.Serializer):
     project_commit_hash = serializers.CharField(max_length=40, required=False, allow_blank=True)
     
     dockerfile_path = serializers.CharField(max_length=255, default='Dockerfile')
+    build_context = serializers.CharField(max_length=255, required=False, allow_blank=True, default='',
+        help_text='Build context path relative to repo root. Defaults to Dockerfile directory. Use for monorepos.')
     port = serializers.IntegerField(min_value=1024, max_value=65535, default=8080)
     
     alloted_cpu = serializers.FloatField(min_value=0.25, max_value=4.0, default=0.25)

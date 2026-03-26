@@ -47,13 +47,13 @@ export default function ApplicationDetailPage() {
 
   useEffect(() => {
     if (!app) return;
-    if (POLLING_STATUSES.includes(app.status)) {
+    if (POLLING_STATUSES.includes(app.status) && !app.is_sleeping) {
       intervalRef.current = setInterval(loadApp, 3000);
     } else {
       if (intervalRef.current) clearInterval(intervalRef.current);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [app, app?.status, loadApp]);
+  }, [app, app?.status, app?.is_sleeping, loadApp]);
 
   const action = async (fn: () => Promise<void>, successMsg: string) => {
     setActionLoading(true);
@@ -171,7 +171,7 @@ export default function ApplicationDetailPage() {
               <a href={app.url} target="_blank" rel="noopener noreferrer"
                 className="text-xs text-violet-400 hover:text-violet-300 break-all text-right transition-colors">{app.url}</a>
             </div>
-            {[['Branch', app.branch], ['Dockerfile', app.dockerfile_path]].map(([k, v]) => (
+            {[['Branch', app.branch], ['Dockerfile', app.dockerfile_path], ...(app.build_context ? [['Build Context', app.build_context]] : [])].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between">
                 <span className="text-xs text-[#888]">{k}</span>
                 <span className="text-xs text-[#ddd] font-mono">{v}</span>

@@ -358,6 +358,7 @@ export default function InfrastructureDetailPage() {
                 {[
                   { label: 'ID', value: infra.id, mono: true },
                   { label: 'Provider', value: infra.cloud_provider },
+                  { label: 'Region', value: infra.metadata?.aws_region ?? '—', mono: true },
                   { label: 'Status', value: infra.status },
                   { label: 'Max CPU', value: `${infra.max_cpu} vCPU` },
                   { label: 'Max Memory', value: `${infra.max_memory} GB` },

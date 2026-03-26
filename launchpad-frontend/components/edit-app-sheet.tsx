@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Application, ApplicationUpdate } from '@/types/application';
 import { applicationApi } from '@/lib/api/applications';
 import { toast } from 'sonner';
-import { Plus, X } from 'lucide-react';
+import { EnvEditor } from '@/components/env-editor';
 
 const CPU_OPTIONS = [0.25, 0.5, 1.0, 2.0, 4.0];
 const MEM_RANGES: Record<number, [number, number]> = {
@@ -67,8 +67,8 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
     }
   };
 
-  const setEnvRow = (i: number, k: string, v: string) =>
-    setEnvs((prev) => prev.map((row, idx) => (idx === i ? [k, v] : row)));
+  // const setEnvRow = (i: number, k: string, v: string) =>
+  //   setEnvs((prev) => prev.map((row, idx) => (idx === i ? [k, v] : row)));
 
   return (
     <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
@@ -144,32 +144,7 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
             </div>
           </Group>
 
-          {/* Env vars */}
-          <Group label="Environment Variables" action={
-            <button onClick={() => setEnvs([...envs, ['', '']])}
-              className="flex items-center gap-1 text-[10px] text-[#555] hover:text-[#aaa] transition-colors font-mono uppercase tracking-widest">
-              <Plus className="w-3 h-3" /> Add
-            </button>
-          }>
-            {envs.length === 0 ? (
-              <div className="px-4 py-3 text-xs text-[#333]">No environment variables</div>
-            ) : envs.map(([k, v], i) => (
-              <div key={i} className={`flex items-center ${i < envs.length - 1 ? 'border-b border-[#1a1a1a]' : ''}`}>
-                <div className="flex-1 border-r border-[#1a1a1a] px-4 py-1.5">
-                  <Input placeholder="KEY" value={k} onChange={(e) => setEnvRow(i, e.target.value.toUpperCase(), v)}
-                    className="bg-transparent border-0 h-8 text-xs text-violet-400 placeholder:text-[#333] focus-visible:ring-0 pl-3 font-mono" />
-                </div>
-                <div className="flex-1 px-4 py-1.5">
-                  <Input placeholder="value" value={v} onChange={(e) => setEnvRow(i, k, e.target.value)}
-                    className="bg-transparent border-0 h-8 text-xs text-[#aaa] placeholder:text-[#333] focus-visible:ring-0 pl-3 font-mono" />
-                </div>
-                <button onClick={() => setEnvs(envs.filter((_, idx) => idx !== i))}
-                  className="px-3 text-[#333] hover:text-red-400 transition-colors shrink-0">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
-          </Group>
+          <EnvEditor envs={envs} onChange={setEnvs} />
         </div>
 
         <div className="pt-4 shrink-0">

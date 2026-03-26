@@ -171,7 +171,7 @@ class ApplicationDetailDeleteView(APIView):
             "status": app.status, "is_sleeping": app.is_sleeping,
             "cpu": app.alloted_cpu, "memory": app.alloted_memory, "storage": app.alloted_storage,
             "port": app.port, "url": app.project_remote_url, "branch": app.project_branch,
-            "dockerfile_path": app.dockerfile_path, "envs": app.envs,
+            "dockerfile_path": app.dockerfile_path, "build_context": app.build_context or "", "envs": app.envs,
             "deployment_url": app.deployment_url, "build_id": app.build_id,
             "error_message": app.error_message if app.status not in ('ACTIVE', 'SLEEPING') else None,
             "created_at": app.created_at.isoformat() if app.created_at else None,
@@ -244,7 +244,7 @@ class ApplicationDeployView(APIView):
             app = ApplicationRepository().get_by_id(pk)
             if not app:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            DeploymentQueue.enqueue_deployment(pk)
+            DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
         except ValueError as e:
@@ -286,7 +286,7 @@ class ApplicationRetryDeployView(APIView):
             app.listener_rule_arn = None
             app.save(update_fields=['status', 'error_message', 'service_arn',
                                     'task_definition_arn', 'target_group_arn', 'listener_rule_arn'])
-            DeploymentQueue.enqueue_deployment(pk)
+            DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment retry queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
         except Exception as e:

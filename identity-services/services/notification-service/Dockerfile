@@ -14,7 +14,7 @@ RUN pnpm --filter @launchpad/common build
 COPY services/notification-service ./services/notification-service
 RUN pnpm --filter notification-service build
 
-FROM node:22-alpine AS final
+FROM public.ecr.aws/docker/library/node:22-alpine AS final
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
