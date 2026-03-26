@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import signal
 import logging
@@ -75,7 +76,7 @@ class Command(BaseCommand):
                     InfraQueue.enqueue_provision(str(env.infrastructure_id))
                     logger.info(f"Re-enqueued {env.infrastructure_id}")
             finally:
-                if r.get(recovery_lock_key) == worker_id:
+                if r.get(recovery_lock_key) == worker_id.encode():
                     r.delete(recovery_lock_key)
         else:
             logger.info(f"Worker {worker_id} skipping recovery — another worker is handling it")
@@ -139,15 +140,16 @@ class Command(BaseCommand):
         def dispatch_provision():
             job = InfraQueue.dequeue_provision(timeout=1)
             if not job:
-                return
+                return False
             infra_id = job['infra_id']
             with _infra_lock(InfraQueue, infra_id, worker_id) as acquired:
                 if not acquired:
                     logger.warning(f"Could not acquire lock for {infra_id}, skipping")
-                    return
+                    return False
                 try:
                     future: Future = provision_pool.submit(run_provision, infra_id)
                     future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'provision'))
+                    return True
                 except Exception:
                     # Lock released by context manager on exit
                     logger.error(f"Failed to submit provision job for {infra_id}", exc_info=True)
@@ -174,12 +176,13 @@ class Command(BaseCommand):
         while running:
             try:
                 if provision_counter < PROVISION_PER_DESTROY:
-                    dispatch_provision()
-                    provision_counter += 1
+                    if dispatch_provision():
+                        provision_counter += 1
                 else:
                     had_destroy = dispatch_destroy()
-                    provision_counter = 0
-                    if not had_destroy:
+                    if had_destroy:
+                        provision_counter = 0
+                    else:
                         dispatch_provision()
             except Exception as e:
                 from redis.exceptions import TimeoutError as RedisTimeout
@@ -190,8 +193,16 @@ class Command(BaseCommand):
                 _close_db()
 
         logger.info("Waiting for in-flight jobs to complete...")
-        provision_pool.shutdown(wait=True, cancel_futures=False)
-        destroy_pool.shutdown(wait=True, cancel_futures=False)
+        provision_pool.shutdown(wait=False)
+        destroy_pool.shutdown(wait=False)
+
+        start_wait = time.time()
+        while time.time() - start_wait < SHUTDOWN_TIMEOUT:
+            if provision_pool._work_queue.empty() and destroy_pool._work_queue.empty():
+                break
+            time.sleep(1)
+        else:
+            logger.warning(f"Shutdown timeout reached, some provision and destroy jobs may be interrupted")
         logger.info(f"Worker {worker_id} stopped")
 
 
