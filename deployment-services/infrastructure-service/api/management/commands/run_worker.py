@@ -202,7 +202,7 @@ class Command(BaseCommand):
                 break
             time.sleep(1)
         else:
-            logger.warning(f"Shutdown timeout reached, some provision and destroy jobs may be interrupted")
+            logger.warning("Shutdown timeout reached, some provision and destroy jobs may be interrupted")
         logger.info(f"Worker {worker_id} stopped")
 
 
