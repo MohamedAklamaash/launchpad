@@ -171,7 +171,7 @@ class ApplicationDetailDeleteView(APIView):
             "status": app.status, "is_sleeping": app.is_sleeping,
             "cpu": app.alloted_cpu, "memory": app.alloted_memory, "storage": app.alloted_storage,
             "port": app.port, "url": app.project_remote_url, "branch": app.project_branch,
-            "dockerfile_path": app.dockerfile_path, "envs": app.envs,
+            "dockerfile_path": app.dockerfile_path, "build_context": app.build_context or "", "envs": app.envs,
             "deployment_url": app.deployment_url, "build_id": app.build_id,
             "error_message": app.error_message if app.status not in ('ACTIVE', 'SLEEPING') else None,
             "created_at": app.created_at.isoformat() if app.created_at else None,

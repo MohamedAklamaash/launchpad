@@ -167,7 +167,7 @@ class ApplicationDeploymentService:
         codebuild = CodeBuildClient(session)
         iam = session.client('iam')
         
-        project_name = f"launchpad-build-{application.infrastructure.id}"
+        project_name = re.sub(r'[^a-zA-Z0-9\-_]', '', f"launchpad-build-{application.infrastructure.id}")
         
         role_name = f"launchpad-codebuild-role-{application.infrastructure.id}"
         try:
@@ -207,6 +207,7 @@ class ApplicationDeploymentService:
         codebuild.ensure_project_exists(project_name, service_role_arn, session.region_name)
         
         dockerfile_path = application.dockerfile_path or "Dockerfile"
+        build_context = application.build_context or ""
         
         github_token = None
         try:
@@ -225,7 +226,8 @@ class ApplicationDeploymentService:
             ecr_url=environment.ecr_repository_url,
             app_name=_slug(application.name),
             dockerfile_path=dockerfile_path,
-            github_token=github_token
+            build_context=build_context,
+            github_token=github_token,
         )
         
         logger.info(f"Started CodeBuild job {build_id} for application {application.name}")
@@ -347,24 +349,26 @@ class ApplicationDeploymentService:
             )
             alb_sg_id = alb_sg_response['SecurityGroups'][0]['GroupId'] if alb_sg_response['SecurityGroups'] else security_group_ids[0]
 
-            # Allow ALB → ECS tasks on port 80
+            # Allow ALB → ECS tasks: port 80 (nginx sidecar) + app port
+            ports_to_open = {80, application.port}
             for ecs_sg_id in security_group_ids:
-                try:
-                    ec2.authorize_security_group_ingress(
-                        GroupId=ecs_sg_id,
-                        IpPermissions=[{
-                            'IpProtocol': 'tcp',
-                            'FromPort': 80,
-                            'ToPort': 80,
-                            'UserIdGroupPairs': [{'GroupId': alb_sg_id}]
-                        }]
-                    )
-                    logger.info(f"Added ingress rule: ALB SG {alb_sg_id} → ECS SG {ecs_sg_id} port 80")
-                except ClientError as e:
-                    if 'InvalidPermission.Duplicate' in str(e):
-                        logger.info("Ingress rule already exists")
-                    else:
-                        raise
+                for port in ports_to_open:
+                    try:
+                        ec2.authorize_security_group_ingress(
+                            GroupId=ecs_sg_id,
+                            IpPermissions=[{
+                                'IpProtocol': 'tcp',
+                                'FromPort': port,
+                                'ToPort': port,
+                                'UserIdGroupPairs': [{'GroupId': alb_sg_id}]
+                            }]
+                        )
+                        logger.info(f"Added ingress rule: ALB SG {alb_sg_id} → ECS SG {ecs_sg_id} port {port}")
+                    except ClientError as e:
+                        if 'InvalidPermission.Duplicate' in str(e):
+                            logger.info(f"Ingress rule port {port} already exists")
+                        else:
+                            raise
 
             logger.info(f"Using ECS security groups: {security_group_ids}")
         except Exception as e:

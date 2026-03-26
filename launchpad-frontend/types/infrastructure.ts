@@ -19,6 +19,7 @@ export interface Infrastructure {
   status: InfrastructureStatus;
   is_cloud_authenticated: boolean;
   invited_users?: InvitedUserSummary[];
+  metadata?: { aws_region?: string; [key: string]: string | undefined };
   created_at: string;
   updated_at: string;
   environment?: Environment;

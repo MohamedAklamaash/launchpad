@@ -24,6 +24,7 @@ export interface Application {
   url: string;
   branch: string;
   dockerfile_path: string;
+  build_context: string | null;
   envs: Record<string, string>;
   deployment_url: string | null;
   build_id: string | null;
@@ -39,6 +40,7 @@ export interface ApplicationCreate {
   project_remote_url: string;
   project_branch: string;
   dockerfile_path?: string;
+  build_context?: string;
   port?: number;
   alloted_cpu: number;
   alloted_memory: number;

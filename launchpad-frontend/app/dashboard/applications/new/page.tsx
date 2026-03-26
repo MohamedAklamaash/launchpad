@@ -38,6 +38,7 @@ function NewApplicationPageInner() {
     project_remote_url: '',
     project_branch: 'main',
     dockerfile_path: 'Dockerfile',
+    build_context: '',
     port: 8080,
     alloted_cpu: 0.25,
     alloted_memory: 0.5,
@@ -121,6 +122,10 @@ function NewApplicationPageInner() {
             <Row label="Dockerfile" icon={<FileText className="w-3.5 h-3.5" />}>
               <Input value={form.dockerfile_path} onChange={(e) => set('dockerfile_path', e.target.value)}
                 className={monoInputCls} />
+            </Row>
+            <Row label="Build Context" icon={<FileText className="w-3.5 h-3.5" />} hint="monorepo root">
+              <Input value={form.build_context} onChange={(e) => set('build_context', e.target.value)}
+                placeholder="e.g. identity-services/ (leave blank for auto)" className={monoInputCls} />
             </Row>
           </Section>
 

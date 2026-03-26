@@ -171,7 +171,7 @@ export default function ApplicationDetailPage() {
               <a href={app.url} target="_blank" rel="noopener noreferrer"
                 className="text-xs text-violet-400 hover:text-violet-300 break-all text-right transition-colors">{app.url}</a>
             </div>
-            {[['Branch', app.branch], ['Dockerfile', app.dockerfile_path]].map(([k, v]) => (
+            {[['Branch', app.branch], ['Dockerfile', app.dockerfile_path], ...(app.build_context ? [['Build Context', app.build_context]] : [])].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between">
                 <span className="text-xs text-[#888]">{k}</span>
                 <span className="text-xs text-[#ddd] font-mono">{v}</span>

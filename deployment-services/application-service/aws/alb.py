@@ -62,19 +62,16 @@ class ALBClient:
             response = self.client.describe_rules(ListenerArn=listener_arn)
             for rule in response['Rules']:
                 if rule.get('Priority') == str(priority):
-                    # Update existing rule to point to new target group
                     rule_arn = rule['RuleArn']
                     self.client.modify_rule(
                         RuleArn=rule_arn,
-                        Actions=[{
-                            'Type': 'forward',
-                            'TargetGroupArn': target_group_arn
-                        }]
+                        Actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}]
                     )
                     logger.info(f"Updated existing listener rule {rule_arn}")
                     break
             else:
-                raise
+                new_priority = self.get_next_priority(listener_arn)
+                return self.create_listener_rule(listener_arn, target_group_arn, path_pattern, new_priority)
         
         propagation_delay = int(os.environ.get('ALB_RULE_PROPAGATION_DELAY', '5'))
         logger.info(f"Waiting {propagation_delay} seconds for listener rule to propagate...")
@@ -114,4 +111,9 @@ class ALBClient:
     def get_next_priority(self, listener_arn):
         response = self.client.describe_rules(ListenerArn=listener_arn)
         priorities = [int(rule['Priority']) for rule in response['Rules'] if rule['Priority'] != 'default']
-        return max(priorities) + 1 if priorities else 1
+        # Find first gap starting from 1 to avoid races with sequential max+1
+        used = set(priorities)
+        priority = 1
+        while priority in used:
+            priority += 1
+        return priority
