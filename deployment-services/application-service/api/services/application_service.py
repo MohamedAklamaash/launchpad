@@ -116,7 +116,8 @@ class ApplicationService:
         app = self.app_repo.create(data)
         
         app_id_str = str(app.id)
-        transaction.on_commit(lambda: DeploymentQueue.enqueue_deployment(app_id_str))
+        infra_id_str = str(app.infrastructure_id)
+        transaction.on_commit(lambda: DeploymentQueue.enqueue_deployment(app_id_str, infra_id_str))
 
         ApplicationEventProducer.publish_application_created(
             app.id, app.infrastructure_id, app.name, user.id

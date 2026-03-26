@@ -244,7 +244,7 @@ class ApplicationDeployView(APIView):
             app = ApplicationRepository().get_by_id(pk)
             if not app:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            DeploymentQueue.enqueue_deployment(pk)
+            DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
         except ValueError as e:
@@ -286,7 +286,7 @@ class ApplicationRetryDeployView(APIView):
             app.listener_rule_arn = None
             app.save(update_fields=['status', 'error_message', 'service_arn',
                                     'task_definition_arn', 'target_group_arn', 'listener_rule_arn'])
-            DeploymentQueue.enqueue_deployment(pk)
+            DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment retry queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
         except Exception as e:

@@ -6,7 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, GitBranch, Globe, Box, Cpu, HardDrive, Hash, FileText, Plus, X } from 'lucide-react';
+import { ArrowLeft, GitBranch, Globe, Box, Cpu, HardDrive, Hash, FileText } from 'lucide-react';
+import { EnvEditor } from '@/components/env-editor';
 import { applicationApi } from '@/lib/api/applications';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { Infrastructure } from '@/types/infrastructure';
@@ -166,36 +167,7 @@ function NewApplicationPageInner() {
             </Row>
           </Section>
 
-          {/* Env vars */}
-          <Section label="Environment Variables" action={
-            <button type="button" onClick={() => setEnvVars([...envVars, { key: '', value: '' }])}
-              className="flex items-center gap-1 text-[10px] text-[#555] hover:text-[#aaa] transition-colors font-mono uppercase tracking-widest">
-              <Plus className="w-3 h-3" /> Add
-            </button>
-          }>
-            {envVars.length === 0 ? (
-              <div className="px-4 py-3 text-xs text-[#333]">No environment variables</div>
-            ) : (
-              envVars.map((env, i) => (
-                <div key={i} className={`flex items-center gap-0 ${i < envVars.length - 1 ? 'border-b border-[#1a1a1a]' : ''}`}>
-                  <div className="flex-1 px-4 py-2 border-r border-[#1a1a1a]">
-                    <Input placeholder="KEY" value={env.key}
-                      onChange={(e) => updateEnv(i, 'key', e.target.value.toUpperCase())}
-                      className="bg-transparent border-0 h-8 text-xs text-violet-400 placeholder:text-[#333] focus-visible:ring-0 pl-3 font-mono" />
-                  </div>
-                  <div className="flex-1 px-4 py-2">
-                    <Input placeholder="value" value={env.value}
-                      onChange={(e) => updateEnv(i, 'value', e.target.value)}
-                      className="bg-transparent border-0 h-8 text-xs text-[#aaa] placeholder:text-[#333] focus-visible:ring-0 pl-3 font-mono" />
-                  </div>
-                  <button type="button" onClick={() => setEnvVars(envVars.filter((_, idx) => idx !== i))}
-                    className="px-3 text-[#333] hover:text-red-400 transition-colors shrink-0">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))
-            )}
-          </Section>
+          <EnvEditor envs={envVars.map(({key, value}) => [key, value] as [string,string])} onChange={(rows) => setEnvVars(rows.map(([key, value]) => ({ key, value })))} />
 
           <div className="flex gap-2 pt-1">
             <Button type="submit" disabled={loading}
