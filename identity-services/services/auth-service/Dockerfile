@@ -14,7 +14,7 @@ RUN pnpm --filter @launchpad/common build
 COPY services/auth-service ./services/auth-service
 RUN pnpm --filter auth-service build
 
-FROM node:22-alpine AS final
+FROM public.ecr.aws/docker/library/node:22-alpine AS final
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
