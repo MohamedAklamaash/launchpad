@@ -2,7 +2,8 @@ import os
 import uuid
 import signal
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, Future
 from django.core.management.base import BaseCommand
 from django.db import connections
 
@@ -12,11 +13,28 @@ logger = logging.getLogger(__name__)
 
 MAX_PROVISION_WORKERS = int(os.environ.get('INFRA_MAX_PROVISION_WORKERS', '5'))
 MAX_DESTROY_WORKERS = int(os.environ.get('INFRA_MAX_DESTROY_WORKERS', '3'))
+SHUTDOWN_TIMEOUT = int(os.environ.get('INFRA_SHUTDOWN_TIMEOUT', '60'))
+PROVISION_PER_DESTROY = int(os.environ.get('INFRA_PROVISION_PER_DESTROY', '3'))
 
 
 def _close_db():
+    """Close only unusable/obsolete connections rather than all connections."""
     for conn in connections.all():
-        conn.close()
+        conn.close_if_unusable_or_obsolete()
+
+
+@contextmanager
+def _infra_lock(infra_queue, infra_id, worker_id):
+    """Context manager that acquires and guarantees release of both locks."""
+    acquired = infra_queue.acquire_db_lock(infra_id, worker_id)
+    if not acquired:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        infra_queue.release_db_lock(infra_id)
+        infra_queue.release_lock(infra_id)
 
 
 class Command(BaseCommand):
@@ -43,11 +61,11 @@ class Command(BaseCommand):
         provision_pool = ThreadPoolExecutor(max_workers=MAX_PROVISION_WORKERS, thread_name_prefix='provision')
         destroy_pool = ThreadPoolExecutor(max_workers=MAX_DESTROY_WORKERS, thread_name_prefix='destroy')
 
-        logger.info(f"Infrastructure worker {worker_id} started")
+        logger.info(f"Infrastructure worker {worker_id} started "
+                    f"(provision={MAX_PROVISION_WORKERS}, destroy={MAX_DESTROY_WORKERS})")
 
         # Re-enqueue stuck jobs from previous worker crash
-        pending = Environment.objects.filter(status__in=['PENDING', 'PROVISIONING']).select_related('infrastructure')
-        for env in pending:
+        for env in Environment.objects.filter(status__in=['PENDING', 'PROVISIONING']).select_related('infrastructure'):
             InfraQueue.release_lock(str(env.infrastructure_id))
             InfraQueue.enqueue_provision(str(env.infrastructure_id))
             logger.info(f"Re-enqueued {env.infrastructure_id}")
@@ -69,8 +87,7 @@ class Command(BaseCommand):
                 except Exception:
                     pass
             finally:
-                InfraQueue.release_db_lock(infra_id)
-                InfraQueue.release_lock(infra_id)
+                # Locks released by context manager in dispatch; just clean up DB connections
                 _close_db()
 
         def run_destroy(infra_id):
@@ -83,7 +100,7 @@ class Command(BaseCommand):
                         NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
                         env.delete()
                         infra.delete()
-                        logger.info(f"Deleted DB records for infrastructure {infra_id}")
+                        logger.info(f"Deleted DB records for {infra_id}")
                     else:
                         NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
                 except Environment.DoesNotExist:
@@ -101,21 +118,66 @@ class Command(BaseCommand):
             finally:
                 _close_db()
 
-        while running:
-            # Drain destroy queue first (higher priority)
-            job = InfraQueue.dequeue_destroy(timeout=0)
-            if job:
-                destroy_pool.submit(run_destroy, job['infra_id'])
-                continue
-
+        def dispatch_provision():
             job = InfraQueue.dequeue_provision(timeout=1)
-            if job:
-                infra_id = job['infra_id']
-                if not InfraQueue.acquire_db_lock(infra_id, worker_id):
+            if not job:
+                return
+            infra_id = job['infra_id']
+            with _infra_lock(InfraQueue, infra_id, worker_id) as acquired:
+                if not acquired:
                     logger.warning(f"Could not acquire lock for {infra_id}, skipping")
-                    continue
-                provision_pool.submit(run_provision, infra_id)
+                    return
+                try:
+                    future: Future = provision_pool.submit(run_provision, infra_id)
+                    future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'provision'))
+                except Exception:
+                    # Lock released by context manager on exit
+                    logger.error(f"Failed to submit provision job for {infra_id}", exc_info=True)
+                    raise
 
-        provision_pool.shutdown(wait=True)
-        destroy_pool.shutdown(wait=True)
+        def dispatch_destroy():
+            job = InfraQueue.dequeue_destroy(timeout=0)
+            if not job:
+                return False
+            infra_id = job['infra_id']
+            with _infra_lock(InfraQueue, infra_id, worker_id) as acquired:
+                if not acquired:
+                    logger.warning(f"Could not acquire destroy lock for {infra_id}, skipping")
+                    return True
+                try:
+                    future: Future = destroy_pool.submit(run_destroy, infra_id)
+                    future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'destroy'))
+                except Exception:
+                    logger.error(f"Failed to submit destroy job for {infra_id}", exc_info=True)
+                    raise
+            return True
+
+        provision_counter = 0
+        while running:
+            try:
+                if provision_counter < PROVISION_PER_DESTROY:
+                    dispatch_provision()
+                    provision_counter += 1
+                else:
+                    had_destroy = dispatch_destroy()
+                    provision_counter = 0
+                    if not had_destroy:
+                        dispatch_provision()
+            except Exception as e:
+                from redis.exceptions import TimeoutError as RedisTimeout
+                if isinstance(e, (TimeoutError, RedisTimeout)):
+                    logger.warning(f"Redis timeout in worker loop, continuing: {e}")
+                else:
+                    logger.error(f"Worker loop error: {e}", exc_info=True)
+                _close_db()
+
+        logger.info("Waiting for in-flight jobs to complete...")
+        provision_pool.shutdown(wait=True, cancel_futures=False)
+        destroy_pool.shutdown(wait=True, cancel_futures=False)
         logger.info(f"Worker {worker_id} stopped")
+
+
+def _log_future_exception(future: Future, infra_id: str, op: str):
+    exc = future.exception()
+    if exc:
+        logger.error(f"Unhandled exception in {op} task for {infra_id}: {exc}", exc_info=exc)
