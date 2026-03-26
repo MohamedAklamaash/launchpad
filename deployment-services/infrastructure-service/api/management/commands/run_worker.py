@@ -5,7 +5,7 @@ import logging
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, Future
 from django.core.management.base import BaseCommand
-from django.db import connections
+from django.db import connections, transaction
 
 os.environ['DB_CONN_MAX_AGE'] = '0'
 
@@ -64,13 +64,24 @@ class Command(BaseCommand):
         logger.info(f"Infrastructure worker {worker_id} started "
                     f"(provision={MAX_PROVISION_WORKERS}, destroy={MAX_DESTROY_WORKERS})")
 
-        # Re-enqueue stuck jobs from previous worker crash
-        for env in Environment.objects.filter(status__in=['PENDING', 'PROVISIONING']).select_related('infrastructure'):
-            InfraQueue.release_lock(str(env.infrastructure_id))
-            InfraQueue.enqueue_provision(str(env.infrastructure_id))
-            logger.info(f"Re-enqueued {env.infrastructure_id}")
+        # Re-enqueue stuck jobs — only one worker should do this at startup
+        recovery_lock_key = "infra:worker:recovery_lock"
+        from api.services.infra_queue import _redis as _get_redis
+        r = _get_redis()
+        if r.set(recovery_lock_key, worker_id, nx=True, ex=60):
+            try:
+                for env in Environment.objects.filter(status__in=['PENDING', 'PROVISIONING']).select_related('infrastructure'):
+                    InfraQueue.release_lock(str(env.infrastructure_id))
+                    InfraQueue.enqueue_provision(str(env.infrastructure_id))
+                    logger.info(f"Re-enqueued {env.infrastructure_id}")
+            finally:
+                if r.get(recovery_lock_key) == worker_id:
+                    r.delete(recovery_lock_key)
+        else:
+            logger.info(f"Worker {worker_id} skipping recovery — another worker is handling it")
 
         def run_provision(infra_id):
+            infra = None
             try:
                 infra = Infrastructure.objects.get(id=infra_id)
                 TerraformWorker.provision(infra_id)
@@ -81,16 +92,16 @@ class Command(BaseCommand):
                     NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
             except Exception as e:
                 logger.error(f"Provision failed for {infra_id}: {e}", exc_info=True)
-                try:
-                    infra = Infrastructure.objects.get(id=infra_id)
-                    NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, str(e))
-                except Exception:
-                    pass
+                if infra:
+                    try:
+                        NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, str(e))
+                    except Exception:
+                        pass
             finally:
-                # Locks released by context manager in dispatch; just clean up DB connections
                 _close_db()
 
         def run_destroy(infra_id):
+            infra = None
             try:
                 infra = Infrastructure.objects.get(id=infra_id)
                 TerraformWorker.destroy(infra_id)
@@ -98,8 +109,9 @@ class Command(BaseCommand):
                     env = Environment.objects.get(infrastructure_id=infra_id)
                     if env.status == 'DESTROYED':
                         NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
-                        env.delete()
-                        infra.delete()
+                        with transaction.atomic():
+                            env.delete()
+                            infra.delete()
                         logger.info(f"Deleted DB records for {infra_id}")
                     else:
                         NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
@@ -110,11 +122,11 @@ class Command(BaseCommand):
                 logger.warning(f"Infrastructure {infra_id} already deleted")
             except Exception as e:
                 logger.error(f"Destroy failed for {infra_id}: {e}", exc_info=True)
-                try:
-                    infra = Infrastructure.objects.get(id=infra_id)
-                    NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, str(e))
-                except Exception:
-                    pass
+                if infra:
+                    try:
+                        NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, str(e))
+                    except Exception:
+                        pass
             finally:
                 _close_db()
 
