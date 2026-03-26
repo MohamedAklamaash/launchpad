@@ -103,8 +103,16 @@ class Command(BaseCommand):
         def run_destroy(infra_id):
             infra = None
             try:
-                infra = Infrastructure.objects.get(id=infra_id)
+                # Call destroy FIRST so it can handle missing Infrastructure rows
                 TerraformWorker.destroy(infra_id)
+
+                # Only fetch Infrastructure afterward for post-destroy work
+                try:
+                    infra = Infrastructure.objects.get(id=infra_id)
+                except Infrastructure.DoesNotExist:
+                    logger.warning(f"Infrastructure {infra_id} already deleted during destroy")
+                    return
+
                 try:
                     env = Environment.objects.get(infrastructure_id=infra_id)
                     if env.status == 'DESTROYED':
@@ -118,8 +126,6 @@ class Command(BaseCommand):
                 except Environment.DoesNotExist:
                     NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
                     infra.delete()
-            except Infrastructure.DoesNotExist:
-                logger.warning(f"Infrastructure {infra_id} already deleted")
             except Exception as e:
                 logger.error(f"Destroy failed for {infra_id}: {e}", exc_info=True)
                 if infra:
