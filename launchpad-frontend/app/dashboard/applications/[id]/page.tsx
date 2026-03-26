@@ -47,13 +47,13 @@ export default function ApplicationDetailPage() {
 
   useEffect(() => {
     if (!app) return;
-    if (POLLING_STATUSES.includes(app.status)) {
+    if (POLLING_STATUSES.includes(app.status) && !app.is_sleeping) {
       intervalRef.current = setInterval(loadApp, 3000);
     } else {
       if (intervalRef.current) clearInterval(intervalRef.current);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [app, app?.status, loadApp]);
+  }, [app?.status, app?.is_sleeping, loadApp]);
 
   const action = async (fn: () => Promise<void>, successMsg: string) => {
     setActionLoading(true);
