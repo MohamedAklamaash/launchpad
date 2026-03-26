@@ -126,7 +126,9 @@ class Command(BaseCommand):
                         NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
                 except Environment.DoesNotExist:
                     NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
-                    infra.delete()
+                    with transaction.atomic():
+                        infra.delete()
+                    logger.info(f"Deleted DB records for {infra_id}")
             except Exception as e:
                 logger.error(f"Destroy failed for {infra_id}: {e}", exc_info=True)
                 if infra:
