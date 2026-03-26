@@ -81,7 +81,7 @@ class Command(BaseCommand):
         else:
             logger.info(f"Worker {worker_id} skipping recovery — another worker is handling it")
 
-        def run_provision(infra_id):
+        def run_provision(infra_id, worker_id):
             infra = None
             try:
                 infra = Infrastructure.objects.get(id=infra_id)
@@ -99,9 +99,11 @@ class Command(BaseCommand):
                     except Exception:
                         pass
             finally:
+                InfraQueue.release_db_lock(infra_id)
+                InfraQueue.release_lock(infra_id)
                 _close_db()
 
-        def run_destroy(infra_id):
+        def run_destroy(infra_id, worker_id):
             infra = None
             try:
                 # Call destroy FIRST so it can handle missing Infrastructure rows
@@ -137,6 +139,8 @@ class Command(BaseCommand):
                     except Exception:
                         pass
             finally:
+                InfraQueue.release_db_lock(infra_id)
+                InfraQueue.release_lock(infra_id)
                 _close_db()
 
         def dispatch_provision():
@@ -144,35 +148,36 @@ class Command(BaseCommand):
             if not job:
                 return False
             infra_id = job['infra_id']
-            with _infra_lock(InfraQueue, infra_id, worker_id) as acquired:
-                if not acquired:
-                    logger.warning(f"Could not acquire lock for {infra_id}, skipping")
-                    return False
-                try:
-                    future: Future = provision_pool.submit(run_provision, infra_id)
-                    future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'provision'))
-                    return True
-                except Exception:
-                    # Lock released by context manager on exit
-                    logger.error(f"Failed to submit provision job for {infra_id}", exc_info=True)
-                    raise
+            if not InfraQueue.acquire_db_lock(infra_id, worker_id):
+                logger.warning(f"Could not acquire lock for {infra_id}, skipping")
+                return False
+            try:
+                future: Future = provision_pool.submit(run_provision, infra_id, worker_id)
+                future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'provision'))
+                return True
+            except Exception:
+                InfraQueue.release_db_lock(infra_id)
+                InfraQueue.release_lock(infra_id)
+                logger.error(f"Failed to submit provision job for {infra_id}", exc_info=True)
+                raise
 
         def dispatch_destroy():
             job = InfraQueue.dequeue_destroy(timeout=0)
             if not job:
                 return False
             infra_id = job['infra_id']
-            with _infra_lock(InfraQueue, infra_id, worker_id) as acquired:
-                if not acquired:
-                    logger.warning(f"Could not acquire destroy lock for {infra_id}, skipping")
-                    return False
-                try:
-                    future: Future = destroy_pool.submit(run_destroy, infra_id)
-                    future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'destroy'))
-                except Exception:
-                    logger.error(f"Failed to submit destroy job for {infra_id}", exc_info=True)
-                    raise
-            return True
+            if not InfraQueue.acquire_db_lock(infra_id, worker_id):
+                logger.warning(f"Could not acquire destroy lock for {infra_id}, skipping")
+                return False
+            try:
+                future: Future = destroy_pool.submit(run_destroy, infra_id, worker_id)
+                future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'destroy'))
+                return True
+            except Exception:
+                InfraQueue.release_db_lock(infra_id)
+                InfraQueue.release_lock(infra_id)
+                logger.error(f"Failed to submit destroy job for {infra_id}", exc_info=True)
+                raise
 
         provision_counter = 0
         while running:
