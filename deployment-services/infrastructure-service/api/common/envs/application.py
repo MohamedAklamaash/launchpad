@@ -17,6 +17,8 @@ class ApplicationConfig:
     redis_port: int
     redis_password: str
     redis_db: int
+    infra_max_provision_workers: int
+    infra_max_destroy_workers: int
 
     @classmethod
     def from_env(cls) -> "ApplicationConfig":
@@ -32,6 +34,8 @@ class ApplicationConfig:
             redis_port=int(os.environ.get("REDIS_PORT", "6379")),
             redis_password=os.environ.get("REDIS_PASSWORD", ""),
             redis_db=int(os.environ.get("REDIS_DB", "0")),
+            infra_max_provision_workers=int(os.environ.get("INFRA_MAX_PROVISION_WORKERS", "5")),
+            infra_max_destroy_workers=int(os.environ.get("INFRA_MAX_DESTROY_WORKERS", "3")),
         )
 
 app_config = ApplicationConfig.from_env()
