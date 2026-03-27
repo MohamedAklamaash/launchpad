@@ -91,7 +91,12 @@ class InfraQueue:
 
     @staticmethod
     def dequeue_destroy(timeout: int = _BLPOP_TIMEOUT):
-        """Get next destroy job (blocking)"""
+        """Get next destroy job. Uses non-blocking lpop when timeout=0."""
+        if timeout == 0:
+            result = _redis().lpop(DESTROY_QUEUE)
+            if result:
+                return json.loads(result)
+            return None
         result = redis.Redis(connection_pool=_blocking_pool).blpop(DESTROY_QUEUE, timeout=timeout)
         if result:
             _, job_data = result
