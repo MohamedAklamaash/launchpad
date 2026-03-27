@@ -1,5 +1,4 @@
 import os
-import time
 import uuid
 import signal
 import logging
