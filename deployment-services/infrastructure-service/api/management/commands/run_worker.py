@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import signal
 import logging
@@ -201,7 +202,7 @@ class Command(BaseCommand):
                     provision_counter += 1
                 else:
                     # Nothing in either queue — short sleep to avoid busy-loop
-                    import time; time.sleep(1)
+                    time.sleep(1)
             except Exception as e:
                 from redis.exceptions import TimeoutError as RedisTimeout
                 if isinstance(e, (TimeoutError, RedisTimeout)):

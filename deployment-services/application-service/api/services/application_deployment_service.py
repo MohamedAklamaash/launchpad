@@ -1,6 +1,7 @@
 import logging
 import json
 import re
+import hashlib
 from api.models import Application, Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from aws.session import create_boto3_session
@@ -295,7 +296,6 @@ class ApplicationDeploymentService:
         return target_group_arn
     
     def _get_app_sg_name(self, application: Application) -> str:
-        import hashlib
         suffix = hashlib.md5(str(application.infrastructure_id).encode()).hexdigest()[:8]
         return f"infra-{str(application.infrastructure_id)[:8]}-{suffix}-fargate-sg"
 
