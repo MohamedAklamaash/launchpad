@@ -91,10 +91,9 @@ phases:
             *) FULL_DOCKERFILE="$BUILD_CONTEXT/$DOCKERFILE_PATH" ;;
           esac
         else
-          CTX=$(dirname "$DOCKERFILE_PATH")
+          CTX="."
           FULL_DOCKERFILE="$DOCKERFILE_PATH"
         fi
-        [ "$CTX" = "." ] && CTX="."
         echo "Building with Dockerfile=$FULL_DOCKERFILE context=$CTX"
         docker build -f "$FULL_DOCKERFILE" -t "$APP_NAME:latest" "$CTX"
       - docker tag "$APP_NAME:latest" "$ECR_URL:$APP_NAME-latest"
