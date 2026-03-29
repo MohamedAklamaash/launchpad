@@ -201,7 +201,7 @@ class ApplicationDeploymentService:
             )
                         
             logger.info("Waiting for IAM role to propagate...")
-            time.sleep(10)
+            time.sleep(15)
             logger.info(f"Created CodeBuild role: {service_role_arn}")
         
         codebuild.ensure_project_exists(project_name, service_role_arn, session.region_name)
@@ -294,6 +294,49 @@ class ApplicationDeploymentService:
         logger.info(f"Created target group {target_group_arn}")
         return target_group_arn
     
+    def _get_app_sg_name(self, application: Application) -> str:
+        import hashlib
+        suffix = hashlib.md5(str(application.infrastructure_id).encode()).hexdigest()[:8]
+        return f"infra-{str(application.infrastructure_id)[:8]}-{suffix}-fargate-sg"
+
+    def _get_or_create_app_security_group(self, ec2, application: Application, environment: Environment, alb_sg_id: str) -> str:
+        sg_name = self._get_app_sg_name(application)
+
+        existing = ec2.describe_security_groups(
+            Filters=[
+                {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
+                {'Name': 'group-name', 'Values': [sg_name]}
+            ]
+        )['SecurityGroups']
+
+        if existing:
+            sg_id = existing[0]['GroupId']
+            logger.info(f"Reusing existing app security group {sg_name} ({sg_id})")
+        else:
+            sg_id = ec2.create_security_group(
+                GroupName=sg_name,
+                Description=f"Security group for app {application.name} in infra {application.infrastructure_id}",
+                VpcId=environment.vpc_id
+            )['GroupId']
+            logger.info(f"Created app security group {sg_name} ({sg_id})")
+
+        for port in {80, application.port}:
+            try:
+                ec2.authorize_security_group_ingress(
+                    GroupId=sg_id,
+                    IpPermissions=[{
+                        'IpProtocol': 'tcp',
+                        'FromPort': port,
+                        'ToPort': port,
+                        'UserIdGroupPairs': [{'GroupId': alb_sg_id}]
+                    }]
+                )
+            except ClientError as e:
+                if 'InvalidPermission.Duplicate' not in str(e):
+                    raise
+
+        return sg_id
+
     def _create_ecs_service(self, session, application: Application, environment: Environment):
         ecs = ECSClient(session)
         ec2 = session.client('ec2')
@@ -324,53 +367,22 @@ class ApplicationDeploymentService:
             raise ValueError(f"Failed to get subnets from VPC: {e}")
         
         try:
-            ecs_sg_response = ec2.describe_security_groups(
-                Filters=[
-                    {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
-                    {'Name': 'group-name', 'Values': ['*ecs*']}
-                ]
-            )
-            if not ecs_sg_response['SecurityGroups']:
-                all_sgs = ec2.describe_security_groups(
-                    Filters=[{'Name': 'vpc-id', 'Values': [environment.vpc_id]}]
-                )['SecurityGroups']
-                ecs_sgs = [sg for sg in all_sgs if 'alb' not in sg['GroupName'].lower()]
-                ecs_sg_response['SecurityGroups'] = ecs_sgs or all_sgs
-
-            security_group_ids = [sg['GroupId'] for sg in ecs_sg_response['SecurityGroups']]
-            if not security_group_ids:
-                raise ValueError(f"No security groups found in VPC {environment.vpc_id}")
-
+            import hashlib
+            suffix = hashlib.md5(str(application.infrastructure_id).encode()).hexdigest()[:8]
+            alb_sg_name = f"infra-{str(application.infrastructure_id)[:8]}-{suffix}-alb-sg"
             alb_sg_response = ec2.describe_security_groups(
                 Filters=[
                     {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
-                    {'Name': 'group-name', 'Values': ['*alb*']}
+                    {'Name': 'group-name', 'Values': [alb_sg_name]}
                 ]
             )
-            alb_sg_id = alb_sg_response['SecurityGroups'][0]['GroupId'] if alb_sg_response['SecurityGroups'] else security_group_ids[0]
+            if not alb_sg_response['SecurityGroups']:
+                raise ValueError(f"ALB security group {alb_sg_name} not found in VPC")
+            alb_sg_id = alb_sg_response['SecurityGroups'][0]['GroupId']
 
-            # Allow ALB → ECS tasks: port 80 (nginx sidecar) + app port
-            ports_to_open = {80, application.port}
-            for ecs_sg_id in security_group_ids:
-                for port in ports_to_open:
-                    try:
-                        ec2.authorize_security_group_ingress(
-                            GroupId=ecs_sg_id,
-                            IpPermissions=[{
-                                'IpProtocol': 'tcp',
-                                'FromPort': port,
-                                'ToPort': port,
-                                'UserIdGroupPairs': [{'GroupId': alb_sg_id}]
-                            }]
-                        )
-                        logger.info(f"Added ingress rule: ALB SG {alb_sg_id} → ECS SG {ecs_sg_id} port {port}")
-                    except ClientError as e:
-                        if 'InvalidPermission.Duplicate' in str(e):
-                            logger.info(f"Ingress rule port {port} already exists")
-                        else:
-                            raise
-
-            logger.info(f"Using ECS security groups: {security_group_ids}")
+            app_sg_id = self._get_or_create_app_security_group(ec2, application, environment, alb_sg_id)
+            security_group_ids = [app_sg_id]
+            logger.info(f"Using app-specific security group: {app_sg_id}")
         except Exception as e:
             logger.error(f"Failed to configure security groups: {e}")
             raise ValueError(f"Failed to configure security groups: {e}")

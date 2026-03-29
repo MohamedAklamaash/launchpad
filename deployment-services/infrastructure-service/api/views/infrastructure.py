@@ -99,6 +99,8 @@ def infrastructure_detail(request: HttpRequest, infra_id):
         if success:
             return Response(status=status.HTTP_204_NO_CONTENT)
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+    except PermissionError as e:
+        return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_409_CONFLICT)
 
