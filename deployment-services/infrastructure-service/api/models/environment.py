@@ -18,6 +18,7 @@ class Environment(models.Model):
     cluster_arn = models.CharField(max_length=512, null=True, blank=True)
     alb_arn = models.CharField(max_length=512, null=True, blank=True)
     alb_dns = models.CharField(max_length=512, null=True, blank=True)
+    alb_security_group_id = models.CharField(max_length=255, null=True, blank=True)
     target_group_arn = models.CharField(max_length=512, null=True, blank=True)
     ecr_repository_url = models.CharField(max_length=512, null=True, blank=True)
     ecs_task_execution_role_arn = models.CharField(max_length=512, null=True, blank=True)

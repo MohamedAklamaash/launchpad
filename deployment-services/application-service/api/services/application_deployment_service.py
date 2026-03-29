@@ -367,18 +367,9 @@ class ApplicationDeploymentService:
             raise ValueError(f"Failed to get subnets from VPC: {e}")
         
         try:
-            import hashlib
-            suffix = hashlib.md5(str(application.infrastructure_id).encode()).hexdigest()[:8]
-            alb_sg_name = f"infra-{str(application.infrastructure_id)[:8]}-{suffix}-alb-sg"
-            alb_sg_response = ec2.describe_security_groups(
-                Filters=[
-                    {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
-                    {'Name': 'group-name', 'Values': [alb_sg_name]}
-                ]
-            )
-            if not alb_sg_response['SecurityGroups']:
-                raise ValueError(f"ALB security group {alb_sg_name} not found in VPC")
-            alb_sg_id = alb_sg_response['SecurityGroups'][0]['GroupId']
+            alb_sg_id = environment.alb_security_group_id
+            if not alb_sg_id:
+                raise ValueError("ALB security group ID not found on environment")
 
             app_sg_id = self._get_or_create_app_security_group(ec2, application, environment, alb_sg_id)
             security_group_ids = [app_sg_id]

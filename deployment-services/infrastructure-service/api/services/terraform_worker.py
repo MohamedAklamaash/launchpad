@@ -373,6 +373,7 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 env.cluster_arn = outputs.get("cluster_arn", {}).get("value")
                 env.alb_arn = outputs.get("alb_arn", {}).get("value")
                 env.alb_dns = outputs.get("alb_dns", {}).get("value")
+                env.alb_security_group_id = outputs.get("alb_security_group_id", {}).get("value")
                 env.target_group_arn = outputs.get("target_group_arn", {}).get("value")
                 env.ecr_repository_url = outputs.get("ecr_repository_url", {}).get("value")
                 env.ecs_task_execution_role_arn = outputs.get("ecs_task_execution_role_arn", {}).get("value")
