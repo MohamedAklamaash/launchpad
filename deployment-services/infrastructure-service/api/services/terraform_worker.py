@@ -246,6 +246,7 @@ output "alb_dns" {{ value = module.alb.alb_dns }}
 output "target_group_arn" {{ value = module.alb.target_group_arn }}
 output "ecr_repository_url" {{ value = module.ecr.repository_url }}
 output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_role_arn }}
+output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
 """
     
     @staticmethod
