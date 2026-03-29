@@ -83,7 +83,7 @@ def infrastructure_list_create(request: HttpRequest):
     summary="Delete an infrastructure",
     description="Triggers Terraform destroy to tear down VPC, ECS, ALB, ECR. Returns 409 if active applications exist.",
     parameters=[OpenApiParameter("infra_id", OpenApiTypes.STR, OpenApiParameter.PATH, description="Infrastructure UUID")],
-    responses={204: None, 404: ErrorSerializer, 409: ErrorSerializer},
+    responses={204: None, 403: ErrorSerializer, 404: ErrorSerializer, 409: ErrorSerializer},
     methods=["DELETE"],
 )
 @csrf_exempt
@@ -99,6 +99,8 @@ def infrastructure_detail(request: HttpRequest, infra_id):
         if success:
             return Response(status=status.HTTP_204_NO_CONTENT)
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+    except PermissionError as e:
+        return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_409_CONFLICT)
 

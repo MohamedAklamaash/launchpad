@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import signal
 import logging
@@ -57,23 +58,30 @@ class Command(BaseCommand):
         r = _get_redis()
         if r.set(recovery_lock_key, worker_id, nx=True, ex=60):
             try:
+                from api.services.infra_queue import DESTROY_QUEUE
                 for env in Environment.objects.filter(status__in=['PENDING', 'PROVISIONING']).select_related('infrastructure'):
                     infra_id_str = str(env.infrastructure_id)
                     InfraQueue.release_lock(infra_id_str)
-                    # Scan queue entries for the infra_id before re-enqueueing
                     already_queued = any(infra_id_str in item for item in r.lrange(PROVISION_QUEUE, 0, -1))
                     if not already_queued:
                         InfraQueue.enqueue_provision(infra_id_str)
-                        logger.info(f"Re-enqueued {infra_id_str}")
-                    else:
-                        logger.info(f"Skipped re-enqueue for {infra_id_str} — already in queue")
+                        logger.info(f"Re-enqueued provision for {infra_id_str}")
+
+                for env in Environment.objects.filter(status='DESTROYING').select_related('infrastructure'):
+                    infra_id_str = str(env.infrastructure_id)
+                    InfraQueue.release_lock(infra_id_str)
+                    InfraQueue.release_db_lock(infra_id_str)  # clear any stale DB lock from crashed worker
+                    already_queued = any(infra_id_str in item for item in r.lrange(DESTROY_QUEUE, 0, -1))
+                    if not already_queued:
+                        InfraQueue.enqueue_destroy(infra_id_str)
+                        logger.info(f"Re-enqueued destroy for {infra_id_str}")
             finally:
-                if r.get(recovery_lock_key) == worker_id.encode():
+                if r.get(recovery_lock_key) == worker_id:
                     r.delete(recovery_lock_key)
         else:
             logger.info(f"Worker {worker_id} skipping recovery — another worker is handling it")
 
-        def run_provision(infra_id, worker_id):
+        def run_provision(infra_id):
             infra = None
             try:
                 infra = Infrastructure.objects.get(id=infra_id)
@@ -151,7 +159,7 @@ class Command(BaseCommand):
                 InfraQueue.enqueue_provision(infra_id)
                 return False
             try:
-                future: Future = provision_pool.submit(run_provision, infra_id, worker_id)
+                future: Future = provision_pool.submit(run_provision, infra_id)
                 future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'provision'))
                 pending_futures.append(future)
                 return True
@@ -184,15 +192,17 @@ class Command(BaseCommand):
         provision_counter = 0
         while running:
             try:
-                if provision_counter < PROVISION_PER_DESTROY:
-                    if dispatch_provision():
-                        provision_counter += 1
+                # Always drain destroy queue first (non-blocking), then provision
+                had_destroy = dispatch_destroy()
+                if had_destroy:
+                    provision_counter = 0
+                    continue
+
+                if dispatch_provision():
+                    provision_counter += 1
                 else:
-                    had_destroy = dispatch_destroy()
-                    if had_destroy:
-                        provision_counter = 0
-                    else:
-                        dispatch_provision()
+                    # Nothing in either queue — short sleep to avoid busy-loop
+                    time.sleep(1)
             except Exception as e:
                 from redis.exceptions import TimeoutError as RedisTimeout
                 if isinstance(e, (TimeoutError, RedisTimeout)):

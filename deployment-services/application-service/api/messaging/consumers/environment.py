@@ -107,6 +107,7 @@ class EnvironmentEventConsumer:
                         "cluster_arn": payload.get("cluster_arn"),
                         "alb_arn": payload.get("alb_arn"),
                         "alb_dns": payload.get("alb_dns"),
+                        "alb_security_group_id": payload.get("alb_security_group_id"),
                         "target_group_arn": payload.get("target_group_arn"),
                         "ecr_repository_url": payload.get("ecr_repository_url"),
                         "ecs_task_execution_role_arn": payload.get("ecs_task_execution_role_arn"),

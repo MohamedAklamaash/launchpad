@@ -246,6 +246,7 @@ output "alb_dns" {{ value = module.alb.alb_dns }}
 output "target_group_arn" {{ value = module.alb.target_group_arn }}
 output "ecr_repository_url" {{ value = module.ecr.repository_url }}
 output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_role_arn }}
+output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
 """
     
     @staticmethod
@@ -373,6 +374,7 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                 env.cluster_arn = outputs.get("cluster_arn", {}).get("value")
                 env.alb_arn = outputs.get("alb_arn", {}).get("value")
                 env.alb_dns = outputs.get("alb_dns", {}).get("value")
+                env.alb_security_group_id = outputs.get("alb_security_group_id", {}).get("value")
                 env.target_group_arn = outputs.get("target_group_arn", {}).get("value")
                 env.ecr_repository_url = outputs.get("ecr_repository_url", {}).get("value")
                 env.ecs_task_execution_role_arn = outputs.get("ecs_task_execution_role_arn", {}).get("value")
@@ -420,10 +422,7 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
     
     @staticmethod
     def _pre_destroy_cleanup(credentials: dict, region: str, infra_id: str):
-        """Pre-clean resources that block Terraform destroy:
-        - Detach/delete ENIs attached to ECS task security groups (causes SG DependencyViolation)
-        - Force-delete all ECR images (ECR repo must be empty)
-        """
+        """Pre-clean resources that block Terraform destroy."""
         import boto3
         boto_kwargs = {
             "region_name": region,
@@ -431,22 +430,20 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             "aws_secret_access_key": credentials.get("aws_secret_access_key"),
             "aws_session_token": credentials.get("aws_session_token"),
         }
-        suffix = TerraformWorker._generate_unique_suffix(infra_id)
-        env_name = f"infra-{infra_id[:8]}-{suffix}"
+        account_id = credentials.get("account_id", "")
 
-        # 1. Force-delete all images in the ECR repo
+        # 1. Force-unlock any stale Terraform state lock in DynamoDB
         try:
-            ecr = boto3.client("ecr", **boto_kwargs)
-            repo_name = f"{env_name}-repo"
-            paginator = ecr.get_paginator("list_images")
-            image_ids = []
-            for page in paginator.paginate(repositoryName=repo_name):
-                image_ids.extend(page.get("imageIds", []))
-            if image_ids:
-                ecr.batch_delete_image(repositoryName=repo_name, imageIds=image_ids)
-                logger.info(f"Deleted {len(image_ids)} ECR images from {repo_name}")
+            table = f"launchpad-tf-locks-{account_id}-{region}"
+            lock_key = f"launchpad-tf-state-{account_id}-{region}/infra/{infra_id}/terraform.tfstate"
+            dynamodb = boto3.client("dynamodb", **boto_kwargs)
+            dynamodb.delete_item(
+                TableName=table,
+                Key={"LockID": {"S": lock_key}}
+            )
+            logger.info(f"Force-unlocked Terraform state lock for {infra_id}")
         except Exception as e:
-            logger.warning(f"ECR pre-clean failed (non-fatal): {e}")
+            logger.warning(f"State lock cleanup (non-fatal): {e}")
 
         # 2. Delete any lingering ENIs in the VPC tagged to this infra (unblocks SG deletion)
         try:
@@ -472,23 +469,20 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             logger.warning(f"ENI pre-clean failed (non-fatal): {e}")
 
         # 3. Remove inbound rules in OTHER security groups that reference our SGs as source.
-        #    AWS blocks SG deletion if any foreign SG rule still points to it.
         try:
             ec2 = boto3.client("ec2", **boto_kwargs)
-            # Find all SGs belonging to this infra
             our_sgs = ec2.describe_security_groups(
                 Filters=[{"Name": "tag:InfraID", "Values": [str(infra_id)]}]
             )["SecurityGroups"]
             our_sg_ids = {sg["GroupId"] for sg in our_sgs}
 
             for sg_id in our_sg_ids:
-                # Find every OTHER SG that has an inbound rule sourced from sg_id
                 referencing = ec2.describe_security_groups(
                     Filters=[{"Name": "ip-permission.group-id", "Values": [sg_id]}]
                 )["SecurityGroups"]
                 for ref_sg in referencing:
                     if ref_sg["GroupId"] in our_sg_ids:
-                        continue  # Terraform will handle intra-infra rules itself
+                        continue
                     rules_to_revoke = [
                         perm for perm in ref_sg.get("IpPermissions", [])
                         if any(pair.get("GroupId") == sg_id for pair in perm.get("UserIdGroupPairs", []))
@@ -498,10 +492,7 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
                             GroupId=ref_sg["GroupId"],
                             IpPermissions=rules_to_revoke,
                         )
-                        logger.info(
-                            f"Revoked {len(rules_to_revoke)} inbound rule(s) in {ref_sg['GroupId']} "
-                            f"that referenced {sg_id}"
-                        )
+                        logger.info(f"Revoked {len(rules_to_revoke)} inbound rule(s) in {ref_sg['GroupId']} referencing {sg_id}")
         except Exception as e:
             logger.warning(f"Cross-SG rule cleanup failed (non-fatal): {e}")
 
@@ -535,7 +526,8 @@ output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_ro
             credentials = {
                 "aws_access_key_id": metadata.get("aws_access_key_id", ""),
                 "aws_secret_access_key": metadata.get("aws_secret_access_key", ""),
-                "aws_session_token": metadata.get("aws_session_token", "")
+                "aws_session_token": metadata.get("aws_session_token", ""),
+                "account_id": account_id,
             }
 
             TerraformWorker._pre_destroy_cleanup(credentials, region, infra_id)

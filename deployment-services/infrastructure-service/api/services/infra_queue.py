@@ -4,6 +4,7 @@ import json
 import logging
 from django.conf import settings
 from django.utils import timezone
+from django.db import models
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
@@ -112,31 +113,17 @@ class InfraQueue:
     
     @staticmethod
     def acquire_db_lock(infra_id: str, worker_id: str) -> bool:
-        """Acquire database-level lock for infrastructure"""
+        """Acquire application-level lock using conditional update (no DB row lock)."""
         from api.models.environment import Environment
-        from django.db import transaction
-        
-        try:
-            with transaction.atomic():
-                env = Environment.objects.select_for_update(nowait=True).get(
-                    infrastructure_id=infra_id
-                )
-                
-                # Check if already locked
-                if env.locked_at and env.locked_by:
-                    lock_age = timezone.now() - env.locked_at
-                    if lock_age < timedelta(hours=1):
-                        logger.warning(f"Infrastructure {infra_id} locked by {env.locked_by}")
-                        return False
-                
-                # Acquire lock
-                env.locked_at = timezone.now()
-                env.locked_by = worker_id
-                env.save(update_fields=['locked_at', 'locked_by'])
-                return True
-        except Exception as e:
-            logger.error(f"Failed to acquire lock for {infra_id}: {e}")
-            return False
+        stale_threshold = timezone.now() - timedelta(hours=1)
+        updated = Environment.objects.filter(
+            infrastructure_id=infra_id
+        ).filter(
+            models.Q(locked_by__isnull=True) | models.Q(locked_at__lt=stale_threshold)
+        ).update(locked_at=timezone.now(), locked_by=worker_id)
+        if not updated:
+            logger.warning(f"Infrastructure {infra_id} is already locked")
+        return bool(updated)
     
     @staticmethod
     def release_db_lock(infra_id: str):

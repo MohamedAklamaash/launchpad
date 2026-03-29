@@ -24,32 +24,41 @@ class CodeBuildClient:
             logger.info(f"CodeBuild project {project_name} does not exist, will create: {e}")
 
         logger.info(f"Creating CodeBuild project {project_name}")
-        try:
-            self.client.create_project(
-                name=project_name,
-                source={'type': 'NO_SOURCE', 'buildspec': buildspec},
-                artifacts={'type': 'NO_ARTIFACTS'},
-                environment={
-                    'type': 'LINUX_CONTAINER',
-                    'image': 'aws/codebuild/standard:7.0',
-                    'computeType': 'BUILD_GENERAL1_SMALL',
-                    'privilegedMode': True,
-                    'environmentVariables': []
-                },
-                serviceRole=service_role_arn,
-                logsConfig={
-                    'cloudWatchLogs': {
-                        'status': 'ENABLED',
-                        'groupName': f'/aws/codebuild/{project_name}'
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                self.client.create_project(
+                    name=project_name,
+                    source={'type': 'NO_SOURCE', 'buildspec': buildspec},
+                    artifacts={'type': 'NO_ARTIFACTS'},
+                    environment={
+                        'type': 'LINUX_CONTAINER',
+                        'image': 'aws/codebuild/standard:7.0',
+                        'computeType': 'BUILD_GENERAL1_SMALL',
+                        'privilegedMode': True,
+                        'environmentVariables': []
+                    },
+                    serviceRole=service_role_arn,
+                    logsConfig={
+                        'cloudWatchLogs': {
+                            'status': 'ENABLED',
+                            'groupName': f'/aws/codebuild/{project_name}'
+                        }
                     }
-                }
-            )
-            logger.info(f"Successfully created CodeBuild project {project_name}")
-        except self.client.exceptions.ResourceAlreadyExistsException:
-            logger.info(f"CodeBuild project {project_name} already exists (race condition)")
-        except Exception as e:
-            logger.error(f"Failed to create CodeBuild project {project_name}: {e}")
-            raise
+                )
+                logger.info(f"Successfully created CodeBuild project {project_name}")
+                return
+            except self.client.exceptions.ResourceAlreadyExistsException:
+                logger.info(f"CodeBuild project {project_name} already exists (race condition)")
+                return
+            except Exception as e:
+                if 'not authorized to perform: sts:AssumeRole' in str(e) and attempt < max_attempts - 1:
+                    wait = 15 * (attempt + 1)
+                    logger.warning(f"IAM role not propagated yet, retrying in {wait}s (attempt {attempt + 1}/{max_attempts})")
+                    time.sleep(wait)
+                else:
+                    logger.error(f"Failed to create CodeBuild project {project_name}: {e}")
+                    raise
     
     def _get_buildspec(self):
         return '''version: 0.2
@@ -82,10 +91,9 @@ phases:
             *) FULL_DOCKERFILE="$BUILD_CONTEXT/$DOCKERFILE_PATH" ;;
           esac
         else
-          CTX=$(dirname "$DOCKERFILE_PATH")
+          CTX="."
           FULL_DOCKERFILE="$DOCKERFILE_PATH"
         fi
-        [ "$CTX" = "." ] && CTX="."
         echo "Building with Dockerfile=$FULL_DOCKERFILE context=$CTX"
         docker build -f "$FULL_DOCKERFILE" -t "$APP_NAME:latest" "$CTX"
       - docker tag "$APP_NAME:latest" "$ECR_URL:$APP_NAME-latest"
