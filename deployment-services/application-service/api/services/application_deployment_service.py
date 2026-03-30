@@ -407,7 +407,18 @@ class ApplicationDeploymentService:
         listener_arn = alb.get_listener_arn(environment.alb_arn)
         if not listener_arn:
             raise ValueError("No listener found for ALB")
-        
+
+        if application.listener_rule_arn:
+            try:
+                alb.client.delete_rule(RuleArn=application.listener_rule_arn)
+                logger.info(f"Deleted old listener rule {application.listener_rule_arn}")
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'RuleNotFound':
+                    logger.info(f"Old listener rule {application.listener_rule_arn} was already absent")
+                else:
+                    logger.error(f"Could not delete old listener rule {application.listener_rule_arn}: {e}")
+                    raise
+
         priority = alb.get_next_priority(listener_arn)
         
         listener_rule_arn = alb.create_listener_rule(
