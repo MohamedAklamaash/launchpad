@@ -162,7 +162,7 @@ class InfraEventProducer:
                 "ecs_task_execution_role_arn": ecs_task_execution_role_arn,
             },
             "occurred_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": {"version": 1, "correlation_id": cid},
+            "metadata": {"version": 2, "correlation_id": cid},
         }
 
         logger.info(

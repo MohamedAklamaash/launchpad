@@ -4,13 +4,17 @@ from django.db import migrations, models, connection
 
 
 def add_name_if_missing(apps, schema_editor):
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name='api_infrastructure' AND column_name='name'
-        """)
-        if not cursor.fetchone():
-            cursor.execute("ALTER TABLE api_infrastructure ADD COLUMN name varchar(255) NOT NULL DEFAULT '1'")
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name='api_infrastructure' AND column_name='name'
+            """)
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE api_infrastructure ADD COLUMN name varchar(255) NOT NULL DEFAULT '1'")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Migration 0005 column check skipped: {e}")
 
 
 class Migration(migrations.Migration):
