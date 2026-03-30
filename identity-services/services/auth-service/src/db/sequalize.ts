@@ -13,7 +13,9 @@ export const sequelize = new Sequelize(
             keepAlive: true,
             statement_timeout: 60_000,
             idle_in_transaction_session_timeout: 30_000,
-            ssl: env.DATABASE_SSL ? { rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED } : false,
+            ssl: env.DATABASE_SSL
+                ? { rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED }
+                : false,
         },
         logging:
             env.NODE_ENV === 'development'

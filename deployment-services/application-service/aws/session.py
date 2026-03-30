@@ -26,7 +26,7 @@ _CREDENTIAL_REFRESH_BUFFER_MINUTES = int(os.environ.get('AWS_CREDENTIAL_REFRESH_
 _last_refresh: OrderedDict = OrderedDict()
 _last_refresh_lock = threading.Lock()
 _MAX_REFRESH_ENTRIES = 500
-_REFRESH_RATE_LIMIT_SECONDS = 300
+_REFRESH_RATE_LIMIT_SECONDS = 60
 
 
 def create_boto3_session(infrastructure):

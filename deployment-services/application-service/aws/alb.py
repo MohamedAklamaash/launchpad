@@ -1,7 +1,19 @@
 import logging
 import os
+import threading
 
 logger = logging.getLogger(__name__)
+
+# Per-listener lock to prevent priority races under concurrent deploys
+_priority_locks: dict = {}
+_priority_locks_lock = threading.Lock()
+
+
+def _get_listener_lock(listener_arn: str) -> threading.Lock:
+    with _priority_locks_lock:
+        if listener_arn not in _priority_locks:
+            _priority_locks[listener_arn] = threading.Lock()
+        return _priority_locks[listener_arn]
 
 class ALBClient:
     def __init__(self, session):
@@ -42,41 +54,33 @@ class ALBClient:
     
     def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority):
         import time
-        try:
-            response = self.client.create_rule(
-                ListenerArn=listener_arn,
-                Conditions=[{
-                    'Field': 'path-pattern',
-                    'Values': [path_pattern]
-                }],
-                Actions=[{
-                    'Type': 'forward',
-                    'TargetGroupArn': target_group_arn
-                }],
-                Priority=priority
-            )
-            logger.info(f"Created listener rule with priority {priority}")
-            rule_arn = response['Rules'][0]['RuleArn']
-        except self.client.exceptions.PriorityInUseException:
-            logger.warning(f"Priority {priority} already in use, checking for existing rule")
-            response = self.client.describe_rules(ListenerArn=listener_arn)
-            for rule in response['Rules']:
-                if rule.get('Priority') == str(priority):
-                    rule_arn = rule['RuleArn']
-                    self.client.modify_rule(
-                        RuleArn=rule_arn,
-                        Actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}]
-                    )
-                    logger.info(f"Updated existing listener rule {rule_arn}")
-                    break
-            else:
-                new_priority = self.get_next_priority(listener_arn)
-                return self.create_listener_rule(listener_arn, target_group_arn, path_pattern, new_priority)
-        
+        # Lock per listener to prevent priority races under concurrent deploys
+        with _get_listener_lock(listener_arn):
+            priority = self.get_next_priority(listener_arn)
+            try:
+                response = self.client.create_rule(
+                    ListenerArn=listener_arn,
+                    Conditions=[{'Field': 'path-pattern', 'Values': [path_pattern]}],
+                    Actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
+                    Priority=priority
+                )
+                rule_arn = response['Rules'][0]['RuleArn']
+                logger.info(f"Created listener rule with priority {priority}")
+            except self.client.exceptions.PriorityInUseException:
+                # Retry with a fresh priority inside the same lock
+                priority = self.get_next_priority(listener_arn)
+                response = self.client.create_rule(
+                    ListenerArn=listener_arn,
+                    Conditions=[{'Field': 'path-pattern', 'Values': [path_pattern]}],
+                    Actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
+                    Priority=priority
+                )
+                rule_arn = response['Rules'][0]['RuleArn']
+                logger.info(f"Created listener rule with priority {priority} (retry)")
+
         propagation_delay = int(os.environ.get('ALB_RULE_PROPAGATION_DELAY', '5'))
         logger.info(f"Waiting {propagation_delay} seconds for listener rule to propagate...")
         time.sleep(propagation_delay)
-        
         return rule_arn
     
     def verify_target_group_attached(self, target_group_arn, listener_arn, max_retries=None, delay=None):
