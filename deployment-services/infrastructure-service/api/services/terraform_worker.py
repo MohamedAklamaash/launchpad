@@ -409,6 +409,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     cluster_arn=env.cluster_arn,
                     alb_arn=env.alb_arn,
                     alb_dns=env.alb_dns,
+                    alb_security_group_id=env.alb_security_group_id,
                     target_group_arn=env.target_group_arn,
                     ecr_repository_url=env.ecr_repository_url,
                     ecs_task_execution_role_arn=env.ecs_task_execution_role_arn,
@@ -457,7 +458,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 if attachment.get("AttachmentId") and attachment.get("Status") != "detached":
                     try:
                         ec2.detach_network_interface(AttachmentId=attachment["AttachmentId"], Force=True)
-                        import time; time.sleep(2)
+                        time.sleep(2)
                     except Exception:
                         pass
                 try:

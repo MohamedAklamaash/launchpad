@@ -28,7 +28,7 @@ class ApplicationCleanupService:
             if application.listener_rule_arn:
                 self._delete_listener_rule(session, application.listener_rule_arn)
             
-            # Stimport reep 3: Delete Target Group
+            # Step 3: Delete Target Group
             if application.target_group_arn:
                 self._delete_target_group(session, application.target_group_arn)
             

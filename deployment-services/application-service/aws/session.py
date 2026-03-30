@@ -2,7 +2,7 @@ import boto3
 from botocore.config import Config
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from api.common.envs.application import app_config
 
 logger = logging.getLogger(__name__)
@@ -27,8 +27,9 @@ def create_boto3_session(infrastructure):
     if expiration:
         try:
             exp_time = datetime.fromisoformat(expiration.replace('Z', '+00:00'))
-            if exp_time <= datetime.now(timezone.utc):
-                logger.info(f"Credentials expired for infrastructure {infrastructure.id}, refreshing...")
+            # Refresh if expired or within 10 minutes of expiry
+            if exp_time <= datetime.now(timezone.utc) + timedelta(minutes=10):
+                logger.info(f"Credentials expiring soon for infrastructure {infrastructure.id}, refreshing...")
                 _refresh_credentials(infrastructure)
                 metadata = infrastructure.metadata
         except Exception as e:
