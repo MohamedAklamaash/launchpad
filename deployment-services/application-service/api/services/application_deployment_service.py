@@ -412,8 +412,12 @@ class ApplicationDeploymentService:
             try:
                 alb.client.delete_rule(RuleArn=application.listener_rule_arn)
                 logger.info(f"Deleted old listener rule {application.listener_rule_arn}")
-            except Exception as e:
-                logger.warning(f"Could not delete old listener rule {application.listener_rule_arn}: {e}")
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'RuleNotFound':
+                    logger.info(f"Old listener rule {application.listener_rule_arn} was already absent")
+                else:
+                    logger.error(f"Could not delete old listener rule {application.listener_rule_arn}: {e}")
+                    raise
 
         priority = alb.get_next_priority(listener_arn)
         
