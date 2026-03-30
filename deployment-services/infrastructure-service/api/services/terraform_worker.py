@@ -401,6 +401,11 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 # Publish environment.updated after a short delay so the application-service
                 # has time to process and commit the infrastructure.created event first.
                 _env_id = env.id
+                import re as _re
+                _sg_id = env.alb_security_group_id
+                if _sg_id and not _re.match(r'^sg-[0-9a-f]{8,17}$', _sg_id):
+                    logger.error(f"Invalid ALB SG ID format '{_sg_id}' for infra {infra_id} — skipping publish")
+                    _sg_id = None
                 _env_kwargs = dict(
                     infra_id=infra_id,
                     environment_id=_env_id,
@@ -409,6 +414,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     cluster_arn=env.cluster_arn,
                     alb_arn=env.alb_arn,
                     alb_dns=env.alb_dns,
+                    alb_security_group_id=_sg_id,
                     target_group_arn=env.target_group_arn,
                     ecr_repository_url=env.ecr_repository_url,
                     ecs_task_execution_role_arn=env.ecs_task_execution_role_arn,
@@ -457,7 +463,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 if attachment.get("AttachmentId") and attachment.get("Status") != "detached":
                     try:
                         ec2.detach_network_interface(AttachmentId=attachment["AttachmentId"], Force=True)
-                        import time; time.sleep(2)
+                        time.sleep(2)
                     except Exception:
                         pass
                 try:

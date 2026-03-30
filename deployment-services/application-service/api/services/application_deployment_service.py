@@ -158,10 +158,18 @@ class ApplicationDeploymentService:
     def _create_aws_session(self, infrastructure):
         if not infrastructure.code:
             raise ValueError("Infrastructure AWS Account ID (code) is not set")
-        
+
         if not infrastructure.is_cloud_authenticated:
             raise ValueError("Infrastructure is not authenticated with AWS. Please re-authenticate.")
-        
+
+        # Always refresh STS credentials before a deployment to avoid mid-deploy expiry
+        from aws.session import _refresh_credentials
+        try:
+            _refresh_credentials(infrastructure)
+            infrastructure.refresh_from_db()
+        except Exception as e:
+            logger.warning(f"Credential refresh failed, proceeding with cached credentials: {e}")
+
         return create_boto3_session(infrastructure)
     
     def _trigger_build(self, session, application: Application, environment: Environment):
@@ -417,7 +425,6 @@ class ApplicationDeploymentService:
     
     def _wait_for_service_stable_with_refresh(self, infrastructure, cluster_arn, service_name, timeout=300):
         """Wait for ECS service with automatic credential refresh"""
-        import time
         logger.info(f"Waiting for service {service_name} to become stable...")
         start_time = time.time()
         

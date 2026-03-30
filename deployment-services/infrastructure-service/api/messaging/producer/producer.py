@@ -137,6 +137,7 @@ class InfraEventProducer:
         cluster_arn=None,
         alb_arn=None,
         alb_dns=None,
+        alb_security_group_id=None,
         target_group_arn=None,
         ecr_repository_url=None,
         ecs_task_execution_role_arn=None,
@@ -155,12 +156,13 @@ class InfraEventProducer:
                 "cluster_arn": cluster_arn,
                 "alb_arn": alb_arn,
                 "alb_dns": alb_dns,
+                "alb_security_group_id": alb_security_group_id,
                 "target_group_arn": target_group_arn,
                 "ecr_repository_url": ecr_repository_url,
                 "ecs_task_execution_role_arn": ecs_task_execution_role_arn,
             },
             "occurred_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": {"version": 1, "correlation_id": cid},
+            "metadata": {"version": 2, "correlation_id": cid},
         }
 
         logger.info(

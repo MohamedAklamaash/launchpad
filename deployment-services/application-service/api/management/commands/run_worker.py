@@ -84,7 +84,7 @@ class Command(BaseCommand):
             logger.info(f"Infra worker started for {infra_id}")
             while True:
                 try:
-                    job = q.get(timeout=2)
+                    job = q.get(timeout=30)
                 except queue.Empty:
                     with infra_queues_lock:
                         if q.empty():

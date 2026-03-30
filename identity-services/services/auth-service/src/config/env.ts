@@ -11,8 +11,10 @@ const envSchema = z.object({
     DATABASE_HOST: z.string(),
     DATABASE_PORT: z.coerce.number().default(5432),
     DATABASE_NAME: z.string(),
-    DATABASE_SSL: z.coerce.boolean().default(false),
-    DATABASE_SSL_REJECT_UNAUTHORIZED: z.coerce.boolean().default(false),
+    DATABASE_SSL: z.preprocess((v) => v === 'true' || v === true, z.boolean()).default(false),
+    DATABASE_SSL_REJECT_UNAUTHORIZED: z
+        .preprocess((v) => v === 'true' || v === true, z.boolean())
+        .default(false),
 
     AUTH_DB_URL: z.url(),
 

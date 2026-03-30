@@ -5,7 +5,8 @@ import { logger } from '@/utils/logger';
 export const sequelize = new Sequelize(
     `postgres://${encodeURIComponent(env.DATABASE_USER_NAME)}:` +
         `${encodeURIComponent(env.DATABASE_PASSWORD)}@` +
-        `${env.DATABASE_HOST}:${env.DATABASE_PORT}/${env.DATABASE_NAME}`,
+        `${env.DATABASE_HOST}:${env.DATABASE_PORT}/${env.DATABASE_NAME}` +
+        `${env.DATABASE_SSL ? '?sslmode=require' : '?sslmode=disable'}`,
     {
         dialect: 'postgres',
         dialectOptions: {
@@ -13,6 +14,9 @@ export const sequelize = new Sequelize(
             keepAlive: true,
             statement_timeout: 60_000,
             idle_in_transaction_session_timeout: 30_000,
+            ...(env.DATABASE_SSL
+                ? { ssl: { rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED === true } }
+                : { ssl: false }),
         },
         logging:
             env.NODE_ENV === 'development'
