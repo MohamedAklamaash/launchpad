@@ -3,6 +3,8 @@ from botocore.config import Config
 import logging
 import os
 from datetime import datetime, timezone, timedelta
+import threading
+from collections import OrderedDict
 from api.common.envs.application import app_config
 
 logger = logging.getLogger(__name__)
@@ -20,8 +22,10 @@ BOTO3_CONFIG = Config(
 # STS tokens are typically 1 hour; 10 min buffer gives ample time for a full deploy.
 _CREDENTIAL_REFRESH_BUFFER_MINUTES = int(os.environ.get('AWS_CREDENTIAL_REFRESH_BUFFER_MINUTES', '10'))
 
-# Per-infra last-refresh timestamps to rate-limit STS calls (max once per 5 min)
-_last_refresh: dict = {}
+# Per-infra last-refresh timestamps to rate-limit STS calls (max once per 5 min).
+_last_refresh: OrderedDict = OrderedDict()
+_last_refresh_lock = threading.Lock()
+_MAX_REFRESH_ENTRIES = 500
 _REFRESH_RATE_LIMIT_SECONDS = 300
 
 
@@ -58,10 +62,15 @@ def _refresh_credentials(infrastructure):
     infra_id = str(infrastructure.id)
     now = datetime.now(timezone.utc).timestamp()
 
-    last = _last_refresh.get(infra_id, 0)
-    if now - last < _REFRESH_RATE_LIMIT_SECONDS:
-        logger.info(f"Skipping credential refresh for {infra_id} — rate limited (last refresh {int(now - last)}s ago)")
-        return
+    with _last_refresh_lock:
+        last = _last_refresh.get(infra_id, 0)
+        if now - last < _REFRESH_RATE_LIMIT_SECONDS:
+            logger.info(f"Skipping credential refresh for {infra_id} — rate limited (last refresh {int(now - last)}s ago)")
+            return
+        _last_refresh[infra_id] = now
+        _last_refresh.move_to_end(infra_id)
+        if len(_last_refresh) > _MAX_REFRESH_ENTRIES:
+            _last_refresh.popitem(last=False)
 
     target_account_id = infrastructure.code
     sts_client = boto3.client(
@@ -85,5 +94,4 @@ def _refresh_credentials(infrastructure):
         "expiration": creds["Expiration"].isoformat() if hasattr(creds["Expiration"], 'isoformat') else str(creds["Expiration"])
     }
     infrastructure.save()
-    _last_refresh[infra_id] = now
     logger.info(f"Refreshed credentials for infrastructure {infra_id}")
