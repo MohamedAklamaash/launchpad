@@ -208,6 +208,13 @@ http {{
                         taskDefinition=task_definition_arn,
                         desiredCount=1,
                         forceNewDeployment=True,
+                        networkConfiguration={
+                            'awsvpcConfiguration': {
+                                'subnets': subnet_ids,
+                                'securityGroups': security_group_ids,
+                                'assignPublicIp': 'DISABLED'
+                            }
+                        },
                     )
                     return existing_service['serviceArn']
             except Exception as e:

@@ -93,6 +93,6 @@ class DeploymentQueue:
                 _, job_data = result
                 return json.loads(job_data)
             return None
-        except Exception as e:
-            logger.error(f"Failed to dequeue: {e}")
-            return None
+        except redis.RedisError as e:
+            logger.error(f"Redis error during dequeue: {e}")
+            raise  # let the worker's except handler back off and retry

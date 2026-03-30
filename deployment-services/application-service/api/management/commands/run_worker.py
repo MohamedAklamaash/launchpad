@@ -1,6 +1,7 @@
 import os
 import time
 import uuid
+import json
 import logging
 import threading
 import queue
@@ -91,11 +92,20 @@ class Command(BaseCommand):
                             del infra_queues[infra_id]
                             logger.info(f"Infra worker exiting for {infra_id}")
                             return
+                        # Jobs arrived between the empty check and the lock — keep draining
                     continue
 
                 try:
                     if job.get('action') == 'deploy':
                         run_deploy(job['app_id'])
+                except Exception as e:
+                    logger.error(f"Unhandled error in drain loop for {infra_id}: {e}", exc_info=True)
+                    # Re-enqueue to Redis so the job isn't silently lost
+                    try:
+                        DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
+                        logger.info(f"Re-enqueued job {job.get('app_id')} to Redis after drain error")
+                    except Exception as re_err:
+                        logger.error(f"Failed to re-enqueue job: {re_err}")
                 finally:
                     q.task_done()
 

@@ -290,7 +290,11 @@ class ApplicationDeploymentService:
                     logger.info(f"Reusing existing target group {application.target_group_arn}")
                     return application.target_group_arn
                 else:
-                    logger.warning(f"Stored TG is in wrong VPC ({tg['VpcId']} != {environment.vpc_id}), creating new one")
+                    logger.warning(f"Stored TG is in wrong VPC ({tg['VpcId']} != {environment.vpc_id}), deleting and creating new one")
+                    try:
+                        alb.client.delete_target_group(TargetGroupArn=application.target_group_arn)
+                    except ClientError:
+                        pass
             except ClientError as e:
                 if e.response['Error']['Code'] != 'TargetGroupNotFound':
                     raise
@@ -438,37 +442,36 @@ class ApplicationDeploymentService:
         """Wait for ECS service with automatic credential refresh"""
         logger.info(f"Waiting for service {service_name} to become stable...")
         start_time = time.time()
-        
+        session = self._create_aws_session(infrastructure)
+        ecs = ECSClient(session)
+
         while time.time() - start_time < timeout:
             try:
-                # Refresh session on each iteration to handle credential expiry
-                session = self._create_aws_session(infrastructure)
-                ecs = ECSClient(session)
-                
                 response = ecs.client.describe_services(
                     cluster=cluster_arn,
                     services=[service_name]
                 )
-                
+
                 if not response['services']:
                     raise Exception(f"Service {service_name} not found")
-                
+
                 service = response['services'][0]
                 running_count = service.get('runningCount', 0)
                 desired_count = service.get('desiredCount', 0)
-                
+
                 if running_count == desired_count and running_count > 0:
                     logger.info(f"Service {service_name} is stable with {running_count} running tasks")
                     return True
-                
+
                 logger.info(f"Service {service_name}: {running_count}/{desired_count} tasks running, waiting...")
                 time.sleep(10)
-                
+
             except Exception as e:
                 if 'ExpiredToken' in str(e):
-                    logger.warning("Token expired during wait, will refresh on next iteration")
-                    time.sleep(2)
+                    logger.warning("Token expired during wait, refreshing credentials")
+                    session = self._create_aws_session(infrastructure)
+                    ecs = ECSClient(session)
                 else:
                     raise
-        
+
         raise Exception(f"Service {service_name} did not become stable within {timeout} seconds")
