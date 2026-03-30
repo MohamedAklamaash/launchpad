@@ -25,10 +25,15 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RunPython(add_name_if_missing, migrations.RunPython.noop),
-        migrations.AlterField(
-            model_name='infrastructure',
-            name='name',
-            field=models.CharField(default=1, max_length=255),
-            preserve_default=False,
+        migrations.SeparateDatabaseAndState(
+            state_operations=[
+                migrations.AddField(
+                    model_name='infrastructure',
+                    name='name',
+                    field=models.CharField(default=1, max_length=255),
+                    preserve_default=False,
+                ),
+            ],
+            database_operations=[],  # column already handled by RunPython above
         ),
     ]
