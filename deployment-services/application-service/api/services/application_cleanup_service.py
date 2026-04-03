@@ -65,6 +65,14 @@ class ApplicationCleanupService:
         except Exception as e:
             logger.error(f"Failed to delete ECS service: {e}")
 
+    def _delete_listener_rule(self, session, listener_rule_arn):
+        try:
+            alb = ALBClient(session)
+            alb.client.delete_rule(RuleArn=listener_rule_arn)
+            logger.info(f"Deleted listener rule {listener_rule_arn}")
+        except Exception as e:
+            logger.error(f"Failed to delete listener rule: {e}")
+
     def _delete_target_group(self, session, target_group_arn):
         import time
         alb = ALBClient(session)
