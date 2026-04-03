@@ -1,7 +1,6 @@
 import os
 import time
 import uuid
-import json
 import logging
 import threading
 import queue

@@ -8,7 +8,6 @@ from api.services.application_service import ApplicationService
 from api.services.application_sleep_service import ApplicationSleepService
 from api.services.deployment_queue import DeploymentQueue
 from api.repositories.application import ApplicationRepository
-from api.services.application_cleanup_service import ApplicationCleanupService
 import logging
 
 logger = logging.getLogger(__name__)
