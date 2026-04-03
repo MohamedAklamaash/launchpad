@@ -10,6 +10,7 @@ class ECSClient:
         self.health_check_grace_period = int(os.environ.get('ECS_HEALTH_CHECK_GRACE_PERIOD', '240'))
         self.service_stable_timeout = int(os.environ.get('ECS_SERVICE_STABLE_TIMEOUT', '300'))
         self.service_stable_poll_interval = int(os.environ.get('ECS_SERVICE_STABLE_POLL_INTERVAL', '10'))
+        self.failed_tasks_threshold = int(os.environ.get('ECS_FAILED_TASKS_THRESHOLD', '3'))
     
     def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None):
         env_vars = [{'name': k, 'value': str(v)} for k, v in (envs or {}).items()]
@@ -46,10 +47,15 @@ class ECSClient:
                 {'name': 'ROOT_PATH', 'value': f'/{app_name}'},
                 {'name': 'UVICORN_ROOT_PATH', 'value': f'/{app_name}'},
                 {'name': 'FORWARDED_ALLOW_IPS', 'value': '*'},
-                # Force the app to bind on all interfaces so nginx can reach it via 127.0.0.1
-                {'name': 'HOSTNAME', 'value': '0.0.0.0'},
-                {'name': 'HOST', 'value': '0.0.0.0'},
             ]
+            # Only inject HOSTNAME/HOST if the app hasn't already set them.
+            # This forces binding on all interfaces so nginx can reach the app via 127.0.0.1,
+            # but avoids breaking apps that rely on HOSTNAME for service discovery.
+            if not any(e['name'] in ('HOSTNAME', 'HOST') for e in env_vars):
+                env_vars += [
+                    {'name': 'HOSTNAME', 'value': '0.0.0.0'},
+                    {'name': 'HOST', 'value': '0.0.0.0'},
+                ]
         
         container_definitions = []
         
@@ -329,7 +335,7 @@ http {{
                         f"Service {service_name} deployment failed (circuit breaker triggered). "
                         f"Failed tasks: {failed}. Check CloudWatch logs for the task family."
                     )
-                if failed >= 3:
+                if failed >= self.failed_tasks_threshold:
                     raise Exception(
                         f"Service {service_name} has {failed} failed tasks — app is crash-looping. "
                         "Check CloudWatch logs for the task family."

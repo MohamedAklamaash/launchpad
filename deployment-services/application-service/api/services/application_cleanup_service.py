@@ -82,8 +82,9 @@ class ApplicationCleanupService:
                 logger.info(f"Deleted target group {target_group_arn}")
                 return
             except alb.client.exceptions.ResourceInUseException:
-                logger.warning(f"TG still in use, retrying in 10s (attempt {attempt + 1}/6)")
-                time.sleep(10)
+                delay = min(5 * (2 ** attempt), 60)
+                logger.warning(f"TG still in use, retrying in {delay}s (attempt {attempt + 1}/6)")
+                time.sleep(delay)
             except Exception as e:
                 logger.error(f"Failed to delete target group: {e}")
                 return

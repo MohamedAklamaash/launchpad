@@ -80,7 +80,8 @@ class ApplicationService:
                     try:
                         allowed_urls = []
                         page = 1
-                        while True:
+                        MAX_GITHUB_PAGES = int(os.environ.get('GITHUB_VALIDATION_MAX_PAGES', '100'))
+                        while page <= MAX_GITHUB_PAGES:
                             response = self.github_client.get(
                                 f"/user/repos?per_page=100&page={page}",
                                 headers={

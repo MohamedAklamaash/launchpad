@@ -11,7 +11,9 @@ class DeploymentLock:
 
     def __init__(self):
         self.redis_client = redis.Redis(connection_pool=_pool)
-        self.lock_timeout = int(os.environ.get('DEPLOYMENT_LOCK_TIMEOUT', '2400'))
+        # Initial TTL is 300s. The heartbeat thread renews it every 60s for the
+        # duration of the deploy, so long-running builds never expire the lock.
+        self.lock_timeout = int(os.environ.get('DEPLOYMENT_LOCK_TIMEOUT', '300'))
         self._heartbeat_threads: dict = {}
 
     def acquire(self, app_id, worker_id):
@@ -54,7 +56,7 @@ class DeploymentLock:
                 else:
                     break
 
-        t = threading.Thread(target=_renew, daemon=True)
+        t = threading.Thread(target=_renew, daemon=True, name=f"heartbeat-{app_id}")
         t.start()
 
     def _stop_heartbeat(self, app_id):

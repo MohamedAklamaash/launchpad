@@ -33,8 +33,14 @@ class Command(BaseCommand):
         worker_id = str(uuid.uuid4())[:8]
         logger.info(f"Starting deployment worker {worker_id} (max {MAX_INFRA_WORKERS} parallel infrastructures)")
 
-        # Recover any jobs that were in-flight when the previous worker crashed
-        DeploymentQueue.recover_processing_jobs()
+        # Recover any jobs that were in-flight when the previous worker crashed.
+        # Fail startup if recovery fails — don't run with unknown queue state.
+        try:
+            recovered = DeploymentQueue.recover_processing_jobs()
+            logger.info(f"Startup: recovered {recovered} in-flight job(s) from processing queue")
+        except Exception as e:
+            logger.critical(f"CRITICAL: Failed to recover processing jobs on startup: {e}")
+            raise
 
         # Each infra gets its own queue + a single dedicated thread draining it.
         infra_queues: dict[str, queue.Queue] = {}
