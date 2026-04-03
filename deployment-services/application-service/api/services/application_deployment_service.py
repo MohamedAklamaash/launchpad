@@ -469,6 +469,7 @@ class ApplicationDeploymentService:
                             f"Service {service_name} deployment failed (circuit breaker triggered). "
                             f"Failed tasks: {failed}. Check CloudWatch logs for the task family."
                         )
+                    import os
                     if failed >= int(os.environ.get('ECS_FAILED_TASKS_THRESHOLD', '3')):
                         raise Exception(
                             f"Service {service_name} has {failed} failed tasks — app is crash-looping. "
