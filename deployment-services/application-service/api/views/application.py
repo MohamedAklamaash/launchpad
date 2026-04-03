@@ -244,6 +244,11 @@ class ApplicationDeployView(APIView):
             app = ApplicationRepository().get_by_id(pk)
             if not app:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            from api.repositories.infrastructure import InfrastructureRepository
+            from api.services.infrastructure_permissions import InfrastructurePermissions
+            infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
+            if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
+                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
             DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
@@ -274,10 +279,8 @@ class ApplicationRetryDeployView(APIView):
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
             if str(app.user_id) != str(request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
-            try:
-                ApplicationCleanupService().cleanup_application(app)
-            except Exception as e:
-                logger.warning(f"Cleanup failed (may not exist): {e}")
+
+            # Reset DB state immediately
             app.status = 'CREATED'
             app.error_message = None
             app.service_arn = None
@@ -286,6 +289,17 @@ class ApplicationRetryDeployView(APIView):
             app.listener_rule_arn = None
             app.save(update_fields=['status', 'error_message', 'service_arn',
                                     'task_definition_arn', 'target_group_arn', 'listener_rule_arn'])
+
+            # Enqueue cleanup first, then deployment — worker handles sequencing
+            if any([app.service_arn, app.listener_rule_arn, app.target_group_arn, app.task_definition_arn]):
+                DeploymentQueue.enqueue_cleanup(
+                    app_id=pk,
+                    infrastructure_id=str(app.infrastructure_id),
+                    service_arn=app.service_arn,
+                    listener_rule_arn=app.listener_rule_arn,
+                    target_group_arn=app.target_group_arn,
+                    task_definition_arn=app.task_definition_arn,
+                )
             DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment retry queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)

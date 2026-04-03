@@ -78,31 +78,35 @@ class ApplicationService:
                 
                 if github_token:
                     try:
-                        response = self.github_client.get(
-                            "/user/repos?per_page=100", 
-                            headers={
-                                "Authorization": f"token {github_token}",
-                                "Accept": "application/vnd.github.v3+json"
-                            }
-                        )
-                        
-                        if response.status_code == 200:
+                        allowed_urls = []
+                        page = 1
+                        while True:
+                            response = self.github_client.get(
+                                f"/user/repos?per_page=100&page={page}",
+                                headers={
+                                    "Authorization": f"token {github_token}",
+                                    "Accept": "application/vnd.github.v3+json"
+                                }
+                            )
+                            if response.status_code != 200:
+                                logger.error(f"Failed to fetch GitHub repos for inviter: {response.status_code} {response.text}")
+                                raise ValueError("Unable to verify GitHub repository ownership at this time")
                             repos = response.json()
-                            allowed_urls = []
+                            if not repos:
+                                break
                             for r in repos:
-                                allowed_urls.append(r.get("html_url", "").lower())
-                                allowed_urls.append(r.get("clone_url", "").lower())
-                                if r.get("html_url", "").endswith(".git"):
-                                    allowed_urls.append(r.get("html_url", "")[:-4].lower())
-                                else:
-                                    allowed_urls.append((r.get("html_url", "") + ".git").lower())
-                                    
-                            normalized_url = project_remote_url.lower().rstrip("/")
-                            if normalized_url not in allowed_urls:
-                                raise ValueError(f"Selected project {project_remote_url} is not in your inviter's ({inviter.user_name}) GitHub projects")
-                        else:
-                            logger.error(f"Failed to fetch GitHub repos for inviter: {response.status_code} {response.text}")
-                            raise ValueError("Unable to verify GitHub repository ownership at this time")
+                                html = r.get("html_url", "").lower()
+                                clone = r.get("clone_url", "").lower()
+                                allowed_urls += [html, clone,
+                                                 html.rstrip(".git") if html.endswith(".git") else html + ".git",
+                                                 clone.rstrip(".git") if clone.endswith(".git") else clone + ".git"]
+                            if len(repos) < 100:
+                                break
+                            page += 1
+
+                        normalized_url = project_remote_url.lower().rstrip("/")
+                        if normalized_url not in allowed_urls:
+                            raise ValueError(f"Selected project {project_remote_url} is not in your inviter's ({inviter.user_name}) GitHub projects")
                     except Exception as e:
                         if isinstance(e, ValueError): raise
                         logger.error(f"Error validating GitHub project: {str(e)}")

@@ -34,25 +34,32 @@ class Command(BaseCommand):
         worker_id = str(uuid.uuid4())[:8]
         logger.info(f"Starting deployment worker {worker_id} (max {MAX_INFRA_WORKERS} parallel infrastructures)")
 
+        # Recover any jobs that were in-flight when the previous worker crashed
+        DeploymentQueue.recover_processing_jobs()
+
         # Each infra gets its own queue + a single dedicated thread draining it.
         infra_queues: dict[str, queue.Queue] = {}
         infra_queues_lock = threading.Lock()
         executor = ThreadPoolExecutor(max_workers=MAX_INFRA_WORKERS, thread_name_prefix='infra-worker')
 
-        def run_deploy(app_id):
+        def run_deploy(app_id, job):
             lock = DeploymentLock()
             if not lock.acquire(app_id, worker_id):
                 logger.warning(f"App {app_id} already locked, skipping")
+                DeploymentQueue.ack_job(job)
                 return
             try:
                 app = ApplicationRepository().get_by_id(app_id)
                 if not app:
                     logger.error(f"Application {app_id} not found")
+                    DeploymentQueue.ack_job(job)
                     return
                 url = ApplicationDeploymentService().deploy_application(app)
                 logger.info(f"Deployed {app_id} at {url}")
+                DeploymentQueue.ack_job(job)
             except Exception as e:
                 logger.error(f"Deployment failed for {app_id}: {e}", exc_info=True)
+                DeploymentQueue.nack_job(job)
             finally:
                 lock.release(app_id, worker_id)
                 _close_db()
@@ -75,8 +82,10 @@ class Command(BaseCommand):
                 if job.get('task_definition_arn'):
                     cleanup._deregister_task_definition(session, job['task_definition_arn'])
                 logger.info(f"Cleaned up AWS resources for deleted app {app_id}")
+                DeploymentQueue.ack_job(job)
             except Exception as e:
                 logger.error(f"AWS cleanup failed for app {app_id}: {e}", exc_info=True)
+                DeploymentQueue.nack_job(job)
             finally:
                 _close_db()
 
@@ -97,15 +106,10 @@ class Command(BaseCommand):
 
                 try:
                     if job.get('action') == 'deploy':
-                        run_deploy(job['app_id'])
+                        run_deploy(job['app_id'], job)
                 except Exception as e:
                     logger.error(f"Unhandled error in drain loop for {infra_id}: {e}", exc_info=True)
-                    # Re-enqueue to Redis so the job isn't silently lost
-                    try:
-                        DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
-                        logger.info(f"Re-enqueued job {job.get('app_id')} to Redis after drain error")
-                    except Exception as re_err:
-                        logger.error(f"Failed to re-enqueue job: {re_err}")
+                    DeploymentQueue.nack_job(job)
                 finally:
                     q.task_done()
 
@@ -126,7 +130,7 @@ class Command(BaseCommand):
                     infra_id = None
 
             if not infra_id:
-                executor.submit(run_deploy, job['app_id'])
+                executor.submit(run_deploy, job['app_id'], job)
                 return
 
             with infra_queues_lock:

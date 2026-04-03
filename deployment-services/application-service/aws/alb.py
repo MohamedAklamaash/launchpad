@@ -18,10 +18,10 @@ def _get_listener_lock(listener_arn: str) -> threading.Lock:
 class ALBClient:
     def __init__(self, session):
         self.client = session.client('elbv2')
-        self.health_check_interval = int(os.environ.get('ALB_HEALTH_CHECK_INTERVAL', '30'))
-        self.health_check_timeout = int(os.environ.get('ALB_HEALTH_CHECK_TIMEOUT', '10'))
+        self.health_check_interval = int(os.environ.get('ALB_HEALTH_CHECK_INTERVAL', '15'))
+        self.health_check_timeout = int(os.environ.get('ALB_HEALTH_CHECK_TIMEOUT', '5'))
         self.healthy_threshold = int(os.environ.get('ALB_HEALTHY_THRESHOLD', '2'))
-        self.unhealthy_threshold = int(os.environ.get('ALB_UNHEALTHY_THRESHOLD', '5'))
+        self.unhealthy_threshold = int(os.environ.get('ALB_UNHEALTHY_THRESHOLD', '3'))
     
     def create_target_group(self, name, vpc_id, port=80):
         try:

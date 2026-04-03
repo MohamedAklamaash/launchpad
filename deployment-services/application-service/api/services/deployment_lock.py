@@ -1,14 +1,9 @@
 import redis
 import logging
 import os
+from api.services.deployment_queue import _pool
 
 logger = logging.getLogger(__name__)
-
-_pool = redis.ConnectionPool.from_url(
-    os.environ.get('REDIS_URL', 'redis://localhost:6379/0'),
-    decode_responses=True,
-    max_connections=10,
-)
 
 
 class DeploymentLock:
@@ -16,19 +11,22 @@ class DeploymentLock:
 
     def __init__(self):
         self.redis_client = redis.Redis(connection_pool=_pool)
-        self.lock_timeout = int(os.environ.get('DEPLOYMENT_LOCK_TIMEOUT', '300'))
+        self.lock_timeout = int(os.environ.get('DEPLOYMENT_LOCK_TIMEOUT', '2400'))
+        self._heartbeat_threads: dict = {}
 
     def acquire(self, app_id, worker_id):
         lock_key = f"deployment:lock:{app_id}"
         acquired = self.redis_client.set(lock_key, worker_id, nx=True, ex=self.lock_timeout)
         if acquired:
             logger.info(f"Worker {worker_id} acquired lock for app {app_id}")
+            self._start_heartbeat(app_id, worker_id)
             return True
         current_owner = self.redis_client.get(lock_key)
         logger.warning(f"App {app_id} is locked by {current_owner}")
         return False
 
     def release(self, app_id, worker_id):
+        self._stop_heartbeat(app_id)
         lock_key = f"deployment:lock:{app_id}"
         current_owner = self.redis_client.get(lock_key)
         if current_owner == worker_id:
@@ -40,3 +38,26 @@ class DeploymentLock:
 
     def is_locked(self, app_id):
         return self.redis_client.exists(f"deployment:lock:{app_id}") > 0
+
+    def _start_heartbeat(self, app_id, worker_id):
+        """Renew lock TTL every 60s so long-running deploys don't expire."""
+        import threading
+        stop_event = threading.Event()
+        self._heartbeat_threads[app_id] = stop_event
+
+        def _renew():
+            while not stop_event.wait(60):
+                lock_key = f"deployment:lock:{app_id}"
+                owner = self.redis_client.get(lock_key)
+                if owner == worker_id:
+                    self.redis_client.expire(lock_key, self.lock_timeout)
+                else:
+                    break
+
+        t = threading.Thread(target=_renew, daemon=True)
+        t.start()
+
+    def _stop_heartbeat(self, app_id):
+        event = self._heartbeat_threads.pop(app_id, None)
+        if event:
+            event.set()

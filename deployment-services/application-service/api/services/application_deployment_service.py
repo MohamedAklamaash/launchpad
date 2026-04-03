@@ -54,30 +54,30 @@ class ApplicationDeploymentService:
             application.target_group_arn = target_group_arn
             application.save()
             created_resources.append(('target_group', target_group_arn))
-            
-            # Step 6.5: Configure ALB Routing
-            listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
-            application.listener_rule_arn = listener_rule_arn
-            application.save()
-            created_resources.append(('listener_rule', listener_rule_arn))
-            
-            # Step 6.6: Verify target group is attached to ALB
-            alb = ALBClient(session)
-            alb.verify_target_group_attached(application.target_group_arn, listener_arn)
-            logger.info("Target group verified as attached to ALB")
-            
-            # Step 7: Create ECS Service
+
+            # Step 7: Create ECS Service (BEFORE listener rule — no traffic until healthy)
             service_arn = self._create_ecs_service(session, application, environment)
             application.service_arn = service_arn
             application.desired_count = 1
             application.save()
             created_resources.append(('ecs_service', service_arn))
-            
-            # Step 8: Wait for service to become stable
+
+            # Step 8: Wait for service to become stable and target healthy
             service_name = f"{_slug(application.name)}-service"
             self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
             logger.info(f"Service {service_name} is stable and running")
-            
+
+            # Step 8.5: Configure ALB Routing AFTER service is healthy — eliminates 502 window
+            listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
+            application.listener_rule_arn = listener_rule_arn
+            application.save()
+            created_resources.append(('listener_rule', listener_rule_arn))
+
+            # Step 8.6: Verify target group is attached to ALB
+            alb = ALBClient(session)
+            alb.verify_target_group_attached(application.target_group_arn, listener_arn)
+            logger.info("Target group verified as attached to ALB")
+
             # Step 9: Return Deployment URL
             deployment_url = self._generate_deployment_url(application, environment)
             application.deployment_url = deployment_url
@@ -458,6 +458,22 @@ class ApplicationDeploymentService:
                 service = response['services'][0]
                 running_count = service.get('runningCount', 0)
                 desired_count = service.get('desiredCount', 0)
+
+                deployments = service.get('deployments', [])
+                primary = next((d for d in deployments if d['status'] == 'PRIMARY'), None)
+                if primary:
+                    failed = primary.get('failedTasks', 0)
+                    rollout = primary.get('rolloutState', '')
+                    if rollout == 'FAILED':
+                        raise Exception(
+                            f"Service {service_name} deployment failed (circuit breaker triggered). "
+                            f"Failed tasks: {failed}. Check CloudWatch logs for the task family."
+                        )
+                    if failed >= 3:
+                        raise Exception(
+                            f"Service {service_name} has {failed} failed tasks — app is crash-looping. "
+                            "Check CloudWatch logs for the task family."
+                        )
 
                 if running_count == desired_count and running_count > 0:
                     logger.info(f"Service {service_name} is stable with {running_count} running tasks")

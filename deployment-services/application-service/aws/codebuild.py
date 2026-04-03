@@ -119,9 +119,13 @@ phases:
             {'name': 'BUILD_CONTEXT', 'value': build_context or '', 'type': 'PLAINTEXT'},
         ]
         
-        # Add GitHub token (for private repos)
+        # Add GitHub token (for private repos) — use SECRETS_MANAGER if an ARN is provided,
+        # otherwise fall back to PLAINTEXT (less secure, visible in build logs)
         if github_token:
-            env_vars.append({'name': 'GITHUB_TOKEN', 'value': github_token, 'type': 'PLAINTEXT'})
+            if github_token.startswith('arn:aws:secretsmanager:'):
+                env_vars.append({'name': 'GITHUB_TOKEN', 'value': github_token, 'type': 'SECRETS_MANAGER'})
+            else:
+                env_vars.append({'name': 'GITHUB_TOKEN', 'value': github_token, 'type': 'PLAINTEXT'})
         
         for attempt in range(max_retries):
             try:

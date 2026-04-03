@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 class ECSClient:
     def __init__(self, session):
         self.client = session.client('ecs')
-        self.health_check_grace_period = int(os.environ.get('ECS_HEALTH_CHECK_GRACE_PERIOD', '120'))
+        self.health_check_grace_period = int(os.environ.get('ECS_HEALTH_CHECK_GRACE_PERIOD', '240'))
         self.service_stable_timeout = int(os.environ.get('ECS_SERVICE_STABLE_TIMEOUT', '300'))
         self.service_stable_poll_interval = int(os.environ.get('ECS_SERVICE_STABLE_POLL_INTERVAL', '10'))
     
@@ -41,11 +41,14 @@ class ECSClient:
         nginx_config = self._generate_nginx_config(app_name, container_port) if app_name else None
         
         if app_name:
-            env_vars = [e for e in env_vars if e['name'] not in ('ROOT_PATH', 'UVICORN_ROOT_PATH', 'FORWARDED_ALLOW_IPS')]
+            env_vars = [e for e in env_vars if e['name'] not in ('ROOT_PATH', 'UVICORN_ROOT_PATH', 'FORWARDED_ALLOW_IPS', 'HOSTNAME', 'HOST')]
             env_vars += [
                 {'name': 'ROOT_PATH', 'value': f'/{app_name}'},
                 {'name': 'UVICORN_ROOT_PATH', 'value': f'/{app_name}'},
                 {'name': 'FORWARDED_ALLOW_IPS', 'value': '*'},
+                # Force the app to bind on all interfaces so nginx can reach it via 127.0.0.1
+                {'name': 'HOSTNAME', 'value': '0.0.0.0'},
+                {'name': 'HOST', 'value': '0.0.0.0'},
             ]
         
         container_definitions = []
@@ -59,6 +62,13 @@ class ECSClient:
                 'containerPort': container_port,
                 'protocol': 'tcp'
             }],
+            'healthCheck': {
+                'command': ['CMD-SHELL', f'nc -z 127.0.0.1 {container_port} || exit 1'],
+                'interval': 10,
+                'timeout': 5,
+                'retries': 3,
+                'startPeriod': 60,
+            },
             'logConfiguration': {
                 'logDriver': 'awslogs',
                 'options': {
@@ -76,10 +86,9 @@ class ECSClient:
                 'name': f'{family}-nginx',
                 'image': 'public.ecr.aws/nginx/nginx:alpine',
                 'essential': True,
-                'dependsOn': [{
-                    'containerName': family,
-                    'condition': 'START'
-                }],
+                # No dependsOn: HEALTHY — nginx starts immediately and handles
+                # "app not ready" gracefully. The ECS healthCheckGracePeriodSeconds
+                # covers the startup window so the ALB doesn't mark the target unhealthy.
                 'portMappings': [{
                     'containerPort': 80,
                     'protocol': 'tcp'
@@ -92,7 +101,7 @@ class ECSClient:
                     'echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/nginx.conf && '
                     'nginx -t && nginx -g "daemon off;" & '
                     'NGINX_PID=$! && '
-                    'APP_PORT=0 && '
+                    # Wait for app to be healthy before nginx starts serving real traffic
                     f'for port in {container_port} 8080 8000 3000 5000 4000; do '
                     '  i=0; while [ $i -lt 90 ]; do '
                     '    if nc -z 127.0.0.1 $port 2>/dev/null; then '
@@ -101,7 +110,7 @@ class ECSClient:
                     '    sleep 2; i=$((i+1)); '
                     '  done; '
                     'done && '
-                    'if [ "$APP_PORT" = "0" ]; then '
+                    'if [ -z "$APP_PORT" ]; then '
                     '  echo "ERROR: App not reachable on any port after 180s"; kill $NGINX_PID; exit 1; '
                     'fi && '
                     'echo "App ready on port $APP_PORT" && '
@@ -109,7 +118,14 @@ class ECSClient:
                     f'  sed -i "s/127\\.0\\.0\\.1:{container_port}/127.0.0.1:$APP_PORT/g" /etc/nginx/nginx.conf && '
                     '  nginx -s reload; '
                     'fi && '
-                    'wait $NGINX_PID'
+                    # Monitor app health — kill nginx (and thus the task) if app dies
+                    'while kill -0 $NGINX_PID 2>/dev/null; do '
+                    '  if ! nc -z 127.0.0.1 $APP_PORT 2>/dev/null; then '
+                    '    echo "ERROR: App on port $APP_PORT is no longer reachable — stopping container"; '
+                    '    kill $NGINX_PID; exit 1; '
+                    '  fi; '
+                    '  sleep 15; '
+                    'done'
                 ],
                 'logConfiguration': {
                     'logDriver': 'awslogs',
@@ -139,6 +155,9 @@ events {{
     worker_connections 1024;
 }}
 http {{
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
     proxy_connect_timeout 60s;
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;
@@ -180,6 +199,17 @@ http {{
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
             proxy_buffering off;
+            # Return 503 (not 502) when backend is down so ALB marks target unhealthy
+            proxy_next_upstream error timeout http_502 http_503;
+            proxy_next_upstream_tries 1;
+            proxy_intercept_errors on;
+            error_page 502 503 504 =503 /healthz_down;
+        }}
+
+        location = /healthz_down {{
+            internal;
+            return 503 "service unavailable\n";
+            add_header Content-Type text/plain;
         }}
     }}
 
@@ -215,6 +245,11 @@ http {{
                                 'assignPublicIp': 'DISABLED'
                             }
                         },
+                        deploymentConfiguration={
+                            'deploymentCircuitBreaker': {'enable': True, 'rollback': True},
+                            'maximumPercent': 200,
+                            'minimumHealthyPercent': 100,
+                        },
                     )
                     return existing_service['serviceArn']
             except Exception as e:
@@ -241,6 +276,11 @@ http {{
                     'containerName': lb_container_name,
                     'containerPort': lb_container_port
                 }],
+                deploymentConfiguration={
+                    'deploymentCircuitBreaker': {'enable': True, 'rollback': True},
+                    'maximumPercent': 200,
+                    'minimumHealthyPercent': 100,
+                },
                 healthCheckGracePeriodSeconds=self.health_check_grace_period
             )
             return response['service']['serviceArn']
@@ -277,6 +317,23 @@ http {{
             
             running_count = service.get('runningCount', 0)
             desired_count = service.get('desiredCount', 0)
+
+            # Detect circuit breaker rollback / crash loop
+            deployments = service.get('deployments', [])
+            primary = next((d for d in deployments if d['status'] == 'PRIMARY'), None)
+            if primary:
+                failed = primary.get('failedTasks', 0)
+                rollout = primary.get('rolloutState', '')
+                if rollout == 'FAILED':
+                    raise Exception(
+                        f"Service {service_name} deployment failed (circuit breaker triggered). "
+                        f"Failed tasks: {failed}. Check CloudWatch logs for the task family."
+                    )
+                if failed >= 3:
+                    raise Exception(
+                        f"Service {service_name} has {failed} failed tasks — app is crash-looping. "
+                        "Check CloudWatch logs for the task family."
+                    )
             
             if running_count == desired_count and running_count > 0:
                 logger.info(f"Service {service_name} is stable with {running_count} running tasks")

@@ -48,6 +48,9 @@ _blocking_pool = redis.ConnectionPool(
 
 class DeploymentQueue:
     QUEUE_NAME = "deployment_queue"
+    PROCESSING_QUEUE = "deployment_queue:processing"
+    DLQ_NAME = "deployment_queue:dlq"
+    MAX_RETRIES = 3
 
     @staticmethod
     def get_redis() -> redis.Redis:
@@ -56,7 +59,7 @@ class DeploymentQueue:
     @staticmethod
     def enqueue_deployment(app_id: str, infrastructure_id: str = None):
         try:
-            job = {"app_id": str(app_id), "action": "deploy"}
+            job = {"app_id": str(app_id), "action": "deploy", "retry_count": 0}
             if infrastructure_id:
                 job["infrastructure_id"] = str(infrastructure_id)
             DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
@@ -78,6 +81,7 @@ class DeploymentQueue:
                 "listener_rule_arn": listener_rule_arn,
                 "target_group_arn": target_group_arn,
                 "task_definition_arn": task_definition_arn,
+                "retry_count": 0,
             }
             DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
             logger.info(f"Enqueued cleanup for application {app_id}")
@@ -86,13 +90,59 @@ class DeploymentQueue:
             raise
 
     @staticmethod
+    def recover_processing_jobs():
+        """On worker startup, move any jobs stuck in the processing queue back to main queue."""
+        r = DeploymentQueue.get_redis()
+        recovered = 0
+        while True:
+            job_data = r.rpoplpush(DeploymentQueue.PROCESSING_QUEUE, DeploymentQueue.QUEUE_NAME)
+            if not job_data:
+                break
+            recovered += 1
+        if recovered:
+            logger.warning(f"Recovered {recovered} in-flight job(s) from processing queue")
+
+    @staticmethod
     def dequeue_deployment():
         try:
-            result = redis.Redis(connection_pool=_blocking_pool).blpop(DeploymentQueue.QUEUE_NAME, timeout=_BLPOP_TIMEOUT)
-            if result:
-                _, job_data = result
+            r = redis.Redis(connection_pool=_blocking_pool)
+            # Atomically move from main queue → processing queue (crash-safe)
+            job_data = r.blmove(
+                DeploymentQueue.QUEUE_NAME,
+                DeploymentQueue.PROCESSING_QUEUE,
+                timeout=_BLPOP_TIMEOUT,
+                src='LEFT',
+                dest='RIGHT',
+            )
+            if job_data:
                 return json.loads(job_data)
             return None
         except redis.RedisError as e:
             logger.error(f"Redis error during dequeue: {e}")
-            raise  # let the worker's except handler back off and retry
+            raise
+
+    @staticmethod
+    def ack_job(job: dict):
+        """Remove job from processing queue after successful completion."""
+        try:
+            DeploymentQueue.get_redis().lrem(
+                DeploymentQueue.PROCESSING_QUEUE, 1, json.dumps(job, sort_keys=True)
+            )
+        except Exception as e:
+            logger.warning(f"Failed to ack job {job.get('app_id')}: {e}")
+
+    @staticmethod
+    def nack_job(job: dict):
+        """On failure: retry up to MAX_RETRIES, then move to DLQ."""
+        r = DeploymentQueue.get_redis()
+        job_str = json.dumps(job, sort_keys=True)
+        r.lrem(DeploymentQueue.PROCESSING_QUEUE, 1, job_str)
+
+        retry_count = job.get("retry_count", 0) + 1
+        if retry_count <= DeploymentQueue.MAX_RETRIES:
+            job["retry_count"] = retry_count
+            r.rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
+            logger.warning(f"Re-enqueued job {job.get('app_id')} (retry {retry_count}/{DeploymentQueue.MAX_RETRIES})")
+        else:
+            r.rpush(DeploymentQueue.DLQ_NAME, json.dumps(job))
+            logger.error(f"Job {job.get('app_id')} moved to DLQ after {DeploymentQueue.MAX_RETRIES} retries")

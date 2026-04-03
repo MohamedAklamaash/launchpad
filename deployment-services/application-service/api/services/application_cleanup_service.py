@@ -48,40 +48,38 @@ class ApplicationCleanupService:
     def _delete_ecs_service(self, session, cluster_arn, service_arn):
         try:
             ecs_client = session.client('ecs')
-            
-            # Scale service to 0 tasks
             service_name = service_arn.split('/')[-1]
-            ecs_client.update_service(
-                cluster=cluster_arn,
-                service=service_name,
-                desiredCount=0
-            )
+            ecs_client.update_service(cluster=cluster_arn, service=service_name, desiredCount=0)
             logger.info(f"Scaled service {service_name} to 0 tasks")
-            
-            ecs_client.delete_service(
-                cluster=cluster_arn,
-                service=service_name,
-                force=True
-            )
+            ecs_client.delete_service(cluster=cluster_arn, service=service_name, force=True)
             logger.info(f"Deleted ECS service {service_name}")
+
+            # Wait for service to become INACTIVE so targets are fully deregistered
+            import time
+            for _ in range(30):
+                resp = ecs_client.describe_services(cluster=cluster_arn, services=[service_name])
+                svc = resp['services'][0] if resp['services'] else None
+                if not svc or svc['status'] == 'INACTIVE':
+                    break
+                time.sleep(5)
         except Exception as e:
             logger.error(f"Failed to delete ECS service: {e}")
-    
-    def _delete_listener_rule(self, session, listener_rule_arn):
-        try:
-            alb = ALBClient(session)
-            alb.client.delete_rule(RuleArn=listener_rule_arn)
-            logger.info(f"Deleted listener rule {listener_rule_arn}")
-        except Exception as e:
-            logger.error(f"Failed to delete listener rule: {e}")
-    
+
     def _delete_target_group(self, session, target_group_arn):
-        try:
-            alb = ALBClient(session)
-            alb.client.delete_target_group(TargetGroupArn=target_group_arn)
-            logger.info(f"Deleted target group {target_group_arn}")
-        except Exception as e:
-            logger.error(f"Failed to delete target group: {e}")
+        import time
+        alb = ALBClient(session)
+        for attempt in range(6):
+            try:
+                alb.client.delete_target_group(TargetGroupArn=target_group_arn)
+                logger.info(f"Deleted target group {target_group_arn}")
+                return
+            except alb.client.exceptions.ResourceInUseException:
+                logger.warning(f"TG still in use, retrying in 10s (attempt {attempt + 1}/6)")
+                time.sleep(10)
+            except Exception as e:
+                logger.error(f"Failed to delete target group: {e}")
+                return
+        logger.error(f"Could not delete target group {target_group_arn} after retries — may need manual cleanup")
     
     def _deregister_task_definition(self, session, task_definition_arn):
         try:

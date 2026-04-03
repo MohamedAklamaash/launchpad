@@ -91,11 +91,13 @@ class ApplicationSleepService:
                 desiredCount=restore_count
             )
             
+            # Mark as DEPLOYING — the app is not yet serving traffic.
+            # Status will be polled/updated by the frontend or a future background job.
             application.is_sleeping = False
-            application.status = 'ACTIVE'
+            application.status = 'DEPLOYING'
             application.save(update_fields=['is_sleeping', 'status'])
             
-            logger.info(f"Application {application.name} woken up (restored count: {restore_count})")
+            logger.info(f"Application {application.name} wake requested (restoring count: {restore_count})")
             
         except Exception as e:
             logger.error(f"Failed to wake application {application.name}: {e}")
