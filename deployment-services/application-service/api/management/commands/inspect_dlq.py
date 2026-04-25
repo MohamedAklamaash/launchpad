@@ -32,15 +32,17 @@ class Command(BaseCommand):
         if options['replay']:
             replayed = 0
             while True:
-                raw = r.rpoplpush(dlq, DeploymentQueue.QUEUE_NAME)
+                raw = r.lpop(dlq)
                 if not raw:
                     break
-                # Reset retry count so replayed jobs get a fresh attempt
                 try:
                     job = json.loads(raw)
                     job['retry_count'] = 0
-                    r.lset(DeploymentQueue.QUEUE_NAME, -1, json.dumps(job))
-                except Exception:
-                    pass
-                replayed += 1
+                    r.rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
+                    replayed += 1
+                except Exception as e:
+                    # Parse or push failed — put the original back on the DLQ, don't lose it
+                    r.rpush(dlq, raw)
+                    self.stderr.write(f"Failed to replay job, returned to DLQ: {e}")
+                    break
             self.stdout.write(f"Replayed {replayed} job(s) from DLQ to main queue")

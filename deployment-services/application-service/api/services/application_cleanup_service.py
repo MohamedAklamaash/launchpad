@@ -54,16 +54,21 @@ class ApplicationCleanupService:
             ecs_client.delete_service(cluster=cluster_arn, service=service_name, force=True)
             logger.info(f"Deleted ECS service {service_name}")
 
-            # Wait for service to become INACTIVE so targets are fully deregistered
             import time
+            svc = None
             for _ in range(30):
                 resp = ecs_client.describe_services(cluster=cluster_arn, services=[service_name])
                 svc = resp['services'][0] if resp['services'] else None
                 if not svc or svc['status'] == 'INACTIVE':
-                    break
+                    return
                 time.sleep(5)
+            raise RuntimeError(
+                f"ECS service {service_name} in cluster {cluster_arn} did not reach INACTIVE "
+                f"after 150s — last status: {svc['status'] if svc else 'not found'}"
+            )
         except Exception as e:
             logger.error(f"Failed to delete ECS service: {e}")
+            raise
 
     def _delete_listener_rule(self, session, listener_rule_arn):
         try:
@@ -87,8 +92,8 @@ class ApplicationCleanupService:
                 time.sleep(delay)
             except Exception as e:
                 logger.error(f"Failed to delete target group: {e}")
-                return
-        logger.error(f"Could not delete target group {target_group_arn} after retries — may need manual cleanup")
+                raise
+        raise RuntimeError(f"Target group {target_group_arn} still in use after 6 attempts — cleanup will be retried")
     
     def _deregister_task_definition(self, session, task_definition_arn):
         try:

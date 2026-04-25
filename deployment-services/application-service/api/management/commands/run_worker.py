@@ -50,8 +50,9 @@ class Command(BaseCommand):
         def run_deploy(app_id, job):
             lock = DeploymentLock()
             if not lock.acquire(app_id, worker_id):
-                logger.warning(f"App {app_id} already locked, skipping")
-                DeploymentQueue.ack_job(job)
+                # Another worker holds the lock. Leave the job in the processing queue —
+                # it will be recovered and retried after DEPLOYMENT_LOCK_TIMEOUT expires.
+                logger.warning(f"App {app_id} already locked, leaving in processing queue for retry")
                 return
             try:
                 app = ApplicationRepository().get_by_id(app_id)
