@@ -71,7 +71,7 @@ class ApplicationCreateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(f"Cannot set reserved variable: {key}")
             
             # Validate key format
-            if not re.match(r'^[A-Z_][A-Z0-9_]*$', key):
+            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', key):
                 raise serializers.ValidationError(f"Invalid environment variable name: {key}")
         
         return value

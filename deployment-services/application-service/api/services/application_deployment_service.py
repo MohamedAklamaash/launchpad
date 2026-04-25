@@ -54,30 +54,34 @@ class ApplicationDeploymentService:
             application.target_group_arn = target_group_arn
             application.save()
             created_resources.append(('target_group', target_group_arn))
-            
-            # Step 6.5: Configure ALB Routing
-            listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
-            application.listener_rule_arn = listener_rule_arn
-            application.save()
-            created_resources.append(('listener_rule', listener_rule_arn))
-            
-            # Step 6.6: Verify target group is attached to ALB
-            alb = ALBClient(session)
-            alb.verify_target_group_attached(application.target_group_arn, listener_arn)
-            logger.info("Target group verified as attached to ALB")
-            
-            # Step 7: Create ECS Service
+
+            # Step 7: Create ECS Service (BEFORE listener rule — no traffic until healthy)
             service_arn = self._create_ecs_service(session, application, environment)
             application.service_arn = service_arn
             application.desired_count = 1
             application.save()
             created_resources.append(('ecs_service', service_arn))
-            
-            # Step 8: Wait for service to become stable
+
+            # Step 8: Wait for service to become stable and target healthy
             service_name = f"{_slug(application.name)}-service"
             self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
             logger.info(f"Service {service_name} is stable and running")
-            
+
+            # Step 8.5: Wait for ALB to mark the target healthy before routing traffic
+            alb = ALBClient(session)
+            self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
+            logger.info(f"Target group {application.target_group_arn} has healthy targets")
+
+            # Step 8.6: Configure ALB Routing AFTER targets are confirmed healthy — zero 502 window
+            listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
+            application.listener_rule_arn = listener_rule_arn
+            application.save()
+            created_resources.append(('listener_rule', listener_rule_arn))
+
+            # Step 8.7: Verify target group is attached to ALB
+            alb.verify_target_group_attached(application.target_group_arn, listener_arn)
+            logger.info("Target group verified as attached to ALB")
+
             # Step 9: Return Deployment URL
             deployment_url = self._generate_deployment_url(application, environment)
             application.deployment_url = deployment_url
@@ -438,34 +442,31 @@ class ApplicationDeploymentService:
     def _generate_deployment_url(self, application: Application, environment: Environment):
         return f"http://{environment.alb_dns}/{_slug(application.name)}"
     
+    def _wait_for_target_healthy(self, alb: ALBClient, target_group_arn: str, desired_count: int = 1, timeout: int = 180):
+        """Poll ALB target health until at least desired_count targets are healthy."""
+        import time as _time
+        deadline = _time.time() + timeout
+        interval = 10
+        while _time.time() < deadline:
+            resp = alb.client.describe_target_health(TargetGroupArn=target_group_arn)
+            healthy = sum(1 for t in resp['TargetHealthDescriptions'] if t['TargetHealth']['State'] == 'healthy')
+            logger.info(f"Target group {target_group_arn}: {healthy}/{desired_count} healthy targets")
+            if healthy >= desired_count:
+                return
+            _time.sleep(interval)
+        raise Exception(f"Target group {target_group_arn} had no healthy targets after {timeout}s — not routing traffic")
+
     def _wait_for_service_stable_with_refresh(self, infrastructure, cluster_arn, service_name, timeout=300):
-        """Wait for ECS service with automatic credential refresh"""
+        """Wait for ECS service stability, refreshing credentials on token expiry."""
         logger.info(f"Waiting for service {service_name} to become stable...")
-        start_time = time.time()
         session = self._create_aws_session(infrastructure)
         ecs = ECSClient(session)
+        start_time = time.time()
 
-        while time.time() - start_time < timeout:
+        while True:
             try:
-                response = ecs.client.describe_services(
-                    cluster=cluster_arn,
-                    services=[service_name]
-                )
-
-                if not response['services']:
-                    raise Exception(f"Service {service_name} not found")
-
-                service = response['services'][0]
-                running_count = service.get('runningCount', 0)
-                desired_count = service.get('desiredCount', 0)
-
-                if running_count == desired_count and running_count > 0:
-                    logger.info(f"Service {service_name} is stable with {running_count} running tasks")
-                    return True
-
-                logger.info(f"Service {service_name}: {running_count}/{desired_count} tasks running, waiting...")
-                time.sleep(10)
-
+                ecs.wait_for_service_stable(cluster_arn, service_name, timeout=int(timeout - (time.time() - start_time)))
+                return
             except Exception as e:
                 if 'ExpiredToken' in str(e):
                     logger.warning("Token expired during wait, refreshing credentials")
@@ -473,5 +474,3 @@ class ApplicationDeploymentService:
                     ecs = ECSClient(session)
                 else:
                     raise
-
-        raise Exception(f"Service {service_name} did not become stable within {timeout} seconds")

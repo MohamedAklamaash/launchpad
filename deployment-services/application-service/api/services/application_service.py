@@ -36,6 +36,41 @@ class ApplicationService:
             base_url="https://api.github.com"
         )
     
+    def _validate_github_repo(self, project_remote_url: str, github_token: str, inviter_name: str):
+        """Validate that project_remote_url belongs to the inviter's GitHub account.
+        Raises ValueError on definitive mismatch, or on transient/API failure.
+        Must be called OUTSIDE any transaction.atomic block.
+        """
+        # Normalise once up front — strip trailing slash and .git suffix
+        url = project_remote_url.lower().rstrip("/")
+        normalized_url = url[:-4] if url.endswith(".git") else url
+        # Also build the .git variant for comparison
+        normalized_url_git = normalized_url + ".git"
+
+        MAX_GITHUB_PAGES = int(os.environ.get('GITHUB_VALIDATION_MAX_PAGES', '100'))
+        for page in range(1, MAX_GITHUB_PAGES + 1):
+            response = self.github_client.get(
+                f"/user/repos?per_page=100&page={page}",
+                headers={"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+            )
+            if response.status_code != 200:
+                raise ValueError("Unable to verify GitHub repository ownership at this time")
+
+            repos = response.json()
+            for r in repos:
+                for raw in (r.get("html_url", ""), r.get("clone_url", "")):
+                    candidate = raw.lower().rstrip("/")
+                    candidate_base = candidate[:-4] if candidate.endswith(".git") else candidate
+                    if normalized_url == candidate_base or normalized_url_git == candidate_base + ".git":
+                        return  # found — short-circuit immediately
+
+            if len(repos) < 100:
+                # Last page reached without a match — definitive rejection
+                raise ValueError(f"Selected project {project_remote_url} is not in your inviter's ({inviter_name}) GitHub projects")
+
+        # Exhausted MAX_GITHUB_PAGES without finding or definitively rejecting — treat as transient
+        raise ValueError("Unable to verify GitHub repository ownership: too many repositories to scan")
+
     @transaction.atomic
     def create_application(self, user, data: dict):
         """Create a new application after validating user authorization and infra capacity."""
@@ -69,49 +104,6 @@ class ApplicationService:
         project_remote_url = data.get("project_remote_url", "")
         if not project_remote_url:
             raise ValueError("Project remote url is required")
-        
-        if user.invited_by:
-            inviter = self.user_repo.get_user(user.invited_by)
-            if inviter:
-                github_metadata = inviter.metadata.get("github", {}) if inviter.metadata else {}
-                github_token = github_metadata.get("token")
-                
-                if github_token:
-                    try:
-                        response = self.github_client.get(
-                            "/user/repos?per_page=100", 
-                            headers={
-                                "Authorization": f"token {github_token}",
-                                "Accept": "application/vnd.github.v3+json"
-                            }
-                        )
-                        
-                        if response.status_code == 200:
-                            repos = response.json()
-                            allowed_urls = []
-                            for r in repos:
-                                allowed_urls.append(r.get("html_url", "").lower())
-                                allowed_urls.append(r.get("clone_url", "").lower())
-                                if r.get("html_url", "").endswith(".git"):
-                                    allowed_urls.append(r.get("html_url", "")[:-4].lower())
-                                else:
-                                    allowed_urls.append((r.get("html_url", "") + ".git").lower())
-                                    
-                            normalized_url = project_remote_url.lower().rstrip("/")
-                            if normalized_url not in allowed_urls:
-                                raise ValueError(f"Selected project {project_remote_url} is not in your inviter's ({inviter.user_name}) GitHub projects")
-                        else:
-                            logger.error(f"Failed to fetch GitHub repos for inviter: {response.status_code} {response.text}")
-                            raise ValueError("Unable to verify GitHub repository ownership at this time")
-                    except Exception as e:
-                        if isinstance(e, ValueError): raise
-                        logger.error(f"Error validating GitHub project: {str(e)}")
-                        raise ValueError(f"GitHub validation failed: {str(e)}")
-                else:
-                    logger.warning(f"Inviter {inviter.email} has no GitHub token in metadata")
-                    raise ValueError("Your inviter has not linked their GitHub account. Cannot verify project.")
-            else:
-                raise ValueError(f"User {user.email} has invited_by {user.invited_by} but inviter not found in DB")
         data["user"] = user
         app = self.app_repo.create(data)
         
