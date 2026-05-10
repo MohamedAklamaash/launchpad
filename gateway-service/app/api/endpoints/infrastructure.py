@@ -37,6 +37,15 @@ class InfraResponse(BaseModel):
     updated_at: str
 
 
+class InfraCreateResponse(InfraResponse):
+    # Plaintext single-use nonce returned only on the create endpoint. Declared here so FastAPI's
+    # response_model filter does not strip it before the dashboard sees it.
+    onboarding_token: Optional[str] = Field(
+        default=None,
+        description="Single-use onboarding token; injected into the AWS bootstrap script. Shown only once.",
+    )
+
+
 @router.get("/", summary="List all infrastructures for the authenticated user",
             response_model=list[InfraResponse])
 async def infrastructure_list(request: Request):
@@ -44,9 +53,9 @@ async def infrastructure_list(request: Request):
 
 
 @router.post("/", summary="Create a new infrastructure",
-             response_model=InfraResponse, status_code=201)
+             response_model=InfraCreateResponse, status_code=201)
 async def infrastructure_create(body: InfraCreateBody, request: Request):
-    """Triggers Terraform to provision VPC, ECS cluster, ALB, and ECR in the given AWS account."""
+    """Creates the infra row and mints a single-use onboarding token. Provisioning starts after the customer runs the bootstrap script."""
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/", request)
 
 
@@ -83,6 +92,21 @@ async def infrastructure_reprovision(infra_id: str, request: Request):
     """Resets environment status to PENDING and re-queues Terraform. Use after a failed provision or ERROR state."""
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/reprovision/", request
+    )
+
+
+class OnboardingCallbackBody(BaseModel):
+    infra_id: str = Field(description="Infrastructure UUID this callback is for")
+    account_id: str = Field(description="AWS Account ID where LaunchpadDeploymentRole was created")
+    onboarding_token: str = Field(description="Single-use onboarding token issued at infra creation")
+
+
+@router.post("/onboarding/callback", summary="Onboarding callback from customer's AWS account",
+             status_code=202)
+async def infrastructure_onboarding_callback(body: OnboardingCallbackBody, request: Request):
+    """Called by app_scripts/create_aws_role.sh after the customer creates the IAM role. No JWT required."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/onboarding/callback/", request
     )
 
 

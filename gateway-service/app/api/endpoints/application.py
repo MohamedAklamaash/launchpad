@@ -144,3 +144,34 @@ async def application_sleep(app_id: str, request: Request):
 async def application_wake(app_id: str, request: Request):
     """No request body required. Restores ECS desired count."""
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/wake/", request)
+
+
+class WebhookSecretResponse(BaseModel):
+    webhook_url: str
+    secret: str = Field(description="Shown only at issue/rotate time; not retrievable later")
+    instructions: str
+
+
+@router.post("/{app_id}/webhook-secret", summary="Issue or rotate GitHub webhook secret",
+             response_model=WebhookSecretResponse)
+async def application_rotate_webhook_secret(app_id: str, request: Request):
+    """Generates a fresh per-app HMAC secret. The secret is returned ONCE."""
+    return await proxy_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/webhook-secret/", request,
+    )
+
+
+# Mounted at the FastAPI app root (no /applications prefix) — GitHub URLs live under
+# a stable /api/v1/webhooks/github/ path so the auth middleware can prefix-exempt them.
+webhook_router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+
+
+@webhook_router.post("/github/{app_id}", summary="GitHub push webhook receiver", status_code=202)
+async def application_github_webhook(app_id: str, request: Request):
+    """
+    Called by GitHub. Must include `X-GitHub-Event` and `X-Hub-Signature-256`.
+    Trailing slash on upstream is required so Django doesn't 301-redirect the POST body.
+    """
+    return await proxy_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/webhooks/github/{app_id}/", request,
+    )
