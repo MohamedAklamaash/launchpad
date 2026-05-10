@@ -298,7 +298,7 @@ def infrastructure_onboarding_callback(request: HttpRequest):
             {'status': 'accepted', 'infrastructure_id': str(infra_id), 'is_cloud_authenticated': True},
             status=status.HTTP_202_ACCEPTED,
         )
-    except Exception as e:
+    except Exception:
         logger.error(f"Onboarding callback enqueue failed for infra {infra_id}", exc_info=True)
         return Response({'error': 'Internal error'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR)
