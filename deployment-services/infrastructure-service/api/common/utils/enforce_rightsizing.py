@@ -18,7 +18,19 @@ def enforce_rightsizing():
         try:
             authenticate_infrastructure(infra)
             metadata = infra.metadata or {}
-            
+
+            # Empty creds would silently fall back to the default boto3 chain
+            # (env vars / IMDS) and operate on the LAUNCHPAD platform account
+            # instead of the customer's. Skip rather than risk stop_instances
+            # against the wrong account.
+            if not metadata.get("aws_access_key_id") or not metadata.get("aws_secret_access_key"):
+                logger.warning(
+                    "Skipping rightsizing for infra %s: missing AWS credentials in metadata. "
+                    "Empty creds would silently fall back to platform credentials and operate on the wrong account.",
+                    infra.id,
+                )
+                continue
+
             compute_optimizer = boto3.client(
                 "compute-optimizer",
                 region_name=metadata.get("aws_region", "us-west-2"),

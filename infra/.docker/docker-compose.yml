@@ -13,7 +13,6 @@ services:
       postgres -c max_connections=500 -c shared_buffers=256MB -c effective_cache_size=768MB -c work_mem=4MB -c maintenance_work_mem=64MB -c idle_in_transaction_session_timeout=30000 -c statement_timeout=60000 -c tcp_keepalives_idle=60 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=6
     ports:
       - "${POSTGRES_PORT}:5432"
-      - "5433:5432"
     volumes:
       - ./init:/docker-entrypoint-initdb.d
       - postgres_data:/var/lib/postgresql/data
@@ -37,7 +36,6 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
       - "${MYSQL_PORT}:3306"
-      - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     networks:
@@ -58,7 +56,6 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
     ports:
       - "${MONGO_PORT}:27017"
-      - "27017:27017"
     volumes:
       - mongo_data:/data/db
     networks:
@@ -71,7 +68,6 @@ services:
     command: redis-server --requirepass ${REDIS_PASSWORD}
     ports:
       - "${REDIS_PORT}:6379"
-      - "6379:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -93,8 +89,6 @@ services:
     ports:
       - "${RABBITMQ_PORT}:5672"
       - "${RABBITMQ_MANAGEMENT_PORT}:15672"
-      - "5672:5672"
-      - "15672:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
@@ -147,7 +141,13 @@ services:
     restart: unless-stopped
     env_file: ../../gateway-service/.env
     environment:
-      REDIS_HOST: redis
+      AUTH_SERVICE_URL: http://auth-service:5001
+      USER_SERVICE_URL: http://user-service:5002
+      NOTIFICATION_SERVICE_URL: http://notification-service:5003
+      APPLICATION_SERVICE_URL: http://application-service:8002
+      INFRASTRUCTURE_SERVICE_URL: http://infrastructure-service:8003
+      PAYMENT_SERVICE_URL: http://payment-service:8004
+      REDIS_URL: redis://aklamaash:${REDIS_PASSWORD}@redis:6379/2
     ports:
       - "8000:8000"
     networks:
@@ -238,6 +238,7 @@ services:
       DATABASE_HOST: postgres
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      ALLOWED_HOSTS: payment-service,localhost,127.0.0.1,host.docker.internal
     ports:
       - "8004:8004"
     networks:
@@ -262,6 +263,7 @@ services:
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
+      ALLOWED_HOSTS: application-service,localhost,127.0.0.1,host.docker.internal
     ports:
       - "8002:8002"
     networks:
@@ -292,6 +294,7 @@ services:
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
+      ALLOWED_HOSTS: application-service,localhost,127.0.0.1,host.docker.internal
     networks:
       - backend
     depends_on:
@@ -312,6 +315,7 @@ services:
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
+      ALLOWED_HOSTS: infrastructure-service,localhost,127.0.0.1,host.docker.internal
     ports:
       - "8003:8003"
     networks:
@@ -342,6 +346,7 @@ services:
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
+      ALLOWED_HOSTS: infrastructure-service,localhost,127.0.0.1,host.docker.internal
     networks:
       - backend
     depends_on:
