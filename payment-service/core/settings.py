@@ -14,6 +14,7 @@ from pathlib import Path
 
 from api.common.env.database import db_config
 from api.common.env.application import app_config
+from core.allowed_hosts_config import get_allowed_hosts
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -29,7 +30,7 @@ JWT_SECRET = app_config.jwt_secret
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = get_allowed_hosts()
 
 
 # Application definition
