@@ -1,14 +1,22 @@
-from rest_framework import status
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from drf_spectacular.utils import extend_schema, OpenApiParameter
+import hashlib
+import hmac
+import logging
+
+from django.conf import settings
+from django.views.decorators.csrf import csrf_exempt
 from drf_spectacular.types import OpenApiTypes
-from rest_framework import serializers
+from drf_spectacular.utils import OpenApiParameter, extend_schema
+from rest_framework import serializers, status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from api.models.application import Application
+from api.repositories.application import ApplicationRepository
 from api.services.application_service import ApplicationService
 from api.services.application_sleep_service import ApplicationSleepService
 from api.services.deployment_queue import DeploymentQueue
-from api.repositories.application import ApplicationRepository
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -376,3 +384,104 @@ class ApplicationWakeView(APIView):
         except Exception as e:
             logger.exception("Failed to wake application")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ── GitHub webhook (unauthenticated; HMAC-verified) ──────────────────────────
+
+class WebhookSecretResponseSerializer(serializers.Serializer):
+    webhook_url = serializers.CharField()
+    secret = serializers.CharField(help_text="Shown only at issue/rotate time; not retrievable later")
+    instructions = serializers.CharField()
+
+
+@csrf_exempt
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def application_github_webhook(request, app_id: str):
+    # GitHub sends X-GitHub-Event and X-Hub-Signature-256: sha256=<hexdigest>.
+    # We verify the per-app HMAC before doing anything else — never trust the payload first.
+    event_type = request.headers.get('X-GitHub-Event', '')
+    signature_header = request.headers.get('X-Hub-Signature-256', '')
+
+    if not signature_header.startswith('sha256='):
+        return Response({"error": "Missing or malformed X-Hub-Signature-256"},
+                        status=status.HTTP_401_UNAUTHORIZED)
+
+    try:
+        app = Application.objects.get(id=app_id)
+    except Application.DoesNotExist:
+        return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if not app.github_webhook_secret:
+        return Response({"error": "Webhook not configured for this application"},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    expected_signature = 'sha256=' + hmac.new(
+        app.github_webhook_secret.encode('utf-8'),
+        request.body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    # Constant-time compare avoids leaking the secret via timing side channels.
+    if not hmac.compare_digest(signature_header, expected_signature):
+        return Response({"error": "Invalid signature"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # GitHub sends a "ping" when the webhook is first configured; ack it without enqueuing.
+    if event_type == 'ping':
+        return Response({"status": "pong"}, status=status.HTTP_200_OK)
+    if event_type != 'push':
+        return Response({"status": "ignored", "event": event_type}, status=status.HTTP_200_OK)
+
+    # Only redeploy when the push targets the branch this app actually tracks.
+    payload = request.data if isinstance(request.data, dict) else {}
+    pushed_ref = payload.get('ref', '')
+    expected_ref = f"refs/heads/{app.project_branch}" if app.project_branch else None
+    if expected_ref and pushed_ref != expected_ref:
+        return Response(
+            {"status": "ignored", "reason": f"pushed ref {pushed_ref} != tracked {expected_ref}"},
+            status=status.HTTP_200_OK,
+        )
+
+    try:
+        DeploymentQueue.enqueue_deployment(str(app_id), str(app.infrastructure_id))
+    except Exception:
+        logger.exception(f"GitHub webhook failed to enqueue deployment for app {app_id}")
+        return Response({"error": "Failed to enqueue deployment"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({"status": "accepted", "application_id": str(app_id)},
+                    status=status.HTTP_202_ACCEPTED)
+
+
+@extend_schema(
+    summary="Issue or rotate GitHub webhook secret",
+    description=(
+        "Generates a fresh per-app HMAC secret for verifying GitHub push webhooks. "
+        "The secret is returned ONCE and is not retrievable afterwards — paste it into "
+        "GitHub's webhook UI immediately. Calling this again rotates the secret."
+    ),
+    parameters=[OpenApiParameter("app_id", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+    request=None,
+    responses={200: WebhookSecretResponseSerializer, 403: ErrorSerializer, 404: ErrorSerializer},
+)
+@api_view(['POST'])
+def application_rotate_webhook_secret(request, app_id: str):
+    app = ApplicationRepository().get_by_id(app_id)
+    if not app:
+        return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+    if str(app.user_id) != str(request.user.id):
+        return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+    secret = app.issue_webhook_secret()
+    # Gateway is mounted at /api (see gateway-service/main.py), so the public URL we hand
+    # to GitHub uses /api/webhooks/... — NOT /api/v1/, which is the internal upstream path.
+    public_base = getattr(settings, 'PUBLIC_GATEWAY_URL', '').rstrip('/')
+    webhook_url = f"{public_base}/api/webhooks/github/{app_id}"
+    return Response({
+        "webhook_url": webhook_url,
+        "secret": secret,
+        "instructions": (
+            "In GitHub: Settings > Webhooks > Add webhook. Paste the URL and secret, "
+            "set Content type to application/json, and select the 'Just the push event' trigger."
+        ),
+    }, status=status.HTTP_200_OK)

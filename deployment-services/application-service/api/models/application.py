@@ -1,3 +1,4 @@
+import secrets
 from shared.utils.uuid import uuid7_pk
 from django.db import models
 from django.conf import settings
@@ -18,7 +19,10 @@ class Application(models.Model):
     project_remote_url = models.CharField(max_length=255)
     project_branch = models.CharField(max_length=255)
     project_commit_hash = models.CharField(max_length=255)
-    
+
+    # Per-app HMAC secret for verifying GitHub push webhooks; null until owner generates one.
+    github_webhook_secret = models.CharField(max_length=64, null=True, blank=True)
+
     class Meta:
         unique_together = [('user', 'infrastructure', 'name')]  # App name unique per infra
         indexes = [
@@ -69,3 +73,10 @@ class Application(models.Model):
 
     def __str__(self):
         return self.name
+
+    def issue_webhook_secret(self) -> str:
+        # 32 bytes of url-safe entropy keeps the secret short enough to paste into GitHub
+        # while staying well above the 256-bit threshold for HMAC-SHA256 brute force.
+        self.github_webhook_secret = secrets.token_urlsafe(32)
+        self.save(update_fields=["github_webhook_secret"])
+        return self.github_webhook_secret

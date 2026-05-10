@@ -108,8 +108,16 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
     "/api/v1/docs/",
     "/api/v1/schema/",
 ]
+# GitHub posts directly to the gateway from outside our network and won't carry the
+# internal token; the per-app HMAC in the view is the trust boundary instead.
+INTERNAL_AUTH_EXEMPT_PREFIXES = [
+    "/api/v1/webhooks/",
+]
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
+
+# Public-facing gateway URL used when generating webhook URLs to hand to GitHub.
+PUBLIC_GATEWAY_URL = os.environ.get("PUBLIC_GATEWAY_URL", "http://localhost:8000")
 
 DJANGO_PORT = app_config.django_port
 

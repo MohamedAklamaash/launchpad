@@ -1,12 +1,14 @@
 from django.urls import path
 from api.views.application import (
-    ApplicationListCreateView, 
+    ApplicationListCreateView,
     ApplicationDetailDeleteView,
     ApplicationUpdateView,
     ApplicationDeployView,
     ApplicationRetryDeployView,
     ApplicationSleepView,
-    ApplicationWakeView
+    ApplicationWakeView,
+    application_github_webhook,
+    application_rotate_webhook_secret,
 )
 from api.views.infrastructure_validation import infrastructure_validation
 from api.views.health import health_check, liveness_check, readiness_check
@@ -20,6 +22,8 @@ urlpatterns = [
     path('applications/<uuid:pk>/retry/', ApplicationRetryDeployView.as_view(), name='application-retry-deploy'),
     path('applications/<uuid:pk>/sleep/', ApplicationSleepView.as_view(), name='application-sleep'),
     path('applications/<uuid:pk>/wake/', ApplicationWakeView.as_view(), name='application-wake'),
+    path('applications/<uuid:app_id>/webhook-secret/', application_rotate_webhook_secret, name='application-webhook-secret'),
+    path('webhooks/github/<uuid:app_id>/', application_github_webhook, name='application-github-webhook'),
     path('infrastructures/<uuid:infra_id>/validation/', infrastructure_validation, name='infrastructure-validation'),
     path('healthz/', health_check, name='health'),
     path('liveness/', liveness_check, name='liveness'),

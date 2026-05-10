@@ -37,4 +37,9 @@ export const applicationApi = {
   wake: async (id: string): Promise<void> => {
     await apiClient.post(`/api/applications/${id}/wake/`);
   },
+
+  rotateWebhookSecret: async (id: string): Promise<{ webhook_url: string; secret: string; instructions: string }> => {
+    const { data } = await apiClient.post(`/api/applications/${id}/webhook-secret`);
+    return data;
+  },
 };
