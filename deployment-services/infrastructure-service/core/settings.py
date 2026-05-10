@@ -129,6 +129,7 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
     "/api/v1/readiness",
     "/api/v1/docs/",
     "/api/v1/schema/",
+    "/api/v1/infrastructures/onboarding/callback/",
 ]
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token

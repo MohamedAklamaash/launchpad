@@ -4,12 +4,13 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert } from 'lucide-react';
 import { infrastructureApi, AwsRegion } from '@/lib/api/infrastructures';
+import { InfrastructureCreateResponse } from '@/types/infrastructure';
 import { toast } from 'sonner';
 
 const SCRIPT_URL = 'https://raw.githubusercontent.com/MohamedAklamaash/launchpad/main/app_scripts/create_aws_role.sh';
-const SCRIPT_CMD = `curl -sSL ${SCRIPT_URL} | bash`;
+const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
 
 export default function NewInfrastructurePage() {
   const router = useRouter();
@@ -19,6 +20,8 @@ export default function NewInfrastructurePage() {
   const [regionSearch, setRegionSearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  // Holds the create response — including the single-use onboarding token — once the form succeeds.
+  const [createdInfra, setCreatedInfra] = useState<InfrastructureCreateResponse | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -59,8 +62,8 @@ export default function NewInfrastructurePage() {
     try {
       const { aws_region, ...rest } = formData;
       const infra = await infrastructureApi.create({ ...rest, metadata: { aws_region } });
-      toast.success('Infrastructure created — provisioning started');
-      router.push(`/dashboard/infrastructures/${infra.id}`);
+      setCreatedInfra(infra);
+      toast.success('Infrastructure created — run the bootstrap script to finish onboarding');
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } };
       toast.error(error.response?.data?.error || 'Failed to create infrastructure');
@@ -69,11 +72,81 @@ export default function NewInfrastructurePage() {
     }
   };
 
-  const copyScript = () => {
-    navigator.clipboard.writeText(SCRIPT_CMD);
+  const boundSnippet = createdInfra
+    ? [
+      `export LAUNCHPAD_INFRA_ID=${createdInfra.id}`,
+      `export LAUNCHPAD_CALLBACK_URL=${API_GATEWAY_URL}/api/infrastructures/onboarding/callback`,
+      `export LAUNCHPAD_ONBOARDING_TOKEN=${createdInfra.onboarding_token}`,
+      `export LAUNCHPAD_EXTERNAL_ID=${createdInfra.id}`,
+      `curl -sSL ${SCRIPT_URL} | bash`,
+    ].join('\n')
+    : '';
+
+  const copySnippet = () => {
+    if (!boundSnippet) return;
+    navigator.clipboard.writeText(boundSnippet);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  if (createdInfra) {
+    return (
+      <div className="flex justify-center">
+        <div className="w-full max-w-2xl space-y-6">
+          <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-[#555] hover:text-[#aaa] transition-colors">
+            <ArrowLeft className="w-3.5 h-3.5" /> Back
+          </button>
+
+          <div>
+            <h1 className="text-xl font-semibold text-white tracking-tight">Bootstrap your AWS account</h1>
+            <p className="text-xs text-[#555] mt-1">
+              Run this command in a shell with AWS credentials for account <span className="font-mono text-[#aaa]">{createdInfra.code}</span>.
+              Provisioning starts automatically once the script finishes.
+            </p>
+          </div>
+
+          <div className="bg-amber-950/30 border border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
+            <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="text-xs font-medium text-amber-200">This token is shown only once</p>
+              <p className="text-[11px] text-amber-200/70">
+                Copy the snippet now. If you navigate away you will need to delete and recreate this infrastructure to get a new token.
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <Terminal className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+              <div className="space-y-0.5 flex-1">
+                <p className="text-xs font-medium text-white">Bootstrap script</p>
+                <p className="text-[11px] text-[#555]">Creates LaunchpadDeploymentRole in your AWS account and notifies Launchpad when ready.</p>
+              </div>
+              <button onClick={copySnippet} className="shrink-0 text-[#444] hover:text-white transition-colors">
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <pre className="bg-[#060606] border border-[#1e1e1e] rounded-lg px-3 py-2 text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre">{boundSnippet}</pre>
+            <a href="https://github.com/MohamedAklamaash/launchpad/blob/main/app_scripts/create_aws_role.sh"
+              target="_blank" rel="noopener noreferrer"
+              className="text-[10px] text-[#444] hover:text-violet-400 transition-colors font-mono">
+              View script on GitHub →
+            </a>
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              onClick={() => router.push(`/dashboard/infrastructures/${createdInfra.id}`)}
+              className="bg-violet-600 hover:bg-violet-700 h-9 text-sm font-medium px-5"
+            >
+              Done — go to dashboard
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex justify-center">
@@ -85,31 +158,6 @@ export default function NewInfrastructurePage() {
         <div>
           <h1 className="text-xl font-semibold text-white tracking-tight">New Infrastructure</h1>
           <p className="text-xs text-[#555] mt-1">Provision an AWS environment for your applications</p>
-        </div>
-
-        {/* AWS Role Script Banner */}
-        <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 space-y-3">
-          <div className="flex items-start gap-3">
-            <Terminal className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-            <div className="space-y-0.5">
-              <p className="text-xs font-medium text-white">AWS IAM Role Setup</p>
-              <p className="text-[11px] text-[#555]">
-                Run this script to create the required IAM role for Launchpad deployments.{' '}
-                <span className="text-[#444]">Do this once when new to the app — skip if already done.</span>
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 bg-[#060606] border border-[#1e1e1e] rounded-lg px-3 py-2">
-            <code className="flex-1 text-[11px] font-mono text-emerald-400 truncate">{SCRIPT_CMD}</code>
-            <button onClick={copyScript} className="shrink-0 text-[#444] hover:text-white transition-colors ml-1">
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
-          </div>
-          <a href="https://github.com/MohamedAklamaash/launchpad/blob/main/app_scripts/create_aws_role.sh"
-            target="_blank" rel="noopener noreferrer"
-            className="text-[10px] text-[#444] hover:text-violet-400 transition-colors font-mono">
-            View script on GitHub →
-          </a>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-1">

@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { Infrastructure, InfrastructureCreate } from '@/types/infrastructure';
+import { Infrastructure, InfrastructureCreate, InfrastructureCreateResponse } from '@/types/infrastructure';
 
 export interface AwsRegion {
   value: string;
@@ -17,7 +17,7 @@ export const infrastructureApi = {
     return data;
   },
 
-  create: async (payload: InfrastructureCreate): Promise<Infrastructure> => {
+  create: async (payload: InfrastructureCreate): Promise<InfrastructureCreateResponse> => {
     const { data } = await apiClient.post('/api/infrastructures/', payload);
     return data;
   },
