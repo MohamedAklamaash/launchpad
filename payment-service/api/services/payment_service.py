@@ -46,8 +46,8 @@ class PaymentService:
                     'quantity': 1,
                 }],
                 mode='payment',
-                success_url=f'{app_config.backend_url}/api/v1/success?session_id={{CHECKOUT_SESSION_ID}}',
-                cancel_url=f'{app_config.backend_url}/api/v1/cancel',
+                success_url=f'{app_config.public_backend_url}/api/v1/payments/success?session_id={{CHECKOUT_SESSION_ID}}',
+                cancel_url=f'{app_config.public_backend_url}/api/v1/payments/cancel',
                 client_reference_id=str(billing.id),
                 customer_email=user.email,
             )
@@ -79,7 +79,7 @@ class PaymentService:
                 off_session=True, # Allow processing without user being on-session
                 description=f'Direct Payment for Infrastructure Usage - {timezone.now().strftime("%B %Y")}',
                 metadata={"billing_id": str(billing.id)},
-                return_url=f'{app_config.backend_url}/api/v1/success' # Redirect back to backend first
+                return_url=f'{app_config.public_backend_url}/api/v1/payments/success' # Redirect back to backend first
             )
 
             if intent.status == 'succeeded':

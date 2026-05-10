@@ -150,6 +150,9 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
     "/api/v1/readiness",
     "/api/v1/docs/",
     "/api/v1/schema/",
+    "/api/v1/payments/webhook/",
+    "/api/v1/payments/success/",
+    "/api/v1/payments/cancel/",
 ]
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
