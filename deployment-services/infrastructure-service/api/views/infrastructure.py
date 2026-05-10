@@ -286,6 +286,26 @@ def infrastructure_onboarding_callback(request: HttpRequest):
     infra.onboarding_token_used_at = timezone.now()
     infra.save(update_fields=['onboarding_token_used_at'])
 
+    # Publish infrastructure.created so application-service / other consumers materialize their
+    # local read-models. Deferred from create_infrastructure to here because pre-authenticated
+    # infras shouldn't be deployable downstream.
+    try:
+        from api.messaging.producer.producer import infra_producer
+        infra_producer.publish_infra_created(
+            user_id=infra.user_id,
+            infra_id=infra.id,
+            name=infra.name,
+            cloud_provider=infra.cloud_provider,
+            max_cpu=infra.max_cpu,
+            max_memory=infra.max_memory,
+            code=infra.code,
+            is_cloud_authenticated=True,
+            metadata=infra.metadata or {},
+        )
+    except Exception:
+        logger.error(f"Onboarding callback failed to publish infra.created for {infra_id}", exc_info=True)
+        # Don't fail the callback — provisioning can still proceed; ops will need to backfill the read-model.
+
     try:
         logger.info(f"onboarding callback succeeded for infra {infra_id}")
         was_enqueued = InfraQueue.enqueue_provision(str(infra_id))

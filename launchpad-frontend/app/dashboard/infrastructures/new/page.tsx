@@ -4,18 +4,21 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert } from 'lucide-react';
+import { ArrowLeft, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert, RefreshCw } from 'lucide-react';
 import { infrastructureApi, AwsRegion } from '@/lib/api/infrastructures';
 import { InfrastructureCreateResponse } from '@/types/infrastructure';
+import { resolveOnboardingScript, getOnboardingMisconfiguration } from '@/lib/onboarding-scripts';
 import { toast } from 'sonner';
 
-const SCRIPT_URL = 'https://raw.githubusercontent.com/MohamedAklamaash/launchpad/main/app_scripts/create_aws_role.sh';
 const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
 
 export default function NewInfrastructurePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // Track which snippet was last copied so the bootstrap and refresh "Copy"
+  // buttons don't share state — clicking one was previously flipping the
+  // other's icon to <Check/>.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [regions, setRegions] = useState<AwsRegion[]>([]);
   const [regionSearch, setRegionSearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -72,21 +75,50 @@ export default function NewInfrastructurePage() {
     }
   };
 
-  const boundSnippet = createdInfra
+  // Env vars the bootstrap script needs to bind the IAM role to this infra and
+  // call the onboarding callback. update_aws_role.sh doesn't need the
+  // onboarding token (no callback), only AWS credentials — so we render a
+  // shorter snippet for it below.
+  const bootstrapEnv = createdInfra
     ? [
       `export LAUNCHPAD_INFRA_ID=${createdInfra.id}`,
       `export LAUNCHPAD_CALLBACK_URL=${API_GATEWAY_URL}/api/infrastructures/onboarding/callback`,
       `export LAUNCHPAD_ONBOARDING_TOKEN=${createdInfra.onboarding_token}`,
       `export LAUNCHPAD_EXTERNAL_ID=${createdInfra.id}`,
-      `curl -sSL ${SCRIPT_URL} | bash`,
-    ].join('\n')
-    : '';
+    ]
+    : [];
 
-  const copySnippet = () => {
-    if (!boundSnippet) return;
-    navigator.clipboard.writeText(boundSnippet);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  // If onboarding env is missing (e.g. no pinned NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF
+  // in a prod build) we don't want to crash the whole page — the customer still
+  // needs to see their onboarding token + account ID. We render a misconfig
+  // banner above the script blocks and skip script resolution.
+  const onboardingMisconfig = createdInfra ? getOnboardingMisconfiguration() : null;
+  let bootstrapScript: ReturnType<typeof resolveOnboardingScript> | null = null;
+  let updateScript: ReturnType<typeof resolveOnboardingScript> | null = null;
+  if (createdInfra && !onboardingMisconfig) {
+    try {
+      bootstrapScript = resolveOnboardingScript('create_aws_role.sh', bootstrapEnv);
+      updateScript = resolveOnboardingScript('update_aws_role.sh', []);
+    } catch {
+      // getOnboardingMisconfiguration should have caught this, but defend
+      // against future drift: leave scripts as null; banner already shown.
+      bootstrapScript = null;
+      updateScript = null;
+    }
+  }
+
+  // Hold the timeout so a second copy click within 1.5s doesn't fire the
+  // first click's reset and prematurely flip the Check icon off.
+  const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copy = (text: string, key: string) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    if (copyResetRef.current) clearTimeout(copyResetRef.current);
+    setCopiedKey(key);
+    copyResetRef.current = setTimeout(() => {
+      setCopiedKey(null);
+      copyResetRef.current = null;
+    }, 1500);
   };
 
   if (createdInfra) {
@@ -115,24 +147,91 @@ export default function NewInfrastructurePage() {
             </div>
           </div>
 
-          <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 space-y-3">
-            <div className="flex items-start gap-3">
-              <Terminal className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-              <div className="space-y-0.5 flex-1">
-                <p className="text-xs font-medium text-white">Bootstrap script</p>
-                <p className="text-[11px] text-[#555]">Creates LaunchpadDeploymentRole in your AWS account and notifies Launchpad when ready.</p>
+          {onboardingMisconfig && (
+            <div className="bg-amber-950/30 border border-amber-900/40 rounded-xl p-4 flex items-start gap-3">
+              <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-1 flex-1">
+                <p className="text-xs font-medium text-amber-200">Onboarding is misconfigured</p>
+                <p className="text-[11px] text-amber-200/70">{onboardingMisconfig}</p>
+                <p className="text-[11px] text-amber-200/70">
+                  Your onboarding token and AWS account ID are still valid — use them with a manually-fetched copy of the bootstrap script.
+                </p>
+                <div className="mt-2 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] uppercase tracking-widest font-mono text-amber-200/60 w-28">Account ID</span>
+                    <code className="text-[11px] font-mono text-amber-100">{createdInfra.code}</code>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] uppercase tracking-widest font-mono text-amber-200/60 w-28">Infra ID</span>
+                    <code className="text-[11px] font-mono text-amber-100">{createdInfra.id}</code>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] uppercase tracking-widest font-mono text-amber-200/60 w-28">Onboarding token</span>
+                    <code className="text-[11px] font-mono text-amber-100 break-all">{createdInfra.onboarding_token}</code>
+                    <button
+                      onClick={() => copy(createdInfra.onboarding_token, 'token')}
+                      className="shrink-0 text-amber-300/60 hover:text-amber-200 transition-colors"
+                    >
+                      {copiedKey === 'token' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
               </div>
-              <button onClick={copySnippet} className="shrink-0 text-[#444] hover:text-white transition-colors">
-                {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-              </button>
             </div>
-            <pre className="bg-[#060606] border border-[#1e1e1e] rounded-lg px-3 py-2 text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre">{boundSnippet}</pre>
-            <a href="https://github.com/MohamedAklamaash/launchpad/blob/main/app_scripts/create_aws_role.sh"
-              target="_blank" rel="noopener noreferrer"
-              className="text-[10px] text-[#444] hover:text-violet-400 transition-colors font-mono">
-              View script on GitHub →
-            </a>
-          </div>
+          )}
+
+          {bootstrapScript && (
+            <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                <Terminal className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <div className="space-y-0.5 flex-1">
+                  <p className="text-xs font-medium text-white">{bootstrapScript.label}</p>
+                  <p className="text-[11px] text-[#555]">{bootstrapScript.description}</p>
+                </div>
+                <button onClick={() => copy(bootstrapScript.invocation, 'bootstrap')} className="shrink-0 text-[#444] hover:text-white transition-colors">
+                  {copiedKey === 'bootstrap' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <pre className="bg-[#060606] border border-[#1e1e1e] rounded-lg px-3 py-2 text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre">{bootstrapScript.invocation}</pre>
+              {bootstrapScript.locationIsUrl ? (
+                <a href={bootstrapScript.location} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-[#444] hover:text-violet-400 transition-colors font-mono">
+                  View script source →
+                </a>
+              ) : (
+                <p className="text-[10px] text-[#444] font-mono">Local path: {bootstrapScript.location}</p>
+              )}
+            </div>
+          )}
+
+          {/* Refresh-policy script. Shown alongside the bootstrap snippet so customers
+              can find it again later when deployments start failing with AccessDenied —
+              the canonical recovery path after the IAM policy widens (e.g. codebuild:*
+              regression). No onboarding token is needed here: this only re-applies the
+              policy in place against pre-existing AWS credentials. */}
+          {updateScript && (
+            <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                <RefreshCw className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div className="space-y-0.5 flex-1">
+                  <p className="text-xs font-medium text-white">{updateScript.label}</p>
+                  <p className="text-[11px] text-[#555]">{updateScript.description}</p>
+                </div>
+                <button onClick={() => copy(updateScript.invocation, 'update')} className="shrink-0 text-[#444] hover:text-white transition-colors">
+                  {copiedKey === 'update' ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+              <pre className="bg-[#060606] border border-[#1e1e1e] rounded-lg px-3 py-2 text-[11px] font-mono text-amber-300 overflow-x-auto whitespace-pre">{updateScript.invocation}</pre>
+              {updateScript.locationIsUrl ? (
+                <a href={updateScript.location} target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] text-[#444] hover:text-violet-400 transition-colors font-mono">
+                  View script source →
+                </a>
+              ) : (
+                <p className="text-[10px] text-[#444] font-mono">Local path: {updateScript.location}</p>
+              )}
+            </div>
+          )}
 
           <div className="flex gap-2">
             <Button

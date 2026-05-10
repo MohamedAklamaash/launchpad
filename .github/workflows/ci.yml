@@ -13,6 +13,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check-onboarding-scripts:
+    # Guards against IAM policy drift between create_aws_role.sh and
+    # update_aws_role.sh — a real bug last hit was codebuild:* being dropped
+    # from the update script, which broke deployments for any customer who ran
+    # the refresh. This is a stdlib-only check so it stays fast.
+    name: Onboarding script policy sync
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Verify LaunchpadDeploymentPolicy is in sync
+        run: python3 app_scripts/_check_policy_sync.py
+
+      - name: Run policy-sync guard tests
+        run: pytest app_scripts/test_check_policy_sync.py -v
+
   check-python:
     name: Lint & Syntax (python services)
     runs-on: ubuntu-latest

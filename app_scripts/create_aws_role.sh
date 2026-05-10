@@ -13,13 +13,16 @@ Creates the LaunchpadDeploymentRole in YOUR AWS account so the Launchpad
 platform can deploy infrastructure on your behalf via cross-account assume-role.
 
 Environment variables (all optional, sensible defaults applied):
-  LAUNCHPAD_PLATFORM_ACCOUNT_ID  Launchpad platform AWS account ID (default: 221082203366)
-  LAUNCHPAD_PLATFORM_USER        Launchpad platform IAM user (default: aklamaash-terraform)
-  LAUNCHPAD_EXTERNAL_ID          Per-customer ExternalId binding the trust policy (defaults to LAUNCHPAD_INFRA_ID)
-  LAUNCHPAD_REGION               AWS region for deployment (default: us-east-1)
-  LAUNCHPAD_INFRA_ID             Infra UUID; required for onboarding callback
-  LAUNCHPAD_CALLBACK_URL         Launchpad callback URL; required for onboarding callback
-  LAUNCHPAD_ONBOARDING_TOKEN     Single-use onboarding token; required for onboarding callback
+  LAUNCHPAD_PLATFORM_ACCOUNT_ID    Launchpad platform AWS account ID (default: 221082203366)
+  LAUNCHPAD_PLATFORM_USER          Launchpad platform IAM user (default: aklamaash-terraform)
+  LAUNCHPAD_EXTERNAL_ID            Per-customer ExternalId binding the trust policy (defaults to LAUNCHPAD_INFRA_ID)
+  LAUNCHPAD_REGION                 AWS region for deployment (default: us-east-1)
+  LAUNCHPAD_INFRA_ID               Infra UUID; required for onboarding callback
+  LAUNCHPAD_CALLBACK_URL           Launchpad callback URL; required for onboarding callback
+  LAUNCHPAD_ONBOARDING_TOKEN       Single-use onboarding token; required for onboarding callback
+  LAUNCHPAD_ALLOW_NO_EXTERNAL_ID   Escape hatch: set to literally "1" (NOT "true"/"yes") to skip
+                                   the ExternalId requirement. Advanced/manual setups only —
+                                   weakens cross-account assume-role protection. NOT RECOMMENDED.
 USAGE
   exit 0
 fi
@@ -50,20 +53,17 @@ echo "Platform account: ${TRUSTED_ACCOUNT_ID}"
 echo "Platform user:    ${PLATFORM_USER}"
 echo "=========================================="
 
-if [ -z "$ASSUME_EXTERNAL_ID" ]; then
-  echo "WARNING: Neither LAUNCHPAD_EXTERNAL_ID nor LAUNCHPAD_INFRA_ID is set."
-  echo "         Trust policy will not enforce ExternalId."
-  echo "         Set one of these env vars to bind the role to a specific Launchpad customer infrastructure."
-fi
-
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
 ########################################
 # TRUST POLICY
 ########################################
 
-# Two heredocs (with vs. without ExternalId condition) keeps it readable and avoids
-# a jq dependency. Empty ExternalId preserves prior behavior for backward compat.
+# ExternalId is mandatory by default — without it, anyone in the Launchpad
+# platform account who can call sts:AssumeRole could assume this role against
+# any customer who reused the same role name. The escape hatch
+# (LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1) exists only for advanced/manual setups
+# that wire their own ExternalId out-of-band.
 if [ -n "$ASSUME_EXTERNAL_ID" ]; then
   cat > "$WORK_DIR/trust-policy.json" <<EOF
 {
@@ -82,7 +82,14 @@ if [ -n "$ASSUME_EXTERNAL_ID" ]; then
   ]
 }
 EOF
-else
+elif [ "${LAUNCHPAD_ALLOW_NO_EXTERNAL_ID:-0}" = "1" ]; then
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo "!! WARNING: LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1 is set.            !!"
+  echo "!! Trust policy will NOT enforce sts:ExternalId.                !!"
+  echo "!! This weakens cross-account assume-role protection — do this  !!"
+  echo "!! ONLY for advanced/manual setups that bind ExternalId         !!"
+  echo "!! elsewhere. NOT RECOMMENDED for the standard onboarding flow. !!"
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   cat > "$WORK_DIR/trust-policy.json" <<EOF
 {
   "Version": "2012-10-17",
@@ -97,6 +104,13 @@ else
   ]
 }
 EOF
+else
+  echo "ERROR: ExternalId is required. Set LAUNCHPAD_INFRA_ID (preferred — the" >&2
+  echo "       dashboard injects it), or LAUNCHPAD_EXTERNAL_ID." >&2
+  echo "       For advanced / manual setup that wires ExternalId out-of-band," >&2
+  echo "       set LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1 (must be literally \"1\";" >&2
+  echo "       values like \"true\" / \"yes\" are NOT accepted; NOT RECOMMENDED)." >&2
+  exit 1
 fi
 
 ########################################
@@ -125,6 +139,8 @@ fi
 # - iam:*: create execution roles for ECS tasks (scoped to launchpad-* roles in code)
 # - kms:*: encrypt state bucket and secrets
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
+# NOTE: Action list must stay in sync with the other script (create_aws_role.sh / update_aws_role.sh).
+# LaunchpadDeploymentPolicy first statement. CI guard: app_scripts/_check_policy_sync.py
 cat > "$WORK_DIR/launchpad-policy.json" <<EOF
 {
   "Version": "2012-10-17",
