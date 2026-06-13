@@ -110,6 +110,39 @@ async def infrastructure_onboarding_callback(body: OnboardingCallbackBody, reque
     )
 
 
+class ScriptApiKeyResponse(BaseModel):
+    api_key: str = Field(description="Per-user script API key (prefix lp_); shown only once")
+
+
+@router.post("/script-api-key", summary="Issue (or rotate) the per-user script API key",
+             response_model=ScriptApiKeyResponse, status_code=201)
+async def script_api_key_issue(request: Request):
+    """Mints the key that authenticates customer-run scripts (update_aws_role.sh) back to
+    Launchpad. Plaintext returned once; issuing again revokes prior keys."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/script-api-key/", request
+    )
+
+
+class PolicyRefreshCallbackBody(BaseModel):
+    account_id: str = Field(description="AWS Account ID the script ran against")
+    infra_id: Optional[str] = Field(default=None, description="Optional infra UUID to link")
+    caller_arn: Optional[str] = Field(default=None, description="sts get-caller-identity ARN of whoever ran the script")
+    script: Optional[str] = Field(default=None, example="update_aws_role.sh")
+    role_name: Optional[str] = Field(default=None)
+    policy_arn: Optional[str] = Field(default=None)
+
+
+@router.post("/policy-refresh/callback", summary="Policy-refresh callback from customer's AWS account",
+             status_code=201)
+async def infrastructure_policy_refresh_callback(body: PolicyRefreshCallbackBody, request: Request):
+    """Called by app_scripts/update_aws_role.sh after an IAM refresh. Authenticated by the
+    per-user script API key (X-API-Key header), not a JWT — records who ran the refresh."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/policy-refresh/callback/", request
+    )
+
+
 aws_router = APIRouter(prefix="/aws", tags=["AWS"])
 
 
