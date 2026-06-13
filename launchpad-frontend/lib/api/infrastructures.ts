@@ -48,4 +48,10 @@ export const infrastructureApi = {
     const { data } = await apiClient.get('/api/aws/regions');
     return data;
   },
+
+  // Plaintext is returned exactly once; issuing again revokes prior keys.
+  issueScriptApiKey: async (): Promise<{ api_key: string }> => {
+    const { data } = await apiClient.post('/api/infrastructures/script-api-key');
+    return data;
+  },
 };

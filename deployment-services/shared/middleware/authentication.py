@@ -14,7 +14,7 @@ EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/health", "/api/v1/h
 
 # Exact-match exemptions for callback/webhook routes — startswith would over-exempt
 # anything sharing the prefix (e.g. /api/v1/payments/webhook/foo).
-EXEMPT_EXACT_PATHS = ["/api/v1/infrastructures/onboarding/callback/", "/api/v1/payments/webhook/", "/api/v1/payments/success/", "/api/v1/payments/cancel/"]
+EXEMPT_EXACT_PATHS = ["/api/v1/infrastructures/onboarding/callback/", "/api/v1/infrastructures/policy-refresh/callback/", "/api/v1/payments/webhook/", "/api/v1/payments/success/", "/api/v1/payments/cancel/"]
 
 class JWTAuthMiddleware:
     def __init__(self, get_response):

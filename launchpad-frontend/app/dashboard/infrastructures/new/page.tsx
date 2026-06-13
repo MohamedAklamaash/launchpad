@@ -25,6 +25,23 @@ export default function NewInfrastructurePage() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   // Holds the create response — including the single-use onboarding token — once the form succeeds.
   const [createdInfra, setCreatedInfra] = useState<InfrastructureCreateResponse | null>(null);
+  // Plaintext script API key, present only after the user clicks "Generate API key".
+  // Injected into the refresh-script snippet so update_aws_role.sh runs are attributed.
+  const [scriptApiKey, setScriptApiKey] = useState<string | null>(null);
+  const [apiKeyLoading, setApiKeyLoading] = useState(false);
+
+  const generateScriptApiKey = async () => {
+    setApiKeyLoading(true);
+    try {
+      const { api_key } = await infrastructureApi.issueScriptApiKey();
+      setScriptApiKey(api_key);
+      toast.success('API key generated — it is shown only once');
+    } catch {
+      toast.error('Failed to generate API key');
+    } finally {
+      setApiKeyLoading(false);
+    }
+  };
 
   const [formData, setFormData] = useState({
     name: '',
@@ -76,15 +93,26 @@ export default function NewInfrastructurePage() {
   };
 
   // Env vars the bootstrap script needs to bind the IAM role to this infra and
-  // call the onboarding callback. update_aws_role.sh doesn't need the
-  // onboarding token (no callback), only AWS credentials — so we render a
-  // shorter snippet for it below.
+  // call the onboarding callback. update_aws_role.sh uses a different set: no
+  // onboarding token, but a per-user API key + policy-refresh callback so the
+  // platform records who ran the refresh.
   const bootstrapEnv = createdInfra
     ? [
       `export LAUNCHPAD_INFRA_ID=${createdInfra.id}`,
       `export LAUNCHPAD_CALLBACK_URL=${API_GATEWAY_URL}/api/infrastructures/onboarding/callback`,
       `export LAUNCHPAD_ONBOARDING_TOKEN=${createdInfra.onboarding_token}`,
       `export LAUNCHPAD_EXTERNAL_ID=${createdInfra.id}`,
+    ]
+    : [];
+
+  const updateEnv = createdInfra
+    ? [
+      `export LAUNCHPAD_INFRA_ID=${createdInfra.id}`,
+      `export LAUNCHPAD_EXTERNAL_ID=${createdInfra.id}`,
+      `export LAUNCHPAD_CALLBACK_URL=${API_GATEWAY_URL}/api/infrastructures/policy-refresh/callback`,
+      scriptApiKey
+        ? `export LAUNCHPAD_API_KEY=${scriptApiKey}`
+        : `export LAUNCHPAD_API_KEY=<generate-an-api-key-below>`,
     ]
     : [];
 
@@ -98,7 +126,7 @@ export default function NewInfrastructurePage() {
   if (createdInfra && !onboardingMisconfig) {
     try {
       bootstrapScript = resolveOnboardingScript('create_aws_role.sh', bootstrapEnv);
-      updateScript = resolveOnboardingScript('update_aws_role.sh', []);
+      updateScript = resolveOnboardingScript('update_aws_role.sh', updateEnv);
     } catch {
       // getOnboardingMisconfiguration should have caught this, but defend
       // against future drift: leave scripts as null; banner already shown.
@@ -207,8 +235,8 @@ export default function NewInfrastructurePage() {
           {/* Refresh-policy script. Shown alongside the bootstrap snippet so customers
               can find it again later when deployments start failing with AccessDenied —
               the canonical recovery path after the IAM policy widens (e.g. codebuild:*
-              regression). No onboarding token is needed here: this only re-applies the
-              policy in place against pre-existing AWS credentials. */}
+              regression). No onboarding token is needed here, but the snippet carries the
+              per-user script API key so the platform records who ran the refresh. */}
           {updateScript && (
             <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 space-y-3">
               <div className="flex items-start gap-3">
@@ -222,6 +250,21 @@ export default function NewInfrastructurePage() {
                 </button>
               </div>
               <pre className="bg-[#060606] border border-[#1e1e1e] rounded-lg px-3 py-2 text-[11px] font-mono text-amber-300 overflow-x-auto whitespace-pre">{updateScript.invocation}</pre>
+              {!scriptApiKey && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    onClick={generateScriptApiKey}
+                    disabled={apiKeyLoading}
+                    className="bg-[#1a1a1a] hover:bg-[#262626] h-7 text-[11px] font-medium px-3"
+                  >
+                    {apiKeyLoading ? 'Generating…' : 'Generate API key'}
+                  </Button>
+                  <p className="text-[10px] text-[#555]">
+                    Fills LAUNCHPAD_API_KEY above so Launchpad records who ran the refresh. Shown only once; generating again revokes old keys.
+                  </p>
+                </div>
+              )}
               {updateScript.locationIsUrl ? (
                 <a href={updateScript.location} target="_blank" rel="noopener noreferrer"
                   className="text-[10px] text-[#444] hover:text-violet-400 transition-colors font-mono">
