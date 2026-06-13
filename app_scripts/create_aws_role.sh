@@ -120,7 +120,13 @@ fi
 echo "Checking if role exists..."
 
 if aws iam get-role --role-name ${ROLE_NAME} >/dev/null 2>&1; then
-  echo "Role already exists."
+  # Refresh the trust policy in place — a re-run with a new ExternalId (or a
+  # rotated platform principal) must land on the existing role, otherwise the
+  # backend's AssumeRole (which always sends ExternalId) fails with AccessDenied.
+  echo "Role already exists; refreshing trust policy..."
+  aws iam update-assume-role-policy \
+    --role-name ${ROLE_NAME} \
+    --policy-document file://"$WORK_DIR/trust-policy.json"
 else
   echo "Creating IAM role..."
   aws iam create-role \
@@ -237,6 +243,7 @@ echo "Notifying Launchpad at ${LAUNCHPAD_CALLBACK_URL}..."
 # status was being masked by the `|| echo "000"` fallback.
 RESP_FILE="$WORK_DIR/callback_resp"
 CALLBACK_HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w "%{http_code}" \
+  --connect-timeout 5 --max-time 30 \
   -X POST "${LAUNCHPAD_CALLBACK_URL}" \
   -H 'Content-Type: application/json' \
   -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"onboarding_token\":\"${LAUNCHPAD_ONBOARDING_TOKEN}\"}" \
@@ -249,7 +256,8 @@ if [ -f "$RESP_FILE" ]; then
   echo ""
 fi
 
-if [ "${CALLBACK_HTTP_CODE}" != "202" ]; then
+# 202 = provisioning enqueued, 200 = already queued (idempotent re-run) — both fine.
+if [ "${CALLBACK_HTTP_CODE}" != "202" ] && [ "${CALLBACK_HTTP_CODE}" != "200" ]; then
   echo "Callback failed; you may need to re-trigger onboarding from the dashboard."
 fi
 
