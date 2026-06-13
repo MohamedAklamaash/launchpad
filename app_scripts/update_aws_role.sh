@@ -17,6 +17,13 @@ PLATFORM_USER="${LAUNCHPAD_PLATFORM_USER:-aklamaash-terraform}"
 # Default ExternalId to the infra UUID — backend uses infra.id as ExternalId on AssumeRole.
 ASSUME_EXTERNAL_ID="${LAUNCHPAD_EXTERNAL_ID:-${LAUNCHPAD_INFRA_ID:-}}"
 
+# Attribution: lets the platform record WHO ran this refresh. The dashboard
+# injects these alongside the script; both are optional but recommended.
+#   LAUNCHPAD_API_KEY      — per-user API key issued by the dashboard
+#   LAUNCHPAD_CALLBACK_URL — platform endpoint for the policy-refresh callback
+LAUNCHPAD_API_KEY="${LAUNCHPAD_API_KEY:-}"
+LAUNCHPAD_CALLBACK_URL="${LAUNCHPAD_CALLBACK_URL:-}"
+
 echo "Updating LaunchpadDeploymentPolicy..."
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -71,6 +78,23 @@ fi
 
 # Get current default version
 DEFAULT_VERSION=$(aws iam get-policy --policy-arn ${POLICY_ARN} --query 'Policy.DefaultVersionId' --output text)
+
+# IAM allows at most 5 versions per managed policy. Re-running this script
+# against an account that already has 5 makes create-policy-version fail under
+# `set -e`. Prune the oldest non-default versions down to 4 before creating.
+VERSION_COUNT=$(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+  --query 'length(Versions)' --output text)
+if [ "${VERSION_COUNT}" -ge 5 ]; then
+  echo "Policy has ${VERSION_COUNT} versions (IAM max is 5); pruning oldest non-default..."
+  for OLD_VERSION in $(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+      --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text); do
+    VERSION_COUNT=$(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+      --query 'length(Versions)' --output text)
+    [ "${VERSION_COUNT}" -lt 5 ] && break
+    echo "Deleting policy version ${OLD_VERSION}..."
+    aws iam delete-policy-version --policy-arn "${POLICY_ARN}" --version-id "${OLD_VERSION}"
+  done
+fi
 
 # Create new version
 echo "Creating new policy version..."
@@ -161,6 +185,47 @@ if aws iam update-assume-role-policy \
 else
   echo "ERROR: Failed to refresh trust policy on ${ROLE_NAME}." >&2
   exit 1
+fi
+
+########################################
+# ATTRIBUTION CALLBACK (WHO RAN THIS)
+########################################
+
+# Report the refresh back to Launchpad so the platform records who ran it,
+# against which AWS account, and when. Authenticated with the per-user API
+# key from the dashboard (X-API-Key). Contract:
+#   POST ${LAUNCHPAD_CALLBACK_URL}
+#   Headers: X-API-Key: <LAUNCHPAD_API_KEY>, Content-Type: application/json
+#   Body: {infra_id, account_id, caller_arn, script, role_name, policy_arn}
+# Failure here is non-fatal: the IAM refresh above already succeeded, and a
+# customer's broken network path shouldn't make them re-run IAM mutations.
+if [ -n "$LAUNCHPAD_API_KEY" ] && [ -n "$LAUNCHPAD_CALLBACK_URL" ]; then
+  case "$LAUNCHPAD_CALLBACK_URL" in
+    https://*|http://localhost*|http://127.0.0.1*)
+      echo "Reporting policy refresh to Launchpad..."
+      CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+      if curl --fail --silent --show-error \
+           --connect-timeout 5 --max-time 15 \
+           -X POST "$LAUNCHPAD_CALLBACK_URL" \
+           -H "Content-Type: application/json" \
+           -H "X-API-Key: ${LAUNCHPAD_API_KEY}" \
+           -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID:-}\",\"account_id\":\"${ACCOUNT_ID}\",\"caller_arn\":\"${CALLER_ARN}\",\"script\":\"update_aws_role.sh\",\"role_name\":\"${ROLE_NAME}\",\"policy_arn\":\"${POLICY_ARN}\"}"; then
+        echo ""
+        echo "Refresh recorded with Launchpad."
+      else
+        echo "WARNING: could not report the refresh to Launchpad (network/auth)." >&2
+        echo "         The IAM update itself succeeded. Re-run later or check"   >&2
+        echo "         your LAUNCHPAD_API_KEY / LAUNCHPAD_CALLBACK_URL."          >&2
+      fi
+      ;;
+    *)
+      echo "WARNING: LAUNCHPAD_CALLBACK_URL must be https:// (or localhost);" >&2
+      echo "         skipping the attribution callback." >&2
+      ;;
+  esac
+else
+  echo "NOTE: set LAUNCHPAD_API_KEY and LAUNCHPAD_CALLBACK_URL (from the dashboard's"
+  echo "      'Refresh policy' snippet) so Launchpad can record who ran this refresh."
 fi
 
 echo ""
