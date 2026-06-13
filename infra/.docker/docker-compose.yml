@@ -147,7 +147,10 @@ services:
       APPLICATION_SERVICE_URL: http://application-service:8002
       INFRASTRUCTURE_SERVICE_URL: http://infrastructure-service:8003
       PAYMENT_SERVICE_URL: http://payment-service:8004
-      REDIS_URL: redis://aklamaash:${REDIS_PASSWORD}@redis:6379/2
+      # No username: redis-server is started with --requirepass only, which authenticates
+      # the `default` user. A named user here (e.g. the Postgres username) hits WRONGPASS
+      # because no such Redis ACL user exists.
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/2
     ports:
       - "8000:8000"
     networks:
