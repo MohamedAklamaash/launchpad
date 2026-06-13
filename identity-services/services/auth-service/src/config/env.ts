@@ -37,7 +37,10 @@ const envSchema = z.object({
                 return false;
             }
         },
-        { message: 'GATEWAY_URL must be scheme://host[:port] only (no path). Use just the origin.' },
+        {
+            message:
+                'GATEWAY_URL must be scheme://host[:port] only (no path). Use just the origin.',
+        },
     ),
 
     GITHUB_TOKEN: z.string(),
