@@ -259,8 +259,23 @@ def infrastructure_onboarding_callback(request: HttpRequest):
     if not secrets.compare_digest(expected_hash, infra.onboarding_token_hash):
         return Response({'error': 'Invalid onboarding token'}, status=status.HTTP_403_FORBIDDEN)
 
-    # Bounded retry around AssumeRole: IAM role/policy creation in the customer account is eventually
-    # consistent, so the first call can race the script's policy-attach step.
+    # Atomically claim the single-use token. The read-check-then-save it replaces let two
+    # concurrent callbacks both pass the used_at check and double-run AssumeRole/provisioning;
+    # the conditional UPDATE makes exactly one request win. Failure paths below release the
+    # claim so a transient AssumeRole/queue error doesn't permanently brick onboarding.
+    claimed = InfraModel.objects.filter(
+        id=infra.id, onboarding_token_used_at__isnull=True,
+    ).update(onboarding_token_used_at=timezone.now())
+    if claimed == 0:
+        return Response({'error': 'Onboarding token already used'}, status=status.HTTP_403_FORBIDDEN)
+
+    def release_token_claim():
+        InfraModel.objects.filter(id=infra.id).update(onboarding_token_used_at=None)
+
+    # Bounded retry around AssumeRole: IAM role/policy creation in the customer account is
+    # eventually consistent, so the first call can race the script's policy-attach step.
+    # Sleeps are short — this blocks a sync worker; persistent failures are pushed back to
+    # the caller via Retry-After instead of longer server-side waits.
     last_exc = None
     for attempt in range(3):
         try:
@@ -268,6 +283,7 @@ def infrastructure_onboarding_callback(request: HttpRequest):
             last_exc = None
             break
         except ValueError as e:
+            release_token_claim()
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             last_exc = e
@@ -275,16 +291,17 @@ def infrastructure_onboarding_callback(request: HttpRequest):
                 f"Onboarding callback AssumeRole attempt {attempt + 1}/3 failed for infra {infra_id}: {e}"
             )
             if attempt < 2:
-                time.sleep(5)
+                time.sleep(2)
 
     if last_exc is not None:
-        response = Response({'error': 'AssumeRole failed'}, status=status.HTTP_403_FORBIDDEN)
+        release_token_claim()
+        response = Response(
+            {'error': 'AssumeRole failed', 'details': type(last_exc).__name__,
+             'retry_after_seconds': 30},
+            status=status.HTTP_403_FORBIDDEN,
+        )
         response['Retry-After'] = '30'
         return response
-
-    # Burn the token only after AssumeRole succeeds — a failed attempt should be retryable.
-    infra.onboarding_token_used_at = timezone.now()
-    infra.save(update_fields=['onboarding_token_used_at'])
 
     # Publish infrastructure.created so application-service / other consumers materialize their
     # local read-models. Deferred from create_infrastructure to here because pre-authenticated
@@ -320,6 +337,10 @@ def infrastructure_onboarding_callback(request: HttpRequest):
         )
     except Exception:
         logger.error(f"Onboarding callback enqueue failed for infra {infra_id}", exc_info=True)
+        # Provisioning never got queued — release the claim so the customer can simply
+        # re-run the script. The infra.created event may be re-published on that retry;
+        # consumers are idempotent on infra_id.
+        release_token_claim()
         return Response({'error': 'Internal error'},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
