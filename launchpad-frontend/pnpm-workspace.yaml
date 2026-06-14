@@ -1,0 +1,7 @@
+# pnpm blocks dependency postinstall scripts by default. These packages need
+# their build scripts to function (sharp: native binaries, msw: service worker,
+# unrs-resolver: native resolver bindings).
+allowBuilds:
+  msw: true
+  sharp: true
+  unrs-resolver: true

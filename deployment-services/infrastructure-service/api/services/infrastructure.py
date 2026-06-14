@@ -6,7 +6,6 @@ from api.repositories.infrastructure import InfrastructureRepository
 from api.serializers.infrastructure import InfrastructureSerializer
 from api.services.infrastructure_permissions import InfrastructurePermissions
 from shared.resilience.circuit_breaker import CircuitBreaker
-from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from shared.enums.cloud_provider import CloudProvider
 from api.models.environment import Environment
 from api.services.infra_queue import InfraQueue
@@ -36,9 +35,14 @@ class InfrastructureService:
         return None
 
     def create_infrastructure(self, user_id, infra_data):
-        """Create infrastructure and enqueue provisioning job"""
+        """Create infrastructure row and mint a single-use onboarding token.
+
+        Authentication and provisioning are deferred to the onboarding callback because the customer
+        has not yet run the bootstrap script that creates LaunchpadDeploymentRole — calling
+        AssumeRole here would always fail.
+        """
         correlation_id = str(uuid.uuid4())
-        
+
         if isinstance(infra_data, dict):
             infra_data = dict(infra_data)
         else:
@@ -51,29 +55,24 @@ class InfrastructureService:
 
         with transaction.atomic():
             infra = self.repo.create(user_id, infra_data)
-            
-            if infra.cloud_provider == CloudProvider.AWS:
-                try:
-                    authenticate_infrastructure(infra)
-                except Exception as e:
-                    logger.error(f"Cloud authentication failed during creation: {e}")
-                    raise ValueError(f"Cloud authentication failed: {str(e)}")
-                infra.refresh_from_db()
 
             Environment.objects.create(
                 infrastructure=infra,
                 status='PENDING'
             )
 
+            # Plaintext is returned to the dashboard exactly once; only the hash is persisted.
+            onboarding_token = infra.issue_onboarding_token()
+
             serialized_infra = InfrastructureSerializer.serialize_instance(infra)
             infra_id = serialized_infra["id"]
 
-        transaction.on_commit(lambda: InfraQueue.enqueue_provision(infra_id))
-
         logger.info(
-            f"Infrastructure {infra_id} created, provisioning enqueued",
+            f"Infrastructure {infra_id} created; awaiting onboarding callback to provision",
             extra={"correlation_id": correlation_id, "infra_id": infra_id, "user_id": str(user_id)}
         )
+        # Transient response key — never persisted in plaintext, never re-served.
+        serialized_infra["onboarding_token"] = onboarding_token
         return serialized_infra
 
     def delete_infrastructure(self, user_id, infra_id):
@@ -94,7 +93,9 @@ class InfrastructureService:
             try:
                 env = Environment.objects.get(infrastructure_id=infra_id)
 
-                if env.status in ['PENDING', 'PROVISIONING']:
+                # PROVISIONING/DESTROYING have a Terraform run in flight — deleting now
+                # would orphan or race live AWS resources, so block.
+                if env.status == 'PROVISIONING':
                     raise ValueError(f"Cannot delete while status is {env.status}. Wait for provisioning to complete.")
 
                 if env.status == 'DESTROYING':
@@ -107,7 +108,10 @@ class InfrastructureService:
                     logger.info(f"Infrastructure {infra_id} destroy enqueued")
                     return True  # Don't delete DB records yet — worker handles that
 
-                # ERROR or DESTROYED — no live AWS resources, delete immediately
+                # PENDING (created, onboarding not finished — no AssumeRole, no Terraform),
+                # ERROR, or DESTROYED: no live AWS resources, delete immediately. Without
+                # this a customer who created an infra but never ran the bootstrap script
+                # would be stuck with an undeletable PENDING record.
                 logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records")
                 env.delete()
 

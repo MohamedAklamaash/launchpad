@@ -14,6 +14,7 @@ from pathlib import Path
 
 from api.common.env.database import db_config
 from api.common.env.application import app_config
+from core.allowed_hosts_config import get_allowed_hosts
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -29,7 +30,7 @@ JWT_SECRET = app_config.jwt_secret
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = get_allowed_hosts()
 
 
 # Application definition
@@ -149,6 +150,9 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
     "/api/v1/readiness",
     "/api/v1/docs/",
     "/api/v1/schema/",
+    "/api/v1/payments/webhook/",
+    "/api/v1/payments/success/",
+    "/api/v1/payments/cancel/",
 ]
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token

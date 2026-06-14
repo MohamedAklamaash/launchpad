@@ -2,6 +2,7 @@ import logging
 import boto3
 from api.repositories.infrastructure import InfrastructureRepository
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
+from shared.enums.cloud_provider import CloudProvider
 
 def enforce_rightsizing():
     logger = logging.getLogger(__name__)
@@ -12,13 +13,27 @@ def enforce_rightsizing():
     processed_count = 0
     
     for infra in infras:
-        if infra.cloud_provider != "AWS":
+        # cloud_provider is stored lowercase (CloudProvider.AWS == "aws"); comparing to
+        # the literal "AWS" skipped every infra, making this whole job a silent no-op.
+        if infra.cloud_provider != CloudProvider.AWS:
             continue
 
         try:
             authenticate_infrastructure(infra)
             metadata = infra.metadata or {}
-            
+
+            # Empty creds would silently fall back to the default boto3 chain
+            # (env vars / IMDS) and operate on the LAUNCHPAD platform account
+            # instead of the customer's. Skip rather than risk stop_instances
+            # against the wrong account.
+            if not metadata.get("aws_access_key_id") or not metadata.get("aws_secret_access_key"):
+                logger.warning(
+                    "Skipping rightsizing for infra %s: missing AWS credentials in metadata. "
+                    "Empty creds would silently fall back to platform credentials and operate on the wrong account.",
+                    infra.id,
+                )
+                continue
+
             compute_optimizer = boto3.client(
                 "compute-optimizer",
                 region_name=metadata.get("aws_region", "us-west-2"),

@@ -141,7 +141,16 @@ services:
     restart: unless-stopped
     env_file: ../../gateway-service/.env
     environment:
-      REDIS_HOST: redis
+      AUTH_SERVICE_URL: http://auth-service:5001
+      USER_SERVICE_URL: http://user-service:5002
+      NOTIFICATION_SERVICE_URL: http://notification-service:5003
+      APPLICATION_SERVICE_URL: http://application-service:8002
+      INFRASTRUCTURE_SERVICE_URL: http://infrastructure-service:8003
+      PAYMENT_SERVICE_URL: http://payment-service:8004
+      # No username: redis-server is started with --requirepass only, which authenticates
+      # the `default` user. A named user here (e.g. the Postgres username) hits WRONGPASS
+      # because no such Redis ACL user exists.
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/2
     ports:
       - "8000:8000"
     networks:
@@ -232,6 +241,7 @@ services:
       DATABASE_HOST: postgres
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      ALLOWED_HOSTS: payment-service,localhost,127.0.0.1,host.docker.internal
     ports:
       - "8004:8004"
     networks:
@@ -256,6 +266,7 @@ services:
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
+      ALLOWED_HOSTS: application-service,localhost,127.0.0.1,host.docker.internal
     ports:
       - "8002:8002"
     networks:
@@ -286,6 +297,7 @@ services:
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
+      ALLOWED_HOSTS: application-service,localhost,127.0.0.1,host.docker.internal
     networks:
       - backend
     depends_on:
@@ -306,6 +318,7 @@ services:
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
+      ALLOWED_HOSTS: infrastructure-service,localhost,127.0.0.1,host.docker.internal
     ports:
       - "8003:8003"
     networks:
@@ -336,6 +349,7 @@ services:
       DATABASE_PORT: "5432"
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       REDIS_HOST: redis
+      ALLOWED_HOSTS: infrastructure-service,localhost,127.0.0.1,host.docker.internal
     networks:
       - backend
     depends_on:

@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff, Github, Copy } from 'lucide-react';
 import { Application } from '@/types/application';
 import { applicationApi } from '@/lib/api/applications';
 import { useAuthStore } from '@/lib/store/auth';
@@ -24,6 +24,8 @@ export default function ApplicationDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [revealedEnvs, setRevealedEnvs] = useState<Set<string>>(new Set());
+  const [webhookCreds, setWebhookCreds] = useState<{ webhook_url: string; secret: string; instructions: string } | null>(null);
+  const [webhookLoading, setWebhookLoading] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const user = useAuthStore((s) => s.user);
   const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
@@ -54,6 +56,27 @@ export default function ApplicationDetailPage() {
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [app, app?.status, app?.is_sleeping, loadApp]);
+
+  const generateWebhook = async () => {
+    setWebhookLoading(true);
+    try {
+      const creds = await applicationApi.rotateWebhookSecret(id);
+      setWebhookCreds(creds);
+      toast.success('Webhook secret generated. Save it now — it will not be shown again.');
+    } catch (e: unknown) {
+      const error = e as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Failed to generate webhook secret');
+    } finally {
+      setWebhookLoading(false);
+    }
+  };
+
+  const copyToClipboard = (value: string, label: string) => {
+    navigator.clipboard.writeText(value).then(
+      () => toast.success(`${label} copied`),
+      () => toast.error(`Failed to copy ${label}`),
+    );
+  };
 
   const action = async (fn: () => Promise<void>, successMsg: string) => {
     setActionLoading(true);
@@ -225,6 +248,72 @@ export default function ApplicationDetailPage() {
           </div>
         </div>
       )}
+
+      <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Github className="w-3.5 h-3.5 text-[#888]" />
+            <p className="text-[10px] uppercase tracking-widest text-[#666] font-mono">Auto-deploy on push</p>
+          </div>
+          {canEdit && (
+            <Button
+              onClick={generateWebhook}
+              disabled={webhookLoading}
+              variant="outline"
+              className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-[#aaa] hover:text-white h-7 text-[11px] gap-1.5 cursor-pointer"
+            >
+              <RefreshCw className="w-3 h-3" />
+              {webhookCreds ? 'Rotate secret' : 'Generate webhook secret'}
+            </Button>
+          )}
+        </div>
+        {!webhookCreds && (
+          <p className="text-xs text-[#888]">
+            Generate a secret, then add a webhook in your GitHub repo to redeploy automatically on every push to{' '}
+            <span className="font-mono text-[#ccc]">{app.branch}</span>.
+          </p>
+        )}
+        {webhookCreds && (
+          <div className="space-y-3">
+            <div className="bg-amber-500/5 border border-amber-500/20 rounded-md px-3 py-2">
+              <p className="text-[11px] text-amber-400">This secret is shown only once. Copy it now and store it safely.</p>
+            </div>
+            <div className="space-y-2">
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-[#666] font-mono mb-1">Webhook URL</p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-xs text-[#ccc] bg-[#070707] border border-[#1a1a1a] rounded-md px-2.5 py-1.5 break-all font-mono">
+                    {webhookCreds.webhook_url}
+                  </code>
+                  <button
+                    onClick={() => copyToClipboard(webhookCreds.webhook_url, 'URL')}
+                    className="text-[#666] hover:text-white transition-colors p-1.5 cursor-pointer"
+                    title="Copy URL"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-[#666] font-mono mb-1">Secret</p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-xs text-[#ccc] bg-[#070707] border border-[#1a1a1a] rounded-md px-2.5 py-1.5 break-all font-mono">
+                    {webhookCreds.secret}
+                  </code>
+                  <button
+                    onClick={() => copyToClipboard(webhookCreds.secret, 'Secret')}
+                    className="text-[#666] hover:text-white transition-colors p-1.5 cursor-pointer"
+                    title="Copy secret"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-[#888] leading-relaxed">{webhookCreds.instructions}</p>
+            </div>
+          </div>
+        )}
+      </div>
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent className="bg-[#090909] border-[#1a1a1a] shadow-2xl shadow-black/60">

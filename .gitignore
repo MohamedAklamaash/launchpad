@@ -18,3 +18,4 @@ volumes/
 *.log*
 logs/
 .ruff_cache/
+.claude/

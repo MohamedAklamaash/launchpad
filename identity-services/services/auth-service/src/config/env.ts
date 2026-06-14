@@ -28,10 +28,32 @@ const envSchema = z.object({
     JWT_EXPIRES_IN: z.string(),
     JWT_REFRESH_EXPIRES_IN: z.string(),
 
+    GATEWAY_URL: z.url().refine(
+        (u) => {
+            try {
+                const url = new URL(u);
+                // Origin only: reject any path, query, or fragment. GITHUB_REDIRECT_URI is
+                // derived from this, and a stray ?x= or #y would corrupt the OAuth callback.
+                return (
+                    (url.pathname === '/' || url.pathname === '') &&
+                    url.search === '' &&
+                    url.hash === ''
+                );
+            } catch {
+                return false;
+            }
+        },
+        {
+            message:
+                'GATEWAY_URL must be scheme://host[:port] only (no path, query, or fragment). Use just the origin.',
+        },
+    ),
+
     GITHUB_TOKEN: z.string(),
     GITHUB_CLIENT_ID: z.string(),
     GITHUB_CLIENT_SECRET: z.string(),
-    GITHUB_REDIRECT_URI: z.string(),
+    // Optional: when unset, derived from GATEWAY_URL below. Override only for non-standard local setups.
+    GITHUB_REDIRECT_URI: z.string().optional(),
 
     REDIS_HOST: z.string(),
     REDIS_PORT: z.coerce.number().default(6379),
@@ -51,9 +73,18 @@ const envSchema = z.object({
     AMQP_PREFETCH_COUNT: z.coerce.number().default(10),
 });
 
-export const env = createEnv(envSchema, {
+const parsedEnv = createEnv(envSchema, {
     serviceName: 'auth-service',
     source: process.env,
 });
+
+// GitHub re-validates redirect_uri at token exchange; it must match the public-facing gateway URL the
+// browser actually hits (not the in-container hostname), so we derive it from GATEWAY_URL by default.
+const gatewayUrl = parsedEnv.GATEWAY_URL.replace(/\/+$/, '');
+
+export const env = {
+    ...parsedEnv,
+    GITHUB_REDIRECT_URI: parsedEnv.GITHUB_REDIRECT_URI ?? `${gatewayUrl}/api/user/callback`,
+} as const;
 
 export type Env = typeof env;

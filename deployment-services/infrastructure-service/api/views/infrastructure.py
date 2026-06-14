@@ -1,11 +1,20 @@
+import logging
+import secrets
+import time
+import uuid
+
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
 from rest_framework import status, serializers
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 from api.services.infrastructure import InfrastructureService
 from django.http import HttpRequest
+
+logger = logging.getLogger(__name__)
 
 infrastructure_service = InfrastructureService()
 
@@ -23,6 +32,12 @@ class InfraResponseSerializer(serializers.Serializer):
     metadata = serializers.DictField(child=serializers.CharField(), help_text='e.g. {"aws_region":"us-east-1"}')
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
+
+
+class InfraCreateResponseSerializer(InfraResponseSerializer):
+    # Plaintext single-use nonce, returned only on the create response. The dashboard injects this
+    # into the bootstrap script so the onboarding callback can authenticate without a JWT.
+    onboarding_token = serializers.CharField(help_text="Single-use onboarding token; shown only once")
 
 class InfraCreateSerializer(serializers.Serializer):
     name = serializers.CharField(help_text="Human-readable name, e.g. prod-infra")
@@ -54,9 +69,12 @@ class ErrorSerializer(serializers.Serializer):
 )
 @extend_schema(
     summary="Create a new infrastructure",
-    description="Provisions a new record and triggers Terraform to create VPC, ECS cluster, and ALB in the given AWS account.",
+    description=(
+        "Creates the infra row and mints a single-use onboarding token. The customer must run the "
+        "AWS bootstrap script (with the token injected) before provisioning will start."
+    ),
     request=InfraCreateSerializer,
-    responses={201: InfraResponseSerializer, 400: ErrorSerializer},
+    responses={201: InfraCreateResponseSerializer, 400: ErrorSerializer},
     methods=["POST"],
 )
 @csrf_exempt
@@ -68,9 +86,14 @@ def infrastructure_list_create(request: HttpRequest):
         infra = infrastructure_service.create_infrastructure(user_id=request.user.id, infra_data=request.data)
         return Response(infra, status=status.HTTP_201_CREATED)
     except ValueError as e:
+        # ValueError is raised explicitly by the service layer for bad user input (cloud provider, account ID).
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        return Response({'error': f"Failed to authenticate cloud provider: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        # Bare Exception was masking DB/RabbitMQ/programming errors as AWS auth failures, sending ops on
+        # ghost IAM hunts and hiding the incident from 5xx alerts. Surface real failure as a 500 with the
+        # stack trace going to logs (not the response).
+        logger.error(f"create_infrastructure failed for user {request.user.id}", exc_info=True)
+        return Response({'error': 'Internal error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(
@@ -161,6 +184,168 @@ def infrastructure_reprovision(request: HttpRequest, infra_id):
 
     InfraQueue.enqueue_provision(str(infra_id))
     return Response({'message': 'Re-provisioning queued'}, status=status.HTTP_202_ACCEPTED)
+
+
+@extend_schema(
+    summary="Onboarding callback from customer's AWS account",
+    description=(
+        "Called by app_scripts/create_aws_role.sh after the customer creates LaunchpadDeploymentRole in "
+        "their AWS account. Authenticated by a single-use onboarding token minted at infra creation; on "
+        "success persists STS credentials and enqueues provisioning."
+    ),
+    request={
+        "type": "object",
+        "required": ["infra_id", "account_id", "onboarding_token"],
+        "properties": {
+            "infra_id": {"type": "string", "format": "uuid"},
+            "account_id": {"type": "string", "description": "AWS Account ID, must match infra.code"},
+            "onboarding_token": {"type": "string", "description": "Single-use token issued at infra creation"},
+        },
+    },
+    responses={
+        202: {"type": "object", "properties": {
+            "status": {"type": "string"},
+            "infrastructure_id": {"type": "string"},
+            "is_cloud_authenticated": {"type": "boolean"},
+        }},
+        400: ErrorSerializer, 403: ErrorSerializer, 404: ErrorSerializer, 500: ErrorSerializer,
+    },
+)
+@csrf_exempt
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def infrastructure_onboarding_callback(request: HttpRequest):
+    from api.models.infrastructure import Infrastructure as InfraModel
+    from api.cloud_providers.aws.authenticate import authenticate_infrastructure
+    from api.services.infra_queue import InfraQueue
+    from shared.enums.cloud_provider import CloudProvider
+
+    infra_id = request.data.get('infra_id')
+    account_id = request.data.get('account_id')
+    if not infra_id or not account_id:
+        return Response({'error': 'infra_id and account_id are required'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    try:
+        uuid.UUID(str(infra_id))
+    except (ValueError, TypeError):
+        return Response({'error': 'infra_id must be a valid UUID'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        infra = InfraModel.objects.get(id=infra_id)
+    except InfraModel.DoesNotExist:
+        return Response({'error': 'Infrastructure not found'},
+                        status=status.HTTP_404_NOT_FOUND)
+
+    if str(infra.code) != str(account_id):
+        # Mismatch means the script ran in a different AWS account than the one the user registered.
+        return Response({'error': 'Account ID mismatch'},
+                        status=status.HTTP_403_FORBIDDEN)
+
+    if infra.cloud_provider != CloudProvider.AWS:
+        return Response({'error': 'Not an AWS infrastructure'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    provided_token = request.data.get('onboarding_token')
+    if not provided_token:
+        return Response({'error': 'onboarding_token is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if not infra.onboarding_token_hash:
+        return Response({'error': 'No onboarding token issued for this infrastructure'},
+                        status=status.HTTP_403_FORBIDDEN)
+    if infra.onboarding_token_used_at is not None:
+        return Response({'error': 'Onboarding token already used'}, status=status.HTTP_403_FORBIDDEN)
+    if infra.onboarding_token_expires_at is not None and timezone.now() > infra.onboarding_token_expires_at:
+        return Response({'error': 'Onboarding token expired; recreate the infrastructure to get a new one'},
+                        status=status.HTTP_403_FORBIDDEN)
+    expected_hash = InfraModel.hash_token(provided_token)
+    # Constant-time comparison defends against timing oracles on the hash check.
+    if not secrets.compare_digest(expected_hash, infra.onboarding_token_hash):
+        return Response({'error': 'Invalid onboarding token'}, status=status.HTTP_403_FORBIDDEN)
+
+    # Atomically claim the single-use token. The read-check-then-save it replaces let two
+    # concurrent callbacks both pass the used_at check and double-run AssumeRole/provisioning;
+    # the conditional UPDATE makes exactly one request win. Failure paths below release the
+    # claim so a transient AssumeRole/queue error doesn't permanently brick onboarding.
+    claimed = InfraModel.objects.filter(
+        id=infra.id, onboarding_token_used_at__isnull=True,
+    ).update(onboarding_token_used_at=timezone.now())
+    if claimed == 0:
+        return Response({'error': 'Onboarding token already used'}, status=status.HTTP_403_FORBIDDEN)
+
+    def release_token_claim():
+        InfraModel.objects.filter(id=infra.id).update(onboarding_token_used_at=None)
+
+    # Bounded retry around AssumeRole: IAM role/policy creation in the customer account is
+    # eventually consistent, so the first call can race the script's policy-attach step.
+    # Sleeps are short — this blocks a sync worker; persistent failures are pushed back to
+    # the caller via Retry-After instead of longer server-side waits.
+    last_exc = None
+    for attempt in range(3):
+        try:
+            authenticate_infrastructure(infra)
+            last_exc = None
+            break
+        except ValueError as e:
+            release_token_claim()
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            last_exc = e
+            logger.warning(
+                f"Onboarding callback AssumeRole attempt {attempt + 1}/3 failed for infra {infra_id}: {e}"
+            )
+            if attempt < 2:
+                time.sleep(2)
+
+    if last_exc is not None:
+        release_token_claim()
+        response = Response(
+            {'error': 'AssumeRole failed', 'details': type(last_exc).__name__,
+             'retry_after_seconds': 30},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+        response['Retry-After'] = '30'
+        return response
+
+    # Publish infrastructure.created so application-service / other consumers materialize their
+    # local read-models. Deferred from create_infrastructure to here because pre-authenticated
+    # infras shouldn't be deployable downstream.
+    try:
+        from api.messaging.producer.producer import infra_producer
+        infra_producer.publish_infra_created(
+            user_id=infra.user_id,
+            infra_id=infra.id,
+            name=infra.name,
+            cloud_provider=infra.cloud_provider,
+            max_cpu=infra.max_cpu,
+            max_memory=infra.max_memory,
+            code=infra.code,
+            is_cloud_authenticated=True,
+            metadata=infra.metadata or {},
+        )
+    except Exception:
+        logger.error(f"Onboarding callback failed to publish infra.created for {infra_id}", exc_info=True)
+        # Don't fail the callback — provisioning can still proceed; ops will need to backfill the read-model.
+
+    try:
+        logger.info(f"onboarding callback succeeded for infra {infra_id}")
+        was_enqueued = InfraQueue.enqueue_provision(str(infra_id))
+        if not was_enqueued:
+            return Response(
+                {'status': 'already_queued', 'infrastructure_id': str(infra_id), 'is_cloud_authenticated': True},
+                status=status.HTTP_200_OK,
+            )
+        return Response(
+            {'status': 'accepted', 'infrastructure_id': str(infra_id), 'is_cloud_authenticated': True},
+            status=status.HTTP_202_ACCEPTED,
+        )
+    except Exception:
+        logger.error(f"Onboarding callback enqueue failed for infra {infra_id}", exc_info=True)
+        # Provisioning never got queued — release the claim so the customer can simply
+        # re-run the script. The infra.created event may be re-published on that retry;
+        # consumers are idempotent on infra_id.
+        release_token_claim()
+        return Response({'error': 'Internal error'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(

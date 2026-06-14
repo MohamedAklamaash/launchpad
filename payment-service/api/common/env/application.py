@@ -1,8 +1,19 @@
 from dataclasses import dataclass
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 import os
 
 load_dotenv()
+
+
+def _origin_only(raw: str) -> str:
+    """Reduce a URL to scheme://host[:port]. Stripe success/cancel URLs are built as
+    f"{public_backend_url}/api/v1/...", so a trailing path/slash yields // or doubled
+    paths in the redirect."""
+    parsed = urlparse((raw or "").strip())
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return (raw or "").strip().rstrip("/")
 
 @dataclass(frozen=True, slots=True)
 class ApplicationConfig:
@@ -17,9 +28,17 @@ class ApplicationConfig:
     stripe_webhook_secret: str
     frontend_url: str
     backend_url: str
+    public_backend_url: str
 
     @classmethod
     def from_env(cls) -> "ApplicationConfig":
+        stripe_webhook_secret = os.environ["STRIPE_WEBHOOK_SECRET"]
+        if stripe_webhook_secret.startswith("whsec_REPLACE"):
+            raise ValueError(
+                "STRIPE_WEBHOOK_SECRET is set to placeholder value. "
+                "Replace it with your real Stripe webhook signing secret."
+            )
+
         return cls(
             django_secret=os.environ["DJANGO_SECRET"],
             jwt_secret=os.environ["JWT_SECRET"],
@@ -28,9 +47,10 @@ class ApplicationConfig:
             rabbitmq_url=os.environ["RABBITMQ_URL"],
             stripe_publishable_key=os.environ["STRIPE_PUBLISHABLE_KEY"],
             stripe_secret_key=os.environ["STRIPE_SECRET_KEY"],
-            stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
+            stripe_webhook_secret=stripe_webhook_secret,
             frontend_url=os.environ.get("FRONTEND_URL", "http://localhost:3000"),
-            backend_url=os.environ.get("BACKEND_URL", "http://localhost:8003")
+            backend_url=os.environ.get("BACKEND_URL", "http://localhost:8003"),
+            public_backend_url=_origin_only(os.environ["PUBLIC_BACKEND_URL"]),
         )
 
 app_config = ApplicationConfig.from_env()

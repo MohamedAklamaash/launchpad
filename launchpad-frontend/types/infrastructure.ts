@@ -47,3 +47,8 @@ export interface InfrastructureCreate {
   code: string;
   metadata?: { aws_region?: string;[key: string]: string | undefined };
 }
+
+// Returned only by POST /api/infrastructures/. The plaintext nonce is shown once and never re-served.
+export interface InfrastructureCreateResponse extends Infrastructure {
+  onboarding_token: string;
+}

@@ -22,7 +22,8 @@ def authenticate_infrastructure(infrastructure: Infrastructure):
     try:
         response = sts_client.assume_role(
             RoleArn=f"arn:aws:iam::{target_account_id}:role/LaunchpadDeploymentRole",
-            RoleSessionName="deployment-session"
+            RoleSessionName=f"launchpad-{infrastructure.id}",
+            ExternalId=str(infrastructure.id),
         )
 
         creds = response["Credentials"]
@@ -38,7 +39,14 @@ def authenticate_infrastructure(infrastructure: Infrastructure):
         infrastructure.save()
         
     except Exception as e:
+        # Persist a generic marker, not str(e): the raw STS error can carry ARNs /
+        # account IDs, and infra.metadata is serialized back to API callers. Full
+        # detail goes to the logs only.
+        import logging
+        logging.getLogger(__name__).error(
+            "AssumeRole failed for infra %s", infrastructure.id, exc_info=True
+        )
         infrastructure.is_cloud_authenticated = False
-        infrastructure.metadata = {**metadata, "error": str(e)}
+        infrastructure.metadata = {**metadata, "error": "AssumeRole failed"}
         infrastructure.save()
         raise e

@@ -37,6 +37,15 @@ class InfraResponse(BaseModel):
     updated_at: str
 
 
+class InfraCreateResponse(InfraResponse):
+    # Plaintext single-use nonce returned only on the create endpoint. Declared here so FastAPI's
+    # response_model filter does not strip it before the dashboard sees it.
+    onboarding_token: Optional[str] = Field(
+        default=None,
+        description="Single-use onboarding token; injected into the AWS bootstrap script. Shown only once.",
+    )
+
+
 @router.get("/", summary="List all infrastructures for the authenticated user",
             response_model=list[InfraResponse])
 async def infrastructure_list(request: Request):
@@ -44,9 +53,9 @@ async def infrastructure_list(request: Request):
 
 
 @router.post("/", summary="Create a new infrastructure",
-             response_model=InfraResponse, status_code=201)
+             response_model=InfraCreateResponse, status_code=201)
 async def infrastructure_create(body: InfraCreateBody, request: Request):
-    """Triggers Terraform to provision VPC, ECS cluster, ALB, and ECR in the given AWS account."""
+    """Creates the infra row and mints a single-use onboarding token. Provisioning starts after the customer runs the bootstrap script."""
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/", request)
 
 
@@ -83,6 +92,54 @@ async def infrastructure_reprovision(infra_id: str, request: Request):
     """Resets environment status to PENDING and re-queues Terraform. Use after a failed provision or ERROR state."""
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/reprovision/", request
+    )
+
+
+class OnboardingCallbackBody(BaseModel):
+    infra_id: str = Field(description="Infrastructure UUID this callback is for")
+    account_id: str = Field(description="AWS Account ID where LaunchpadDeploymentRole was created")
+    onboarding_token: str = Field(description="Single-use onboarding token issued at infra creation")
+
+
+@router.post("/onboarding/callback", summary="Onboarding callback from customer's AWS account",
+             status_code=202)
+async def infrastructure_onboarding_callback(body: OnboardingCallbackBody, request: Request):
+    """Called by app_scripts/create_aws_role.sh after the customer creates the IAM role. No JWT required."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/onboarding/callback/", request
+    )
+
+
+class ScriptApiKeyResponse(BaseModel):
+    api_key: str = Field(description="Per-user script API key (prefix lp_); shown only once")
+
+
+@router.post("/script-api-key", summary="Issue (or rotate) the per-user script API key",
+             response_model=ScriptApiKeyResponse, status_code=201)
+async def script_api_key_issue(request: Request):
+    """Mints the key that authenticates customer-run scripts (update_aws_role.sh) back to
+    Launchpad. Plaintext returned once; issuing again revokes prior keys."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/script-api-key/", request
+    )
+
+
+class PolicyRefreshCallbackBody(BaseModel):
+    account_id: str = Field(description="AWS Account ID the script ran against")
+    infra_id: Optional[str] = Field(default=None, description="Optional infra UUID to link")
+    caller_arn: Optional[str] = Field(default=None, description="sts get-caller-identity ARN of whoever ran the script")
+    script: Optional[str] = Field(default=None, example="update_aws_role.sh")
+    role_name: Optional[str] = Field(default=None)
+    policy_arn: Optional[str] = Field(default=None)
+
+
+@router.post("/policy-refresh/callback", summary="Policy-refresh callback from customer's AWS account",
+             status_code=201)
+async def infrastructure_policy_refresh_callback(body: PolicyRefreshCallbackBody, request: Request):
+    """Called by app_scripts/update_aws_role.sh after an IAM refresh. Authenticated by the
+    per-user script API key (X-API-Key header), not a JWT — records who ran the refresh."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/policy-refresh/callback/", request
     )
 
 

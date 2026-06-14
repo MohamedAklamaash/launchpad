@@ -1,15 +1,56 @@
 #!/bin/bash
 set -e
 
+########################################
+# USAGE
+########################################
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  cat <<USAGE
+Usage: $0
+
+Creates the LaunchpadDeploymentRole in YOUR AWS account so the Launchpad
+platform can deploy infrastructure on your behalf via cross-account assume-role.
+
+Environment variables (all optional, sensible defaults applied):
+  LAUNCHPAD_PLATFORM_ACCOUNT_ID    Launchpad platform AWS account ID (default: 221082203366)
+  LAUNCHPAD_PLATFORM_USER          Launchpad platform IAM user (default: aklamaash-terraform)
+  LAUNCHPAD_EXTERNAL_ID            Per-customer ExternalId binding the trust policy (defaults to LAUNCHPAD_INFRA_ID)
+  LAUNCHPAD_REGION                 AWS region for deployment (default: us-east-1)
+  LAUNCHPAD_INFRA_ID               Infra UUID; required for onboarding callback
+  LAUNCHPAD_CALLBACK_URL           Launchpad callback URL; required for onboarding callback
+  LAUNCHPAD_ONBOARDING_TOKEN       Single-use onboarding token; required for onboarding callback
+  LAUNCHPAD_ALLOW_NO_EXTERNAL_ID   Escape hatch: set to literally "1" (NOT "true"/"yes") to skip
+                                   the ExternalId requirement. Advanced/manual setups only —
+                                   weakens cross-account assume-role protection. NOT RECOMMENDED.
+USAGE
+  exit 0
+fi
+
 ROLE_NAME="LaunchpadDeploymentRole"
 POLICY_NAME="LaunchpadDeploymentPolicy"
-ASSUME_POLICY_NAME="AllowAssumeLaunchpadDeploymentRole"
 
-TRUSTED_ACCOUNT_ID="221082203366"
-PLATFORM_USER="aklamaash-terraform"
+# Defaults match the current Launchpad platform; override via env if platform creds rotate
+# so customers don't need a fresh script each rotation.
+TRUSTED_ACCOUNT_ID="${LAUNCHPAD_PLATFORM_ACCOUNT_ID:-221082203366}"
+PLATFORM_USER="${LAUNCHPAD_PLATFORM_USER:-aklamaash-terraform}"
+# Default ExternalId to the infra UUID — backend uses infra.id as ExternalId on AssumeRole, so binding
+# the trust policy to it by default removes a manual setup step for customers using the dashboard flow.
+ASSUME_EXTERNAL_ID="${LAUNCHPAD_EXTERNAL_ID:-${LAUNCHPAD_INFRA_ID:-}}"
+
+# Region must match where Launchpad provisions; customer's CLI default may differ.
+LAUNCHPAD_REGION="${LAUNCHPAD_REGION:-us-east-1}"
+export AWS_REGION="$LAUNCHPAD_REGION"
+
+# Use a temp dir + trap so policy JSON files don't pollute PWD on failure / Ctrl-C.
+WORK_DIR=$(mktemp -d)
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "=========================================="
 echo "Launchpad AWS Role Setup"
+echo "Region:           ${LAUNCHPAD_REGION}"
+echo "Platform account: ${TRUSTED_ACCOUNT_ID}"
+echo "Platform user:    ${PLATFORM_USER}"
 echo "=========================================="
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -18,7 +59,38 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 # TRUST POLICY
 ########################################
 
-cat > trust-policy.json <<EOF
+# ExternalId is mandatory by default — without it, anyone in the Launchpad
+# platform account who can call sts:AssumeRole could assume this role against
+# any customer who reused the same role name. The escape hatch
+# (LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1) exists only for advanced/manual setups
+# that wire their own ExternalId out-of-band.
+if [ -n "$ASSUME_EXTERNAL_ID" ]; then
+  cat > "$WORK_DIR/trust-policy.json" <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::${TRUSTED_ACCOUNT_ID}:user/${PLATFORM_USER}"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": { "sts:ExternalId": "${ASSUME_EXTERNAL_ID}" }
+      }
+    }
+  ]
+}
+EOF
+elif [ "${LAUNCHPAD_ALLOW_NO_EXTERNAL_ID:-0}" = "1" ]; then
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo "!! WARNING: LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1 is set.            !!"
+  echo "!! Trust policy will NOT enforce sts:ExternalId.                !!"
+  echo "!! This weakens cross-account assume-role protection — do this  !!"
+  echo "!! ONLY for advanced/manual setups that bind ExternalId         !!"
+  echo "!! elsewhere. NOT RECOMMENDED for the standard onboarding flow. !!"
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  cat > "$WORK_DIR/trust-policy.json" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -32,6 +104,14 @@ cat > trust-policy.json <<EOF
   ]
 }
 EOF
+else
+  echo "ERROR: ExternalId is required. Set LAUNCHPAD_INFRA_ID (preferred — the" >&2
+  echo "       dashboard injects it), or LAUNCHPAD_EXTERNAL_ID." >&2
+  echo "       For advanced / manual setup that wires ExternalId out-of-band," >&2
+  echo "       set LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1 (must be literally \"1\";" >&2
+  echo "       values like \"true\" / \"yes\" are NOT accepted; NOT RECOMMENDED)." >&2
+  exit 1
+fi
 
 ########################################
 # CREATE ROLE (IDEMPOTENT)
@@ -40,19 +120,34 @@ EOF
 echo "Checking if role exists..."
 
 if aws iam get-role --role-name ${ROLE_NAME} >/dev/null 2>&1; then
-  echo "Role already exists."
+  # Refresh the trust policy in place — a re-run with a new ExternalId (or a
+  # rotated platform principal) must land on the existing role, otherwise the
+  # backend's AssumeRole (which always sends ExternalId) fails with AccessDenied.
+  echo "Role already exists; refreshing trust policy..."
+  aws iam update-assume-role-policy \
+    --role-name ${ROLE_NAME} \
+    --policy-document file://"$WORK_DIR/trust-policy.json"
 else
   echo "Creating IAM role..."
   aws iam create-role \
     --role-name ${ROLE_NAME} \
-    --assume-role-policy-document file://trust-policy.json
+    --assume-role-policy-document file://"$WORK_DIR/trust-policy.json"
 fi
 
 ########################################
 # POLICY FOR TERRAFORM INFRA
 ########################################
 
-cat > launchpad-policy.json <<EOF
+# Permissions granted to Launchpad in YOUR account:
+# - ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure
+# - s3: terraform state bucket + application asset storage
+# - dynamodb: terraform state lock table
+# - iam:*: create execution roles for ECS tasks (scoped to launchpad-* roles in code)
+# - kms:*: encrypt state bucket and secrets
+# Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
+# NOTE: Action list must stay in sync with the other script (create_aws_role.sh / update_aws_role.sh).
+# LaunchpadDeploymentPolicy first statement. CI guard: app_scripts/_check_policy_sync.py
+cat > "$WORK_DIR/launchpad-policy.json" <<EOF
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -96,7 +191,7 @@ else
   echo "Creating deployment policy..."
   aws iam create-policy \
     --policy-name ${POLICY_NAME} \
-    --policy-document file://launchpad-policy.json
+    --policy-document file://"$WORK_DIR/launchpad-policy.json"
 fi
 
 ########################################
@@ -110,49 +205,6 @@ aws iam attach-role-policy \
   --policy-arn ${POLICY_ARN} \
   2>/dev/null || true
 
-########################################
-# PLATFORM USER ASSUME ROLE POLICY
-########################################
-
-cat > allow-assume-role.json <<EOF
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": "sts:AssumeRole",
-      "Resource": "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
-    }
-  ]
-}
-EOF
-
-ASSUME_POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${ASSUME_POLICY_NAME}"
-
-if aws iam get-policy --policy-arn ${ASSUME_POLICY_ARN} >/dev/null 2>&1; then
-  echo "Assume policy already exists."
-else
-  echo "Creating assume-role policy..."
-  aws iam create-policy \
-    --policy-name ${ASSUME_POLICY_NAME} \
-    --policy-document file://allow-assume-role.json
-fi
-
-echo "Attaching assume-role policy to ${PLATFORM_USER}..."
-
-aws iam attach-user-policy \
-  --user-name ${PLATFORM_USER} \
-  --policy-arn ${ASSUME_POLICY_ARN} \
-  2>/dev/null || true
-
-########################################
-# CLEANUP
-########################################
-
-rm -f trust-policy.json
-rm -f launchpad-policy.json
-rm -f allow-assume-role.json
-
 echo ""
 echo "=========================================="
 echo "Launchpad Role Setup Complete"
@@ -161,3 +213,52 @@ echo ""
 echo "Role ARN:"
 echo "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 echo ""
+
+########################################
+# LAUNCHPAD ONBOARDING CALLBACK (best-effort)
+########################################
+
+# All three env vars are injected by the dashboard when it generates this script for a specific
+# infra. When run manually (no env vars), we skip the callback rather than failing the script.
+if [ -z "${LAUNCHPAD_INFRA_ID}" ] || [ -z "${LAUNCHPAD_CALLBACK_URL}" ] || [ -z "${LAUNCHPAD_ONBOARDING_TOKEN}" ]; then
+  echo "LAUNCHPAD_INFRA_ID, LAUNCHPAD_CALLBACK_URL or LAUNCHPAD_ONBOARDING_TOKEN not set; skipping onboarding callback."
+  echo "If you ran this manually, trigger onboarding from the Launchpad dashboard."
+  exit 0
+fi
+
+# Reject plaintext callback URLs — onboarding payload contains the customer's AWS Account ID.
+case "$LAUNCHPAD_CALLBACK_URL" in
+  https://*) ;;
+  http://localhost*|http://127.0.0.1*) ;;
+  *)
+    echo "ERROR: LAUNCHPAD_CALLBACK_URL must be HTTPS (or localhost for dev)."
+    echo "  Got: $LAUNCHPAD_CALLBACK_URL"
+    exit 1
+    ;;
+esac
+
+echo "Notifying Launchpad at ${LAUNCHPAD_CALLBACK_URL}..."
+
+# Drop -f: with -f curl returns non-zero on 4xx AND skips writing the body, so the actual
+# status was being masked by the `|| echo "000"` fallback.
+RESP_FILE="$WORK_DIR/callback_resp"
+CALLBACK_HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w "%{http_code}" \
+  --connect-timeout 5 --max-time 30 \
+  -X POST "${LAUNCHPAD_CALLBACK_URL}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"onboarding_token\":\"${LAUNCHPAD_ONBOARDING_TOKEN}\"}" \
+  || echo "000")
+
+echo "Callback HTTP status: ${CALLBACK_HTTP_CODE}"
+if [ -f "$RESP_FILE" ]; then
+  echo "Callback response:"
+  cat "$RESP_FILE"
+  echo ""
+fi
+
+# 202 = provisioning enqueued, 200 = already queued (idempotent re-run) — both fine.
+if [ "${CALLBACK_HTTP_CODE}" != "202" ] && [ "${CALLBACK_HTTP_CODE}" != "200" ]; then
+  echo "Callback failed; you may need to re-trigger onboarding from the dashboard."
+fi
+
+exit 0

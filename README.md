@@ -75,6 +75,23 @@ See [docs/USER_ONBOARDING_GUIDE.md](docs/USER_ONBOARDING_GUIDE.md) for setup ins
 - [IAM Policies](docs/IAM_POLICIES.md) - AWS permissions setup
 - [Deployment Edge Cases](docs/DEPLOYMENT_EDGE_CASES.md) - Troubleshooting
 
+## Required Production Frontend Environment Variables
+
+The dashboard renders `curl | bash` snippets that target the onboarding shell
+scripts in this repo. To keep that supply chain auditable, production builds
+of `launchpad-frontend/` require:
+
+- `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF` — commit SHA or signed tag of the ref the
+  onboarding scripts are fetched from. Required in production; missing it
+  renders a misconfiguration banner instead of an unpinned `main` fetch.
+- `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REPO` — GitHub `owner/repo` slug that hosts
+  the scripts. Defaults to `MohamedAklamaash/launchpad`; override if you fork.
+- `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_BASE_URL` — optional full override. Must be
+  `https://` (or `http://localhost` / `http://127.0.0.1` for dev). Bypasses
+  the ref/repo composition; useful for staging mirrors.
+
+See `launchpad-frontend/lib/onboarding-scripts.ts` for resolution precedence.
+
 ## Support
 
 For issues, questions, or feature requests, see [docs/](docs/).

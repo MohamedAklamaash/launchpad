@@ -34,7 +34,7 @@ async def proxy_request(url: str, request: Request) -> Response:
             for k, v in response.headers.items():
                 if k.lower() not in exclude_headers:
                     if k.lower() == "location":                        
-                        for service_url in [settings.AUTH_SERVICE_URL, settings.USER_SERVICE_URL, settings.NOTIFICATION_SERVICE_URL, settings.INFRASTRUCTURE_SERVICE_URL, settings.PAYMENT_SERVICE_URL]:
+                        for service_url in [settings.AUTH_SERVICE_URL, settings.USER_SERVICE_URL, settings.NOTIFICATION_SERVICE_URL, settings.APPLICATION_SERVICE_URL, settings.INFRASTRUCTURE_SERVICE_URL, settings.PAYMENT_SERVICE_URL]:
                             if v.startswith(service_url):
                                 v = v.replace(service_url, str(request.base_url).rstrip("/"))
                                 break
@@ -47,14 +47,15 @@ async def proxy_request(url: str, request: Request) -> Response:
             )
         except httpx.TimeoutException:
             return Response(content="Gateway Timeout", status_code=504)
-        except httpx.HTTPStatusError as exc:
-            return Response(content=exc.response.content, status_code=exc.response.status_code)
         except Exception as exc:
+            # No raise_for_status() above, so httpx.HTTPStatusError can't reach here.
+            # Keep the upstream URL / transport error in logs only — leaking str(exc)
+            # to the client exposes internal hostnames and TCP error detail.
             import logging
             import json
             logging.error(f"Error forwarding request to {url}: {exc}", exc_info=True)
             return Response(
-                content=json.dumps({"message": "Error forwarding request", "details": str(exc)}),
+                content=json.dumps({"message": "Error forwarding request"}),
                 status_code=502,
                 media_type="application/json"
             )

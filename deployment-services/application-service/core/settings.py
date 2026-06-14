@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 from api.common.envs.application import app_config
 from api.common.envs.database import db_config
+from core.allowed_hosts_config import get_allowed_hosts
 import os
 
 # Validate critical configuration on startup
@@ -40,7 +41,7 @@ JWT_SECRET = app_config.jwt_secret
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') + ['infrastructure-service', 'application-service', 'payment-service']
+ALLOWED_HOSTS = get_allowed_hosts()
 
 
 # Application definition
@@ -107,8 +108,25 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
     "/api/v1/docs/",
     "/api/v1/schema/",
 ]
+# GitHub posts directly to the gateway from outside our network and won't carry the
+# internal token; the per-app HMAC in the view is the trust boundary instead.
+INTERNAL_AUTH_EXEMPT_PREFIXES = [
+    "/api/v1/webhooks/",
+]
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
+
+# Public-facing gateway URL used when generating webhook URLs to hand to GitHub.
+# Normalized to scheme://host[:port] at load — a value with a trailing path/slash
+# would otherwise produce malformed webhook URLs registered in GitHub.
+def _origin_only(raw: str) -> str:
+    from urllib.parse import urlparse
+    parsed = urlparse(raw.strip())
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return raw.strip().rstrip("/")
+
+PUBLIC_GATEWAY_URL = _origin_only(os.environ.get("PUBLIC_GATEWAY_URL", "http://localhost:8000"))
 
 DJANGO_PORT = app_config.django_port
 

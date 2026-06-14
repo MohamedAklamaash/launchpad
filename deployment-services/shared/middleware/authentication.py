@@ -10,14 +10,24 @@ def my_view(request):
     
 logger = logging.getLogger(__name__)
 
-EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/health", "/api/v1/healthz", "/api/v1/liveness", "/api/v1/readiness", "/api/v1/docs", "/api/v1/schema"]
+EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/health", "/api/v1/healthz", "/api/v1/liveness", "/api/v1/readiness", "/api/v1/docs", "/api/v1/schema", "/api/v1/webhooks/"]
+
+# Exact-match exemptions for callback/webhook routes — startswith would over-exempt
+# anything sharing the prefix (e.g. /api/v1/payments/webhook/foo).
+EXEMPT_EXACT_PATHS = ["/api/v1/infrastructures/onboarding/callback/", "/api/v1/infrastructures/policy-refresh/callback/", "/api/v1/payments/webhook/", "/api/v1/payments/success/", "/api/v1/payments/cancel/"]
 
 class JWTAuthMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        if request.path == "/" or any(request.path.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
+        # Middleware runs before APPEND_SLASH redirect, so check both forms of the path.
+        if (
+            request.path == "/"
+            or any(request.path.startswith(prefix) for prefix in EXCLUDED_PREFIXES)
+            or request.path in EXEMPT_EXACT_PATHS
+            or request.path + "/" in EXEMPT_EXACT_PATHS
+        ):
             return self.get_response(request)
 
         try:

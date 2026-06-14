@@ -14,6 +14,13 @@ class InternalAuthMiddleware:
             "INTERNAL_AUTH_EXEMPT_PATHS",
             []
         )
+        # Prefix-based exemptions for parametric routes (e.g. webhook receivers
+        # whose final path segment is a UUID we cannot enumerate at config time).
+        self.exempt_prefixes = getattr(
+            settings,
+            "INTERNAL_AUTH_EXEMPT_PREFIXES",
+            []
+        )
 
         header_name = getattr(
             settings,
@@ -29,8 +36,13 @@ class InternalAuthMiddleware:
         path = request.path
 
         is_exempt = any(
-            path == exempt or path.endswith(exempt)
+            path == exempt or path == exempt.rstrip('/')
             for exempt in self.exempt_paths
+        ) or any(
+            # Require the match to end at a path boundary so a prefix like
+            # "/api/v1/webhooks/" can't also exempt "/api/v1/webhooks-internal/...".
+            path == prefix.rstrip('/') or path.startswith(prefix if prefix.endswith('/') else prefix + '/')
+            for prefix in self.exempt_prefixes
         )
 
         if not is_exempt:

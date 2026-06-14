@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 from api.common.envs.database import DatabaseConfig
 from api.common.envs.application import app_config
+from core.allowed_hosts_config import get_allowed_hosts
 import os
 
 # Validate critical configuration on startup
@@ -40,7 +41,7 @@ JWT_SECRET = app_config.jwt_secret
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',') + ['infrastructure-service', 'application-service']
+ALLOWED_HOSTS = get_allowed_hosts()
 
 
 # Application definition
@@ -128,6 +129,8 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
     "/api/v1/readiness",
     "/api/v1/docs/",
     "/api/v1/schema/",
+    "/api/v1/infrastructures/onboarding/callback/",
+    "/api/v1/infrastructures/policy-refresh/callback/",
 ]
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
