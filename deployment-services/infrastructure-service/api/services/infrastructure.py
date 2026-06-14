@@ -43,10 +43,20 @@ class InfrastructureService:
         """
         correlation_id = str(uuid.uuid4())
 
-        if isinstance(infra_data, dict):
-            infra_data = dict(infra_data)
-        else:
-            infra_data = dict(infra_data)
+        # Allow-list the client-supplied fields. The serializers are docs-only (never
+        # validated), and the repo splats this dict into the model constructor, so
+        # without this filter a caller could set server-controlled fields directly
+        # (is_cloud_authenticated, onboarding_token_*, id, user) and subvert the
+        # onboarding state machine.
+        ALLOWED_CREATE_FIELDS = {"name", "cloud_provider", "max_cpu", "max_memory", "code", "metadata"}
+        infra_data = {k: v for k, v in dict(infra_data).items() if k in ALLOWED_CREATE_FIELDS}
+        if isinstance(infra_data.get("metadata"), dict):
+            # Never let a caller seed credential keys into metadata (it's serialized back
+            # out, and the worker treats these keys as live STS creds).
+            infra_data["metadata"] = {
+                k: v for k, v in infra_data["metadata"].items()
+                if k not in {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
+            }
         if infra_data.get("cloud_provider"):
             infra_data["cloud_provider"] = infra_data["cloud_provider"].lower()
         cloud_provider = infra_data.get("cloud_provider")
@@ -132,10 +142,10 @@ class InfrastructureService:
             target_user = User.objects.get(id=target_user_id)
         except User.DoesNotExist:
             return False
+        # Only revoke this infra's membership. The previous code deleted the global
+        # User row when they had no other invited infra — an infra-scoped action must
+        # never delete a cross-service account (and it cascaded to their owned rows).
         infra.invited_users.remove(target_user)
-        # Delete user if they no longer belong to any infrastructure
-        if not target_user.invited_infrastructures.exists():
-            target_user.delete()
         return True
     
     def update_infrastructure_config(self, user_id, infra_id, update_data):

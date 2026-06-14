@@ -71,9 +71,22 @@ class ApplicationService:
         # Exhausted MAX_GITHUB_PAGES without finding or definitively rejecting — treat as transient
         raise ValueError("Unable to verify GitHub repository ownership: too many repositories to scan")
 
+    # Server-managed / security-sensitive fields a client must never set at create
+    # time. The serializer is docs-only and the repo splats this dict into
+    # Application.objects.create(**data), so without stripping these a caller could
+    # set their own github_webhook_secret (then forge push webhooks), pre-set ARNs,
+    # or jump the status — i.e. mass assignment.
+    _PROTECTED_CREATE_FIELDS = frozenset({
+        "id", "user", "status", "version", "github_webhook_secret",
+        "task_definition_arn", "service_arn", "target_group_arn", "listener_rule_arn",
+        "deployment_url", "build_id", "error_message", "is_sleeping", "desired_count",
+        "created_at", "updated_at",
+    })
+
     @transaction.atomic
     def create_application(self, user, data: dict):
         """Create a new application after validating user authorization and infra capacity."""
+        data = {k: v for k, v in dict(data).items() if k not in self._PROTECTED_CREATE_FIELDS}
         infra_id = data.get("infrastructure_id")
         if not infra_id:
             raise ValueError("Infrastructure ID is required")
