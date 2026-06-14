@@ -17,8 +17,10 @@ class Settings(BaseSettings):
     INFRASTRUCTURE_SERVICE_URL: str = os.getenv("INFRASTRUCTURE_SERVICE_URL", "http://localhost:8002")
     APPLICATION_SERVICE_URL: str = os.getenv("APPLICATION_SERVICE_URL", "http://localhost:8001")
     PAYMENT_SERVICE_URL: str = os.getenv("PAYMENT_SERVICE_URL", "http://localhost:8003")
-    ALLOWED_HOSTS:str = os.getenv("ALLOWED_HOSTS", "*")
-    DEBUG:bool = os.getenv("DEBUG", "True").lower() in ("true", "1", "yes")
+    # Secure-by-default: a gateway sitting at the edge should not default to wildcard
+    # hosts or debug-on. Production overrides via env; dev sets them explicitly.
+    ALLOWED_HOSTS:str = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1")
+    DEBUG:bool = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
     PORT: int = int(os.getenv("PORT", "8000"))
     INTERNAL_API_TOKEN:str = os.getenv("INTERNAL_API_TOKEN", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -41,7 +43,16 @@ class Settings(BaseSettings):
         # downstream call. Strip-and-warn keeps misconfigured envs working while
         # surfacing the issue; reject other paths to fail fast on real mistakes.
         normalized = v.rstrip("/")
-        path = urlparse(normalized).path
+        parsed = urlparse(normalized)
+        # A value lacking a scheme (e.g. "localhost:8002") parses with an empty netloc
+        # and the host stuffed into path/scheme — that silently produces a broken base
+        # URL. Require both scheme and netloc so misconfig fails fast here.
+        if not parsed.scheme or not parsed.netloc:
+            raise ValueError(
+                f"{info.field_name} must be a full URL with scheme and host "
+                f"(e.g. http://host:port). Got: {v!r}"
+            )
+        path = parsed.path
         if path in ("/api/v1",):
             logger.warning(
                 "%s has trailing /api/v1 — stripping. Service URLs must be host:port only.",

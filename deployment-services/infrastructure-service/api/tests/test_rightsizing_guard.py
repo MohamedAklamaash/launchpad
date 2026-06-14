@@ -5,11 +5,25 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 
-def _infra(*, metadata, cloud_provider="AWS", id_="11111111-1111-1111-1111-111111111111"):
-    # `enforce_rightsizing` filters with `infra.cloud_provider != "AWS"` (string,
-    # not the lowercased enum value), so the tests have to feed it "AWS" to
-    # exercise the guard. See bug note in the report.
+def _infra(*, metadata, cloud_provider="aws", id_="11111111-1111-1111-1111-111111111111"):
+    # cloud_provider is stored lowercase (CloudProvider.AWS == "aws"); enforce_rightsizing
+    # now compares against the enum, so the guard only proceeds for "aws".
     return SimpleNamespace(id=id_, cloud_provider=cloud_provider, metadata=metadata)
+
+
+def test_skips_non_aws_infra(patches):
+    from api.common.utils.enforce_rightsizing import enforce_rightsizing
+
+    patches.repo.get_all.return_value = [
+        _infra(cloud_provider="azure", metadata={
+            "aws_access_key_id": "AKIA_TEST",
+            "aws_secret_access_key": "SECRET_TEST",
+        })
+    ]
+
+    enforce_rightsizing()
+
+    assert not patches.boto3.client.called
 
 
 @pytest.fixture

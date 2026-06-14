@@ -140,13 +140,20 @@ export default function NewInfrastructurePage() {
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copy = (text: string, key: string) => {
     if (!text) return;
-    navigator.clipboard.writeText(text);
-    if (copyResetRef.current) clearTimeout(copyResetRef.current);
-    setCopiedKey(key);
-    copyResetRef.current = setTimeout(() => {
-      setCopiedKey(null);
-      copyResetRef.current = null;
-    }, 1500);
+    // Only flip the icon to the "copied" state once the write actually succeeds;
+    // a rejected clipboard write (permissions, insecure context) surfaces a toast
+    // instead of a misleading checkmark.
+    navigator.clipboard.writeText(text).then(
+      () => {
+        if (copyResetRef.current) clearTimeout(copyResetRef.current);
+        setCopiedKey(key);
+        copyResetRef.current = setTimeout(() => {
+          setCopiedKey(null);
+          copyResetRef.current = null;
+        }, 1500);
+      },
+      () => toast.error('Copy failed — copy it manually'),
+    );
   };
 
   if (createdInfra) {

@@ -254,6 +254,9 @@ def infrastructure_onboarding_callback(request: HttpRequest):
                         status=status.HTTP_403_FORBIDDEN)
     if infra.onboarding_token_used_at is not None:
         return Response({'error': 'Onboarding token already used'}, status=status.HTTP_403_FORBIDDEN)
+    if infra.onboarding_token_expires_at is not None and timezone.now() > infra.onboarding_token_expires_at:
+        return Response({'error': 'Onboarding token expired; recreate the infrastructure to get a new one'},
+                        status=status.HTTP_403_FORBIDDEN)
     expected_hash = InfraModel.hash_token(provided_token)
     # Constant-time comparison defends against timing oracles on the hash check.
     if not secrets.compare_digest(expected_hash, infra.onboarding_token_hash):

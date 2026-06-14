@@ -2,6 +2,7 @@ import logging
 import boto3
 from api.repositories.infrastructure import InfrastructureRepository
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
+from shared.enums.cloud_provider import CloudProvider
 
 def enforce_rightsizing():
     logger = logging.getLogger(__name__)
@@ -12,7 +13,9 @@ def enforce_rightsizing():
     processed_count = 0
     
     for infra in infras:
-        if infra.cloud_provider != "AWS":
+        # cloud_provider is stored lowercase (CloudProvider.AWS == "aws"); comparing to
+        # the literal "AWS" skipped every infra, making this whole job a silent no-op.
+        if infra.cloud_provider != CloudProvider.AWS:
             continue
 
         try:

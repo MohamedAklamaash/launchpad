@@ -442,6 +442,26 @@ def application_github_webhook(request, app_id: str):
             status=status.HTTP_200_OK,
         )
 
+    # GitHub redelivers the same push (manual replay, or its own retry on a slow
+    # response) with a stable X-GitHub-Delivery GUID. Without dedup each redelivery
+    # triggers another full deployment. SETNX keeps the first delivery and drops
+    # repeats within the TTL window; a Redis hiccup falls through to enqueue (we'd
+    # rather double-deploy than silently drop a real push).
+    delivery_id = request.headers.get('X-GitHub-Delivery', '')
+    if delivery_id:
+        try:
+            first_seen = DeploymentQueue.get_redis().set(
+                f"gh:webhook:delivery:{app_id}:{delivery_id}", "1",
+                nx=True, ex=3600,
+            )
+            if not first_seen:
+                return Response(
+                    {"status": "duplicate", "application_id": str(app_id)},
+                    status=status.HTTP_200_OK,
+                )
+        except Exception:
+            logger.warning(f"GitHub webhook dedup check failed for app {app_id}; proceeding")
+
     try:
         DeploymentQueue.enqueue_deployment(str(app_id), str(app.infrastructure_id))
     except Exception:
@@ -472,10 +492,17 @@ def application_rotate_webhook_secret(request, app_id: str):
     if str(app.user_id) != str(request.user.id):
         return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
-    secret = app.issue_webhook_secret()
     # Gateway is mounted at /api (see gateway-service/main.py), so the public URL we hand
     # to GitHub uses /api/webhooks/... — NOT /api/v1/, which is the internal upstream path.
     public_base = getattr(settings, 'PUBLIC_GATEWAY_URL', '').rstrip('/')
+    if not public_base:
+        # Without a public base we'd hand GitHub a relative /api/webhooks/... URL that
+        # silently never delivers. Fail loudly instead of issuing a dead webhook.
+        logger.error("PUBLIC_GATEWAY_URL is not configured; cannot build a webhook URL")
+        return Response({"error": "Webhook URL is not configured on the server"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    secret = app.issue_webhook_secret()
     webhook_url = f"{public_base}/api/webhooks/github/{app_id}"
     return Response({
         "webhook_url": webhook_url,
