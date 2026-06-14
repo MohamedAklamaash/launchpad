@@ -1,463 +1,295 @@
-# Launchpad Platform - User Onboarding Guide
+# Launchpad Platform — User Onboarding Guide
 
 ## Overview
 
-Launchpad is a cloud deployment platform that deploys your applications into **your own AWS account**. You maintain full control and ownership of your infrastructure and data.
+Launchpad deploys your applications into **your own AWS account**. You keep full
+control and ownership of your infrastructure and data — Launchpad never holds
+long-lived credentials to your account; it assumes a role you create, scoped by a
+per-infrastructure secret, and the temporary session credentials expire after ~1 hour.
+
+Onboarding is **mostly automated**: you create an infrastructure in the dashboard,
+copy the one-time setup command it generates, run it in a shell with AWS access to
+your account, and provisioning starts automatically. You do **not** create IAM users
+or paste access keys anywhere.
 
 ---
 
 ## Prerequisites
 
-- AWS Account
-- GitHub Account
-- GitHub repository with a Dockerfile
+- An AWS account (and a shell with credentials/CLI for it — e.g. AWS CloudShell, or
+  local `aws` configured for the account).
+- A GitHub account.
+- A GitHub repository containing a `Dockerfile`.
 
 ---
 
-## Step 1: Create IAM User for Launchpad
+## Step 1 — Sign in to Launchpad
 
-Launchpad needs access to your AWS account to provision infrastructure and deploy applications. You'll create a dedicated IAM user with specific permissions.
-
-### 1.1 Sign in to AWS Console
-
-1. Go to [AWS Console](https://console.aws.amazon.com)
-2. Navigate to **IAM** service
-3. Click **Users** → **Create user**
-
-### 1.2 Create User
-
-1. **User name**: `launchpad-deployment`
-2. **Access type**: Select "Programmatic access"
-3. Click **Next: Permissions**
-
-### 1.3 Attach Policies
-
-Click **Attach policies directly** and attach these AWS managed policies:
-
-**Required Policies**:
-- `AmazonVPCFullAccess` - For VPC, subnets, NAT gateway
-- `AmazonECS_FullAccess` - For ECS clusters and services
-- `AmazonEC2ContainerRegistryFullAccess` - For ECR repositories
-- `ElasticLoadBalancingFullAccess` - For Application Load Balancer
-- `IAMFullAccess` - For creating service roles
-- `AWSCodeBuildAdminAccess` - For CodeBuild projects
-- `CloudWatchLogsFullAccess` - For application logs
-- `AmazonS3FullAccess` - For Terraform state storage
-- `AmazonDynamoDBFullAccess` - For Terraform state locking
-
-Click **Next: Tags** (optional) → **Next: Review** → **Create user**
-
-### 1.4 Save Credentials
-
-**IMPORTANT**: Save these credentials securely. You'll need them for Launchpad.
-
-- **Access Key ID**: `AKIA...`
-- **Secret Access Key**: `wJalr...`
-
-IMPORTANT: Never share these credentials or commit them to Git
+1. Go to the [Launchpad dashboard](https://launchpad-five-lilac.vercel.app/).
+2. Click **Sign in with GitHub**.
+3. Authorize Launchpad. The GitHub OAuth token lets Launchpad read the repos you
+   deploy (including private ones) and register push webhooks for auto-deploy.
 
 ---
 
-## Step 2: Create Cross-Account Role
+## Step 2 — Create an Infrastructure
 
-Launchpad assumes a role in your account for deployments. This provides better security than long-lived credentials.
+An *infrastructure* is one AWS environment (one VPC/cluster/ALB) that your apps run in.
 
-### 2.1 Create Role
+1. In the dashboard, click **Create Infrastructure**.
+2. Fill in:
+   - **Name** — e.g. `production`.
+   - **AWS Account ID** — your 12-digit account number (e.g. `123456789012`). This is
+     verified during onboarding: the setup script must run in *this* account.
+   - **Region** — the AWS region to provision in.
+   - **Max CPU / Max Memory** — the total vCPU/GB ceiling shared across all apps in this
+     infrastructure (a guardrail so a runaway app can't exhaust the account).
+3. Click **Create**.
 
-1. In AWS Console, go to **IAM** → **Roles** → **Create role**
-2. **Trusted entity type**: Select "AWS account"
-3. **An AWS account**: Select "Another AWS account"
-4. **Account ID**: Enter Launchpad's AWS account ID (provided by Launchpad)
-5. Click **Next**
+The infrastructure is created in `PENDING` state and the dashboard shows a
+**one-time onboarding token** plus a generated setup command. Nothing has been
+provisioned in AWS yet — that starts after Step 3.
 
-### 2.2 Attach Policies
-
-Attach the same policies as the IAM user:
-- `AmazonVPCFullAccess`
-- `AmazonECS_FullAccess`
-- `AmazonEC2ContainerRegistryFullAccess`
-- `ElasticLoadBalancingFullAccess`
-- `IAMFullAccess`
-- `AWSCodeBuildAdminAccess`
-- `CloudWatchLogsFullAccess`
-- `AmazonS3FullAccess`
-- `AmazonDynamoDBFullAccess`
-
-### 2.3 Name the Role
-
-**Role name**: `LaunchpadDeploymentRole`
-
-IMPORTANT: This exact name is required - Launchpad expects this role name.
-
-Click **Create role**
-
-### 2.4 Note Your Account ID
-
-You'll need your AWS Account ID for Launchpad:
-
-1. Click your account name in top-right corner
-2. Copy the **Account ID** (12-digit number)
-3. Example: `123456789012`
+> ⚠️ **The onboarding token is shown only once and expires in 24 hours.** Copy the
+> command now. If you lose it or it expires, delete the infrastructure and recreate
+> it to get a fresh token. The token is single-use and stored only as a hash on our
+> side — we cannot show it again.
 
 ---
 
-## Step 3: Sign Up for Launchpad
+## Step 3 — Run the AWS setup command
 
-1. Go to [Launchpad Platform](https://launchpad-five-lilac.vercel.app/)
-2. Click **Sign in with GitHub**
-3. Authorize Launchpad to access your GitHub repositories
+The dashboard generates a **Bootstrap script** snippet. It looks like this (the values
+are pre-filled for your infrastructure):
+
+```bash
+export LAUNCHPAD_INFRA_ID=<your-infra-uuid>
+export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
+export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/onboarding/callback
+export LAUNCHPAD_ONBOARDING_TOKEN=<one-time-token>
+curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
+```
+
+Run it in a shell that has admin (or sufficient IAM) access to the AWS account you
+named in Step 2 — **AWS CloudShell** in that account is the simplest option.
+
+What the script does:
+
+1. Creates the IAM role **`LaunchpadDeploymentRole`** (exact name required) with a
+   trust policy that allows **only** Launchpad's platform principal to assume it, and
+   **only** when presenting your infrastructure's `ExternalId` (a confused-deputy
+   guard — see [IAM_POLICIES.md](./IAM_POLICIES.md)).
+2. Attaches **`LaunchpadDeploymentPolicy`** (the permissions Launchpad needs — VPC,
+   ECS, ECR, ELB, CloudWatch Logs, S3, DynamoDB, CodeBuild, IAM, KMS).
+3. Calls back to Launchpad with your account ID and the onboarding token. Launchpad
+   verifies the token and that the account matches, assumes the role to confirm access,
+   then **automatically queues provisioning.**
+
+> The script is idempotent and safe to re-run — if the role already exists it refreshes
+> the trust policy in place. It requires the onboarding token to be valid (single-use,
+> 24-hour TTL); a re-run after the token is consumed will skip the callback.
+
+### What gets provisioned (in *your* account)
+
+VPC with public/private subnets · NAT Gateway · ECS (Fargate) cluster · Application
+Load Balancer · ECR repository · IAM service roles · S3 + DynamoDB for Terraform state.
+
+**Status** moves `PENDING → PROVISIONING → ACTIVE` (typically 5–10 minutes). If it ends
+in `ERROR`, the dashboard shows the reason; fix it and use **Reprovision**.
 
 ---
 
-## Step 4: Create Infrastructure
+## Step 4 — Prepare your application
 
-Infrastructure represents your AWS environment where applications will run.
+Your repo needs a `Dockerfile`. Two rules make deploys reliable:
 
-### 4.1 Create Infrastructure
-
-1. In Launchpad dashboard, click **Create Infrastructure**
-2. Fill in details:
-   - **Name**: `production` (or any name)
-   - **Cloud Provider**: AWS
-   - **AWS Account ID**: Your 12-digit account ID
-   - **Region**: `us-west-2` (or your preferred region)
-   - **Max CPU**: `4` (vCPU limit for all applications)
-   - **Max Memory**: `8` (GB limit for all applications)
-
-3. Click **Create**
-
-### 4.2 Wait for Provisioning
-
-Launchpad will provision infrastructure in your AWS account:
-- VPC with public/private subnets
-- NAT Gateway
-- ECS Cluster
-- Application Load Balancer
-- ECR Repository
-- IAM Roles
-
-**Time**: 5-10 minutes
-
-**Status**: Watch the status change from `PENDING` → `PROVISIONING` → `ACTIVE`
-
----
-
-## Step 5: Prepare Your Application
-
-Your application must have a Dockerfile in the repository.
-
-### 5.1 Create Dockerfile
-
-Example for Node.js application:
+- **Listen on `0.0.0.0`** (not `localhost`) and read the `PORT` env var.
+- **Respond to `GET /`** with any 2xx–4xx so the load balancer health check passes.
 
 ```dockerfile
-FROM node:18-alpine
-
+FROM public.ecr.aws/docker/library/node:18-alpine   # ECR Public avoids Docker Hub rate limits
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-
-# Install dependencies
 RUN npm install --production
-
-# Copy application code
 COPY . .
-
-# Expose port
-EXPOSE 8000
-
-# Start application
+EXPOSE 8080
 CMD ["npm", "start"]
 ```
 
-### 5.2 Commit and Push
+```js
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, "0.0.0.0");
+```
+
+See [DEPLOYMENT_EDGE_CASES.md](./DEPLOYMENT_EDGE_CASES.md) for port/health-check pitfalls.
+
+---
+
+## Step 5 — Create and deploy an Application
+
+1. In the infrastructure, click **Create Application** and fill in:
+   - **Name** — used in the app's URL path.
+   - **Repository URL** and **Branch**.
+   - **Dockerfile path** — default `Dockerfile`.
+   - **CPU / Memory** — must fit a valid Fargate combination (see Resource Limits) and
+     stay within the infrastructure's remaining quota.
+   - **Environment variables** — your app's config.
+2. The first deployment starts automatically. Status moves
+   `CREATED → BUILDING → PUSHING_IMAGE → DEPLOYING → ACTIVE`:
+   - **BUILDING** — CodeBuild builds your image (in your account).
+   - **PUSHING_IMAGE** — image pushed to ECR.
+   - **DEPLOYING** — ECS service + ALB rule created.
+   - **ACTIVE** — reachable at `http://<alb-dns>/<app-name>`.
+
+---
+
+## Step 6 — Auto-deploy on `git push` (optional)
+
+Launchpad can redeploy automatically whenever you push to the tracked branch.
+
+1. On the application page, click **Generate webhook secret**. The dashboard shows a
+   **webhook URL** and a **secret** (shown once).
+2. In GitHub: **Settings → Webhooks → Add webhook**. Paste the URL and secret, set
+   **Content type** to `application/json`, and select **Just the push event**.
+3. Pushes to your tracked branch now trigger a deploy. Each delivery is HMAC-verified
+   and de-duplicated, so redeliveries/retries won't double-deploy.
+
+Re-generating the secret rotates it (the old one stops working immediately).
+
+---
+
+## Keeping IAM permissions current — the refresh script
+
+Occasionally Launchpad widens the IAM permissions it needs (new AWS features). When
+that happens, deployments may start failing with `AccessDenied`. The dashboard provides
+a **Refresh policy script** (`update_aws_role.sh`) that re-applies the latest
+`LaunchpadDeploymentPolicy` and trust policy in place — no need to recreate anything.
+
+The refresh snippet includes a **per-user API key** so Launchpad can record *who* ran
+the refresh, against which account, and when:
 
 ```bash
-git add Dockerfile
-git commit -m "Add Dockerfile"
-git push origin main
+export LAUNCHPAD_INFRA_ID=<your-infra-uuid>
+export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
+export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/policy-refresh/callback
+export LAUNCHPAD_API_KEY=<generated-key>
+curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/update_aws_role.sh | bash
 ```
 
----
-
-## Step 6: Deploy Application
-
-### 6.1 Create Application
-
-1. In Launchpad, click **Create Application**
-2. Fill in details:
-
-**Field Descriptions**:
-- `name`: Application name (used in URL)
-- `infrastructure_id`: From Step 4
-- `project_remote_url`: Your GitHub repository URL
-- `project_branch`: Branch to deploy
-- `project_commit_hash`: Commit hash or "HEAD"
-- `dockerfile_path`: Path to Dockerfile (default: "Dockerfile")
-- `alloted_cpu`: CPU allocation in vCPU (0.25, 0.5, 1, 2, 4)
-- `alloted_memory`: Memory in GB (0.5, 1, 2, 4, 8, 16)
-- `envs`: Environment variables for your application
-
-3. Click **Create**
-
-### 6.2 Deploy Application
-
-1. Click **Deploy** on your application
-2. Wait for deployment (5-15 minutes)
-
-**Deployment Steps**:
-- `BUILDING`: CodeBuild clones repo and builds Docker image
-- `PUSHING_IMAGE`: Image pushed to ECR
-- `DEPLOYING`: ECS service created
-- `ACTIVE`: Application running
-
-### 6.3 Access Your Application
-
-Once status is `ACTIVE`, your application is accessible at:
-
-```
-http://<alb-dns>/<app-name>
-```
-
-Example:
-```
-http://my-alb-123456.us-west-2.elb.amazonaws.com/my-api
-```
-
----
-
-## Step 7: Monitor Your Application
-
-### 7.1 CloudWatch Logs
-
-View application logs in AWS Console:
-
-1. Go to **CloudWatch** → **Log groups**
-2. Find `/ecs/<app-name>-task`
-3. View real-time logs
-
-### 7.2 ECS Service
-
-Monitor container health:
-
-1. Go to **ECS** → **Clusters**
-2. Click your cluster
-3. View services and tasks
-
-### 7.3 Cost Monitoring
-
-All resources run in **your AWS account**. Monitor costs:
-
-1. Go to **AWS Cost Explorer**
-2. Filter by service: ECS, ECR, ALB, NAT Gateway
+Click **Generate API key** next to the snippet to fill in `LAUNCHPAD_API_KEY`. The key
+is shown once and stored only as a hash; generating a new one revokes the previous key.
+The attribution callback is best-effort — if it can't reach Launchpad the IAM refresh
+still succeeded.
 
 ---
 
 ## Resource Limits
 
-### CPU and Memory Combinations (Fargate)
+### Fargate CPU/Memory combinations
 
 | CPU (vCPU) | Memory (GB) |
 |------------|-------------|
-| 0.25       | 0.5 - 2     |
-| 0.5        | 1 - 4       |
-| 1          | 2 - 8       |
-| 2          | 4 - 16      |
-| 4          | 8 - 30      |
+| 0.25       | 0.5 – 2     |
+| 0.5        | 1 – 4       |
+| 1          | 2 – 8       |
+| 2          | 4 – 16      |
+| 4          | 8 – 30      |
 
-### Infrastructure Limits
+### Infrastructure quota
 
-Set during infrastructure creation:
-- `max_cpu`: Total CPU across all applications
-- `max_memory`: Total memory across all applications
-
-Example: If `max_cpu = 4`, you can run:
-- 4 apps with 1 vCPU each, OR
-- 8 apps with 0.5 vCPU each, OR
-- Any combination totaling ≤ 4 vCPU
+`max_cpu` / `max_memory` cap the total across all apps in an infrastructure. Example:
+with `max_cpu = 4` you can run four 1-vCPU apps, eight 0.5-vCPU apps, or any combination
+totalling ≤ 4 vCPU. Raise the limits in infrastructure settings, or delete unused apps.
 
 ---
 
-## Security Best Practices
+## Monitoring
 
-### 1. IAM Credentials
-
-- Create dedicated IAM user for Launchpad
-- Use cross-account role (AssumeRole)
-- Never share credentials
-- ✅ Rotate credentials regularly
-- ❌ Don't use root account credentials
-
-### 2. Secrets Management
-
-- Store secrets in environment variables
-- Use AWS Secrets Manager for sensitive data (future)
-- Never commit secrets to Git
-
-### 3. Network Security
-
-- Applications run in private subnets
-- Only ALB is publicly accessible
-- Use security groups to restrict access
-
-### 4. Access Control
-
-- Use GitHub repository permissions
-- Invite team members through Launchpad
-- Review IAM policies regularly
-
----
-
-## Troubleshooting
-
-### Infrastructure Provisioning Failed
-
-**Check**:
-1. IAM role `LaunchpadDeploymentRole` exists
-2. Role has correct policies attached
-3. AWS Account ID is correct
-4. Region is supported
-
-**View Logs**:
-- Launchpad dashboard shows error message
-- Check AWS CloudTrail for API errors
-
-### Application Deployment Failed
-
-**Common Issues**:
-
-1. **Build Failed**
-   - Check Dockerfile syntax
-   - Verify repository is accessible
-   - Check CodeBuild logs in AWS Console
-
-2. **Container Won't Start**
-   - Check CloudWatch logs
-   - Verify PORT environment variable
-   - Ensure application listens on correct port
-
-3. **Out of Resources**
-   - Check infrastructure CPU/memory limits
-   - Reduce application resource allocation
-   - Delete unused applications
-
-### Application Not Accessible
-
-**Check**:
-1. Application status is `ACTIVE`
-2. ALB health checks passing
-3. Security groups allow traffic
-4. Application listens on port 8000
-
----
-
-## Cost Estimation
-
-### Monthly Costs (Example)
-
-**Infrastructure** (always running):
-- VPC: Free
-- NAT Gateway: ~$32/month
-- ALB: ~$16/month + data transfer
-- ECS Cluster: Free (pay for tasks)
-
-**Per Application**:
-- ECS Fargate (0.5 vCPU, 1GB): ~$15/month
-- ECR Storage: ~$0.10/GB/month
-- CodeBuild: ~$0.005/build minute
-
-**Example**: 3 small applications
-- Infrastructure: ~$50/month
-- Applications: ~$45/month
-- **Total**: ~$95/month
-
-💡 **Tip**: Use AWS Cost Calculator for accurate estimates
+- **App logs** — CloudWatch log group `/ecs/<app-name>-task`.
+- **Build logs** — `/aws/codebuild/launchpad-build-<infra-id>`.
+- **Containers** — ECS → Clusters → your cluster → services/tasks.
+- **Cost** — everything runs in your account; use AWS Cost Explorer (filter ECS/ECR/ALB/
+  NAT Gateway).
 
 ---
 
 ## Cleanup
 
-### Delete Application
-
-1. In Launchpad, click application
-2. Click **Delete**
-3. Confirm deletion
-
-Resources deleted:
-- ECS Service
-- Task Definition
-- Target Group
-- ALB Listener Rule
-
-### Delete Infrastructure
-
-1. Click infrastructure
-2. Click **Delete**
-3. Wait for destruction (5-10 minutes)
-
-Resources deleted:
-- All applications
-- ECS Cluster
-- ALB
-- NAT Gateway
-- VPC
-- ECR Repository
-
-⚠️ **Warning**: This deletes all applications in the infrastructure
+- **Delete Application** — removes its ECS service, task definition, target group, and
+  ALB listener rule.
+- **Delete Infrastructure** — tears down the whole environment (VPC, NAT, ALB, ECS, ECR,
+  state). You must delete all applications first. A `PENDING` infrastructure that was
+  never onboarded can be deleted immediately.
+- **Revoke Launchpad's access** — delete `LaunchpadDeploymentRole` and
+  `LaunchpadDeploymentPolicy` in your account (clean up provisioned resources first).
+  See [IAM_POLICIES.md](./IAM_POLICIES.md#revoking-access).
 
 ---
 
-## Support
+## Security model (how your account stays yours)
 
-### Documentation
-- [API Reference](https://launchpad-five-lilac.vercel.app/) (check /docs in the api gateway's endpoint)
-- [GitHub Examples](https://github.com/MohamedAklamaash/launchpad/tree/main/docs) (for developers)
+- **No long-lived keys.** Launchpad assumes `LaunchpadDeploymentRole` via STS; the
+  session credentials expire (~1h) and are refreshed as needed. They are never returned
+  through the API.
+- **Confused-deputy protection.** The role's trust policy requires both Launchpad's
+  platform principal *and* your infrastructure's `ExternalId`. Treat the setup command
+  as sensitive while onboarding.
+- **Single-use onboarding token**, hashed at rest, 24-hour TTL.
+- **Per-app webhook secrets** with HMAC verification and delivery de-duplication.
+- **Network isolation** — apps run in private subnets; only the ALB is public.
 
-
-### Contact
-- Email: [EMAIL_ADDRESS](https://mail.google.com/mail/u/0/?fs=1&to=aklamaash78@gmail.com&su=Hello!&tf=cm)
 ---
 
-## Next Steps
+## Troubleshooting
 
-1. ✅ Set up AWS IAM user and role
-2. ✅ Create infrastructure
-3. ✅ Deploy first application
-4. 🚀 Set up custom domain (coming soon)
-5. 🚀 Enable HTTPS (coming soon)
-6. 🚀 Configure auto-scaling (coming soon)
+### Onboarding didn't start provisioning
+- Confirm the setup command ran in the AWS account whose ID you entered (it must match).
+- Confirm the onboarding token hadn't expired (24h) — if so, recreate the infrastructure.
+- Re-run the bootstrap command; it's safe to re-run.
+
+### Provisioning failed (`ERROR`)
+- The dashboard shows the reason. Common causes: the IAM role/policy wasn't created
+  (re-run the bootstrap script), an unsupported region, or a service quota in your
+  account. Use **Reprovision** after fixing.
+
+### Deployments fail with `AccessDenied`
+- Run the **Refresh policy script** (`update_aws_role.sh`) — Launchpad's required
+  permissions likely widened since you onboarded.
+
+### Application won't deploy or isn't reachable
+- See [DEPLOYMENT_EDGE_CASES.md](./DEPLOYMENT_EDGE_CASES.md): port detection, health
+  checks on `GET /`, Docker Hub rate limits, and the CloudWatch/ECS debugging checklist.
 
 ---
 
 ## FAQ
 
-**Q: Do you store my AWS credentials?**
-A: We store temporary session credentials obtained via AssumeRole. These expire after 1 hour and are automatically refreshed.
+**Do you store my AWS credentials?** No long-lived keys. We use temporary STS session
+credentials from AssumeRole (≈1-hour lifetime, auto-refreshed) and never return them via
+the API.
 
-**Q: Can I use my existing VPC?**
-A: Not currently. Launchpad creates a dedicated VPC for isolation.
+**Why an ExternalId / onboarding token?** They prevent anyone else from binding *your*
+account to Launchpad and stop a confused-deputy attack on the assume-role.
 
-**Q: What regions are supported?**
-A: All AWS regions. Specify during infrastructure creation. This is restricted in UI as of now to us-west-2, will fix it later.
+**Can I use my existing VPC?** Not yet — Launchpad provisions a dedicated VPC for isolation.
 
-**Q: Can I SSH into containers?**
-A: No. Use CloudWatch Logs for debugging. ECS Exec coming soon.
+**What regions are supported?** Selectable at infrastructure creation (the UI may
+restrict the list while the feature stabilizes).
 
-**Q: How do I update my application?**
-A: Update your code, push to GitHub, and click Deploy again in Launchpad.
+**Can I SSH into containers?** No. Use CloudWatch Logs. ECS Exec is planned.
 
-**Q: Can I use private GitHub repositories?**
-A: Yes. Launchpad uses your GitHub OAuth token to access private repos.
+**How do I update my app?** Push to the tracked branch (with the webhook configured), or
+click **Deploy** again in the dashboard.
 
-**Q: What if I hit resource limits?**
-A: Increase `max_cpu` and `max_memory` in infrastructure settings, or delete unused applications.
+**Can I deploy databases?** Not managed by Launchpad — use AWS RDS for production databases.
 
-**Q: Can I deploy databases?**
-A: Not supported right now, please use AWS RDS for production databases.
+**Is there a free tier?** The Launchpad platform is free; you pay only for the AWS
+resources in your own account.
 
-**Q: Is there a free tier?**
-A: Launchpad platform is free. You pay only for AWS resources in your account.
+---
 
-**Q: Can I export my infrastructure?**
-A: Yes. All infrastructure is defined in Terraform. Check your s3 for terraform logs, contact support for terraform export.
+## Support
+
+- **API reference** — `/docs` on the API gateway endpoint.
+- **Scripts** — [`app_scripts/`](https://github.com/MohamedAklamaash/launchpad/tree/main/app_scripts).
+- **Contact** — aklamaash78@gmail.com
