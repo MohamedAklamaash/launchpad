@@ -67,3 +67,11 @@ def test_normalize_rejects_path_on_infrastructure_service_url(settings_cls):
     with pytest.raises(ValidationError) as exc_info:
         settings_cls(INFRASTRUCTURE_SERVICE_URL="http://infra:8002/v2/whatever")
     assert "INFRASTRUCTURE_SERVICE_URL" in str(exc_info.value)
+
+
+def test_normalize_rejects_url_without_scheme(settings_cls):
+    # "host:port" with no scheme parses with an empty netloc — must be rejected,
+    # not silently accepted as a broken base URL.
+    with pytest.raises(ValidationError) as exc_info:
+        settings_cls(AUTH_SERVICE_URL="auth-service:5001")
+    assert "AUTH_SERVICE_URL" in str(exc_info.value)

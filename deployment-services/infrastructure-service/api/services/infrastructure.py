@@ -93,7 +93,9 @@ class InfrastructureService:
             try:
                 env = Environment.objects.get(infrastructure_id=infra_id)
 
-                if env.status in ['PENDING', 'PROVISIONING']:
+                # PROVISIONING/DESTROYING have a Terraform run in flight — deleting now
+                # would orphan or race live AWS resources, so block.
+                if env.status == 'PROVISIONING':
                     raise ValueError(f"Cannot delete while status is {env.status}. Wait for provisioning to complete.")
 
                 if env.status == 'DESTROYING':
@@ -106,7 +108,10 @@ class InfrastructureService:
                     logger.info(f"Infrastructure {infra_id} destroy enqueued")
                     return True  # Don't delete DB records yet — worker handles that
 
-                # ERROR or DESTROYED — no live AWS resources, delete immediately
+                # PENDING (created, onboarding not finished — no AssumeRole, no Terraform),
+                # ERROR, or DESTROYED: no live AWS resources, delete immediately. Without
+                # this a customer who created an infra but never ran the bootstrap script
+                # would be stuck with an undeletable PENDING record.
                 logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records")
                 env.delete()
 

@@ -32,14 +32,20 @@ const envSchema = z.object({
         (u) => {
             try {
                 const url = new URL(u);
-                return url.pathname === '/' || url.pathname === '';
+                // Origin only: reject any path, query, or fragment. GITHUB_REDIRECT_URI is
+                // derived from this, and a stray ?x= or #y would corrupt the OAuth callback.
+                return (
+                    (url.pathname === '/' || url.pathname === '') &&
+                    url.search === '' &&
+                    url.hash === ''
+                );
             } catch {
                 return false;
             }
         },
         {
             message:
-                'GATEWAY_URL must be scheme://host[:port] only (no path). Use just the origin.',
+                'GATEWAY_URL must be scheme://host[:port] only (no path, query, or fragment). Use just the origin.',
         },
     ),
 

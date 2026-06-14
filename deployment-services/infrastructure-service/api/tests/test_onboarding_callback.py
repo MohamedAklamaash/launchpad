@@ -7,12 +7,23 @@ import pytest
 from rest_framework.test import APIRequestFactory
 
 
-# Stub the InfraQueue module BEFORE the view imports it. The real module touches
-# Redis at import-time (creates connection pools), which we don't want in unit
-# tests.
-fake_infra_queue_mod = types.ModuleType("api.services.infra_queue")
-fake_infra_queue_mod.InfraQueue = MagicMock()
-sys.modules.setdefault("api.services.infra_queue", fake_infra_queue_mod)
+@pytest.fixture(autouse=True)
+def _stub_infra_queue():
+    """Stub the InfraQueue module the view imports lazily — the real module opens
+    Redis connection pools at import time. Installed per-test and restored on
+    teardown so it doesn't leak the fake into other test modules in the same run.
+    """
+    previous = sys.modules.get("api.services.infra_queue")
+    fake = types.ModuleType("api.services.infra_queue")
+    fake.InfraQueue = MagicMock()
+    sys.modules["api.services.infra_queue"] = fake
+    try:
+        yield
+    finally:
+        if previous is not None:
+            sys.modules["api.services.infra_queue"] = previous
+        else:
+            sys.modules.pop("api.services.infra_queue", None)
 
 
 @pytest.fixture
@@ -154,6 +165,19 @@ def test_returns_403_when_token_already_used(factory, view, make_infra):
     response = _post_callback(factory, view, infra, token)
     assert response.status_code == 403
     assert response.data["error"] == "Onboarding token already used"
+
+
+def test_returns_403_when_token_expired(factory, view, make_infra):
+    from datetime import timedelta
+    from django.utils import timezone
+
+    infra = make_infra(code="123456789012")
+    token = infra.issue_onboarding_token()
+    infra.onboarding_token_expires_at = timezone.now() - timedelta(minutes=1)
+    infra.save(update_fields=["onboarding_token_expires_at"])
+    response = _post_callback(factory, view, infra, token)
+    assert response.status_code == 403
+    assert "expired" in response.data["error"].lower()
 
 
 def test_happy_path_returns_202_burns_token_and_enqueues_provision(

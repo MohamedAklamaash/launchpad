@@ -7,8 +7,8 @@ Background
 `create_aws_role.sh` and `update_aws_role.sh` each embed the same IAM policy
 JSON inside a heredoc. They have drifted before (codebuild:* was dropped from
 update_aws_role.sh, which silently broke `create_project` for any customer who
-ran the refresh script). This check parses the first Statement's Action array
-out of each script and fails CI if the two sets disagree.
+ran the refresh script). This check parses the Action entries across ALL
+statements of each script and fails CI if the two sets disagree.
 
 Run locally:
     python3 app_scripts/_check_policy_sync.py
@@ -34,7 +34,7 @@ _POLICY_HEREDOC_RE = re.compile(
 )
 
 
-def _extract_first_statement_actions(script_path: Path) -> list[str]:
+def _extract_all_actions(script_path: Path) -> list[str]:
     text = script_path.read_text()
     match = _POLICY_HEREDOC_RE.search(text)
     if not match:
@@ -49,17 +49,27 @@ def _extract_first_statement_actions(script_path: Path) -> list[str]:
     statements = policy.get("Statement") or []
     if not statements:
         raise SystemExit(f"{script_path}: policy has no Statement entries")
-    actions = statements[0].get("Action")
-    if not isinstance(actions, list):
-        raise SystemExit(
-            f"{script_path}: first Statement.Action must be a list, got {type(actions).__name__}"
-        )
+
+    # Collect Action across every statement — drift in iam:* / kms:* (their own
+    # statements) was previously invisible because only Statement[0] was checked.
+    actions: list[str] = []
+    for i, statement in enumerate(statements):
+        action = statement.get("Action")
+        if isinstance(action, str):
+            actions.append(action)
+        elif isinstance(action, list):
+            actions.extend(action)
+        else:
+            raise SystemExit(
+                f"{script_path}: Statement[{i}].Action must be a string or list, "
+                f"got {type(action).__name__}"
+            )
     return actions
 
 
 def main() -> int:
     actions_by_script = {
-        script.name: _extract_first_statement_actions(script) for script in SCRIPTS
+        script.name: _extract_all_actions(script) for script in SCRIPTS
     }
 
     # Use set semantics — order in the JSON does not affect IAM evaluation, and
@@ -68,8 +78,8 @@ def main() -> int:
     create, update = "create_aws_role.sh", "update_aws_role.sh"
     if sets[create] == sets[update]:
         print(
-            f"OK: {create} and {update} share {len(sets[create])} actions in the "
-            "first Statement."
+            f"OK: {create} and {update} share {len(sets[create])} actions across "
+            "all statements."
         )
         return 0
 

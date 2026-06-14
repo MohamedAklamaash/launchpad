@@ -39,7 +39,10 @@ class InternalAuthMiddleware:
             path == exempt or path == exempt.rstrip('/')
             for exempt in self.exempt_paths
         ) or any(
-            path.startswith(prefix) for prefix in self.exempt_prefixes
+            # Require the match to end at a path boundary so a prefix like
+            # "/api/v1/webhooks/" can't also exempt "/api/v1/webhooks-internal/...".
+            path == prefix.rstrip('/') or path.startswith(prefix if prefix.endswith('/') else prefix + '/')
+            for prefix in self.exempt_prefixes
         )
 
         if not is_exempt:

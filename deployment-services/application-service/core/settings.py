@@ -117,7 +117,16 @@ INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
 
 # Public-facing gateway URL used when generating webhook URLs to hand to GitHub.
-PUBLIC_GATEWAY_URL = os.environ.get("PUBLIC_GATEWAY_URL", "http://localhost:8000")
+# Normalized to scheme://host[:port] at load — a value with a trailing path/slash
+# would otherwise produce malformed webhook URLs registered in GitHub.
+def _origin_only(raw: str) -> str:
+    from urllib.parse import urlparse
+    parsed = urlparse(raw.strip())
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return raw.strip().rstrip("/")
+
+PUBLIC_GATEWAY_URL = _origin_only(os.environ.get("PUBLIC_GATEWAY_URL", "http://localhost:8000"))
 
 DJANGO_PORT = app_config.django_port
 
