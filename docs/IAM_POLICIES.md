@@ -8,33 +8,46 @@ This document defines the IAM policies required for Launchpad to operate in your
 
 ## Automated Setup (Recommended)
 
-Use our setup script to automatically configure IAM role and policies:
+**You do not run these scripts by hand from this doc.** The Launchpad dashboard generates
+the exact command — with your infrastructure's IDs, callback URL, and one-time onboarding
+token pre-filled — when you create an infrastructure. Copy it from there and run it in a
+shell with access to your AWS account. See the
+[User Onboarding Guide](./USER_ONBOARDING_GUIDE.md#step-3--run-the-aws-setup-command).
+
+The generated bootstrap command looks like:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/launchpad/setup/main/create_aws_role.sh | bash
-```
-
-Or download and run manually:
-```bash
-wget https://raw.githubusercontent.com/launchpad/setup/main/create_aws_role.sh
-chmod +x create_aws_role.sh
-./create_aws_role.sh
+export LAUNCHPAD_INFRA_ID=<your-infra-uuid>
+export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
+export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/onboarding/callback
+export LAUNCHPAD_ONBOARDING_TOKEN=<one-time-token>
+curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
 ```
 
 The script creates:
 - IAM role: `LaunchpadDeploymentRole`
 - IAM policy: `LaunchpadDeploymentPolicy`
-- Trust relationship with Launchpad platform account
+- A trust relationship scoped to the Launchpad platform principal **and** your
+  infrastructure's `ExternalId`
+- A callback to Launchpad that verifies the token and starts provisioning
+
+It is idempotent: re-running refreshes the trust policy in place. There is also a
+**refresh script** (`update_aws_role.sh`) for when Launchpad's required permissions widen
+— see [Keeping the policy current](#keeping-the-policy-current).
 
 ---
 
 ## Manual Setup
 
-If you prefer manual setup, follow these instructions.
+If you prefer to configure the role by hand instead of running the script, follow these
+instructions. **You must include the `ExternalId` condition** — the backend always
+presents it on AssumeRole, so a trust policy without it will fail with `AccessDenied`.
 
 ### Trust Policy for Cross-Account Role
 
-Create role `LaunchpadDeploymentRole` with this trust policy:
+Create role `LaunchpadDeploymentRole` with this trust policy. Replace
+`<YOUR_INFRA_ID>` with the infrastructure UUID shown in the dashboard (this is the
+`ExternalId`):
 
 ```json
 {
@@ -45,7 +58,10 @@ Create role `LaunchpadDeploymentRole` with this trust policy:
       "Principal": {
         "AWS": "arn:aws:iam::221082203366:user/aklamaash-terraform"
       },
-      "Action": "sts:AssumeRole"
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": { "sts:ExternalId": "<YOUR_INFRA_ID>" }
+      }
     }
   ]
 }
@@ -55,6 +71,7 @@ Create role `LaunchpadDeploymentRole` with this trust policy:
 - Platform Account ID: `221082203366`
 - Platform User: `aklamaash-terraform`
 - Role Name: `LaunchpadDeploymentRole` (exact name required)
+- `sts:ExternalId`: your infrastructure UUID (required — prevents confused-deputy abuse)
 
 ### Deployment Policy
 
@@ -96,44 +113,33 @@ Attach this policy to the role:
 
 ## Setup Instructions
 
-### Using Automated Script (Recommended)
+### Using the dashboard-generated script (Recommended)
 
-```bash
-# Download and run
-curl -fsSL https://raw.githubusercontent.com/launchpad/setup/main/create_aws_role.sh | bash
-
-# Or manually
-wget https://raw.githubusercontent.com/launchpad/setup/main/create_aws_role.sh
-chmod +x create_aws_role.sh
-./create_aws_role.sh
-```
+Create the infrastructure in the dashboard and run the command it generates (it carries
+your IDs + one-time token). See the
+[User Onboarding Guide](./USER_ONBOARDING_GUIDE.md#step-3--run-the-aws-setup-command).
+The script source lives at
+[`app_scripts/create_aws_role.sh`](https://github.com/MohamedAklamaash/launchpad/blob/main/app_scripts/create_aws_role.sh);
+the dashboard pins it to a specific commit and injects the env vars.
 
 ### Using AWS Console
 
-1. **Create Role**:
-   - Go to IAM → Roles → Create role
-   - Select "AWS account" → "Another AWS account"
-   - Enter Account ID: `221082203366`
-   - Click Next
-   - Click "Create policy" (opens new tab)
-   - Paste the deployment policy JSON above
-   - Name: `LaunchpadDeploymentPolicy`
-   - Return to role creation tab
-   - Attach `LaunchpadDeploymentPolicy`
-   - Name: `LaunchpadDeploymentRole`
-   - Click Create role
-
-2. **Update Trust Policy**:
-   - Open the role
-   - Click "Trust relationships" tab
-   - Click "Edit trust policy"
-   - Replace with trust policy above
-   - Save changes
+1. **Create the policy**: IAM → Policies → Create policy → paste the deployment policy
+   JSON above → name it `LaunchpadDeploymentPolicy`.
+2. **Create the role**: IAM → Roles → Create role → "AWS account" → "Another AWS account"
+   → Account ID `221082203366`. **Check "Require external ID"** and enter your
+   infrastructure UUID. Attach `LaunchpadDeploymentPolicy`. Name the role
+   `LaunchpadDeploymentRole`.
+3. **Verify the trust policy** matches the JSON above (principal scoped to
+   `aklamaash-terraform` and the `sts:ExternalId` condition present).
 
 ### Using AWS CLI
 
 ```bash
-# Create trust policy file
+# Your infrastructure UUID from the dashboard — also used as the ExternalId.
+INFRA_ID=<YOUR_INFRA_ID>
+
+# Create trust policy file (note the ExternalId condition — required)
 cat > trust-policy.json <<EOF
 {
   "Version": "2012-10-17",
@@ -143,7 +149,10 @@ cat > trust-policy.json <<EOF
       "Principal": {
         "AWS": "arn:aws:iam::221082203366:user/aklamaash-terraform"
       },
-      "Action": "sts:AssumeRole"
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": { "sts:ExternalId": "${INFRA_ID}" }
+      }
     }
   ]
 }
@@ -205,6 +214,25 @@ rm trust-policy.json deployment-policy.json
 
 echo "Role ARN: arn:aws:iam::${ACCOUNT_ID}:role/LaunchpadDeploymentRole"
 ```
+
+---
+
+## Keeping the policy current
+
+When Launchpad adds capabilities, `LaunchpadDeploymentPolicy` may gain actions. If your
+deployments start failing with `AccessDenied`, run the **refresh script**
+(`update_aws_role.sh`) — surfaced in the dashboard as the *Refresh policy script*. It
+re-applies the latest policy **and** trust policy in place; you don't recreate the role.
+
+The two scripts deliberately keep an identical action list (a CI check,
+`app_scripts/_check_policy_sync.py`, fails the build if they drift), so the refresh never
+narrows your permissions by accident.
+
+The refresh snippet also carries a **per-user API key** (`LAUNCHPAD_API_KEY`) and posts to
+a policy-refresh callback so Launchpad records who ran the refresh, against which account,
+and when. The key is issued from the dashboard ("Generate API key"), shown once, stored
+only as a hash, and rotated on re-issue. This attribution callback is best-effort — if it
+can't reach Launchpad, the IAM update still succeeds.
 
 ---
 
@@ -282,9 +310,12 @@ The policy grants broad permissions within specific services. This is necessary 
 The trust policy is restricted to:
 - **Specific Account**: `221082203366` (Launchpad platform)
 - **Specific User**: `aklamaash-terraform` (not account root)
+- **Specific ExternalId**: your infrastructure UUID — the backend must present this exact
+  value on AssumeRole, which blocks confused-deputy abuse even if someone learns your
+  account ID and role name
 - **AssumeRole Only**: No direct access to resources
 
-This is more secure than trusting the entire account root.
+This is far more secure than trusting the entire account root.
 
 ### Recommendations
 
@@ -296,12 +327,6 @@ This is more secure than trusting the entire account root.
 
 ---
 
-## Permission Breakdown
-
-### Why Each Permission is Needed
-
----
-
 ## Troubleshooting
 
 ### Permission Denied Errors
@@ -309,19 +334,26 @@ This is more secure than trusting the entire account root.
 If you see permission errors:
 
 1. **Check Role Name**: Must be exactly `LaunchpadDeploymentRole`
-2. **Check Trust Policy**: Launchpad account ID must be correct
+2. **Check Trust Policy**: Launchpad account ID must be correct **and** the
+   `sts:ExternalId` condition must equal your infrastructure UUID. A missing or wrong
+   ExternalId is the most common cause of `AccessDenied` right after onboarding —
+   re-run the bootstrap/refresh script to fix the trust policy in place.
 3. **Check Policy Attachment**: Policy must be attached to role
 4. **Check Region**: Some services are region-specific
+5. **Permissions widened?**: Run the refresh script (`update_aws_role.sh`) to pick up
+   newly required actions.
 
 ### Testing Permissions
 
 Test if role is configured correctly:
 
 ```bash
-# Assume the role
+# Assume the role (the --external-id must match your infrastructure UUID,
+# exactly as the backend sends it)
 aws sts assume-role \
   --role-arn arn:aws:iam::<YOUR_ACCOUNT_ID>:role/LaunchpadDeploymentRole \
-  --role-session-name test-session
+  --role-session-name test-session \
+  --external-id <YOUR_INFRA_ID>
 
 # Use temporary credentials to test
 export AWS_ACCESS_KEY_ID=<from above>
@@ -357,5 +389,5 @@ WARNING: This will prevent Launchpad from managing your infrastructure. Clean up
 This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
-**Version**: 1.0.0  
-**Last Updated**: 2026-03-23
+**Version**: 2.0.0  
+**Last Updated**: 2026-06-14
