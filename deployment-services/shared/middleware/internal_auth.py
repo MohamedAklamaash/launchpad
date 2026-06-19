@@ -52,7 +52,7 @@ class InternalAuthMiddleware:
 
             # Constant-time compare: a plain != is a timing oracle on the shared
             # service-to-service token (the entire S2S trust boundary).
-            if not token or not secrets.compare_digest(str(token), str(self.expected_token)):
+            if not token or not secrets.compare_digest(token, self.expected_token):
                 return JsonResponse(
                     {
                         "message": "Unauthorized in Internal middleware",

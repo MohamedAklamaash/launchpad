@@ -49,7 +49,7 @@ class InfrastructureService:
         # (is_cloud_authenticated, onboarding_token_*, id, user) and subvert the
         # onboarding state machine.
         ALLOWED_CREATE_FIELDS = {"name", "cloud_provider", "max_cpu", "max_memory", "code", "metadata"}
-        infra_data = {k: v for k, v in dict(infra_data).items() if k in ALLOWED_CREATE_FIELDS}
+        infra_data = {k: v for k, v in infra_data.items() if k in ALLOWED_CREATE_FIELDS}
         if isinstance(infra_data.get("metadata"), dict):
             # Never let a caller seed credential keys into metadata (it's serialized back
             # out, and the worker treats these keys as live STS creds).

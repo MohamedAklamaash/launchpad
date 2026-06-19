@@ -36,6 +36,7 @@ def test_to_dict_strips_sts_credentials():
     assert "aws_secret_access_key" not in meta
     assert "aws_access_key_id" not in meta
     assert "aws_session_token" not in meta
+    assert "expiration" not in meta
     # Non-sensitive config is preserved.
     assert meta["aws_region"] == "us-east-1"
     assert meta["vpc_cidr"] == "10.0.0.0/16"

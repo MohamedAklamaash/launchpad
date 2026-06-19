@@ -86,7 +86,7 @@ class ApplicationService:
     @transaction.atomic
     def create_application(self, user, data: dict):
         """Create a new application after validating user authorization and infra capacity."""
-        data = {k: v for k, v in dict(data).items() if k not in self._PROTECTED_CREATE_FIELDS}
+        data = {k: v for k, v in data.items() if k not in self._PROTECTED_CREATE_FIELDS}
         infra_id = data.get("infrastructure_id")
         if not infra_id:
             raise ValueError("Infrastructure ID is required")
