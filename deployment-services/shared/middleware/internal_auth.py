@@ -1,3 +1,5 @@
+import secrets
+
 from django.conf import settings
 from django.http import JsonResponse
 
@@ -48,7 +50,9 @@ class InternalAuthMiddleware:
         if not is_exempt:
             token = request.META.get(self.header_meta_key)
 
-            if not token or token != self.expected_token:
+            # Constant-time compare: a plain != is a timing oracle on the shared
+            # service-to-service token (the entire S2S trust boundary).
+            if not token or not secrets.compare_digest(token, self.expected_token):
                 return JsonResponse(
                     {
                         "message": "Unauthorized in Internal middleware",

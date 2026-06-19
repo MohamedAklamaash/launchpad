@@ -4,10 +4,6 @@ from shared.errors.exception import HttpError
 import logging
 from django.http import JsonResponse
 
-def my_view(request):
-    data = {'message': 'Hello, world!', 'status': 'success'}
-    return JsonResponse(data)
-    
 logger = logging.getLogger(__name__)
 
 EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/health", "/api/v1/healthz", "/api/v1/liveness", "/api/v1/readiness", "/api/v1/docs", "/api/v1/schema", "/api/v1/webhooks/"]
@@ -32,7 +28,8 @@ class JWTAuthMiddleware:
 
         try:
             auth_header = request.headers.get("Authorization")
-            logger.info(f"Authorization header: {auth_header}")
+            # Never log the header value — it's a bearer JWT. Log only presence.
+            logger.debug("Authorization header present: %s", bool(auth_header))
             if not auth_header:
                 raise HttpError("Authorization header is required", status_code=401)
 
