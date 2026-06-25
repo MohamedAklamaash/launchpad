@@ -1,14 +1,42 @@
+import logging
+
 import boto3
 from api.models.infrastructure import Infrastructure
 from shared.enums.cloud_provider import CloudProvider
+from shared.mode import is_dev_mode
 from api.common.envs.application import app_config
+from api.mock.aws_fixtures import synthesize_assumed_role_metadata
+
+logger = logging.getLogger(__name__)
+
+
+def _authenticate_mock_infrastructure(infrastructure: Infrastructure):
+    metadata = infrastructure.metadata or {}
+    infrastructure.metadata = {**metadata, **synthesize_assumed_role_metadata(infrastructure)}
+    infrastructure.is_cloud_authenticated = True
+    infrastructure.save(update_fields=["metadata", "is_cloud_authenticated", "updated_at"])
+    logger.warning(
+        "MOCK AssumeRole synthesized in dev mode",
+        extra={"infra_id": str(infrastructure.id), "is_mock": True},
+    )
+
 
 def authenticate_infrastructure(infrastructure: Infrastructure):
     if infrastructure.cloud_provider != CloudProvider.AWS:
         raise ValueError("Invalid cloud provider")
-    
+
     if not infrastructure.code:
         raise ValueError("AWS Account ID is required in the infrastructure code field")
+
+    dev_mode = is_dev_mode(app_config.mode)
+    if infrastructure.is_mock and not dev_mode:
+        raise ValueError("Refusing real AssumeRole against a mock infrastructure")
+    if dev_mode and not infrastructure.is_mock:
+        raise ValueError("Refusing mock AssumeRole against a real infrastructure")
+
+    if infrastructure.is_mock:
+        _authenticate_mock_infrastructure(infrastructure)
+        return
 
     target_account_id = infrastructure.code
     metadata = infrastructure.metadata or {}
@@ -36,17 +64,13 @@ def authenticate_infrastructure(infrastructure: Infrastructure):
             "expiration": creds["Expiration"].isoformat() if hasattr(creds["Expiration"], 'isoformat') else str(creds["Expiration"])
         }
         infrastructure.is_cloud_authenticated = True
-        infrastructure.save()
-        
+        infrastructure.save(update_fields=["metadata", "is_cloud_authenticated", "updated_at"])
+
     except Exception as e:
-        # Persist a generic marker, not str(e): the raw STS error can carry ARNs /
-        # account IDs, and infra.metadata is serialized back to API callers. Full
-        # detail goes to the logs only.
-        import logging
-        logging.getLogger(__name__).error(
+        logger.error(
             "AssumeRole failed for infra %s", infrastructure.id, exc_info=True
         )
         infrastructure.is_cloud_authenticated = False
         infrastructure.metadata = {**metadata, "error": "AssumeRole failed"}
-        infrastructure.save()
+        infrastructure.save(update_fields=["metadata", "is_cloud_authenticated", "updated_at"])
         raise e

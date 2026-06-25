@@ -59,12 +59,24 @@ class InfrastructureRepository:
         if "is_cloud_authenticated" in infra_data:
             defaults["is_cloud_authenticated"] = infra_data["is_cloud_authenticated"]
 
+        incoming_is_mock = bool(infra_data.get("is_mock", False))
+
         try:
             with transaction.atomic():
-                infra, created = Infrastructure.objects.update_or_create(
-                    id=infra_id,
-                    defaults=defaults,
+                existing = (
+                    Infrastructure.objects.select_for_update()
+                    .filter(id=infra_id)
+                    .first()
                 )
+                defaults["is_mock"] = (existing.is_mock if existing else False) or incoming_is_mock
+                if existing:
+                    for field, value in defaults.items():
+                        setattr(existing, field, value)
+                    existing.save()
+                    infra, created = existing, False
+                else:
+                    infra = Infrastructure.objects.create(id=infra_id, **defaults)
+                    created = True
             action = "created" if created else "updated"
             logger.info(
                 f"Infrastructure {action} in local DB",

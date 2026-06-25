@@ -6,8 +6,25 @@ from datetime import datetime, timezone, timedelta
 import threading
 from collections import OrderedDict
 from api.common.envs.application import app_config
+from api.mock.mock_session import MockSession, DEFAULT_REGION, MOCK_ACCOUNT_ID
+from shared.mode import is_dev_mode
 
 logger = logging.getLogger(__name__)
+
+
+def _is_mock_infrastructure(infrastructure) -> bool:
+    return bool(getattr(infrastructure, "is_mock", False))
+
+
+def _build_mock_session(infrastructure) -> MockSession:
+    metadata = infrastructure.metadata or {}
+    region = metadata.get("aws_region", DEFAULT_REGION)
+    account_id = infrastructure.code or MOCK_ACCOUNT_ID
+    logger.warning(
+        "MOCK boto3 session created in dev mode (no AWS calls)",
+        extra={"infra_id": str(infrastructure.id), "is_mock": True},
+    )
+    return MockSession(region=region, account_id=account_id)
 
 BOTO3_CONFIG = Config(
     retries={
@@ -30,6 +47,14 @@ _REFRESH_RATE_LIMIT_SECONDS = 60
 
 
 def create_boto3_session(infrastructure):
+    dev_mode = is_dev_mode(app_config.mode)
+    if _is_mock_infrastructure(infrastructure) and not dev_mode:
+        raise ValueError("Refusing real AWS session against a mock infrastructure")
+    if dev_mode and not _is_mock_infrastructure(infrastructure):
+        raise ValueError("Refusing mock AWS session against a real infrastructure")
+    if _is_mock_infrastructure(infrastructure):
+        return _build_mock_session(infrastructure)
+
     metadata = infrastructure.metadata or {}
 
     if not metadata.get('aws_access_key_id'):
@@ -59,6 +84,13 @@ def get_boto3_config():
 
 def _refresh_credentials(infrastructure):
     """Refresh AWS STS credentials with rate limiting and timeout."""
+    if _is_mock_infrastructure(infrastructure):
+        logger.warning(
+            "MOCK credential refresh skipped in dev mode (no STS)",
+            extra={"infra_id": str(infrastructure.id), "is_mock": True},
+        )
+        return
+
     infra_id = str(infrastructure.id)
     now = datetime.now(timezone.utc).timestamp()
 

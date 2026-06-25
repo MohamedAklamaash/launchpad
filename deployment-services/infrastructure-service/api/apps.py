@@ -68,6 +68,10 @@ class ApiConfig(AppConfig):
 
     def ready(self):
         """Start RabbitMQ consumers when the server starts."""
+        from shared.mode import enforce_dev_mode_safety
+        from api.common.envs.application import app_config
+        enforce_dev_mode_safety(app_config.mode, "infrastructure-service", logger)
+
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 

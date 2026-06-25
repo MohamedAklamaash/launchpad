@@ -54,6 +54,7 @@ class InfrastructureResponse:
     updated_at: datetime
     invited_users: List[Any]
     status: str = "UNKNOWN"
+    is_mock: bool = False
 
     def to_dict(self):
         data = asdict(self)
@@ -67,4 +68,5 @@ class InfrastructureResponse:
         data['max_memory'] = self.max_memory
         data['is_cloud_authenticated'] = self.is_cloud_authenticated
         data['status'] = self.status
+        data['is_mock'] = self.is_mock
         return data

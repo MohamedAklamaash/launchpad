@@ -1,0 +1,83 @@
+"""Requirement 7: is_mock is indelible — upsert_infrastructure never flips True -> False.
+
+DB-backed via the schema_db fixture (tables built from model state, since a full
+migrate is blocked by the pre-existing Postgres-only migration 0005 on SQLite).
+"""
+import uuid
+
+import pytest
+
+
+@pytest.fixture
+def make_user(schema_db):
+    from api.models.user import User
+
+    def _make():
+        return User.objects.create(
+            id=uuid.uuid4(),
+            email=f"u-{uuid.uuid4()}@example.com",
+            user_name="tester",
+        )
+
+    return _make
+
+
+@pytest.fixture
+def repo():
+    from api.repositories.infrastructure import InfrastructureRepository
+
+    return InfrastructureRepository()
+
+
+def _base_payload(user_id, infra_id, **overrides):
+    payload = {
+        "id": str(infra_id),
+        "user_id": str(user_id),
+        "name": "infra-x",
+        "cloud_provider": "aws",
+        "max_cpu": 1.0,
+        "max_memory": 2.0,
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.django_db
+def test_mock_true_persists_then_cannot_be_flipped_false(repo, make_user):
+    user = make_user()
+    infra_id = uuid.uuid4()
+
+    # First upsert: created as mock.
+    infra, created = repo.upsert_infrastructure(_base_payload(user.id, infra_id, is_mock=True))
+    assert created is True
+    assert infra.is_mock is True
+
+    # Second upsert tries to flip it back to real — must stay mock.
+    infra2, created2 = repo.upsert_infrastructure(
+        _base_payload(user.id, infra_id, is_mock=False, name="renamed")
+    )
+    assert created2 is False
+    assert infra2.is_mock is True
+    infra2.refresh_from_db()
+    assert infra2.is_mock is True
+
+
+@pytest.mark.django_db
+def test_mock_omitted_on_subsequent_upsert_stays_mock(repo, make_user):
+    user = make_user()
+    infra_id = uuid.uuid4()
+    repo.upsert_infrastructure(_base_payload(user.id, infra_id, is_mock=True))
+
+    # Event without is_mock at all (e.g. environment.updated) must not clear it.
+    infra2, _ = repo.upsert_infrastructure(_base_payload(user.id, infra_id))
+    assert infra2.is_mock is True
+
+
+@pytest.mark.django_db
+def test_real_infra_stays_real(repo, make_user):
+    user = make_user()
+    infra_id = uuid.uuid4()
+    infra, _ = repo.upsert_infrastructure(_base_payload(user.id, infra_id, is_mock=False))
+    assert infra.is_mock is False
+    infra2, _ = repo.upsert_infrastructure(_base_payload(user.id, infra_id))
+    assert infra2.is_mock is False

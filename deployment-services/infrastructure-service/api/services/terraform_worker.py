@@ -11,11 +11,15 @@ from django.db import transaction
 from api.models.infrastructure import Infrastructure
 from api.models.environment import Environment
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
+from api.common.envs.application import app_config
+from api.mock.aws_fixtures import resolve_region, synthesize_environment_outputs
+from shared.mode import is_dev_mode
 
 logger = logging.getLogger(__name__)
 
 TF_MODULES_DIR = Path(__file__).resolve().parent.parent.parent / "infra" / "aws"
 MAX_RETRIES = 3
+MOCK_PROVISION_DELAY_SECONDS = 4
 
 
 class TerraformWorker:
@@ -31,7 +35,11 @@ class TerraformWorker:
         """Ensure S3 backend and DynamoDB lock table exist"""
         bucket = f"launchpad-tf-state-{account_id}-{region}"
         table = f"launchpad-tf-locks-{account_id}-{region}"
-        
+
+        if is_dev_mode(app_config.mode):
+            logger.warning("MOCK backend ensure skipped in dev mode (no S3/DynamoDB)")
+            return bucket, table
+
         s3 = boto3.client("s3", region_name=region, **credentials)
         dynamodb = boto3.client("dynamodb", region_name=region, **credentials)
         
@@ -264,9 +272,49 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
         return any(pattern.lower() in error.lower() for pattern in transient_patterns)
     
     @staticmethod
+    def _mock_provision(infra_id: str, infra: Infrastructure):
+        with transaction.atomic():
+            env = Environment.objects.select_for_update().get(infrastructure_id=infra_id)
+            env.status = "PROVISIONING"
+            env.save(update_fields=['status'])
+
+        logger.warning(
+            "MOCK provisioning infrastructure in dev mode (no terraform, no AWS)",
+            extra={"infra_id": str(infra_id), "is_mock": True},
+        )
+        time.sleep(MOCK_PROVISION_DELAY_SECONDS)
+
+        region = resolve_region(infra)
+        outputs = synthesize_environment_outputs(infra, region)
+        TerraformWorker._save_outputs(
+            infra_id,
+            {"logs": "[MOCK] synthesized environment outputs", "outputs": outputs},
+            tf_vars={}, credentials={}, region=region, account_id=infra.code or "mock",
+            mock_outputs=outputs,
+        )
+        logger.info(f"MOCK infrastructure {infra_id} provisioned successfully")
+
+    @staticmethod
     def provision(infra_id: str, retry_count: int = 0):
         """Provision infrastructure with retry logic"""
+        dev_mode = is_dev_mode(app_config.mode)
         try:
+            infra = Infrastructure.objects.get(id=infra_id)
+            if infra.is_mock and not dev_mode:
+                raise ValueError("Refusing to provision a mock infrastructure outside dev mode")
+            if dev_mode and not infra.is_mock:
+                raise ValueError("Refusing mock provisioning against a real infrastructure")
+
+            if infra.is_mock:
+                env = Environment.objects.get(infrastructure_id=infra_id)
+                if env.status == "ACTIVE":
+                    logger.warning(f"Infrastructure {infra_id} already active")
+                    return
+                authenticate_infrastructure(infra)
+                infra.refresh_from_db()
+                TerraformWorker._mock_provision(infra_id, infra)
+                return
+
             with transaction.atomic():
                 env = Environment.objects.select_for_update().get(infrastructure_id=infra_id)
                 if env.status == "ACTIVE":
@@ -275,8 +323,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 env.status = "PROVISIONING"
                 env.retry_count = retry_count
                 env.save(update_fields=['status', 'retry_count'])
-            
-            infra = Infrastructure.objects.get(id=infra_id)
+
             authenticate_infrastructure(infra)
             infra.refresh_from_db()
             
@@ -357,13 +404,20 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             )
     
     @staticmethod
-    def _save_outputs(infra_id, apply_result, tf_vars, credentials, region, account_id):
+    def _save_outputs(infra_id, apply_result, tf_vars, credentials, region, account_id, mock_outputs=None):
         """Get terraform outputs and save to database"""
-        output_result = TerraformWorker._exec_tf(
-            ["terraform", "output", "-json"],
-            tf_vars, credentials, str(infra_id), region, account_id
-        )
-        
+        if mock_outputs is not None:
+            output_result = {
+                "success": True,
+                "output": json.dumps({k: {"value": v} for k, v in mock_outputs.items()}),
+                "logs": "[MOCK OUTPUT] synthesized",
+            }
+        else:
+            output_result = TerraformWorker._exec_tf(
+                ["terraform", "output", "-json"],
+                tf_vars, credentials, str(infra_id), region, account_id
+            )
+
         if output_result["success"]:
             outputs = json.loads(output_result["output"])
             combined_logs = apply_result.get("logs", "") + "\n[OUTPUT]\n" + output_result.get("logs", "")
@@ -394,6 +448,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     max_memory=infra.max_memory,
                     code=infra.code,
                     is_cloud_authenticated=infra.is_cloud_authenticated,
+                    is_mock=infra.is_mock,
                     metadata=infra.metadata,
                     correlation_id=None
                 ))
@@ -429,6 +484,9 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
     @staticmethod
     def _pre_destroy_cleanup(credentials: dict, region: str, infra_id: str):
         """Pre-clean resources that block Terraform destroy."""
+        if is_dev_mode(app_config.mode):
+            logger.warning("MOCK pre-destroy cleanup skipped in dev mode")
+            return
         import boto3
         boto_kwargs = {
             "region_name": region,
@@ -517,7 +575,23 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 with transaction.atomic():
                     Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYED")
                 return
-            
+
+            dev_mode = is_dev_mode(app_config.mode)
+            if infra.is_mock and not dev_mode:
+                raise ValueError("Refusing to destroy a mock infrastructure outside dev mode")
+            if dev_mode and not infra.is_mock:
+                raise ValueError("Refusing mock destroy against a real infrastructure")
+            if infra.is_mock:
+                logger.warning(
+                    "MOCK destroy in dev mode (no terraform, no AWS)",
+                    extra={"infra_id": str(infra_id), "is_mock": True},
+                )
+                with transaction.atomic():
+                    Environment.objects.filter(infrastructure_id=infra_id).update(
+                        status="DESTROYED", logs="[MOCK] destroyed"
+                    )
+                return
+
             region = metadata.get("aws_region", "us-west-2")
             account_id = infra.code or "default"
 

@@ -7,6 +7,8 @@ from api.serializers.infrastructure import InfrastructureSerializer
 from api.services.infrastructure_permissions import InfrastructurePermissions
 from shared.resilience.circuit_breaker import CircuitBreaker
 from shared.enums.cloud_provider import CloudProvider
+from shared.mode import is_dev_mode
+from api.common.envs.application import app_config
 from api.models.environment import Environment
 from api.services.infra_queue import InfraQueue
 
@@ -63,8 +65,19 @@ class InfrastructureService:
         if cloud_provider == CloudProvider.AWS and not infra_data.get("code"):
             raise ValueError("AWS Account ID is required in the 'code' field for AWS infrastructure.")
 
+        dev_mode = is_dev_mode(app_config.mode)
+        infra_data.pop("is_mock", None)
+
         with transaction.atomic():
             infra = self.repo.create(user_id, infra_data)
+
+            if dev_mode:
+                infra.is_mock = True
+                infra.save(update_fields=["is_mock"])
+                logger.warning(
+                    "MOCK infrastructure created in dev mode",
+                    extra={"infra_id": str(infra.id), "user_id": str(user_id), "is_mock": True},
+                )
 
             Environment.objects.create(
                 infrastructure=infra,
