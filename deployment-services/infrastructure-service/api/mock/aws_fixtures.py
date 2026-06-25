@@ -1,7 +1,7 @@
 import hashlib
 from datetime import datetime, timedelta, timezone
 
-DEFAULT_REGION = "us-east-1"
+DEFAULT_REGION = "us-west-2"
 MOCK_ACCOUNT_ID = "000000000000"
 MOCK_CREDENTIAL_TTL = timedelta(hours=12)
 

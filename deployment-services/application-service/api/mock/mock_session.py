@@ -1,11 +1,8 @@
 import hashlib
-import logging
 
 from botocore.exceptions import ClientError
 
-logger = logging.getLogger(__name__)
-
-DEFAULT_REGION = "us-east-1"
+DEFAULT_REGION = "us-west-2"
 MOCK_ACCOUNT_ID = "000000000000"
 
 
@@ -229,11 +226,10 @@ class MockClient:
         return _hex_resource_id("vpc", self._account_id)
 
     def __getattr__(self, name: str):
-        def _noop(**kwargs):
-            logger.warning(f"MOCK client {self._service}.{name} called — returning empty response")
-            return {}
-
-        return _noop
+        raise NotImplementedError(
+            f"Mock AWS client does not implement {self._service}.{name}; "
+            "add an explicit stub before routing this path through dev mode."
+        )
 
 
 class MockSession:

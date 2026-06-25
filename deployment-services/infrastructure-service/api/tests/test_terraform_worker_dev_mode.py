@@ -155,3 +155,34 @@ def test_provision_refuses_real_infra_in_dev(make_infra_env):
     env.refresh_from_db()
     assert env.status == "ERROR"
     assert "real infrastructure" in (env.error_message or "")
+
+
+def test_dev_destroy_marks_destroyed_without_exec_tf(make_infra_env):
+    infra, env = make_infra_env(is_mock=True)
+    with _force_mode(True), \
+            patch.object(TerraformWorker, "_exec_tf", side_effect=AssertionError("_exec_tf must not run in dev")) as exec_tf:
+        TerraformWorker.destroy(str(infra.id))
+    exec_tf.assert_not_called()
+    env.refresh_from_db()
+    assert env.status == "DESTROYED"
+    assert env.logs == "[MOCK] destroyed"
+
+
+def test_destroy_refuses_mock_infra_in_prod(make_infra_env):
+    infra, env = make_infra_env(is_mock=True)
+    with _force_mode(False), \
+            patch.object(TerraformWorker, "_exec_tf") as exec_tf:
+        TerraformWorker.destroy(str(infra.id))
+    exec_tf.assert_not_called()
+    env.refresh_from_db()
+    assert env.status != "DESTROYED"
+
+
+def test_destroy_refuses_real_infra_in_dev(make_infra_env):
+    infra, env = make_infra_env(is_mock=False)
+    with _force_mode(True), \
+            patch.object(TerraformWorker, "_exec_tf") as exec_tf:
+        TerraformWorker.destroy(str(infra.id))
+    exec_tf.assert_not_called()
+    env.refresh_from_db()
+    assert env.status != "DESTROYED"

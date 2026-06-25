@@ -88,7 +88,7 @@ def test_prod_mode_with_real_creds_does_not_exit(clean_aws_env, logger):
 def test_dev_mode_placeholder_creds_do_not_trip_guard(clean_aws_env, logger):
     # test_settings stubs AWS_ACCESS_KEY_ID="test"/SECRET="test"; placeholder-ish
     # values like "changeme"/"dev"/"mock" must NOT be treated as real creds.
-    for placeholder in ("dev", "mock", "changeme", "placeholder"):
+    for placeholder in ("dev", "mock", "changeme", "placeholder", "test"):
         clean_aws_env.setenv("AWS_ACCESS_KEY_ID", placeholder)
         # Should not raise.
         enforce_dev_mode_safety("dev", "infrastructure-service", logger)

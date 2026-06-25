@@ -14,7 +14,7 @@ def _authenticate_mock_infrastructure(infrastructure: Infrastructure):
     metadata = infrastructure.metadata or {}
     infrastructure.metadata = {**metadata, **synthesize_assumed_role_metadata(infrastructure)}
     infrastructure.is_cloud_authenticated = True
-    infrastructure.save()
+    infrastructure.save(update_fields=["metadata", "is_cloud_authenticated", "updated_at"])
     logger.warning(
         "MOCK AssumeRole synthesized in dev mode",
         extra={"infra_id": str(infrastructure.id), "is_mock": True},
@@ -64,13 +64,13 @@ def authenticate_infrastructure(infrastructure: Infrastructure):
             "expiration": creds["Expiration"].isoformat() if hasattr(creds["Expiration"], 'isoformat') else str(creds["Expiration"])
         }
         infrastructure.is_cloud_authenticated = True
-        infrastructure.save()
-        
+        infrastructure.save(update_fields=["metadata", "is_cloud_authenticated", "updated_at"])
+
     except Exception as e:
         logger.error(
             "AssumeRole failed for infra %s", infrastructure.id, exc_info=True
         )
         infrastructure.is_cloud_authenticated = False
         infrastructure.metadata = {**metadata, "error": "AssumeRole failed"}
-        infrastructure.save()
+        infrastructure.save(update_fields=["metadata", "is_cloud_authenticated", "updated_at"])
         raise e

@@ -23,6 +23,7 @@ _PLACEHOLDER_CREDENTIAL_VALUES = frozenset(
         "dev",
         "mock",
         "none",
+        "test",
     }
 )
 

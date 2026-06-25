@@ -27,8 +27,8 @@ def test_resolve_region_from_metadata():
 
 
 def test_resolve_region_defaults_when_missing():
-    assert aws_fixtures.resolve_region(_FakeInfra(metadata=None)) == "us-east-1"
-    assert aws_fixtures.resolve_region(_FakeInfra(metadata={})) == "us-east-1"
+    assert aws_fixtures.resolve_region(_FakeInfra(metadata=None)) == "us-west-2"
+    assert aws_fixtures.resolve_region(_FakeInfra(metadata={})) == "us-west-2"
 
 
 def test_synthesize_outputs_has_all_eight_fields():

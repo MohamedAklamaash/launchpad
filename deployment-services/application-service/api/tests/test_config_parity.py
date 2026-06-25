@@ -21,10 +21,11 @@ INFRA_APP_CFG = os.path.abspath(
 APP_APP_CFG = os.path.abspath(os.path.join(_APP_SVC, "api", "common", "envs", "application.py"))
 
 
-def _load(path, name):
-    # Provide every env var both from_env() implementations dereference.
+def _load(monkeypatch, path, name, mode="prod"):
+    # Provide every env var both from_env() implementations dereference,
+    # isolated per-test via monkeypatch so nothing leaks into the suite.
     for k, v in {
-        "MODE": os.environ.get("MODE", "prod"),
+        "MODE": mode,
         "DJANGO_SECRET": "x" * 60,
         "JWT_SECRET": "x" * 40,
         "DJANGO_PORT": "8000",
@@ -38,16 +39,16 @@ def _load(path, name):
         "REDIS_DB": "0",
         "DEPLOYMENT_MAX_INFRA_WORKERS": "5",
     }.items():
-        os.environ.setdefault(k, v)
+        monkeypatch.setenv(k, v)
     spec = importlib.util.spec_from_file_location(name, os.path.abspath(path))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-def test_both_configs_expose_mode_field():
-    infra = _load(INFRA_APP_CFG, "_infra_app_cfg")
-    app = _load(APP_APP_CFG, "_app_app_cfg")
+def test_both_configs_expose_mode_field(monkeypatch):
+    infra = _load(monkeypatch, INFRA_APP_CFG, "_infra_app_cfg")
+    app = _load(monkeypatch, APP_APP_CFG, "_app_app_cfg")
     assert hasattr(infra.ApplicationConfig, "__dataclass_fields__")
     assert "mode" in infra.ApplicationConfig.__dataclass_fields__
     assert "mode" in app.ApplicationConfig.__dataclass_fields__
@@ -65,9 +66,8 @@ def test_both_configs_expose_mode_field():
     ],
 )
 def test_both_configs_agree_on_dev_prod_mapping(monkeypatch, raw, expected):
-    monkeypatch.setenv("MODE", raw)
-    infra = _load(INFRA_APP_CFG, f"_infra_cfg_{abs(hash(raw))}")
-    app = _load(APP_APP_CFG, f"_app_cfg_{abs(hash(raw))}")
+    infra = _load(monkeypatch, INFRA_APP_CFG, f"_infra_cfg_{abs(hash(raw))}", mode=raw)
+    app = _load(monkeypatch, APP_APP_CFG, f"_app_cfg_{abs(hash(raw))}", mode=raw)
     infra_cfg = infra.ApplicationConfig.from_env()
     app_cfg = app.ApplicationConfig.from_env()
     assert infra_cfg.mode == expected

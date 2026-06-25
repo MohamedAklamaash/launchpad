@@ -305,10 +305,16 @@ export default function InfrastructureDetailPage() {
       {infra.environment?.alb_dns && (
         <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl px-4 py-3 flex items-center justify-between">
           <span className="text-xs text-[#666]">Load Balancer</span>
-          <a href={`http://${infra.environment.alb_dns}`} target="_blank" rel="noopener noreferrer"
-            className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1.5 font-mono transition-colors">
-            {infra.environment.alb_dns} <ExternalLink className="w-3 h-3" />
-          </a>
+          {infra.is_mock ? (
+            <span className="text-xs text-[#555] flex items-center gap-1.5 font-mono cursor-not-allowed select-none">
+              {infra.environment.alb_dns} <span className="text-[10px] uppercase tracking-widest">dead link</span>
+            </span>
+          ) : (
+            <a href={`http://${infra.environment.alb_dns}`} target="_blank" rel="noopener noreferrer"
+              className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1.5 font-mono transition-colors">
+              {infra.environment.alb_dns} <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
         </div>
       )}
 
