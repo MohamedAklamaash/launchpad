@@ -63,9 +63,16 @@ export default function InfrastructuresPage() {
             >
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold">{infra.name}</h3>
-                <Badge className={statusColor[infra.status] || 'bg-[#262626] text-[#a3a3a3]'}>
-                  {infra.status}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  {infra.is_mock && (
+                    <Badge className="bg-amber-500/15 text-amber-300 font-bold uppercase tracking-widest">
+                      Mock
+                    </Badge>
+                  )}
+                  <Badge className={statusColor[infra.status] || 'bg-[#262626] text-[#a3a3a3]'}>
+                    {infra.status}
+                  </Badge>
+                </div>
               </div>
               <div className="space-y-2 text-sm text-[#a3a3a3]">
                 <div className="flex items-center gap-2">

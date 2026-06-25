@@ -230,6 +230,11 @@ export default function InfrastructureDetailPage() {
             <span className={`text-xs font-mono px-2 py-0.5 rounded-full border ${getStatusColor(infra.status)}`}>
               {infra.status}
             </span>
+            {infra.is_mock && (
+              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 text-amber-300 uppercase tracking-widest">
+                Mock / Dev
+              </span>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -251,6 +256,15 @@ export default function InfrastructureDetailPage() {
           </Button>
         </div>
       </div>
+
+      {infra.is_mock && (
+        <div className="bg-amber-500/10 border border-amber-500/40 rounded-xl px-4 py-3 flex items-center gap-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+          <p className="text-xs text-amber-300">
+            This is a MOCK / DEV infrastructure. No real AWS resources exist and the load balancer link is a dead placeholder.
+          </p>
+        </div>
+      )}
 
       {/* Provisioning status banner */}
       {(infra.status === 'PROVISIONING' || infra.status === 'PENDING') && (

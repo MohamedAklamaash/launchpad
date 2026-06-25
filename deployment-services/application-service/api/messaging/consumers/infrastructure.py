@@ -96,6 +96,7 @@ class InfraEventConsumer:
                         "max_memory": payload.get("max_memory", 0),
                         "code": payload.get("code"),
                         "is_cloud_authenticated": payload.get("is_cloud_authenticated", False),
+                        "is_mock": payload.get("is_mock", False),
                         "metadata": payload.get("metadata"),
                     }
                 )

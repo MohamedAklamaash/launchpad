@@ -18,6 +18,7 @@ export interface Infrastructure {
   user_id: string;
   status: InfrastructureStatus;
   is_cloud_authenticated: boolean;
+  is_mock?: boolean;
   invited_users?: InvitedUserSummary[];
   metadata?: { aws_region?: string; [key: string]: string | undefined };
   created_at: string;

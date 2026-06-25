@@ -59,6 +59,9 @@ class InfrastructureRepository:
         if "is_cloud_authenticated" in infra_data:
             defaults["is_cloud_authenticated"] = infra_data["is_cloud_authenticated"]
 
+        existing = Infrastructure.objects.filter(id=infra_id).values_list("is_mock", flat=True).first()
+        defaults["is_mock"] = bool(existing) or bool(infra_data.get("is_mock", False))
+
         try:
             with transaction.atomic():
                 infra, created = Infrastructure.objects.update_or_create(

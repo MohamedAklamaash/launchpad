@@ -33,6 +33,7 @@ class InfrastructureSerializer:
             updated_at=instance.updated_at,
             invited_users=invited_users_details,
             status=status,
+            is_mock=instance.is_mock,
         )
         return response.to_dict()
 

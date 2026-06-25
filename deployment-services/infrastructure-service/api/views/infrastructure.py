@@ -28,6 +28,7 @@ class InfraResponseSerializer(serializers.Serializer):
     max_cpu = serializers.FloatField(help_text="Total CPU units ceiling (1024 = 1 vCPU)")
     max_memory = serializers.FloatField(help_text="Total memory ceiling in MB")
     is_cloud_authenticated = serializers.BooleanField(help_text="Whether Launchpad successfully assumed the IAM role")
+    is_mock = serializers.BooleanField(help_text="True when this infra was created in dev mock mode; never touches real AWS")
     code = serializers.CharField(help_text="AWS Account ID")
     metadata = serializers.DictField(child=serializers.CharField(), help_text='e.g. {"aws_region":"us-east-1"}')
     created_at = serializers.DateTimeField()
@@ -320,6 +321,7 @@ def infrastructure_onboarding_callback(request: HttpRequest):
             max_memory=infra.max_memory,
             code=infra.code,
             is_cloud_authenticated=True,
+            is_mock=infra.is_mock,
             metadata=infra.metadata or {},
         )
     except Exception:

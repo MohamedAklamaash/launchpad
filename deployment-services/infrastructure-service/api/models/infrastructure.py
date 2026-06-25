@@ -32,6 +32,7 @@ class Infrastructure(models.Model):
     max_cpu = models.FloatField()
     max_memory = models.FloatField()
     is_cloud_authenticated = models.BooleanField(default=False)
+    is_mock = models.BooleanField(default=False, editable=False)
     code = models.TextField(null=True, blank=True) # some auth code from cloud provider
     metadata = models.JSONField(null=True, blank=True)
     invited_users = models.ManyToManyField(
