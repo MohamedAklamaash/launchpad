@@ -21,16 +21,16 @@ wait_healthy() {
   local container="$1"
   local retries=30
   while [ "$retries" -gt 0 ]; do
+    if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then
+      echo "  ! $container not running"
+      return 1
+    fi
     local status
-    status="$(docker inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null || echo "missing")"
+    status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null)"
     case "$status" in
-      healthy)
-        echo "  ✓ $container healthy"
+      healthy|none)
+        echo "  ✓ $container ready"
         return 0
-        ;;
-      missing)
-        echo "  ! $container not found"
-        return 1
         ;;
     esac
     sleep 2
@@ -40,9 +40,20 @@ wait_healthy() {
   return 1
 }
 
+failed=""
 for c in postgres mysql redis rabbitmq; do
-  wait_healthy "$c" || true
+  if ! wait_healthy "$c"; then
+    failed="$c"
+    break
+  fi
 done
+
+if [ -n "$failed" ]; then
+  echo ""
+  echo "Infra failed to come up: $failed is not healthy."
+  echo "Inspect logs with: docker compose -f $COMPOSE_FILE logs $failed"
+  exit 1
+fi
 
 echo ""
 echo "Infra is up. Bring it down with:"

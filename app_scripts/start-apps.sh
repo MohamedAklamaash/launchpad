@@ -23,12 +23,27 @@ trap cleanup SIGINT SIGTERM
 echo "Cleaning up stale app processes..."
 pkill -f "tsx watch" 2>/dev/null || true
 pkill -f "manage.py runserver" 2>/dev/null || true
-pkill -f "python app.py" 2>/dev/null || true
+pkill -f "gateway-service/venv/bin/python main.py" 2>/dev/null || true
 sleep 2
 
 echo "Starting Launchpad app services..."
 echo "Root directory: $ROOT_DIR"
 echo ""
+
+wait_port() {
+  HOST="$1"
+  PORT="$2"
+  retries=30
+  while [ "$retries" -gt 0 ]; do
+    if (exec 3<>"/dev/tcp/$HOST/$PORT") 2>/dev/null; then
+      exec 3>&- 3<&-
+      return 0
+    fi
+    sleep 1
+    retries=$((retries - 1))
+  done
+  return 1
+}
 
 ########################################
 # Identity Services (auth/user/notification)
@@ -36,10 +51,15 @@ echo ""
 echo "Starting Identity Services..."
 (
   cd "$ROOT_DIR/identity-services" || exit 1
-  pnpm dev
+  exec pnpm dev
 ) &
 
-sleep 10
+echo "Waiting for identity (auth-service:5001) to accept connections..."
+if wait_port 127.0.0.1 5001; then
+  echo "  ✓ auth-service is up"
+else
+  echo "  ! auth-service not reachable yet; continuing anyway"
+fi
 
 ########################################
 # Gateway Service
@@ -47,7 +67,7 @@ sleep 10
 echo "Starting Gateway Service..."
 (
   cd "$ROOT_DIR/gateway-service" || exit 1
-  "$ROOT_DIR/gateway-service/venv/bin/python" main.py
+  exec "$ROOT_DIR/gateway-service/venv/bin/python" main.py
 ) &
 
 ########################################
@@ -65,24 +85,12 @@ run_django_service() {
   (
     cd "$ROOT_DIR/$SERVICE_PATH" || exit 1
 
-    echo "→ Checking for model changes..."
-    if ! "$PYTHON_EXEC" manage.py makemigrations --check --dry-run > /dev/null 2>&1; then
-      echo "   Creating new migrations..."
-      "$PYTHON_EXEC" manage.py makemigrations
-    else
-      echo "   No new migrations needed."
-    fi
-
-    echo "→ Checking for unapplied migrations..."
-    if ! "$PYTHON_EXEC" manage.py migrate --check > /dev/null 2>&1; then
-      echo "   Applying migrations..."
-      "$PYTHON_EXEC" manage.py migrate
-    else
-      echo "   Database up to date."
-    fi
+    echo "→ Applying migrations..."
+    "$PYTHON_EXEC" manage.py makemigrations
+    "$PYTHON_EXEC" manage.py migrate
 
     echo "→ Starting server on port $PORT..."
-    "$PYTHON_EXEC" manage.py runserver 0.0.0.0:$PORT
+    exec "$PYTHON_EXEC" manage.py runserver 0.0.0.0:$PORT
   ) &
 }
 

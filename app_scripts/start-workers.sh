@@ -32,7 +32,7 @@ run_worker() {
   echo "Starting worker: $(basename "$SERVICE_PATH")..."
   (
     cd "$ROOT_DIR/$SERVICE_PATH" || exit 1
-    "$DEPLOY_PYTHON" manage.py run_worker
+    exec "$DEPLOY_PYTHON" manage.py run_worker
   ) &
 }
 
