@@ -5,7 +5,7 @@ from api.models.infrastructure import Infrastructure
 from api.repositories.user import UserRepository
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaConsumer
-from django.db.utils import OperationalError, ProgrammingError
+from django.db.utils import OperationalError
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,10 @@ class AuthEventConsumer:
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as exc:
-            requeue = isinstance(exc, (OperationalError, ProgrammingError))
+            # Only OperationalError (lost/idle connection) is transient and worth requeueing.
+            # ProgrammingError (schema/SQL mismatch) is permanent — requeueing it against a
+            # DLX-less, prefetch=1 queue is a sleepless redelivery loop that never drains.
+            requeue = isinstance(exc, OperationalError)
             logger.error(
                 "AuthEventConsumer: error processing auth event — NACKing %s",
                 "with requeue (transient)" if requeue else "without requeue (permanent)",

@@ -12,6 +12,7 @@ from rest_framework import status, serializers
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 from api.services.infrastructure import InfrastructureService
+from shared.errors.exception import HttpError
 from django.http import HttpRequest
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,10 @@ def infrastructure_list_create(request: HttpRequest):
     try:
         infra = infrastructure_service.create_infrastructure(user_id=request.user.id, infra_data=request.data)
         return Response(infra, status=status.HTTP_201_CREATED)
+    except HttpError as e:
+        # Authorization denials (e.g. non-super_admin create) are raised as HttpError by the repo;
+        # surface them with their real status (403), not as a 500 masking the denial.
+        return Response({'error': e.message}, status=e.status_code)
     except ValueError as e:
         # ValueError is raised explicitly by the service layer for bad user input (cloud provider, account ID).
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -146,10 +151,14 @@ def infrastructure_update(request: HttpRequest, infra_id):
         if infra:
             return Response(infra)
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+    except PermissionError as e:
+        # Non-owner update: a denial, not a server fault. Matches the DELETE handler's 403.
+        return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except Exception:
+        logger.error(f"update_infrastructure failed for infra {infra_id}", exc_info=True)
+        return Response({'error': 'Internal error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(
@@ -170,6 +179,10 @@ def infrastructure_reprovision(request: HttpRequest, infra_id):
     infra = infrastructure_service.get_infrastructure(user_id=request.user.id, infra_id=infra_id)
     if not infra:
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+    # Owner-only, matching update/delete. get_infrastructure resolves for owner OR invited member,
+    # so without this an invited (view-only) user could force a real Terraform re-run.
+    if str(infra['user_id']) != str(request.user.id):
+        return Response({'error': 'Only the infrastructure owner can reprovision it'}, status=status.HTTP_403_FORBIDDEN)
     try:
         env = Environment.objects.get(infrastructure_id=infra_id)
         if env.status in ('PROVISIONING', 'DESTROYING'):

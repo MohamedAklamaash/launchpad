@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     MAX_REQUESTS: int = int(os.getenv("MAX_REQUESTS", "100"))
     MAX_USER_REQUESTS: int = int(os.getenv("MAX_USER_REQUESTS", "10"))
     RATE_LIMIT_WINDOW_SECONDS: int = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "300"))
+    # Number of trusted proxy hops in front of the gateway (e.g. 1 for a single ALB). When >0,
+    # the rate-limit client IP is read from X-Forwarded-For instead of the immediate peer, so
+    # every user behind the LB doesn't collapse into one shared bucket. 0 = use the peer IP.
+    RATE_LIMIT_TRUSTED_PROXY_HOPS: int = int(os.getenv("RATE_LIMIT_TRUSTED_PROXY_HOPS", "0"))
 
     @field_validator(
         "AUTH_SERVICE_URL",

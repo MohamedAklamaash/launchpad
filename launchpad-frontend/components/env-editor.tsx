@@ -60,13 +60,14 @@ export function EnvEditor({ envs, onChange }: Props) {
     e.target.value = '';
   };
 
+  const actionCls = 'flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-brand transition-colors font-mono uppercase tracking-widest';
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5 px-0.5">
-        <span className="text-[10px] uppercase tracking-widest font-mono text-[#555]">Environment Variables</span>
+      <div className="flex items-center justify-between mb-2 px-0.5">
+        <span className="eyebrow">Environment Variables</span>
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => fileRef.current?.click()}
-            className="flex items-center gap-1 text-[10px] text-[#555] hover:text-[#aaa] transition-colors font-mono uppercase tracking-widest">
+          <button type="button" onClick={() => fileRef.current?.click()} className={actionCls}>
             <Upload className="w-3 h-3" /> .env file
           </button>
           <button type="button" onClick={() => {
@@ -77,12 +78,10 @@ export function EnvEditor({ envs, onChange }: Props) {
               for (const [k, v] of parsed) map.set(k, v);
               onChange(Array.from(map.entries()));
             }).catch(() => {});
-          }}
-            className="flex items-center gap-1 text-[10px] text-[#555] hover:text-[#aaa] transition-colors font-mono uppercase tracking-widest">
+          }} className={actionCls}>
             <ClipboardPaste className="w-3 h-3" /> Paste
           </button>
-          <button type="button" onClick={() => onChange([...envs, ['', '']])}
-            className="flex items-center gap-1 text-[10px] text-[#555] hover:text-[#aaa] transition-colors font-mono uppercase tracking-widest">
+          <button type="button" onClick={() => onChange([...envs, ['', '']])} className={actionCls}>
             <Plus className="w-3 h-3" /> Add
           </button>
         </div>
@@ -90,25 +89,25 @@ export function EnvEditor({ envs, onChange }: Props) {
 
       <input ref={fileRef} type="file" accept=".env,.txt,text/plain" className="hidden" onChange={handleFile} />
 
-      <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl overflow-hidden divide-y divide-[#1a1a1a]">
+      <div className="bg-surface-1 border border-hairline rounded-xl overflow-hidden divide-y divide-hairline">
         {envs.length === 0 ? (
           <div
             onPaste={handlePaste}
-            className="px-4 py-6 text-xs text-[#333] text-center outline-none"
+            className="px-4 py-6 text-xs text-muted-foreground/70 text-center outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
             tabIndex={0}
           >
-            Paste a <span className="font-mono text-[#444]">.env</span> file or click Add
+            Paste a <span className="font-mono text-muted-foreground">.env</span> file or click Add
           </div>
         ) : (
           envs.map(([k, v], i) => (
-            <div key={i} className="flex items-center">
-              <div className="flex-1 border-r border-[#1a1a1a] px-4 py-1.5">
+            <div key={i} className="group flex items-center transition-colors focus-within:bg-surface-2">
+              <div className="flex-1 border-r border-hairline px-4 py-1.5">
                 <Input
                   placeholder="KEY"
                   value={k}
                   onChange={(e) => setRow(i, e.target.value.toUpperCase(), v)}
                   onPaste={handlePaste}
-                  className="bg-transparent border-0 h-8 text-xs text-violet-400 placeholder:text-[#333] focus-visible:ring-0 pl-3 font-mono"
+                  className="bg-transparent border-0 h-8 text-xs text-brand placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0 font-mono"
                 />
               </div>
               <div className="flex-1 px-4 py-1.5">
@@ -117,11 +116,11 @@ export function EnvEditor({ envs, onChange }: Props) {
                   value={v}
                   onChange={(e) => setRow(i, k, e.target.value)}
                   onPaste={handlePaste}
-                  className="bg-transparent border-0 h-8 text-xs text-[#aaa] placeholder:text-[#333] focus-visible:ring-0 pl-3 font-mono"
+                  className="bg-transparent border-0 h-8 text-xs text-foreground placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0 font-mono"
                 />
               </div>
               <button type="button" onClick={() => onChange(envs.filter((_, idx) => idx !== i))}
-                className="px-3 text-[#333] hover:text-red-400 transition-colors shrink-0">
+                className="px-3 self-stretch flex items-center text-muted-foreground/50 hover:text-destructive transition-colors shrink-0">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>

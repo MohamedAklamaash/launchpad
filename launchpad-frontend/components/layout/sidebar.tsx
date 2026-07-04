@@ -2,47 +2,66 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Server, Rocket } from 'lucide-react';
+import { LayoutGrid, Server, Rocket } from 'lucide-react';
 import { LogoMark } from '@/components/logo-mark';
 
 const navItems = [
-  { href: '/dashboard', icon: Home, label: 'Dashboard' },
-  { href: '/dashboard/infrastructures', icon: Server, label: 'Infrastructure' },
-  { href: '/dashboard/applications', icon: Rocket, label: 'Applications' },
+  { href: '/dashboard', icon: LayoutGrid, label: 'Overview', match: 'exact' as const },
+  { href: '/dashboard/infrastructures', icon: Server, label: 'Infrastructure', match: 'prefix' as const },
+  { href: '/dashboard/applications', icon: Rocket, label: 'Applications', match: 'prefix' as const },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="w-56 bg-[#080808] border-r border-[#1a1a1a] flex flex-col">
-      <div className="px-5 py-5 border-b border-[#1a1a1a]">
-        <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-md bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shrink-0">
+    <aside className="w-60 shrink-0 bg-sidebar border-r border-hairline flex flex-col">
+      <div className="px-5 h-16 flex items-center border-b border-hairline">
+        <Link href="/dashboard" className="flex items-center gap-2.5 group">
+          <span className="w-8 h-8 rounded-lg bg-surface-2 border border-hairline-strong flex items-center justify-center shrink-0 transition-colors group-hover:border-brand/40">
             <LogoMark size={20} />
-          </div>
-          <span className="text-sm font-semibold tracking-tight text-white">Launchpad</span>
-        </div>
+          </span>
+          <span className="text-[15px] font-display font-semibold tracking-tight text-foreground">Launchpad</span>
+        </Link>
       </div>
-      <nav className="flex-1 px-2 py-3 space-y-0.5">
+
+      <div className="px-5 pt-6 pb-2">
+        <span className="eyebrow">Console</span>
+      </div>
+
+      <nav className="flex-1 px-3 space-y-1">
         {navItems.map((item) => {
-          const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href));
+          const isActive =
+            item.match === 'exact'
+              ? pathname === item.href
+              : pathname === item.href || pathname.startsWith(item.href + '/');
           return (
-            <Link key={item.href} href={item.href}>
-              <div className={`flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-all ${
+            <Link
+              key={item.href}
+              href={item.href}
+              aria-current={isActive ? 'page' : undefined}
+              className={`relative flex items-center gap-3 px-3 h-9 rounded-lg text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
                 isActive
-                  ? 'bg-[#1a1a1a] text-white font-medium'
-                  : 'text-[#666] hover:text-[#aaa] hover:bg-[#111]'
-              }`}>
-                <item.icon className={`w-4 h-4 ${isActive ? 'text-violet-400' : ''}`} />
-                {item.label}
-              </div>
+                  ? 'bg-surface-2 text-foreground font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-surface-1'
+              }`}
+            >
+              {isActive && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-full bg-brand" />
+              )}
+              <item.icon className={`w-4 h-4 transition-colors ${isActive ? 'text-brand' : 'text-muted-foreground/80'}`} />
+              {item.label}
             </Link>
           );
         })}
       </nav>
-      <div className="px-3 py-3 border-t border-[#1a1a1a]">
-        <p className="text-[10px] text-[#333] font-mono uppercase tracking-widest">v1.0.0</p>
+
+      <div className="px-5 py-4 border-t border-hairline flex items-center justify-between">
+        <span className="eyebrow">v1.0.0</span>
+        <span className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Live</span>
+        </span>
       </div>
     </aside>
   );

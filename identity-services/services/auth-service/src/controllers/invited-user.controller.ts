@@ -5,6 +5,7 @@ import { USER_ROLE } from '@/types/auth.invited_user.types';
 import { getAuthHeader } from '@/utils/auth-header';
 import { verifyAccessToken } from '@/utils/handle-token';
 import { superAdminMiddleware } from '@/utils/super-admin';
+import { env } from '@/config/env';
 
 const invitedUserFacade = new InvitedUserFacade();
 
@@ -20,7 +21,7 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
                 `Unauthorized, user:${payload.user_name} is not authorized to invite users to ${infra_id}`,
             );
         }
-        const authRes = await invitedUserFacade.register(
+        const { user, otp } = await invitedUserFacade.register(
             {
                 email,
                 password,
@@ -31,7 +32,24 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
             super_user.id,
         );
 
-        return res.status(201).json(authRes);
+        // Never serialize the raw model — it carries password_hash and OTP linkage.
+        // The OTP is delivered by email; only echo it outside production for local/e2e flows.
+        const body: Record<string, unknown> = {
+            user: {
+                id: user.id,
+                email: user.email,
+                user_name: user.user_name,
+                role: user.role,
+                infra_id: user.infra_id,
+                invited_by: user.invited_by,
+                created_at: user.created_at,
+            },
+        };
+        if (env.NODE_ENV !== 'production') {
+            body.otp = otp;
+        }
+
+        return res.status(201).json(body);
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
         throw new HttpError(500, 'Internal Server Error');

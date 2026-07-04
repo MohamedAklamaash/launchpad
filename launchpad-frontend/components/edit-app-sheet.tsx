@@ -5,6 +5,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Hash, FileText, GitBranch, Cpu, HardDrive } from 'lucide-react';
 import { Application, ApplicationUpdate } from '@/types/application';
 import { applicationApi } from '@/lib/api/applications';
 import { toast } from 'sonner';
@@ -15,9 +16,9 @@ const MEM_RANGES: Record<number, [number, number]> = {
   0.25: [0.5, 2], 0.5: [1, 4], 1: [2, 8], 2: [4, 16], 4: [8, 30],
 };
 
-const rowCls = "flex items-center border-b border-[#1a1a1a] last:border-0";
-const labelCls = "w-28 shrink-0 text-xs text-[#555] px-4 py-3";
-const inputCls = "bg-transparent border-0 h-9 text-sm text-white placeholder:text-[#333] focus-visible:ring-0 pl-3 flex-1";
+const inputCls = 'bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0';
+const monoInputCls = inputCls + ' font-mono';
+const triggerCls = 'bg-transparent border-0 h-9 text-sm text-foreground focus:ring-0 px-0 shadow-none font-mono';
 
 interface Props {
   app: Application;
@@ -67,89 +68,68 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
     }
   };
 
-  // const setEnvRow = (i: number, k: string, v: string) =>
-  //   setEnvs((prev) => prev.map((row, idx) => (idx === i ? [k, v] : row)));
-
   return (
     <Sheet open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <SheetContent className="bg-[#090909] border-[#1a1a1a] w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto flex flex-col resize-x">
+      <SheetContent className="bg-surface-2 border-hairline w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto flex flex-col resize-x">
         <SheetHeader className="mb-5 shrink-0">
-          <SheetTitle className="text-base font-semibold text-white">Edit Application</SheetTitle>
+          <span className="eyebrow">Console / Edit Application</span>
+          <SheetTitle className="mt-2 text-lg font-display font-semibold text-foreground tracking-tight">Edit application</SheetTitle>
         </SheetHeader>
 
-        <div className="flex-1 space-y-4 overflow-y-auto">
-          {/* General */}
-          <Group label="General">
-            <div className={rowCls}>
-              <span className={labelCls}>Name</span>
-              <Input value={form.name} onChange={(e) => set('name', e.target.value)}
-                className={inputCls + " pr-4"} />
-            </div>
-            <div className={rowCls}>
-              <span className={labelCls}>Description</span>
+        <div className="flex-1 space-y-6 overflow-y-auto">
+          <Section label="General">
+            <Field icon={<Hash className="w-3.5 h-3.5" />} label="Name">
+              <Input value={form.name} onChange={(e) => set('name', e.target.value)} className={inputCls} />
+            </Field>
+            <Field icon={<FileText className="w-3.5 h-3.5" />} label="Description">
               <Input value={form.description} onChange={(e) => set('description', e.target.value)}
-                placeholder="Optional" className={inputCls + " pr-4"} />
-            </div>
-          </Group>
+                placeholder="Optional" className={inputCls} />
+            </Field>
+          </Section>
 
-          {/* Repository */}
-          <Group label="Repository">
-            <div className={rowCls}>
-              <span className={labelCls}>Branch</span>
-              <Input value={form.project_branch} onChange={(e) => set('project_branch', e.target.value)}
-                className={inputCls + " pr-4 font-mono text-xs"} />
-            </div>
-            <div className={rowCls}>
-              <span className={labelCls}>Dockerfile</span>
-              <Input value={form.dockerfile_path} onChange={(e) => set('dockerfile_path', e.target.value)}
-                className={inputCls + " pr-4 font-mono text-xs"} />
-            </div>
-          </Group>
+          <Section label="Repository">
+            <Field icon={<GitBranch className="w-3.5 h-3.5" />} label="Branch">
+              <Input value={form.project_branch} onChange={(e) => set('project_branch', e.target.value)} className={monoInputCls} />
+            </Field>
+            <Field icon={<FileText className="w-3.5 h-3.5" />} label="Dockerfile">
+              <Input value={form.dockerfile_path} onChange={(e) => set('dockerfile_path', e.target.value)} className={monoInputCls} />
+            </Field>
+          </Section>
 
-          {/* Resources */}
-          <Group label="Resources">
-            <div className={rowCls}>
-              <span className={labelCls}>Port</span>
+          <Section label="Resources">
+            <Field icon={<Hash className="w-3.5 h-3.5" />} label="Port">
               <Input type="number" value={form.port} onChange={(e) => set('port', e.target.value)}
-                min={1024} max={65535} className={inputCls + " pr-4 font-mono text-xs"} />
-            </div>
-            <div className={rowCls}>
-              <span className={labelCls}>CPU</span>
-              <div className="flex-1 pr-4">
-                <Select value={String(form.alloted_cpu)} onValueChange={(v) => {
-                  const cpu = Number(v);
-                  set('alloted_cpu', cpu);
-                  set('alloted_memory', MEM_RANGES[cpu][0]);
-                }}>
-                  <SelectTrigger className="bg-transparent border-0 h-9 text-sm text-white focus:ring-0 px-0 shadow-none">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#0f0f0f] border-[#1a1a1a]">
-                    {CPU_OPTIONS.map((c) => (
-                      <SelectItem key={c} value={String(c)} className="font-mono text-sm">{c} vCPU</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className={rowCls}>
-              <span className={labelCls}>Memory</span>
-              <div className="flex-1 pr-4">
-                <Input type="number" value={form.alloted_memory}
-                  onChange={(e) => set('alloted_memory', Number(e.target.value))}
-                  min={minMem} max={maxMem} step={0.5}
-                  className={inputCls + " font-mono text-xs"} />
-              </div>
-              <span className="text-[10px] text-[#333] pr-4 shrink-0">{minMem}–{maxMem} GB</span>
-            </div>
-          </Group>
+                min={1024} max={65535} className={monoInputCls} />
+            </Field>
+            <Field icon={<Cpu className="w-3.5 h-3.5" />} label="CPU">
+              <Select value={String(form.alloted_cpu)} onValueChange={(v) => {
+                const cpu = Number(v);
+                set('alloted_cpu', cpu);
+                set('alloted_memory', MEM_RANGES[cpu][0]);
+              }}>
+                <SelectTrigger className={triggerCls}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-popover border-hairline">
+                  {CPU_OPTIONS.map((c) => (
+                    <SelectItem key={c} value={String(c)} className="font-mono text-sm">{c} vCPU</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field icon={<HardDrive className="w-3.5 h-3.5" />} label="Memory" hint={`${minMem}–${maxMem} GB`}>
+              <Input type="number" value={form.alloted_memory}
+                onChange={(e) => set('alloted_memory', Number(e.target.value))}
+                min={minMem} max={maxMem} step={0.5}
+                className={monoInputCls} />
+            </Field>
+          </Section>
 
           <EnvEditor envs={envs} onChange={setEnvs} />
         </div>
 
         <div className="pt-4 shrink-0">
-          <Button onClick={handleSave} disabled={saving}
-            className="w-full bg-violet-600 hover:bg-violet-700 h-9 text-sm font-medium">
+          <Button onClick={handleSave} disabled={saving} size="lg" className="w-full">
             {saving ? 'Saving…' : 'Save Changes'}
           </Button>
         </div>
@@ -158,16 +138,26 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
   );
 }
 
-function Group({ label, children, action }: { label: string; children: React.ReactNode; action?: React.ReactNode }) {
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5 px-0.5">
-        <span className="text-[10px] uppercase tracking-widest font-mono text-[#555]">{label}</span>
-        {action}
+      <span className="eyebrow">{label}</span>
+      <div className="mt-2">{children}</div>
+    </div>
+  );
+}
+
+function Field({ icon, label, hint, children }: {
+  icon: React.ReactNode; label: string; hint?: string; children: React.ReactNode;
+}) {
+  return (
+    <div className="group bg-surface-1 border border-hairline px-4 py-2.5 transition-colors focus-within:border-brand/40 focus-within:bg-surface-2 first:rounded-t-xl last:rounded-b-xl">
+      <div className="flex items-center gap-2 mb-0.5">
+        <span className="text-muted-foreground/70 group-focus-within:text-brand transition-colors">{icon}</span>
+        <span className="eyebrow">{label}</span>
+        {hint && <span className="text-[10px] text-muted-foreground/60 ml-auto font-mono">{hint}</span>}
       </div>
-      <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl overflow-hidden">
-        {children}
-      </div>
+      {children}
     </div>
   );
 }

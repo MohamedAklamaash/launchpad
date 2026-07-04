@@ -14,6 +14,13 @@ def _hex_resource_id(prefix: str, seed: str) -> str:
     return f"{prefix}-{hashlib.md5(seed.encode()).hexdigest()[:17]}"
 
 
+def _hex_infra_id(prefix: str, infra_id: str, salt: str = "") -> str:
+    # Mirror infrastructure-service api/mock/aws_fixtures.py::_hex_id so the VpcId the deploy reads
+    # back for a target group matches the environment.vpc_id the provisioner recorded — otherwise
+    # every redeploy sees a VPC mismatch and needlessly deletes + recreates the target group.
+    return f"{prefix}-{hashlib.md5(f'{infra_id}:{salt}'.encode()).hexdigest()[:17]}"
+
+
 class _MockClientExceptions:
     def __init__(self, service: str):
         self._service = service
@@ -40,11 +47,14 @@ class _MockPaginator:
 
 
 class MockClient:
-    def __init__(self, service: str, region: str, account_id: str, deleted_services: set):
+    def __init__(self, service: str, region: str, account_id: str, deleted_services: set,
+                 listener_rules: dict, infra_id: str = None):
         self._service = service
         self._region = region
         self._account_id = account_id
+        self._infra_id = infra_id
         self._deleted_services = deleted_services
+        self._listener_rules = listener_rules
         self.meta = _MockMeta(region)
         self.exceptions = _MockClientExceptions(service)
 
@@ -131,21 +141,27 @@ class MockClient:
         return {"Listeners": [{"ListenerArn": self._arn(f"listener/app/{_suffix(lb_arn)}/80")}]}
 
     def describe_rules(self, **kwargs):
-        return {"Rules": [{"RuleArn": self._arn("listener-rule/default"), "Priority": "default", "Actions": []}]}
+        # Reflect rules created via create_rule so verify_target_group_attached and
+        # get_next_priority see the forward action they just wired up — a stateless
+        # mock would loop forever on "target group not in listener rules yet".
+        listener_arn = kwargs.get("ListenerArn", "listener")
+        default = {"RuleArn": self._arn("listener-rule/default"), "Priority": "default", "Actions": []}
+        return {"Rules": self._listener_rules.get(listener_arn, []) + [default]}
 
     def create_rule(self, **kwargs):
-        actions = kwargs.get("Actions", [])
-        return {
-            "Rules": [
-                {
-                    "RuleArn": self._arn(f"listener-rule/{_suffix(str(kwargs))}"),
-                    "Priority": str(kwargs.get("Priority", 1)),
-                    "Actions": actions,
-                }
-            ]
+        listener_arn = kwargs.get("ListenerArn", "listener")
+        rule = {
+            "RuleArn": self._arn(f"listener-rule/{_suffix(str(kwargs))}"),
+            "Priority": str(kwargs.get("Priority", 1)),
+            "Actions": kwargs.get("Actions", []),
         }
+        self._listener_rules.setdefault(listener_arn, []).append(rule)
+        return {"Rules": [rule]}
 
     def delete_rule(self, **kwargs):
+        rule_arn = kwargs.get("RuleArn")
+        for rules in self._listener_rules.values():
+            rules[:] = [r for r in rules if r["RuleArn"] != rule_arn]
         return {}
 
     def describe_target_health(self, **kwargs):
@@ -223,6 +239,8 @@ class MockClient:
 
     @property
     def _mock_vpc_id(self) -> str:
+        if self._infra_id:
+            return _hex_infra_id("vpc", self._infra_id, "vpc")
         return _hex_resource_id("vpc", self._account_id)
 
     def __getattr__(self, name: str):
@@ -233,10 +251,15 @@ class MockClient:
 
 
 class MockSession:
-    def __init__(self, region: str, account_id: str):
+    def __init__(self, region: str, account_id: str, infra_id: str = None):
         self.region_name = region
         self._account_id = account_id
+        self._infra_id = infra_id
         self._deleted_services: set = set()
+        self._listener_rules: dict = {}
 
     def client(self, service_name: str, **kwargs):
-        return MockClient(service_name, self.region_name, self._account_id, self._deleted_services)
+        return MockClient(
+            service_name, self.region_name, self._account_id,
+            self._deleted_services, self._listener_rules, infra_id=self._infra_id,
+        )

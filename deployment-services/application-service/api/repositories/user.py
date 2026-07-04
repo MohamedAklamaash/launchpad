@@ -5,6 +5,15 @@ from api.models.user import User as UserModel
 logger = logging.getLogger(__name__)
 
 
+class PendingInvitedInfrastructure(Exception):
+    """An invited infrastructure isn't materialized in the read-model yet. The user row is
+    already committed; the caller should retry the link (bounded) rather than drop it."""
+
+    def __init__(self, missing):
+        self.missing = missing
+        super().__init__(f"invited infrastructures not yet materialized: {missing}")
+
+
 class UserRepository:
     def get_user(self, user_id):
         try:
@@ -23,26 +32,14 @@ class UserRepository:
         defaults = {k: v for k, v in user_data.items() if k not in ("id", "infra_id")}
 
         try:
+            # Commit the user independently of invite linking. auth.user.registered and
+            # infrastructure.created race on separate queues; if an invited infra hasn't
+            # materialized yet, the user must not be lost — the link is retried separately.
             with transaction.atomic():
                 user, created = UserModel.objects.update_or_create(
                     id=user_id,
                     defaults=defaults,
                 )
-                infra_ids = user_data.get("infra_id", [])
-                if infra_ids and user_data.get("invited_by"):
-                    from api.models.infrastructure import Infrastructure
-                    for iid in infra_ids:
-                        try:
-                            infra = Infrastructure.objects.get(id=iid)
-                            infra.invited_users.add(user)
-                        except Infrastructure.DoesNotExist:
-                            pass
-            action = "created" if created else "updated"
-            logger.info(
-                f"User {action} in local DB",
-                extra={"user_id": str(user_id), "email": user_data.get("email")},
-            )
-            return user, created
         except IntegrityError as exc:
             logger.error(
                 "IntegrityError during user upsert",
@@ -50,3 +47,29 @@ class UserRepository:
                 exc_info=True,
             )
             raise
+
+        action = "created" if created else "updated"
+        logger.info(
+            f"User {action} in local DB",
+            extra={"user_id": str(user_id), "email": user_data.get("email")},
+        )
+
+        missing = self._link_invited_infrastructures(user, user_data)
+        if missing:
+            raise PendingInvitedInfrastructure(missing)
+        return user, created
+
+    @staticmethod
+    def _link_invited_infrastructures(user, user_data: dict) -> list:
+        infra_ids = user_data.get("infra_id", [])
+        if not (infra_ids and user_data.get("invited_by")):
+            return []
+        from api.models.infrastructure import Infrastructure
+        missing = []
+        for iid in infra_ids:
+            infra = Infrastructure.objects.filter(id=iid).first()
+            if infra:
+                infra.invited_users.add(user)
+            else:
+                missing.append(str(iid))
+        return missing

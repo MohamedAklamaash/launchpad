@@ -191,11 +191,14 @@ class ApplicationDetailDeleteView(APIView):
         responses={204: None, 403: ErrorSerializer, 400: ErrorSerializer},
     )
     def delete(self, request, pk=None):
+        from api.services.application_service import DeploymentInProgressError
         try:
             self.service.delete_application(request.user.id, pk)
             return Response(status=status.HTTP_204_NO_CONTENT)
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        except DeploymentInProgressError as e:
+            return Response({"error": str(e)}, status=status.HTTP_409_CONFLICT)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

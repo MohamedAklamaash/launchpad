@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
+import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -34,11 +35,28 @@ import { useAuthStore } from '@/lib/store/auth';
 import { toast } from 'sonner';
 
 const ROLE_COLORS: Record<string, string> = {
-  super_admin: 'text-purple-400',
-  admin: 'text-blue-400',
-  user: 'text-green-400',
-  guest: 'text-[#666]',
+  super_admin: 'text-brand',
+  admin: 'text-azure',
+  user: 'text-success',
+  guest: 'text-muted-foreground',
 };
+
+const STATUS: Record<string, { dot: string; badge: string; label: string }> = {
+  ACTIVE: { dot: 'bg-success', badge: 'border-success/30 bg-success/10 text-success', label: 'text-success' },
+  PROVISIONING: { dot: 'bg-azure animate-pulse', badge: 'border-azure/30 bg-azure/10 text-azure', label: 'text-azure' },
+  DEPLOYING: { dot: 'bg-azure animate-pulse', badge: 'border-azure/30 bg-azure/10 text-azure', label: 'text-azure' },
+  BUILDING: { dot: 'bg-azure animate-pulse', badge: 'border-azure/30 bg-azure/10 text-azure', label: 'text-azure' },
+  PENDING: { dot: 'bg-warning animate-pulse', badge: 'border-warning/30 bg-warning/10 text-warning', label: 'text-warning' },
+  ERROR: { dot: 'bg-destructive', badge: 'border-destructive/30 bg-destructive/10 text-destructive', label: 'text-destructive' },
+  FAILED: { dot: 'bg-destructive', badge: 'border-destructive/30 bg-destructive/10 text-destructive', label: 'text-destructive' },
+  DESTROYING: { dot: 'bg-warning animate-pulse', badge: 'border-warning/30 bg-warning/10 text-warning', label: 'text-warning' },
+  DESTROYED: { dot: 'bg-muted-foreground', badge: 'border-hairline bg-surface-1 text-muted-foreground', label: 'text-muted-foreground' },
+};
+
+const statusOf = (status: string) =>
+  STATUS[status] ?? { dot: 'bg-muted-foreground', badge: 'border-hairline bg-surface-1 text-muted-foreground', label: 'text-muted-foreground' };
+
+const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
 export default function InfrastructureDetailPage() {
   const router = useRouter();
@@ -77,7 +95,7 @@ export default function InfrastructureDetailPage() {
       setApps(appsData);
     } catch (error: unknown) {
       const err = error as { response?: { data?: { error?: string } } };
-      toast.error(err.response?.data?.error || 'Failed to load data');
+      toast.error(err.response?.data?.error || 'Failed to load data', { id: 'infra-detail-load' });
     } finally {
       setLoading(false);
     }
@@ -183,55 +201,49 @@ export default function InfrastructureDetailPage() {
     }
   };
 
-  const getStatusDot = (status: string) => {
-    switch (status) {
-      case 'ACTIVE': return 'bg-emerald-500';
-      case 'PROVISIONING': return 'bg-blue-500 animate-pulse';
-      case 'PENDING': return 'bg-amber-500 animate-pulse';
-      case 'ERROR': return 'bg-red-500';
-      case 'BUILDING': return 'bg-blue-500 animate-pulse';
-      case 'DEPLOYING': return 'bg-blue-500 animate-pulse';
-      case 'FAILED': return 'bg-red-500';
-      default: return 'bg-[#444]';
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'ACTIVE': return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
-      case 'PROVISIONING': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-      case 'PENDING': return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
-      case 'ERROR': return 'bg-red-500/10 text-red-400 border-red-500/20';
-      case 'BUILDING': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-      case 'DEPLOYING': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-      case 'FAILED': return 'bg-red-500/10 text-red-400 border-red-500/20';
-      default: return 'bg-[#1a1a1a] text-[#666] border-[#222]';
-    }
-  };
-
   if (loading) return (
-    <div className="flex items-center justify-center h-64">
-      <div className="w-5 h-5 border-2 border-[#333] border-t-violet-500 rounded-full animate-spin" />
+    <div className="space-y-6">
+      <div className="h-3 w-16 rounded panel animate-pulse" />
+      <div className="flex items-start justify-between">
+        <div className="space-y-2.5">
+          <div className="h-3 w-40 rounded panel animate-pulse" />
+          <div className="h-7 w-56 rounded panel animate-pulse" />
+        </div>
+        <div className="h-8 w-40 rounded-lg panel animate-pulse" />
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-24 rounded-xl panel animate-pulse" />
+        ))}
+      </div>
+      <div className="h-40 rounded-xl panel animate-pulse" />
     </div>
   );
-  if (!infra) return <div className="text-[#555] text-sm">Infrastructure not found</div>;
+
+  if (!infra) return (
+    <div className="rounded-2xl panel-inset px-8 py-20 text-center">
+      <p className="text-sm text-muted-foreground">Infrastructure not found.</p>
+    </div>
+  );
+
+  const st = statusOf(infra.status);
 
   return (
-    <div className="space-y-6">
-      <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-[#666] hover:text-white transition-colors cursor-pointer">
+    <motion.div {...rise} className="space-y-6">
+      <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
         <ArrowLeft className="w-3.5 h-3.5" /> Back
       </button>
 
-      {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div className="space-y-1.5">
+          <span className="eyebrow">Console / Infrastructure</span>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-xl font-semibold text-white tracking-tight">{infra.name}</h1>
-            <span className={`text-xs font-mono px-2 py-0.5 rounded-full border ${getStatusColor(infra.status)}`}>
+            <h1 className="text-xl font-display font-semibold text-foreground tracking-tight">{infra.name}</h1>
+            <span className={`font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${st.badge}`}>
               {infra.status}
             </span>
             {infra.is_mock && (
-              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full border border-amber-500/60 bg-amber-500/15 text-amber-300 uppercase tracking-widest">
+              <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border border-brand/30 bg-brand-soft text-brand">
                 Mock / Dev
               </span>
             )}
@@ -239,142 +251,137 @@ export default function InfrastructureDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           {isSuperAdmin && (infra.status === 'ERROR' || infra.status === 'DESTROYED' || infra.status === 'PENDING') && (
-            <Button variant="outline" onClick={handleReprovision} disabled={reprovisioning}
-              className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-amber-400 hover:text-amber-300 h-8 text-xs gap-1.5">
+            <Button variant="outline" size="sm" onClick={handleReprovision} disabled={reprovisioning} className="gap-1.5 text-brand hover:text-brand">
               <RefreshCw className={`w-3.5 h-3.5 ${reprovisioning ? 'animate-spin' : ''}`} /> Reprovision
             </Button>
           )}
           {isSuperAdmin && (
-            <Button variant="outline" onClick={() => setInviteOpen(true)}
-              className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-[#888] hover:text-white h-8 text-xs gap-1.5">
+            <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)} className="gap-1.5">
               <UserPlus className="w-3.5 h-3.5" /> Invite
             </Button>
           )}
-          <Button variant="outline" onClick={() => setSettingsOpen(true)}
-            className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-[#888] hover:text-white h-8 text-xs gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="gap-1.5">
             <Settings className="w-3.5 h-3.5" /> Settings
           </Button>
         </div>
       </div>
 
       {infra.is_mock && (
-        <div className="bg-amber-500/10 border border-amber-500/40 rounded-xl px-4 py-3 flex items-center gap-3">
-          <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-          <p className="text-xs text-amber-300">
+        <div className="rounded-xl border border-brand/30 bg-brand-soft px-4 py-3 flex items-center gap-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-brand shrink-0" />
+          <p className="text-xs text-brand">
             This is a MOCK / DEV infrastructure. No real AWS resources exist and the load balancer link is a dead placeholder.
           </p>
         </div>
       )}
 
-      {/* Provisioning status banner */}
       {(infra.status === 'PROVISIONING' || infra.status === 'PENDING') && (
-        <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl px-4 py-3 flex items-center gap-3">
-          <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse shrink-0" />
-          <p className="text-xs text-blue-400">
+        <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 flex items-center gap-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
+          <p className="text-xs text-azure">
             {infra.status === 'PROVISIONING' ? 'Terraform is provisioning your AWS infrastructure…' : 'Provisioning queued — waiting to start…'}
           </p>
         </div>
       )}
       {infra.status === 'ERROR' && (
-        <div className="bg-red-500/5 border border-red-500/20 rounded-xl px-4 py-3 flex items-center justify-between">
-          <p className="text-xs text-red-400">Provisioning failed. Click <span className="font-medium">Reprovision</span> to retry.</p>
+        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 flex items-center justify-between">
+          <p className="text-xs text-destructive">Provisioning failed. Click <span className="font-medium">Reprovision</span> to retry.</p>
         </div>
       )}
       {infra.status === 'DESTROYING' && (
-        <div className="bg-orange-500/5 border border-orange-500/20 rounded-xl px-4 py-3 flex items-center gap-3">
-          <div className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse shrink-0" />
-          <p className="text-xs text-orange-400">Terraform is destroying your AWS infrastructure…</p>
+        <div className="rounded-xl border border-warning/20 bg-warning/5 px-4 py-3 flex items-center gap-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse shrink-0" />
+          <p className="text-xs text-warning">Terraform is destroying your AWS infrastructure…</p>
         </div>
       )}
 
-      {/* Stats */}
       <div className="grid grid-cols-3 gap-3">
         {[
-          { icon: Server, label: 'Provider', value: infra.cloud_provider, color: 'text-violet-400' },
-          { icon: Cpu, label: 'Max CPU', value: `${infra.max_cpu} vCPU`, color: 'text-blue-400' },
-          { icon: HardDrive, label: 'Max Memory', value: `${infra.max_memory} GB`, color: 'text-emerald-400' },
-        ].map(({ icon: Icon, label, value, color }) => (
-          <div key={label} className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4">
-            <Icon className={`w-4 h-4 ${color} mb-3`} />
-            <p className="text-xs text-[#666] mb-0.5">{label}</p>
-            <p className="text-sm font-semibold text-white">{value}</p>
+          { icon: Server, label: 'Provider', value: infra.cloud_provider, mono: false, tint: 'text-brand' },
+          { icon: Cpu, label: 'Max CPU', value: `${infra.max_cpu} vCPU`, mono: true, tint: 'text-azure' },
+          { icon: HardDrive, label: 'Max Memory', value: `${infra.max_memory} GB`, mono: true, tint: 'text-success' },
+        ].map(({ icon: Icon, label, value, mono, tint }) => (
+          <div key={label} className="rounded-xl panel p-4">
+            <Icon className={`w-4 h-4 ${tint} mb-3`} />
+            <p className="eyebrow">{label}</p>
+            <p className={`mt-1 text-sm font-semibold text-foreground ${mono ? 'font-mono' : ''}`}>{value}</p>
           </div>
         ))}
       </div>
 
       {infra.environment?.alb_dns && (
-        <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl px-4 py-3 flex items-center justify-between">
-          <span className="text-xs text-[#666]">Load Balancer</span>
+        <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
+          <span className="eyebrow">Load Balancer</span>
           {infra.is_mock ? (
-            <span className="text-xs text-[#555] flex items-center gap-1.5 font-mono cursor-not-allowed select-none">
-              {infra.environment.alb_dns} <span className="text-[10px] uppercase tracking-widest">dead link</span>
+            <span className="text-xs text-muted-foreground/70 flex items-center gap-2 font-mono cursor-not-allowed select-none">
+              {infra.environment.alb_dns} <span className="text-[10px] uppercase tracking-widest text-muted-foreground/60">dead link</span>
             </span>
           ) : (
             <a href={`http://${infra.environment.alb_dns}`} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1.5 font-mono transition-colors">
+              className="text-xs text-azure hover:text-azure/80 flex items-center gap-1.5 font-mono transition-colors">
               {infra.environment.alb_dns} <ExternalLink className="w-3 h-3" />
             </a>
           )}
         </div>
       )}
 
-      {/* Applications */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-white">Applications <span className="text-[#444] font-normal">({apps.length})</span></h2>
+          <h2 className="text-sm font-display font-semibold text-foreground">
+            Applications <span className="text-muted-foreground/60 font-normal font-mono">({apps.length})</span>
+          </h2>
           {infra.status === 'ACTIVE' && canDeploy && (
-            <Button onClick={() => router.push(`/dashboard/applications/new?infra=${id}`)}
-              className="bg-violet-600 hover:bg-violet-700 text-white h-8 text-xs gap-1.5">
+            <Button size="sm" onClick={() => router.push(`/dashboard/applications/new?infra=${id}`)} className="gap-1.5">
               <Plus className="w-3.5 h-3.5" /> Deploy
             </Button>
           )}
         </div>
         {apps.length === 0 ? (
-          <div className="border border-dashed border-[#1a1a1a] rounded-xl p-10 text-center">
-            <p className="text-xs text-[#444] mb-3">No applications deployed yet</p>
+          <div className="rounded-xl border border-dashed border-hairline-strong p-10 text-center">
+            <p className="text-xs text-muted-foreground mb-3">No applications deployed yet</p>
             {infra.status === 'ACTIVE' && canDeploy && (
-              <Button onClick={() => router.push(`/dashboard/applications/new?infra=${id}`)}
-                className="bg-violet-600 hover:bg-violet-700 text-white h-8 text-xs gap-1.5">
+              <Button size="sm" onClick={() => router.push(`/dashboard/applications/new?infra=${id}`)} className="gap-1.5">
                 <Plus className="w-3.5 h-3.5" /> Deploy First Application
               </Button>
             )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {apps.map((app) => (
-              <div key={app.id}
-                className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-4 cursor-pointer hover:border-[#2a2a2a] hover:bg-[#111] transition-all"
-                onClick={() => router.push(`/dashboard/applications/${app.id}`)}>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-sm font-medium text-white truncate">{app.name}</span>
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    <span className={`w-1.5 h-1.5 rounded-full ${getStatusDot(app.status)}`} />
-                    <span className="text-xs text-[#444] font-mono">{app.status}</span>
+            {apps.map((app) => {
+              const ast = statusOf(app.status);
+              return (
+                <div key={app.id}
+                  className="group rounded-xl panel p-4 cursor-pointer transition-colors hover:border-brand/30 hover:bg-surface-2"
+                  onClick={() => router.push(`/dashboard/applications/${app.id}`)}>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm font-medium text-foreground truncate">{app.name}</span>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      <span className={`w-1.5 h-1.5 rounded-full ${ast.dot}`} />
+                      <span className={`font-mono text-[10px] uppercase tracking-[0.12em] ${ast.label}`}>{app.status}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono">
+                    <span>{app.cpu} vCPU</span>
+                    <span>{app.memory} GB</span>
+                    <span>:{app.port}</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-3 text-xs text-[#444]">
-                  <span>{app.cpu} vCPU</span>
-                  <span>{app.memory} GB</span>
-                  <span>:{app.port}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
 
-      {/* Settings Sheet */}
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <SheetContent className="bg-[#090909] border-[#1a1a1a] w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto resize-x">
+        <SheetContent className="w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto resize-x">
           <SheetHeader className="mb-6">
-            <SheetTitle className="text-white text-base font-semibold">Settings</SheetTitle>
+            <SheetTitle className="text-base font-display font-semibold">Settings</SheetTitle>
           </SheetHeader>
 
           <div className="space-y-6">
-            {/* Details */}
             <div className="space-y-2">
-              <p className="text-[10px] uppercase tracking-widest text-[#555] font-mono px-1">Details</p>
-              <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl divide-y divide-[#1a1a1a]">
+              <p className="eyebrow px-1">Details</p>
+              <div className="rounded-xl panel-inset divide-y divide-hairline">
                 {[
                   { label: 'ID', value: infra.id, mono: true },
                   { label: 'Provider', value: infra.cloud_provider },
@@ -386,29 +393,28 @@ export default function InfrastructureDetailPage() {
                   { label: 'Created', value: new Date(infra.created_at).toLocaleDateString() },
                 ].map(({ label, value, mono }) => (
                   <div key={label} className="flex items-center justify-between px-4 py-2.5">
-                    <span className="text-xs text-[#444]">{label}</span>
-                    <span className={`text-xs text-[#aaa] ${mono ? 'font-mono' : ''} max-w-[200px] truncate`}>{value}</span>
+                    <span className="text-xs text-muted-foreground">{label}</span>
+                    <span className={`text-xs text-foreground/80 ${mono ? 'font-mono' : ''} max-w-[200px] truncate`}>{value}</span>
                   </div>
                 ))}
-                {/* Editable name */}
                 <div className="flex items-center justify-between px-4 py-2.5">
-                  <span className="text-xs text-[#444]">Name</span>
+                  <span className="text-xs text-muted-foreground">Name</span>
                   {isOwner && editingName ? (
                     <div className="flex items-center gap-2">
                       <Input value={infraName} onChange={(e) => setInfraName(e.target.value)}
                         onKeyDown={(e) => { if (e.key === 'Enter') handleRenameInfra(); if (e.key === 'Escape') setEditingName(false); }}
-                        className="bg-[#050505] border-[#222] h-7 text-xs w-36 font-mono focus:border-violet-500" autoFocus />
+                        className="h-7 text-xs w-36 font-mono" autoFocus />
                       <button onClick={handleRenameInfra} disabled={savingName}
-                        className="text-xs text-violet-400 hover:text-violet-300 disabled:opacity-40 transition-colors">
+                        className="text-xs text-brand hover:text-brand/80 disabled:opacity-40 transition-colors">
                         {savingName ? '…' : 'Save'}
                       </button>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-[#aaa]">{infra.name}</span>
+                      <span className="text-xs text-foreground/80">{infra.name}</span>
                       {isOwner && (
                         <button onClick={() => { setInfraName(infra.name); setEditingName(true); }}
-                          className="text-[#333] hover:text-[#888] transition-colors">
+                          className="text-muted-foreground/50 hover:text-foreground transition-colors">
                           <Pencil className="w-3 h-3" />
                         </button>
                       )}
@@ -418,33 +424,30 @@ export default function InfrastructureDetailPage() {
               </div>
             </div>
 
-            {/* Invited Users */}
             <div className="space-y-2">
-              <p className="text-[10px] uppercase tracking-widest text-[#555] font-mono px-1">
-                Users ({infra.invited_users?.length ?? 0})
-              </p>
+              <p className="eyebrow px-1">Users ({infra.invited_users?.length ?? 0})</p>
               {!infra.invited_users || infra.invited_users.length === 0 ? (
-                <p className="text-xs text-[#555] px-1">No invited users yet.</p>
+                <p className="text-xs text-muted-foreground px-1">No invited users yet.</p>
               ) : (
                 <div className="space-y-1.5">
                   {infra.invited_users.map((u) => (
-                    <div key={u.id} className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl px-4 py-3 flex items-center justify-between">
+                    <div key={u.id} className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <div className="w-7 h-7 rounded-full bg-[#141414] border border-[#1e1e1e] flex items-center justify-center">
-                          <User className="w-3 h-3 text-[#444]" />
+                        <div className="w-7 h-7 rounded-full bg-surface-3 border border-hairline flex items-center justify-center">
+                          <User className="w-3 h-3 text-muted-foreground" />
                         </div>
                         <div>
-                          <p className="text-xs font-medium text-white">{u.user_name}</p>
-                          <p className="text-[11px] text-[#444]">{u.email}</p>
+                          <p className="text-xs font-medium text-foreground">{u.user_name}</p>
+                          <p className="text-[11px] text-muted-foreground">{u.email}</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
-                        <span className={`text-[10px] font-mono ${ROLE_COLORS[u.role] ?? 'text-[#444]'}`}>{u.role}</span>
+                        <span className={`text-[10px] font-mono uppercase tracking-[0.12em] ${ROLE_COLORS[u.role] ?? 'text-muted-foreground'}`}>{u.role}</span>
                         {isOwner && (
                           <button
                             onClick={() => handleRemoveUser(u)}
                             disabled={removingUserId === u.id}
-                            className="text-[#333] hover:text-red-400 transition-colors disabled:opacity-40"
+                            className="text-muted-foreground/50 hover:text-destructive transition-colors disabled:opacity-40"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -456,19 +459,19 @@ export default function InfrastructureDetailPage() {
               )}
             </div>
 
-            {/* Danger Zone */}
             {isOwner && (
               <div className="space-y-2">
-                <p className="text-[10px] uppercase tracking-widest text-red-500/60 font-mono px-1">Danger Zone</p>
-                <div className="bg-red-500/5 border border-red-500/20 rounded-xl px-4 py-3 flex items-center justify-between">
+                <p className="eyebrow px-1 text-destructive/70">Danger Zone</p>
+                <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 flex items-center justify-between">
                   <div>
-                    <p className="text-xs font-medium text-white">Delete Infrastructure</p>
-                    <p className="text-[11px] text-[#555] mt-0.5">Tears down all AWS resources. Cannot be undone.</p>
+                    <p className="text-xs font-medium text-foreground">Delete Infrastructure</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">Tears down all AWS resources. Cannot be undone.</p>
                   </div>
                   <Button
                     variant="outline"
+                    size="sm"
                     onClick={() => setDeleteOpen(true)}
-                    className="border-red-500/30 text-red-400 hover:bg-red-500/10 hover:text-red-400 h-8 text-xs gap-1.5 shrink-0 ml-4"
+                    className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive gap-1.5 shrink-0 ml-4"
                   >
                     <Trash2 className="w-3.5 h-3.5" /> Delete
                   </Button>
@@ -479,46 +482,42 @@ export default function InfrastructureDetailPage() {
         </SheetContent>
       </Sheet>
 
-      {/* Delete Confirmation Dialog */}
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <DialogContent className="bg-[#090909] border-[#1a1a1a] max-w-sm shadow-2xl shadow-black/60">
+        <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base font-semibold">Delete Infrastructure</DialogTitle>
+            <DialogTitle className="text-base font-display font-semibold">Delete Infrastructure</DialogTitle>
           </DialogHeader>
-          <p className="text-xs text-[#555]">
-            Delete <span className="text-[#aaa] font-mono">{infra.name}</span>? This will trigger Terraform destroy and remove all AWS resources (VPC, ECS, ALB, ECR). This cannot be undone.
+          <p className="text-xs text-muted-foreground">
+            Delete <span className="text-foreground font-mono">{infra.name}</span>? This will trigger Terraform destroy and remove all AWS resources (VPC, ECS, ALB, ECR). This cannot be undone.
           </p>
           <div className="flex gap-2 justify-end mt-2">
-            <Button variant="outline" onClick={() => setDeleteOpen(false)}
-              className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-[#888] h-9 text-sm">
+            <Button variant="outline" onClick={() => setDeleteOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleDeleteInfra} disabled={deleting}
-              className="bg-red-500/90 hover:bg-red-500 h-9 text-sm">
+            <Button variant="destructive" onClick={handleDeleteInfra} disabled={deleting}>
               {deleting ? 'Deleting…' : 'Delete'}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Invite User Dialog */}
       <Dialog open={inviteOpen} onOpenChange={(o) => { if (!o) closeInviteDialog(); else setInviteOpen(true); }}>
-        <DialogContent className="bg-[#090909] border-[#1a1a1a] max-w-md shadow-2xl shadow-black/60">
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-base font-semibold">{inviteUrl ? 'Invitation Ready' : 'Invite User'}</DialogTitle>
+            <DialogTitle className="text-base font-display font-semibold">{inviteUrl ? 'Invitation Ready' : 'Invite User'}</DialogTitle>
           </DialogHeader>
           {inviteUrl ? (
             <div className="space-y-4">
-              <p className="text-xs text-[#555]">
-                Share this link with <span className="text-[#aaa] font-mono">{inviteForm.email}</span>.
+              <p className="text-xs text-muted-foreground">
+                Share this link with <span className="text-foreground font-mono">{inviteForm.email}</span>.
               </p>
-              <div className="bg-[#050505] border border-[#1a1a1a] rounded-xl p-3 flex items-center gap-3">
-                <p className="flex-1 text-xs font-mono text-[#777] break-all">{inviteUrl}</p>
-                <button onClick={copyUrl} className="shrink-0 text-[#444] hover:text-white transition-colors">
-                  {copied ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
+              <div className="rounded-xl panel-inset p-3 flex items-center gap-3">
+                <p className="flex-1 text-xs font-mono text-muted-foreground break-all">{inviteUrl}</p>
+                <button onClick={copyUrl} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+                  {copied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
                 </button>
               </div>
-              <Button onClick={closeInviteDialog} variant="outline" className="w-full border-[#1e1e1e] bg-transparent hover:bg-[#111] text-[#888] h-9 text-sm">Done</Button>
+              <Button onClick={closeInviteDialog} variant="outline" className="w-full">Done</Button>
             </div>
           ) : (
             <form onSubmit={handleInvite} className="space-y-3">
@@ -528,32 +527,32 @@ export default function InfrastructureDetailPage() {
                 { label: 'Temporary Password', type: 'password', placeholder: 'Min 6 characters', key: 'password' },
               ].map(({ label, type, placeholder, key }) => (
                 <div key={key} className="space-y-1.5">
-                  <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">{label}</Label>
+                  <Label className="eyebrow">{label}</Label>
                   <Input type={type} placeholder={placeholder}
                     value={inviteForm[key as keyof typeof inviteForm]}
                     onChange={(e) => setInviteForm({ ...inviteForm, [key]: e.target.value })}
                     required minLength={key === 'password' ? 6 : undefined}
-                    className="bg-[#050505] border-[#1a1a1a] focus:border-violet-500 h-9 text-sm" />
+                    className="h-9 text-sm" />
                 </div>
               ))}
               <div className="space-y-1.5">
-                <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">Role</Label>
+                <Label className="eyebrow">Role</Label>
                 <Select value={inviteForm.role} onValueChange={(v) => setInviteForm({ ...inviteForm, role: v as 'admin' | 'user' | 'guest' })}>
-                  <SelectTrigger className="bg-[#050505] border-[#1a1a1a] h-9 text-sm w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent className="bg-[#0d0d0d] border-[#1a1a1a] w-[320px]">
+                  <SelectTrigger className="h-9 text-sm w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent className="w-[320px]">
                     <SelectItem value="admin" className="text-sm py-2.5">Admin — can deploy apps</SelectItem>
                     <SelectItem value="user" className="text-sm py-2.5">User — view only</SelectItem>
                     <SelectItem value="guest" className="text-sm py-2.5">Guest — limited access</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              <Button type="submit" disabled={inviting} className="w-full bg-violet-600 hover:bg-violet-700 h-9 text-sm font-medium mt-1">
+              <Button type="submit" disabled={inviting} className="w-full mt-1">
                 {inviting ? 'Inviting…' : 'Send Invite'}
               </Button>
             </form>
           )}
         </DialogContent>
       </Dialog>
-    </div>
+    </motion.div>
   );
 }

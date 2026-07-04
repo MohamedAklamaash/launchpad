@@ -28,13 +28,17 @@ def test_skips_non_aws_infra(patches):
 
 @pytest.fixture
 def patches():
+    # The credential-gating tests below exercise the production path, so force non-dev mode;
+    # the dev-mode short-circuit is covered separately by test_skips_in_dev_mode.
     with patch(
         "api.common.utils.enforce_rightsizing.boto3"
     ) as mock_boto3, patch(
         "api.common.utils.enforce_rightsizing.authenticate_infrastructure"
     ) as mock_auth, patch(
         "api.common.utils.enforce_rightsizing.InfrastructureRepository"
-    ) as mock_repo_cls:
+    ) as mock_repo_cls, patch(
+        "api.common.utils.enforce_rightsizing.is_dev_mode", return_value=False
+    ) as mock_dev:
         mock_boto3.client.return_value = MagicMock(
             get_ec2_instance_recommendations=MagicMock(return_value={"instanceRecommendations": []})
         )
@@ -42,8 +46,22 @@ def patches():
         repo_instance = MagicMock()
         mock_repo_cls.return_value = repo_instance
         yield SimpleNamespace(
-            boto3=mock_boto3, auth=mock_auth, repo=repo_instance, repo_cls=mock_repo_cls
+            boto3=mock_boto3, auth=mock_auth, repo=repo_instance, repo_cls=mock_repo_cls, dev=mock_dev
         )
+
+
+def test_skips_in_dev_mode():
+    from api.common.utils.enforce_rightsizing import enforce_rightsizing
+
+    with patch("api.common.utils.enforce_rightsizing.is_dev_mode", return_value=True), patch(
+        "api.common.utils.enforce_rightsizing.boto3"
+    ) as mock_boto3, patch(
+        "api.common.utils.enforce_rightsizing.InfrastructureRepository"
+    ) as mock_repo_cls:
+        enforce_rightsizing()
+
+    assert not mock_boto3.client.called
+    assert not mock_repo_cls.return_value.get_all.called
 
 
 def test_proceeds_to_boto3_when_both_credentials_are_present(patches):

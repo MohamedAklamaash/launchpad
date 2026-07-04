@@ -2,11 +2,18 @@ import logging
 import boto3
 from api.repositories.infrastructure import InfrastructureRepository
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
+from api.common.envs.application import app_config
 from shared.enums.cloud_provider import CloudProvider
+from shared.mode import is_dev_mode
 
 def enforce_rightsizing():
     logger = logging.getLogger(__name__)
     logger.info("Starting AWS Compute Optimizer enforcement job...")
+    # Dev/mock mode must never make real AWS calls. Mock infras synthesize fake creds that
+    # would otherwise be used against the real compute-optimizer/ec2 endpoints.
+    if is_dev_mode(app_config.mode):
+        logger.info("Skipping rightsizing in dev/mock mode (no AWS calls)")
+        return
     repo = InfrastructureRepository()
     
     infras = repo.get_all()

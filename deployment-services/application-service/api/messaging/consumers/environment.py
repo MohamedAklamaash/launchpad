@@ -2,7 +2,8 @@ import json
 import time
 import uuid
 import logging
-from django.db import transaction, connection
+from django.db import transaction, connection, OperationalError
+from django.core.exceptions import ObjectDoesNotExist
 from api.models import Environment, Infrastructure
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaConsumer
@@ -122,17 +123,40 @@ class EnvironmentEventConsumer:
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as exc:
-            log.error(
-                "Error persisting environment event — NACKing with requeue",
-                extra={
-                    "correlation_id": correlation_id,
-                    "environment_id": env_id,
-                    "infrastructure_id": infra_id,
-                    "error": str(exc),
-                },
-                exc_info=True,
-            )
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            # Only retry genuinely transient errors. A non-transient failure (bad payload
+            # shape, programming error) requeued forever is a poison message that stalls the
+            # whole queue under prefetch_count=1.
+            transient = isinstance(exc, (ObjectDoesNotExist, OperationalError))
+            if not transient:
+                log.error(
+                    "Error persisting environment event — NACKing without requeue (permanent)",
+                    extra={"correlation_id": correlation_id, "environment_id": env_id,
+                           "infrastructure_id": infra_id, "error": str(exc)},
+                    exc_info=True,
+                )
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                return
+
+            retry_count = self._retry_counts.get(env_id, 0)
+            if retry_count >= self.MAX_RETRIES:
+                log.error(
+                    "Error persisting environment event — max retries exceeded, discarding",
+                    extra={"correlation_id": correlation_id, "environment_id": env_id, "error": str(exc)},
+                    exc_info=True,
+                )
+                self._retry_counts.pop(env_id, None)
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            else:
+                self._retry_counts[env_id] = retry_count + 1
+                delay = min(2 ** retry_count, 30)
+                log.error(
+                    "Error persisting environment event — NACKing with requeue (attempt %d/%d, delay %ds)",
+                    retry_count + 1, self.MAX_RETRIES, delay,
+                    extra={"correlation_id": correlation_id, "environment_id": env_id, "error": str(exc)},
+                    exc_info=True,
+                )
+                time.sleep(delay)
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def start(self):
         """Start consuming messages."""

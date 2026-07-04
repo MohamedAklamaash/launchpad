@@ -62,7 +62,11 @@ class InfrastructureService:
         if infra_data.get("cloud_provider"):
             infra_data["cloud_provider"] = infra_data["cloud_provider"].lower()
         cloud_provider = infra_data.get("cloud_provider")
-        if cloud_provider == CloudProvider.AWS and not infra_data.get("code"):
+        # Only AWS is onboardable end-to-end; anything else persists a permanently
+        # un-onboardable junk row (the callback rejects non-AWS). Reject at the boundary.
+        if cloud_provider != CloudProvider.AWS:
+            raise ValueError("Only AWS is currently supported as a cloud provider.")
+        if not infra_data.get("code"):
             raise ValueError("AWS Account ID is required in the 'code' field for AWS infrastructure.")
 
         dev_mode = is_dev_mode(app_config.mode)
@@ -141,7 +145,18 @@ class InfrastructureService:
             except Environment.DoesNotExist:
                 logger.warning(f"No environment found for infrastructure {infra_id}, deleting record")
 
-        return self.repo.delete(user_id, infra_id)
+        deleted = self.repo.delete(user_id, infra_id)
+        if deleted:
+            # Propagate to read-models (application-service) so they drop the row; without this
+            # a later infra with the same (user, name) collides on materialization.
+            try:
+                from api.messaging.producer.producer import infra_producer
+                infra_producer.publish_infrastructure_deleted(user_id=user_id, infra_id=infra_id)
+            except Exception:
+                logger.error(
+                    f"Failed to publish infrastructure.deleted for {infra_id}", exc_info=True
+                )
+        return deleted
 
     def remove_invited_user(self, owner_id, infra_id, target_user_id):
         """Remove an invited user from an infrastructure. Delete user if they belong to no other infra."""
@@ -159,6 +174,16 @@ class InfrastructureService:
         # User row when they had no other invited infra — an infra-scoped action must
         # never delete a cross-service account (and it cascaded to their owned rows).
         infra.invited_users.remove(target_user)
+        try:
+            from api.messaging.producer.producer import infra_producer
+            infra_producer.publish_infrastructure_user_removed(
+                infra_id=infra_id, removed_user_id=target_user_id
+            )
+        except Exception:
+            logger.error(
+                f"Failed to publish infrastructure.user_removed for {infra_id}/{target_user_id}",
+                exc_info=True,
+            )
         return True
     
     def update_infrastructure_config(self, user_id, infra_id, update_data):

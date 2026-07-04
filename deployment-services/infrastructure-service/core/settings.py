@@ -180,6 +180,9 @@ SPECTACULAR_SETTINGS = {
     'SERVE_INCLUDE_SCHEMA': False,
 }
 
+LOG_DIR = os.path.join(os.path.dirname(BASE_DIR), 'logs', 'infrastructure-service')
+os.makedirs(LOG_DIR, exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -200,7 +203,7 @@ LOGGING = {
         },
         'file': {
             'class': 'logging.handlers.RotatingFileHandler',
-            'filename': os.path.join(os.path.dirname(BASE_DIR), 'logs', 'infrastructure-service', 'app.log'),
+            'filename': os.path.join(LOG_DIR, 'app.log'),
             'maxBytes': 10485760,  # 10MB
             'backupCount': 5,
             'formatter': 'json',

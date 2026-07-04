@@ -1,7 +1,9 @@
 import json
+import time
 import logging
 import threading
 import pika
+from django.db import connection
 from api.models import Application
 
 logger = logging.getLogger(__name__)
@@ -19,32 +21,51 @@ class ApplicationEventConsumer:
         queue_name = 'infrastructure-service.application-events'
         self.channel.queue_declare(queue=queue_name, durable=True)
         self.channel.queue_bind(exchange='application_events', queue=queue_name, routing_key='application.created')
+        self.channel.queue_bind(exchange='application_events', queue=queue_name, routing_key='application.updated')
         self.channel.queue_bind(exchange='application_events', queue=queue_name, routing_key='application.deleted')
         self.channel.basic_qos(prefetch_count=1)
-        self.channel.basic_consume(queue=queue_name, on_message_callback=self.callback, auto_ack=True)
-    
+        # Manual ack: auto_ack acknowledges before the handler runs, so a DB blip silently drops
+        # the event and the read-model drifts permanently. Ack only after the write succeeds.
+        self.channel.basic_consume(queue=queue_name, on_message_callback=self.callback, auto_ack=False)
+
     def callback(self, ch, method, properties, body):
         try:
             data = json.loads(body)
-            routing_key = method.routing_key
-            
+        except json.JSONDecodeError:
+            logger.error("Application event JSON decode failed — discarding")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        routing_key = method.routing_key
+        try:
+            connection.close()
             if routing_key == 'application.created':
                 Application.objects.update_or_create(
                     id=data['id'],
                     defaults={
                         'infrastructure_id': data['infrastructure_id'],
                         'name': data['name'],
-                        'user_id': data['user_id']
-                    }
+                        'user_id': data['user_id'],
+                    },
                 )
                 logger.info(f"Synced application created: {data['id']}")
-            
+            elif routing_key == 'application.updated':
+                Application.objects.filter(id=data['id']).update(
+                    name=data['name'],
+                    infrastructure_id=data['infrastructure_id'],
+                )
+                logger.info(f"Synced application updated: {data['id']}")
             elif routing_key == 'application.deleted':
                 Application.objects.filter(id=data['id']).delete()
                 logger.info(f"Synced application deleted: {data['id']}")
-        
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+        except KeyError as e:
+            logger.error(f"Malformed application event ({routing_key}) — discarding: {e}")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         except Exception as e:
-            logger.error(f"Error processing application event: {e}")
+            logger.error(f"Error processing application event ({routing_key}) — requeueing: {e}", exc_info=True)
+            time.sleep(1)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     
     def start(self):
         try:

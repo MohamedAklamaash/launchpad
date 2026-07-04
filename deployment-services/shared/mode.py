@@ -57,19 +57,18 @@ def real_aws_credentials_present() -> bool:
 
 
 def enforce_dev_mode_safety(mode, service_name: str, logger) -> None:
-    dev = is_dev_mode(mode)
-    detected = detected_real_aws_credentials()
-    if dev:
-        logger.warning(
-            "%s booting in MODE=dev — AWS calls are MOCKED. Detected real-looking AWS env vars: %s",
-            service_name,
-            detected or "none",
-        )
-        if detected:
-            raise SystemExit(
-                f"{service_name}: refusing to boot in MODE=dev with real AWS credentials present "
-                f"({', '.join(detected)}). Unset them or run with MODE=prod."
-            )
-    else:
+    if not is_dev_mode(mode):
         logger.warning("%s booting in MODE=prod — real AWS path active.", service_name)
+        return
+
+    detected = detected_real_aws_credentials()
+    if detected:
+        logger.warning(
+            "%s booting in MODE=dev — AWS calls are MOCKED. Real-looking AWS env vars are "
+            "present and will be IGNORED: %s",
+            service_name,
+            ", ".join(detected),
+        )
+    else:
+        logger.warning("%s booting in MODE=dev — AWS calls are MOCKED.", service_name)
 

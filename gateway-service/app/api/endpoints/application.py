@@ -10,7 +10,7 @@ class AppCreateBody(BaseModel):
     name: str = Field(example="my-app")
     infrastructure_id: str = Field(example="018e1234-abcd-7000-8000-000000000001")
     project_remote_url: str = Field(example="https://github.com/user/repo")
-    project_branch: str = Field(example="main")
+    project_branch: Optional[str] = Field(default="main", example="main")
     description: Optional[str] = None
     project_commit_hash: Optional[str] = Field(default=None, example="abc1234")
     dockerfile_path: Optional[str] = Field(default="Dockerfile", example="Dockerfile")

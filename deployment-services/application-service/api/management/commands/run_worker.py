@@ -47,12 +47,31 @@ class Command(BaseCommand):
         infra_queues_lock = threading.Lock()
         executor = ThreadPoolExecutor(max_workers=MAX_INFRA_WORKERS, thread_name_prefix='infra-worker')
 
+        # Apps this worker has taken but not finished — includes jobs still waiting in an in-memory
+        # infra queue (no deploy lock yet). The reaper consults this so it never re-queues a job we
+        # already own into a duplicate deploy.
+        claimed_apps: set = set()
+        claimed_apps_lock = threading.Lock()
+
+        def _claim(app_id):
+            with claimed_apps_lock:
+                claimed_apps.add(app_id)
+
+        def _unclaim(app_id):
+            with claimed_apps_lock:
+                claimed_apps.discard(app_id)
+
+        def _is_claimed(app_id):
+            with claimed_apps_lock:
+                return app_id in claimed_apps
+
         def run_deploy(app_id, job):
             lock = DeploymentLock()
             if not lock.acquire(app_id, worker_id):
                 # Another worker holds the lock. Leave the job in the processing queue —
-                # it will be recovered and retried after DEPLOYMENT_LOCK_TIMEOUT expires.
+                # the reaper re-queues it once that worker releases (or its lock expires).
                 logger.warning(f"App {app_id} already locked, leaving in processing queue for retry")
+                _unclaim(app_id)
                 return
             try:
                 app = ApplicationRepository().get_by_id(app_id)
@@ -68,12 +87,22 @@ class Command(BaseCommand):
                 DeploymentQueue.nack_job(job)
             finally:
                 lock.release(app_id, worker_id)
+                _unclaim(app_id)
                 _close_db()
 
         def run_cleanup(job):
             from api.models.infrastructure import Infrastructure
             from aws.session import create_boto3_session
             app_id = job.get('app_id')
+            # Tear down AWS resources under the same lock the deploy uses, so a redeploy racing
+            # a delete can't have its half-created service/target-group ripped out mid-flight.
+            lock = DeploymentLock()
+            cleanup_owner = f"cleanup-{worker_id}"
+            if not lock.acquire(app_id, cleanup_owner):
+                logger.warning(f"App {app_id} locked during cleanup — requeueing")
+                DeploymentQueue.nack_job(job)
+                _unclaim(app_id)
+                return
             try:
                 infra = Infrastructure.objects.get(id=job['infrastructure_id'])
                 session = create_boto3_session(infra)
@@ -93,6 +122,8 @@ class Command(BaseCommand):
                 logger.error(f"AWS cleanup failed for app {app_id}: {e}", exc_info=True)
                 DeploymentQueue.nack_job(job)
             finally:
+                lock.release(app_id, cleanup_owner)
+                _unclaim(app_id)
                 _close_db()
 
         def drain_infra_queue(infra_id: str, q: queue.Queue):
@@ -121,6 +152,8 @@ class Command(BaseCommand):
 
         def dispatch(job):
             action = job.get('action', 'deploy')
+            if job.get('app_id'):
+                _claim(job['app_id'])
 
             if action == 'cleanup':
                 executor.submit(run_cleanup, job)
@@ -150,10 +183,26 @@ class Command(BaseCommand):
                     infra_queues[infra_id].put(job)
                     logger.info(f"Queued job for existing infra worker {infra_id}")
 
+        reap_interval = int(os.environ.get('DEPLOYMENT_REAP_INTERVAL', '120'))
+
+        def _reaper_loop():
+            while True:
+                time.sleep(reap_interval)
+                try:
+                    DeploymentQueue.reap_orphaned_processing_jobs(is_claimed=_is_claimed)
+                except Exception as e:
+                    logger.error(f"Reaper error: {e}", exc_info=True)
+
+        threading.Thread(target=_reaper_loop, daemon=True, name="deploy-reaper").start()
+
         while True:
             try:
                 job = DeploymentQueue.dequeue_deployment()
                 if job:
+                    # Claim immediately on dequeue — before the reaper's next scan can observe
+                    # the job sitting in the processing queue unowned and re-enqueue a duplicate.
+                    if job.get('app_id'):
+                        _claim(job['app_id'])
                     dispatch(job)
                 else:
                     time.sleep(1)

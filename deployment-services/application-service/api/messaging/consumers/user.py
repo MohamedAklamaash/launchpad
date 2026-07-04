@@ -1,8 +1,9 @@
 import json
+import time
 import uuid
 import logging
-from django.db import transaction, connection, ProgrammingError, OperationalError
-from api.repositories.user import UserRepository
+from django.db import connection, OperationalError
+from api.repositories.user import UserRepository, PendingInvitedInfrastructure
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaConsumer
 
@@ -15,9 +16,13 @@ class AuthEventConsumer:
     EXCHANGE_NAME = "auth.events"
     ROUTING_KEY = "auth.user.registered"
     QUEUE_NAME = "application-service.auth-events"
+    # Invite-link is best-effort and re-attempted on the next auth event, so a short retry covers
+    # same-session ordering without holding the message (and spamming logs) for minutes per login.
+    MAX_RETRIES = 3
 
     def __init__(self):
         self.user_repo = UserRepository()
+        self._retry_counts: dict = {}
         self.consumer = ResilientPikaConsumer(
             url=app_config.rabbitmq_url,
             exchange=self.EXCHANGE_NAME,
@@ -30,11 +35,11 @@ class AuthEventConsumer:
     @staticmethod
     def _is_transient(exc: Exception) -> bool:
         """
-        ProgrammingError  → table doesn't exist yet (unapplied migrations) — retry
-        OperationalError  → DB connection lost — retry
-        Everything else   → permanent, discard
+        OperationalError → DB connection lost — retry.
+        Everything else (incl. ProgrammingError, a permanent schema mismatch) → discard,
+        so a poison message can't loop forever against a DLX-less queue.
         """
-        return isinstance(exc, (ProgrammingError, OperationalError))
+        return isinstance(exc, (OperationalError,))
 
     def callback(self, ch, method, properties, body):
         """Process received auth.user.registered events."""
@@ -87,25 +92,49 @@ class AuthEventConsumer:
 
         try:
             connection.close()
-            with transaction.atomic():
-                self.user_repo.upsert_user(
-                    {
-                        "id": user_id,
-                        "email": email,
-                        "user_name": user_name,
-                        "role": role,
-                        "is_active": True,
-                        "metadata": metadata,
-                        "invited_by": invited_by,
-                        "infra_id": infra_id if isinstance(infra_id, list) else [infra_id] if infra_id else [],
-                    }
-                )
+            self.user_repo.upsert_user(
+                {
+                    "id": user_id,
+                    "email": email,
+                    "user_name": user_name,
+                    "role": role,
+                    "is_active": True,
+                    "metadata": metadata,
+                    "invited_by": invited_by,
+                    "infra_id": infra_id if isinstance(infra_id, list) else [infra_id] if infra_id else [],
+                }
+            )
 
             log.info(
                 "user upserted successfully — ACKing",
                 extra={"correlation_id": correlation_id, "user_id": user_id},
             )
+            self._retry_counts.pop(user_id, None)
             ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        except PendingInvitedInfrastructure as exc:
+            # User is already committed; only the invite link is outstanding. Retry it (bounded)
+            # until the infra materializes, then give up on the link rather than the whole user.
+            retry_count = self._retry_counts.get(user_id, 0)
+            if retry_count >= self.MAX_RETRIES:
+                log.warning(
+                    "Invited infrastructures still not materialized after max retries — "
+                    "ACKing user without those links",
+                    extra={"correlation_id": correlation_id, "user_id": user_id, "missing": exc.missing},
+                )
+                self._retry_counts.pop(user_id, None)
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+            else:
+                self._retry_counts[user_id] = retry_count + 1
+                delay = min(2 ** retry_count, 5)
+                log.info(
+                    "Invited infrastructure not materialized yet — requeueing to retry link "
+                    "(attempt %d/%d, delay %ds)",
+                    retry_count + 1, self.MAX_RETRIES, delay,
+                    extra={"correlation_id": correlation_id, "user_id": user_id, "missing": exc.missing},
+                )
+                time.sleep(delay)
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
         except Exception as exc:
             transient = self._is_transient(exc)

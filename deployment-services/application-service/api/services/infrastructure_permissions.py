@@ -1,6 +1,5 @@
 from shared.enums.user_role import UserRole
 import logging
-from api.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -10,15 +9,19 @@ class InfrastructurePermissions:
     def get_user_role(infrastructure, user_id):
         if str(infrastructure.user_id) == str(user_id):
             return UserRole.SUPER_ADMIN
-        if infrastructure.invited_users.filter(id=user_id).exists():
-            return UserRole.USER
-        try:
-            user = User.objects.get(id=user_id)
-            if user.invited_by and str(user.invited_by) == str(infrastructure.user_id):
-                return UserRole.USER
-        except User.DoesNotExist:
-            pass
-        return None
+        # Authorize strictly on per-infra membership. The previous `invited_by` fallback
+        # granted access to EVERY infra owned by the inviter — leaking other infras'
+        # application env-vars/secrets to a user invited to just one of them.
+        member = infrastructure.invited_users.filter(id=user_id).first()
+        if member is None:
+            return None
+        # Honor the role the member was invited with (an invited ADMIN can manage this infra's
+        # apps; a USER stays read-only) — the previous hardcoded USER made every invite view-only.
+        # Cap at ADMIN: a non-owner is never owner-level on an infra they don't own, whatever
+        # their global role happens to be.
+        if member.role == UserRole.SUPER_ADMIN:
+            return UserRole.ADMIN
+        return member.role or UserRole.USER
 
     @staticmethod
     def can_create_application(infrastructure, user_id):

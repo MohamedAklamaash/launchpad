@@ -2,8 +2,12 @@
 
 import { Suspense, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { motion } from 'framer-motion';
+import { LogoMark } from '@/components/logo-mark';
 import { useAuthStore } from '@/lib/store/auth';
 import { authApi } from '@/lib/api/auth';
+
+const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
 function AuthCallbackInner() {
   const router = useRouter();
@@ -43,11 +47,19 @@ function AuthCallbackInner() {
   }, [searchParams, router, setAuth]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a]">
-      <div className="text-center">
-        <div className="w-8 h-8 border-2 border-[#333] border-t-violet-500 rounded-full animate-spin mx-auto mb-4" />
-        <p className="text-[#a3a3a3]">Completing authentication...</p>
-      </div>
+    <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden px-4">
+      <div className="brand-glow pointer-events-none absolute inset-0" />
+      <motion.div {...rise} className="relative flex flex-col items-center gap-5 text-center">
+        <div className="inline-flex items-center gap-2.5">
+          <LogoMark size={32} />
+          <span className="font-display text-lg font-semibold tracking-tight text-foreground">Launchpad</span>
+        </div>
+        <div className="w-8 h-8 border-2 border-hairline-strong border-t-brand rounded-full animate-spin" />
+        <div className="space-y-1.5">
+          <span className="eyebrow">Signing in</span>
+          <p className="text-sm text-muted-foreground">Completing authentication…</p>
+        </div>
+      </motion.div>
     </div>
   );
 }

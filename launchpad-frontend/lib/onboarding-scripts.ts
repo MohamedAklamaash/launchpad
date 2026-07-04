@@ -10,13 +10,14 @@
  * URL). If you change this file, re-read those two invariants before
  * shipping.
  *
- * Two scripts:
- *   - create_aws_role.sh — first-time bootstrap. Creates the role, attaches
- *     the policy, and posts back to the onboarding callback.
- *   - update_aws_role.sh — refresh path. Re-applies the policy in place. The
- *     customer needs this whenever Launchpad widens the IAM surface (e.g. the
- *     codebuild:* regression that broke `create_project` for accounts onboarded
- *     before the fix).
+ * One script, two snippet variants:
+ *   - create_aws_role.sh is idempotent and does both the first-time bootstrap
+ *     and the later policy refresh. Which callback it fires is decided by the
+ *     credential the snippet injects (onboarding token vs script API key).
+ *   - "bootstrap" renders the first-time snippet (onboarding token); "refresh"
+ *     renders the re-run snippet (script API key) customers use when Launchpad
+ *     widens the IAM surface (e.g. the codebuild:* regression that broke
+ *     `create_project` for accounts onboarded before the fix).
  *
  * Environment resolution
  * ----------------------
@@ -45,7 +46,11 @@ const DEFAULT_SCRIPT_REPO = "MohamedAklamaash/launchpad";
 // natural thing to copy into a terminal sitting in that checkout.
 const DEFAULT_LOCAL_PATH = "./app_scripts";
 
-export type OnboardingScript = "create_aws_role.sh" | "update_aws_role.sh";
+// A single idempotent script backs every flow; the variant only changes the
+// label/description and which credential the caller injects.
+const SCRIPT_FILE = "create_aws_role.sh";
+
+export type OnboardingVariant = "bootstrap" | "refresh";
 
 interface ResolvedScript {
   /** Human-readable label shown in the UI ("Bootstrap script" etc.). */
@@ -179,33 +184,30 @@ function resolveRemoteBaseUrl(): string {
   return composeProdBaseUrl().replace(/\/+$/, "");
 }
 
-function buildScriptInvocation(
-  script: OnboardingScript,
-  envExports: string[],
-): string {
+function buildScriptInvocation(envExports: string[]): string {
   const lines = [...envExports];
   if (isLocalEnvironment()) {
-    lines.push(`bash ${DEFAULT_LOCAL_PATH}/${script}`);
+    lines.push(`bash ${DEFAULT_LOCAL_PATH}/${SCRIPT_FILE}`);
   } else {
-    lines.push(`curl -sSL ${resolveRemoteBaseUrl()}/${script} | bash`);
+    lines.push(`curl -sSL ${resolveRemoteBaseUrl()}/${SCRIPT_FILE} | bash`);
   }
   return lines.join("\n");
 }
 
 export function resolveOnboardingScript(
-  script: OnboardingScript,
+  variant: OnboardingVariant,
   envExports: string[] = [],
 ): ResolvedScript {
   const local = isLocalEnvironment();
   const base = local ? DEFAULT_LOCAL_PATH : resolveRemoteBaseUrl();
 
-  const meta: Record<OnboardingScript, { label: string; description: string }> = {
-    "create_aws_role.sh": {
+  const meta: Record<OnboardingVariant, { label: string; description: string }> = {
+    bootstrap: {
       label: "Bootstrap script",
       description:
         "Creates LaunchpadDeploymentRole in your AWS account and notifies Launchpad when ready.",
     },
-    "update_aws_role.sh": {
+    refresh: {
       label: "Refresh policy script",
       description:
         "Re-applies the latest LaunchpadDeploymentPolicy and refreshes the trust policy in your AWS account. Re-run this if deployments fail with an AccessDenied error after onboarding.",
@@ -213,10 +215,10 @@ export function resolveOnboardingScript(
   };
 
   return {
-    label: meta[script].label,
-    description: meta[script].description,
-    invocation: buildScriptInvocation(script, envExports),
-    location: `${base}/${script}`,
+    label: meta[variant].label,
+    description: meta[variant].description,
+    invocation: buildScriptInvocation(envExports),
+    location: `${base}/${SCRIPT_FILE}`,
     locationIsUrl: !local,
   };
 }

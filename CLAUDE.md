@@ -14,7 +14,7 @@ cross-account IAM AssumeRole (`LaunchpadDeploymentRole`, ExternalId = infrastruc
 | `identity-services/` | pnpm TS monorepo | `services/auth-service` (issues/verifies JWTs), `services/user-service`, `services/notification-service` (Resend email), `packages/common`. |
 | `payment-service/` | Django/DRF | Stripe billing. |
 | `launchpad-frontend/` | Next.js (app router) | Dashboard. Onboarding script snippets generated in `lib/onboarding-scripts.ts`. |
-| `app_scripts/` | bash | Customer-run onboarding scripts (`create_aws_role.sh`, `update_aws_role.sh`). IAM action list must stay in sync between them — CI enforces via `_check_policy_sync.py`. |
+| `app_scripts/` | bash | Customer-run onboarding script (`create_aws_role.sh`) — one idempotent script for both first-time bootstrap and later policy refresh; picks the callback by which credential is injected (`MODE=dev` sets `LAUNCHPAD_MOCK=1` to skip AWS entirely). |
 | `infra/.docker/` | docker compose | Local dev stack: Postgres, MySQL, Mongo, Redis, RabbitMQ, Prometheus/Grafana. Ports come from `.env`; `docker-compose.override.yml` is applied automatically. |
 | `infra/aws/` | Terraform | Platform infrastructure modules (vpc, ecs, ecr, alb, iam, secrets). |
 
@@ -31,7 +31,7 @@ cross-account IAM AssumeRole (`LaunchpadDeploymentRole`, ExternalId = infrastruc
 2. Frontend renders a `create_aws_role.sh` command with `LAUNCHPAD_INFRA_ID`, `LAUNCHPAD_ONBOARDING_TOKEN`, `LAUNCHPAD_EXTERNAL_ID`, `LAUNCHPAD_CALLBACK_URL` exported.
 3. Customer runs the script in their AWS account: creates role + policy, then POSTs `{infra_id, account_id, onboarding_token}` to `/api/infrastructures/onboarding/callback` (no JWT; token-authenticated).
 4. Callback verifies `infra.code == account_id` and the token hash, runs `authenticate_infrastructure` (AssumeRole with ExternalId), burns the token, publishes `infra.created` to RabbitMQ, enqueues provisioning.
-5. `update_aws_role.sh` refreshes the IAM policy + trust policy in place for already-onboarded accounts.
+5. Re-running `create_aws_role.sh` with a script API key (the dashboard's *Refresh policy* snippet) refreshes the IAM policy + trust policy in place for already-onboarded accounts and posts the policy-refresh callback.
 
 ## Dev environment
 
@@ -45,7 +45,6 @@ Each Python service has an `env.example`. Identity services: `pnpm install` at `
 - Python services (gateway, payment, deployment-services): `python -m compileall <dir> -q` and `ruff check <dir>` (config: root `ruff.toml`).
 - identity-services: `pnpm install --frozen-lockfile`, `pnpm --filter @launchpad/common build`, `pnpm format` (prettier --check), `pnpm lint`, `pnpm -r --workspace-root=false exec tsc --noEmit`.
 - frontend: lint + typecheck.
-- `Onboarding script policy sync`: `app_scripts/_check_policy_sync.py` fails if the IAM action lists in `create_aws_role.sh` and `update_aws_role.sh` drift apart.
 
 Run the matching commands locally before pushing; prettier failures are the most common CI break in identity-services.
 
@@ -53,7 +52,6 @@ Run the matching commands locally before pushing; prettier failures are the most
 
 - infrastructure-service: `pytest` from `deployment-services/infrastructure-service/` (uses `test_settings.py`, see `pytest.ini`).
 - gateway-service: `pytest gateway-service/tests/`.
-- app_scripts: `pytest app_scripts/test_check_policy_sync.py`.
 
 ## Conventions
 

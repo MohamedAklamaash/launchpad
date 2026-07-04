@@ -161,9 +161,9 @@ Re-generating the secret rotates it (the old one stops working immediately).
 ## Keeping IAM permissions current — the refresh script
 
 Occasionally Launchpad widens the IAM permissions it needs (new AWS features). When
-that happens, deployments may start failing with `AccessDenied`. The dashboard provides
-a **Refresh policy script** (`update_aws_role.sh`) that re-applies the latest
-`LaunchpadDeploymentPolicy` and trust policy in place — no need to recreate anything.
+that happens, deployments may start failing with `AccessDenied`. The dashboard's
+**Refresh policy script** re-runs the same `create_aws_role.sh` — it re-applies the latest
+`LaunchpadDeploymentPolicy` and trust policy in place, no need to recreate anything.
 
 The refresh snippet includes a **per-user API key** so Launchpad can record *who* ran
 the refresh, against which account, and when:
@@ -173,7 +173,7 @@ export LAUNCHPAD_INFRA_ID=<your-infra-uuid>
 export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
 export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/policy-refresh/callback
 export LAUNCHPAD_API_KEY=<generated-key>
-curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/update_aws_role.sh | bash
+curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
 ```
 
 Click **Generate API key** next to the snippet to fill in `LAUNCHPAD_API_KEY`. The key
@@ -253,7 +253,7 @@ totalling ≤ 4 vCPU. Raise the limits in infrastructure settings, or delete unu
   account. Use **Reprovision** after fixing.
 
 ### Deployments fail with `AccessDenied`
-- Run the **Refresh policy script** (`update_aws_role.sh`) — Launchpad's required
+- Run the **Refresh policy script** (re-runs `create_aws_role.sh`) — Launchpad's required
   permissions likely widened since you onboarded.
 
 ### Application won't deploy or isn't reachable
