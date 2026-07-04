@@ -145,7 +145,7 @@ function LoginPageInner() {
         <Field icon={<Mail className="w-3.5 h-3.5" />} label="Email">
           <Input type="email" placeholder="you@example.com" value={email}
             onChange={(e) => setEmail(e.target.value)} required
-            className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+            className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
         </Field>
         <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Sending…' : 'Send Reset OTP'}
@@ -174,7 +174,7 @@ function LoginPageInner() {
         <Field icon={<Lock className="w-3.5 h-3.5" />} label="New Password">
           <Input type="password" placeholder="Min 6 characters" value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)} required minLength={6}
-            className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+            className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
         </Field>
         <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Resetting…' : 'Reset Password'}
@@ -188,12 +188,12 @@ function LoginPageInner() {
           <Field icon={<Mail className="w-3.5 h-3.5" />} label="Email">
             <Input type="email" placeholder="you@example.com" value={email}
               onChange={(e) => setEmail(e.target.value)} required
-              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
           </Field>
           <Field icon={<Lock className="w-3.5 h-3.5" />} label="Password">
             <Input type="password" placeholder="••••••••" value={password}
               onChange={(e) => setPassword(e.target.value)} required
-              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
           </Field>
         </div>
         <Button type="submit" size="lg" disabled={loading} className="w-full">

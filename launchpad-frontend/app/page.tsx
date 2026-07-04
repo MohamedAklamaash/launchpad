@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ReactLenis } from 'lenis/react';
 import {
   motion, useScroll, useTransform, useSpring, useMotionValue,
@@ -648,7 +649,11 @@ function LandingContent() {
 }
 
 export default function LandingPage() {
+  const router = useRouter();
   const reduce = useReducedMotion();
+  useEffect(() => {
+    if (localStorage.getItem('access_token')) router.replace('/dashboard');
+  }, [router]);
   if (reduce) return <LandingContent />;
   return (
     <ReactLenis root options={{ lerp: 0.09 }}>

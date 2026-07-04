@@ -56,6 +56,52 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
     }
 };
 
+export const ListInvitedUsers = async (req: Request, res: Response) => {
+    try {
+        const token = getAuthHeader(req);
+        const payload = verifyAccessToken(token);
+        const invitees = await invitedUserFacade.listInvitedBy(payload.sub);
+        return res.status(200).json(
+            invitees.map((u) => ({
+                id: u.id,
+                email: u.email,
+                user_name: u.user_name,
+                role: u.role,
+                infra_id: u.infra_id,
+                is_authenticated: u.is_authenticated,
+                created_at: u.created_at,
+            })),
+        );
+    } catch (error: unknown) {
+        if (error instanceof HttpError) throw error;
+        console.error('ListInvitedUsers failed', error);
+        throw new HttpError(500, 'Internal Server Error');
+    }
+};
+
+export const RemoveMemberFromOrg = async (req: Request, res: Response) => {
+    try {
+        const token = getAuthHeader(req);
+        const payload = verifyAccessToken(token);
+        if (payload.role !== USER_ROLE.SUPER_ADMIN && payload.role !== USER_ROLE.ADMIN) {
+            throw new HttpError(403, 'Only admins can remove members');
+        }
+        const { userId } = req.params as { userId: string };
+        const { infra_ids } = (req.body ?? {}) as { infra_ids?: string[] };
+        const result = await invitedUserFacade.removeFromOrg(
+            payload.sub,
+            payload.role,
+            userId,
+            infra_ids ?? [],
+        );
+        return res.status(200).json(result);
+    } catch (error: unknown) {
+        if (error instanceof HttpError) throw error;
+        console.error('RemoveMemberFromOrg failed', error);
+        throw new HttpError(500, 'Internal Server Error');
+    }
+};
+
 export const LoginUser = async (req: Request, res: Response) => {
     try {
         const { email, password } = req.body;
