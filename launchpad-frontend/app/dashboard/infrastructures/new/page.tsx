@@ -2,11 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert, Rocket } from 'lucide-react';
-import { LaunchSequence, PreflightMeter } from '@/components/launch';
+import { ArrowLeft, ArrowRight, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert, Rocket } from 'lucide-react';
+import { LaunchSequence } from '@/components/launch';
 import { infrastructureApi, AwsRegion } from '@/lib/api/infrastructures';
 import { InfrastructureCreateResponse } from '@/types/infrastructure';
 import { resolveOnboardingScript, getOnboardingMisconfiguration } from '@/lib/onboarding-scripts';
@@ -15,6 +15,12 @@ import { toast } from 'sonner';
 const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
 
 const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
+
+const STEPS = [
+  { title: 'Identity', sub: 'Pre-flight', blurb: 'Name the environment and link your AWS account.' },
+  { title: 'Region', sub: 'Placement', blurb: 'Choose where this environment is deployed.' },
+  { title: 'Resources', sub: 'Compute', blurb: 'Set the CPU and memory ceilings.' },
+] as const;
 
 export default function NewInfrastructurePage() {
   const router = useRouter();
@@ -25,6 +31,8 @@ export default function NewInfrastructurePage() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [createdInfra, setCreatedInfra] = useState<InfrastructureCreateResponse | null>(null);
+  const [step, setStep] = useState(0);
+  const [dir, setDir] = useState(1);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -51,12 +59,25 @@ export default function NewInfrastructurePage() {
 
   const set = (k: string, v: string | number) => setFormData((p) => ({ ...p, [k]: v }));
 
-  const preflight = [
-    formData.name.trim().length > 0,
-    formData.code.trim().length === 12,
-    formData.max_cpu > 0,
-    formData.max_memory > 0,
-  ].filter(Boolean).length;
+  const checks = {
+    name: formData.name.trim().length > 0,
+    code: formData.code.trim().length === 12,
+    cpu: formData.max_cpu > 0,
+    memory: formData.max_memory > 0,
+  };
+  const stepValid = [checks.name && checks.code, true, checks.cpu && checks.memory];
+  const firstInvalid = stepValid.findIndex((v) => !v);
+  const gate = firstInvalid === -1 ? STEPS.length - 1 : firstInvalid;
+  const readyCount = Object.values(checks).filter(Boolean).length;
+  const isLast = step === STEPS.length - 1;
+
+  useEffect(() => {
+    if (step > gate) setStep(gate);
+  }, [gate, step]);
+
+  const go = (i: number) => { setDir(i > step ? 1 : -1); setStep(i); };
+  const next = () => { if (!isLast && stepValid[step]) go(step + 1); };
+  const back = () => { if (step > 0) go(step - 1); else router.back(); };
 
   const filteredRegions = regions.filter(
     (r) =>
@@ -66,8 +87,7 @@ export default function NewInfrastructurePage() {
 
   const selectedRegionLabel = regions.find((r) => r.value === formData.aws_region)?.label ?? formData.aws_region;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const create = async () => {
     setLoading(true);
     try {
       const { aws_region, ...rest } = formData;
@@ -80,6 +100,12 @@ export default function NewInfrastructurePage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isLast) create();
+    else next();
   };
 
   const mockEnv = createdInfra?.is_mock
@@ -231,99 +257,131 @@ export default function NewInfrastructurePage() {
           <ArrowLeft className="w-3.5 h-3.5" /> Back
         </button>
 
-        <div className="rounded-2xl panel p-5">
-          <LaunchSequence current="configure" />
-        </div>
-
         <div>
           <span className="eyebrow">Stage 01 / Pre-flight</span>
           <h1 className="mt-1 text-2xl font-display font-semibold text-foreground tracking-tight">Provision an environment</h1>
           <p className="text-sm text-muted-foreground mt-1.5">Stand up a managed AWS environment for your applications.</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-1">
-          <Field icon={<Server className="w-3.5 h-3.5" />} label="Name" hint="e.g. production, staging">
-            <Input value={formData.name} onChange={(e) => set('name', e.target.value)}
-              placeholder="production" required
-              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
-          </Field>
+        <div className="rounded-2xl panel p-5">
+          <Stepper current={step} gate={gate} onSelect={go} />
+        </div>
 
-          <Field icon={<Hash className="w-3.5 h-3.5" />} label="AWS Account ID" hint="12-digit account number">
-            <Input value={formData.code} onChange={(e) => set('code', e.target.value)}
-              placeholder="123456789012" required maxLength={12}
-              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6 font-mono" />
-          </Field>
+        <form onSubmit={onSubmit} className="space-y-6">
+          <AnimatePresence mode="wait" custom={dir}>
+            <motion.div
+              key={step}
+              custom={dir}
+              initial={{ opacity: 0, x: dir * 26 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: dir * -26 }}
+              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+              className="space-y-4"
+            >
+              <div>
+                <h2 className="text-sm font-display font-semibold text-foreground">{STEPS[step].title}</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">{STEPS[step].blurb}</p>
+              </div>
 
-          <Field icon={<Globe className="w-3.5 h-3.5" />} label="AWS Region" hint="Deployment region">
-            <div className="relative" ref={dropdownRef}>
-              <button
-                type="button"
-                onClick={() => { setDropdownOpen((o) => !o); setRegionSearch(''); }}
-                className="w-full flex items-center justify-between h-9 pl-6 text-sm text-foreground focus:outline-none"
-              >
-                <span className="font-mono text-sm">{selectedRegionLabel}</span>
-                <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              {dropdownOpen && (
-                <div className="absolute z-50 left-0 right-0 top-full mt-2 bg-popover border border-hairline-strong rounded-xl shadow-xl shadow-black/40 overflow-hidden">
-                  <div className="flex items-center gap-2 px-3 py-2.5 border-b border-hairline">
-                    <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                    <input
-                      autoFocus
-                      value={regionSearch}
-                      onChange={(e) => setRegionSearch(e.target.value)}
-                      placeholder="Search regions…"
-                      className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
-                    />
-                  </div>
-                  <ul className="max-h-52 overflow-y-auto py-1">
-                    {filteredRegions.length === 0 ? (
-                      <li className="px-4 py-3 text-xs text-muted-foreground">No regions found</li>
-                    ) : (
-                      filteredRegions.map((r) => (
-                        <li key={r.value}>
-                          <button
-                            type="button"
-                            onClick={() => { set('aws_region', r.value); setDropdownOpen(false); }}
-                            className={`w-full text-left px-4 py-2 flex items-center justify-between transition-colors hover:bg-surface-3 ${formData.aws_region === r.value ? 'text-brand' : 'text-foreground'}`}
-                          >
-                            <span className="text-xs">{r.label}</span>
-                            <span className="text-[10px] font-mono text-muted-foreground">{r.value}</span>
-                          </button>
-                        </li>
-                      ))
-                    )}
-                  </ul>
+              {step === 0 && (
+                <div>
+                  <Field icon={<Server className="w-3.5 h-3.5" />} label="Name" hint="e.g. production, staging">
+                    <Input value={formData.name} onChange={(e) => set('name', e.target.value)}
+                      placeholder="production" autoFocus
+                      className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
+                  </Field>
+                  <Field icon={<Hash className="w-3.5 h-3.5" />} label="AWS Account ID" hint="12-digit account number">
+                    <Input value={formData.code} onChange={(e) => set('code', e.target.value)}
+                      placeholder="123456789012" maxLength={12}
+                      className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6 font-mono" />
+                  </Field>
                 </div>
               )}
+
+              {step === 1 && (
+                <Field icon={<Globe className="w-3.5 h-3.5" />} label="AWS Region" hint="Deployment region">
+                  <div className="relative" ref={dropdownRef}>
+                    <button
+                      type="button"
+                      onClick={() => { setDropdownOpen((o) => !o); setRegionSearch(''); }}
+                      className="w-full flex items-center justify-between h-9 pl-6 text-sm text-foreground focus:outline-none"
+                    >
+                      <span className="font-mono text-sm">{selectedRegionLabel}</span>
+                      <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
+                    </button>
+
+                    {dropdownOpen && (
+                      <div className="absolute z-50 left-0 right-0 top-full mt-2 bg-popover border border-hairline-strong rounded-xl shadow-xl shadow-black/40 overflow-hidden">
+                        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-hairline">
+                          <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                          <input
+                            autoFocus
+                            value={regionSearch}
+                            onChange={(e) => setRegionSearch(e.target.value)}
+                            placeholder="Search regions…"
+                            className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
+                          />
+                        </div>
+                        <ul className="max-h-52 overflow-y-auto py-1">
+                          {filteredRegions.length === 0 ? (
+                            <li className="px-4 py-3 text-xs text-muted-foreground">No regions found</li>
+                          ) : (
+                            filteredRegions.map((r) => (
+                              <li key={r.value}>
+                                <button
+                                  type="button"
+                                  onClick={() => { set('aws_region', r.value); setDropdownOpen(false); }}
+                                  className={`w-full text-left px-4 py-2 flex items-center justify-between transition-colors hover:bg-surface-3 ${formData.aws_region === r.value ? 'text-brand' : 'text-foreground'}`}
+                                >
+                                  <span className="text-xs">{r.label}</span>
+                                  <span className="text-[10px] font-mono text-muted-foreground">{r.value}</span>
+                                </button>
+                              </li>
+                            ))
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </Field>
+              )}
+
+              {step === 2 && (
+                <div>
+                  <Field icon={<Cpu className="w-3.5 h-3.5" />} label="Max CPU" hint="vCPU">
+                    <Input type="number" step="0.25" min={0.25} value={Number.isNaN(formData.max_cpu) ? '' : formData.max_cpu}
+                      onChange={(e) => set('max_cpu', e.target.value === '' ? NaN : parseFloat(e.target.value))}
+                      className="bg-transparent border-0 h-9 text-sm focus-visible:ring-0 pl-6 font-mono" />
+                  </Field>
+                  <Field icon={<HardDrive className="w-3.5 h-3.5" />} label="Max Memory" hint="GB">
+                    <Input type="number" step="0.5" min={0.5} value={Number.isNaN(formData.max_memory) ? '' : formData.max_memory}
+                      onChange={(e) => set('max_memory', e.target.value === '' ? NaN : parseFloat(e.target.value))}
+                      className="bg-transparent border-0 h-9 text-sm focus-visible:ring-0 pl-6 font-mono" />
+                  </Field>
+                </div>
+              )}
+            </motion.div>
+          </AnimatePresence>
+
+          <div className="flex items-center gap-3 pt-1">
+            <Button type="button" variant="outline" size="lg" onClick={back} className="gap-1.5">
+              <ArrowLeft className="w-3.5 h-3.5" /> {step === 0 ? 'Cancel' : 'Back'}
+            </Button>
+            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
+              Stage {String(step + 1).padStart(2, '0')} / {String(STEPS.length).padStart(2, '0')}
+              <span className="ml-2 text-muted-foreground/50">{readyCount}/4 ready</span>
+            </span>
+            <div className="ml-auto">
+              {isLast ? (
+                <Button type="submit" size="lg" disabled={loading || readyCount < 4} className="px-5 gap-1.5">
+                  <Rocket className="w-4 h-4" /> {loading ? 'Igniting…' : 'Ignite provisioning'}
+                </Button>
+              ) : (
+                <Button type="submit" size="lg" disabled={!stepValid[step]} className="px-5 gap-1.5">
+                  Next <ArrowRight className="w-4 h-4" />
+                </Button>
+              )}
             </div>
-          </Field>
-
-          <div className="grid grid-cols-2 gap-0">
-            <Field icon={<Cpu className="w-3.5 h-3.5" />} label="Max CPU" hint="vCPU" noBorder>
-              <Input type="number" step="0.25" min={0.25} value={formData.max_cpu}
-                onChange={(e) => set('max_cpu', parseFloat(e.target.value))} required
-                className="bg-transparent border-0 h-9 text-sm focus-visible:ring-0 pl-6 font-mono" />
-            </Field>
-            <Field icon={<HardDrive className="w-3.5 h-3.5" />} label="Max Memory" hint="GB">
-              <Input type="number" step="0.5" min={0.5} value={formData.max_memory}
-                onChange={(e) => set('max_memory', parseFloat(e.target.value))} required
-                className="bg-transparent border-0 h-9 text-sm focus-visible:ring-0 pl-6 font-mono" />
-            </Field>
-          </div>
-
-          <div className="pt-4">
-            <PreflightMeter ready={preflight} total={4} />
-          </div>
-
-          <div className="pt-4 flex gap-2">
-            <Button type="submit" size="lg" disabled={loading} className="px-5 gap-1.5">
-              <Rocket className="w-4 h-4" /> {loading ? 'Igniting…' : 'Ignite provisioning'}
-            </Button>
-            <Button type="button" variant="outline" size="lg" onClick={() => router.back()}>
-              Cancel
-            </Button>
           </div>
         </form>
       </div>
@@ -331,11 +389,50 @@ export default function NewInfrastructurePage() {
   );
 }
 
-function Field({ icon, label, hint, children, noBorder }: {
-  icon: React.ReactNode; label: string; hint?: string; children: React.ReactNode; noBorder?: boolean;
+function Stepper({ current, gate, onSelect }: { current: number; gate: number; onSelect: (i: number) => void }) {
+  return (
+    <div className="flex items-center">
+      {STEPS.map((s, i) => {
+        const state = i < current ? 'done' : i === current ? 'active' : 'todo';
+        const reachable = i <= gate;
+        return (
+          <div key={s.title} className={`flex items-center ${i < STEPS.length - 1 ? 'flex-1' : ''}`}>
+            <button
+              type="button"
+              onClick={() => reachable && onSelect(i)}
+              disabled={!reachable}
+              className="flex items-center gap-2.5 text-left outline-none disabled:cursor-not-allowed focus-visible:opacity-100"
+            >
+              <span
+                className={`relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border text-[10px] font-mono transition-colors ${
+                  state === 'done'
+                    ? 'border-brand/40 bg-brand-soft text-brand'
+                    : state === 'active'
+                      ? 'border-brand bg-brand text-primary-foreground'
+                      : 'border-hairline bg-surface-1 text-muted-foreground'
+                }`}
+              >
+                {state === 'done' ? <Check className="w-3.5 h-3.5" /> : String(i + 1).padStart(2, '0')}
+                {state === 'active' && <span className="absolute inset-0 rounded-lg bg-brand/40 animate-ping" />}
+              </span>
+              <div className="hidden sm:block leading-tight">
+                <p className={`text-xs font-medium ${state === 'todo' ? 'text-muted-foreground' : 'text-foreground'}`}>{s.title}</p>
+                <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/70">{s.sub}</p>
+              </div>
+            </button>
+            {i < STEPS.length - 1 && <span className={`mx-3 h-px flex-1 ${i < current ? 'bg-brand/40' : 'bg-hairline'}`} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Field({ icon, label, hint, children }: {
+  icon: React.ReactNode; label: string; hint?: string; children: React.ReactNode;
 }) {
   return (
-    <div className={`group bg-surface-1 border-hairline px-4 py-2.5 transition-colors focus-within:border-brand/40 focus-within:bg-surface-2 ${noBorder ? 'border border-r-0' : 'border'} first:rounded-t-xl last:rounded-b-xl`}>
+    <div className="group bg-surface-1 border border-hairline px-4 py-2.5 transition-colors focus-within:border-brand/40 focus-within:bg-surface-2 first:rounded-t-xl last:rounded-b-xl">
       <div className="flex items-center gap-2 mb-0.5">
         <span className="text-muted-foreground/70 group-focus-within:text-brand transition-colors">{icon}</span>
         <span className="eyebrow">{label}</span>
