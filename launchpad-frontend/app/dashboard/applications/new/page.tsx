@@ -188,7 +188,8 @@ function NewApplicationPageInner() {
               {step === 2 && (
                 <div>
                   <Field icon={<Hash className="w-3.5 h-3.5" />} label="Port">
-                    <Input type="number" value={form.port} onChange={(e) => set('port', parseInt(e.target.value))}
+                    <Input type="number" value={Number.isNaN(form.port) ? '' : form.port}
+                      onChange={(e) => set('port', e.target.value === '' ? NaN : parseInt(e.target.value, 10))}
                       min={1024} max={65535} className={monoInputCls} />
                   </Field>
                   <Field icon={<Cpu className="w-3.5 h-3.5" />} label="CPU">

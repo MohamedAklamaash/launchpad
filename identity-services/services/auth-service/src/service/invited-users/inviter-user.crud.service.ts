@@ -28,7 +28,10 @@ export class InvitedUserService extends BaseService {
     ) {
         const RANK: Record<string, number> = { super_admin: 3, admin: 2, user: 1, guest: 0 };
         return sequelize.transaction(async (transaction) => {
-            const target = await InvitedUser.findByPk(targetUserId, { transaction });
+            const target = await InvitedUser.findByPk(targetUserId, {
+                transaction,
+                lock: transaction.LOCK.UPDATE,
+            });
             if (!target) throw new HttpError(404, 'Member not found');
 
             if (target.invited_by !== callerId && callerRole !== 'super_admin') {

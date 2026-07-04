@@ -74,6 +74,7 @@ export const ListInvitedUsers = async (req: Request, res: Response) => {
         );
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
+        console.error('ListInvitedUsers failed', error);
         throw new HttpError(500, 'Internal Server Error');
     }
 };
@@ -96,6 +97,7 @@ export const RemoveMemberFromOrg = async (req: Request, res: Response) => {
         return res.status(200).json(result);
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
+        console.error('RemoveMemberFromOrg failed', error);
         throw new HttpError(500, 'Internal Server Error');
     }
 };

@@ -82,12 +82,22 @@ export default function SettingsPage() {
     if (!removeTarget) return;
     setRemoving(true);
     try {
-      await authApi.removeMemberFromOrg(removeTarget.id, removeTarget.infraIds);
       const owned = new Set(infras.map((i) => i.id));
-      await Promise.allSettled(
-        removeTarget.infraIds.filter((id) => owned.has(id)).map((id) => infrastructureApi.removeUser(id, removeTarget.id)),
+      const scopedInfraIds = removeTarget.infraIds.filter((id) => owned.has(id));
+      if (scopedInfraIds.length === 0) {
+        toast.error('You do not manage any organization this member belongs to');
+        return;
+      }
+      await authApi.removeMemberFromOrg(removeTarget.id, scopedInfraIds);
+      const results = await Promise.allSettled(
+        scopedInfraIds.map((id) => infrastructureApi.removeUser(id, removeTarget.id)),
       );
-      toast.success(`${removeTarget.user_name} removed from the organization`);
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      if (failed > 0) {
+        toast.error(`Removed from ${scopedInfraIds.length - failed} of ${scopedInfraIds.length} organizations — retry to clear the rest`);
+      } else {
+        toast.success(`${removeTarget.user_name} removed from the organization`);
+      }
       setInvited(await authApi.listInvitedUsers());
       setRemoveTarget(null);
     } catch (e: unknown) {
