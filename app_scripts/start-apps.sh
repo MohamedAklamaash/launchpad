@@ -86,11 +86,10 @@ run_django_service() {
     cd "$ROOT_DIR/$SERVICE_PATH" || exit 1
 
     echo "→ Applying migrations..."
-    "$PYTHON_EXEC" manage.py makemigrations
     "$PYTHON_EXEC" manage.py migrate
 
     echo "→ Starting server on port $PORT..."
-    exec "$PYTHON_EXEC" manage.py runserver 0.0.0.0:$PORT
+    exec "$PYTHON_EXEC" manage.py runserver "0.0.0.0:$PORT"
   ) &
 }
 
