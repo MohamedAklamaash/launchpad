@@ -39,8 +39,10 @@ class InfrastructureRepository:
                 status_code=400,
                 details=f"The user with ID {user_id} has not been synchronized from the auth service yet. Please ensure the user registration event has been processed."
             )
-        except IntegrityError as e:
-            raise e
+        except IntegrityError:
+            raise ValueError(
+                f"You already have an infrastructure named '{infra_data.get('name')}'. Choose a different name."
+            )
 
     def update(self, user_id, infra_id, update_data) -> Optional[Infrastructure]:
         infra_qs = Infrastructure.objects.filter(user_id=user_id, id=infra_id)
