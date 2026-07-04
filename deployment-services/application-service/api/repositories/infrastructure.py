@@ -16,6 +16,12 @@ class InfrastructureRepository:
         except Infrastructure.DoesNotExist:
             return None
 
+    def delete_infrastructure(self, infra_id) -> bool:
+        """Drop a materialized infrastructure row on an infrastructure.deleted event.
+        Idempotent: a no-op (returns False) if the row is already gone."""
+        deleted, _ = Infrastructure.objects.filter(id=infra_id).delete()
+        return deleted > 0
+
     def is_user_authorized(self, infra_id: str, user_id: str) -> bool:
         """Check if user owns or is invited to the infrastructure."""
         return Infrastructure.objects.filter(
@@ -35,12 +41,14 @@ class InfrastructureRepository:
         if not user_id:
             raise ValueError("user_id is required for upsert")
 
-        # if the user hasn't been synced yet, skip and NACK
+        # Owner not synced yet (event ordering) or the infra is stale (its owner was never
+        # synced / already removed). Either way this is an expected read-model condition — the
+        # consumer retries it (bounded) then discards; a WARNING is enough, not an ERROR.
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            logger.error(
-                "upsert_infrastructure: user not found in local DB — user sync may be lagging",
+            logger.warning(
+                "upsert_infrastructure: owner not in local DB yet — deferring (user sync lag or stale infra)",
                 extra={"infra_id": str(infra_id), "user_id": str(user_id)},
             )
             raise
@@ -75,6 +83,16 @@ class InfrastructureRepository:
                     existing.save()
                     infra, created = existing, False
                 else:
+                    # A stale read-model row can still occupy this (user, name) slot when a
+                    # prior infra with the same name was deleted upstream but that delete never
+                    # reached this service (no infrastructure.deleted consumer). infra-service is
+                    # the source of truth and enforces unique (user, name), so any same-(user, name)
+                    # row with a different id is stale — drop it before materializing the
+                    # authoritative event, otherwise the create hits the unique constraint and the
+                    # event is discarded, leaving app creation permanently broken for this infra.
+                    Infrastructure.objects.filter(
+                        user_id=user_id, name=defaults["name"]
+                    ).exclude(id=infra_id).delete()
                     infra = Infrastructure.objects.create(id=infra_id, **defaults)
                     created = True
             action = "created" if created else "updated"

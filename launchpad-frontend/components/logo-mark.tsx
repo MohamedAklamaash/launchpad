@@ -46,20 +46,20 @@ export function LogoMark({ size = 28, className = '' }: LogoMarkProps) {
 
       <defs>
         <linearGradient id="lp-ring" x1="3.61" y1="2" x2="24.39" y2="26" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#a78bfa" />
-          <stop offset="1" stopColor="#6d28d9" />
+          <stop stopColor="#7dd3fc" />
+          <stop offset="1" stopColor="#0369a1" />
         </linearGradient>
         <linearGradient id="lp-body" x1="10" y1="7" x2="18" y2="19" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#c4b5fd" />
-          <stop offset="1" stopColor="#7c3aed" />
+          <stop stopColor="#bae6fd" />
+          <stop offset="1" stopColor="#0284c7" />
         </linearGradient>
         <linearGradient id="lp-fin" x1="8" y1="15" x2="20" y2="18" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#a78bfa" />
-          <stop offset="1" stopColor="#5b21b6" />
+          <stop stopColor="#38bdf8" />
+          <stop offset="1" stopColor="#075985" />
         </linearGradient>
         <linearGradient id="lp-flame" x1="12.5" y1="19" x2="15.5" y2="22" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#fbbf24" />
-          <stop offset="1" stopColor="#f97316" />
+          <stop stopColor="#e0f2fe" />
+          <stop offset="1" stopColor="#38bdf8" />
         </linearGradient>
       </defs>
     </svg>

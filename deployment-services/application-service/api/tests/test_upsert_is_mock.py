@@ -81,3 +81,40 @@ def test_real_infra_stays_real(repo, make_user):
     assert infra.is_mock is False
     infra2, _ = repo.upsert_infrastructure(_base_payload(user.id, infra_id))
     assert infra2.is_mock is False
+
+
+@pytest.mark.django_db
+def test_upsert_replaces_stale_same_user_name_row(repo, make_user):
+    # Regression: infra-service enforces unique (user, name), so a same-(user, name)
+    # read-model row with a different id is stale (its upstream delete never arrived).
+    # The upsert must drop it and materialize the authoritative event instead of dying
+    # on the unique constraint and discarding the event (which left app creation broken
+    # with "Infrastructure not found").
+    from api.models.infrastructure import Infrastructure
+
+    user = make_user()
+    stale_id, fresh_id = uuid.uuid4(), uuid.uuid4()
+
+    repo.upsert_infrastructure(_base_payload(user.id, stale_id, name="dup"))
+    infra, created = repo.upsert_infrastructure(_base_payload(user.id, fresh_id, name="dup"))
+
+    assert created is True
+    assert str(infra.id) == str(fresh_id)
+    assert not Infrastructure.objects.filter(id=stale_id).exists()
+    assert Infrastructure.objects.filter(id=fresh_id).exists()
+
+
+@pytest.mark.django_db
+def test_delete_infrastructure_removes_row_idempotently(repo, make_user):
+    # Regression: infrastructure.deleted consumer must drop the read-model row and be a
+    # no-op if it's already gone (redelivery / double delete).
+    from api.models.infrastructure import Infrastructure
+
+    user = make_user()
+    infra_id = uuid.uuid4()
+    repo.upsert_infrastructure(_base_payload(user.id, infra_id))
+    assert Infrastructure.objects.filter(id=infra_id).exists()
+
+    assert repo.delete_infrastructure(infra_id) is True
+    assert not Infrastructure.objects.filter(id=infra_id).exists()
+    assert repo.delete_infrastructure(infra_id) is False

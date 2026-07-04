@@ -14,6 +14,17 @@ _pool = redis.ConnectionPool.from_url(
 )
 
 
+def _client_ip(request: Request) -> str:
+    # Behind N trusted proxies, the immediate peer is the proxy, not the user — read the client
+    # from X-Forwarded-For (each hop appends the IP it received from) so users don't share a bucket.
+    hops = settings.RATE_LIMIT_TRUSTED_PROXY_HOPS
+    if hops > 0:
+        parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+        if len(parts) >= hops:
+            return parts[-hops]
+    return request.client.host if request.client else "unknown"
+
+
 class RateLimiter:
     def __init__(self):
         self.redis = redis.Redis(connection_pool=_pool)
@@ -22,7 +33,7 @@ class RateLimiter:
         if request.url.path in EXEMPT_PATHS:
             return
 
-        key = f"rate_limit:{request.client.host}"
+        key = f"rate_limit:{_client_ip(request)}"
         try:
             async with self.redis.pipeline() as pipe:
                 pipe.incr(key)

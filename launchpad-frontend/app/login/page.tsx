@@ -2,16 +2,18 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Github } from 'lucide-react';
+import { Github, Mail, Lock, KeyRound, ArrowLeft, Rocket, ShieldCheck, Zap } from 'lucide-react';
 import { LogoMark } from '@/components/logo-mark';
 import { useAuthStore } from '@/lib/store/auth';
 import { authApi } from '@/lib/api/auth';
 import { toast } from 'sonner';
 
 type CredsStep = 'login' | 'otp' | 'forgot' | 'verify-reset' | 'reset-done';
+
+const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
 function LoginPageInner() {
   const router = useRouter();
@@ -122,54 +124,45 @@ function LoginPageInner() {
   const renderCredsContent = () => {
     if (step === 'otp') return (
       <form onSubmit={handleVerifyOtp} className="space-y-4">
-        <p className="text-xs text-[#444]">
-          Check your email <span className="text-[#888] font-mono">{email}</span> for the OTP.
+        <p className="text-xs text-muted-foreground">
+          Check your email <span className="text-foreground font-mono">{email}</span> for the OTP.
         </p>
-        <div className="space-y-1.5">
-          <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">OTP Code</Label>
+        <Field icon={<KeyRound className="w-3.5 h-3.5" />} label="OTP Code">
           <Input placeholder="000000" value={otp} onChange={(e) => setOtp(e.target.value)}
             required maxLength={6}
-            className="bg-[#050505] border-[#1a1a1a] focus:border-violet-500 h-10 font-mono text-lg tracking-[0.5em] text-center" />
-        </div>
-        <Button type="submit" disabled={loading} className="w-full bg-violet-600 hover:bg-violet-700 h-10 text-sm font-medium">
+            className="bg-transparent border-0 h-9 font-mono text-lg tracking-[0.5em] text-center placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+        </Field>
+        <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Verifying…' : 'Verify & Sign In'}
         </Button>
-        <button type="button" onClick={() => { setStep('login'); setOtp(''); }}
-          className="w-full text-xs text-[#333] hover:text-[#666] transition-colors">
-          ← Back to login
-        </button>
+        <BackToLogin onClick={() => { setStep('login'); setOtp(''); }} />
       </form>
     );
 
     if (step === 'forgot') return (
       <form onSubmit={handleForgotPassword} className="space-y-4">
-        <p className="text-xs text-[#444]">Enter your email to receive a password reset OTP.</p>
-        <div className="space-y-1.5">
-          <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">Email</Label>
+        <p className="text-xs text-muted-foreground">Enter your email to receive a password reset OTP.</p>
+        <Field icon={<Mail className="w-3.5 h-3.5" />} label="Email">
           <Input type="email" placeholder="you@example.com" value={email}
             onChange={(e) => setEmail(e.target.value)} required
-            className="bg-[#050505] border-[#1a1a1a] focus:border-violet-500 h-10 text-sm" />
-        </div>
-        <Button type="submit" disabled={loading} className="w-full bg-violet-600 hover:bg-violet-700 h-10 text-sm font-medium">
+            className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+        </Field>
+        <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Sending…' : 'Send Reset OTP'}
         </Button>
-        <button type="button" onClick={() => setStep('login')}
-          className="w-full text-xs text-[#333] hover:text-[#666] transition-colors">
-          ← Back to login
-        </button>
+        <BackToLogin onClick={() => setStep('login')} />
       </form>
     );
 
     if (step === 'verify-reset') return (
       <form onSubmit={handleVerifyResetOtp} className="space-y-4">
-        <p className="text-xs text-[#444]">Enter the OTP sent to <span className="text-[#888] font-mono">{email}</span>.</p>
-        <div className="space-y-1.5">
-          <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">Reset OTP</Label>
+        <p className="text-xs text-muted-foreground">Enter the OTP sent to <span className="text-foreground font-mono">{email}</span>.</p>
+        <Field icon={<KeyRound className="w-3.5 h-3.5" />} label="Reset OTP">
           <Input placeholder="000000" value={otp} onChange={(e) => setOtp(e.target.value)}
             required maxLength={6}
-            className="bg-[#050505] border-[#1a1a1a] focus:border-violet-500 h-10 font-mono text-lg tracking-[0.5em] text-center" />
-        </div>
-        <Button type="submit" disabled={loading} className="w-full bg-violet-600 hover:bg-violet-700 h-10 text-sm font-medium">
+            className="bg-transparent border-0 h-9 font-mono text-lg tracking-[0.5em] text-center placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+        </Field>
+        <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Verifying…' : 'Verify OTP'}
         </Button>
       </form>
@@ -177,39 +170,37 @@ function LoginPageInner() {
 
     if (step === 'reset-done') return (
       <form onSubmit={handleResetPassword} className="space-y-4">
-        <p className="text-xs text-[#444]">Set your new password.</p>
-        <div className="space-y-1.5">
-          <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">New Password</Label>
+        <p className="text-xs text-muted-foreground">Set your new password.</p>
+        <Field icon={<Lock className="w-3.5 h-3.5" />} label="New Password">
           <Input type="password" placeholder="Min 6 characters" value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)} required minLength={6}
-            className="bg-[#050505] border-[#1a1a1a] focus:border-violet-500 h-10 text-sm" />
-        </div>
-        <Button type="submit" disabled={loading} className="w-full bg-violet-600 hover:bg-violet-700 h-10 text-sm font-medium">
+            className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+        </Field>
+        <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Resetting…' : 'Reset Password'}
         </Button>
       </form>
     );
 
-    // default: login
     return (
-      <form onSubmit={handleLogin} className="space-y-3">
-        <div className="space-y-1.5">
-          <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">Email</Label>
-          <Input type="email" placeholder="you@example.com" value={email}
-            onChange={(e) => setEmail(e.target.value)} required
-            className="bg-[#050505] border-[#1a1a1a] focus:border-violet-500 h-10 text-sm" />
+      <form onSubmit={handleLogin} className="space-y-4">
+        <div className="space-y-1">
+          <Field icon={<Mail className="w-3.5 h-3.5" />} label="Email">
+            <Input type="email" placeholder="you@example.com" value={email}
+              onChange={(e) => setEmail(e.target.value)} required
+              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+          </Field>
+          <Field icon={<Lock className="w-3.5 h-3.5" />} label="Password">
+            <Input type="password" placeholder="••••••••" value={password}
+              onChange={(e) => setPassword(e.target.value)} required
+              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
+          </Field>
         </div>
-        <div className="space-y-1.5">
-          <Label className="text-[#444] text-[10px] uppercase tracking-widest font-mono">Password</Label>
-          <Input type="password" placeholder="••••••••" value={password}
-            onChange={(e) => setPassword(e.target.value)} required
-            className="bg-[#050505] border-[#1a1a1a] focus:border-violet-500 h-10 text-sm" />
-        </div>
-        <Button type="submit" disabled={loading} className="w-full bg-violet-600 hover:bg-violet-700 h-10 text-sm font-medium mt-1">
+        <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Signing in…' : 'Sign In'}
         </Button>
         <button type="button" onClick={() => setStep('forgot')}
-          className="w-full text-xs text-[#333] hover:text-[#666] transition-colors">
+          className="w-full text-xs text-muted-foreground hover:text-foreground transition-colors">
           Forgot password?
         </button>
       </form>
@@ -217,44 +208,168 @@ function LoginPageInner() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#060606]">
-      {/* Subtle grid background */}
-      <div className="fixed inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:64px_64px] pointer-events-none" />
-      <div className="w-full max-w-sm px-4 relative">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center mb-4">
-            <LogoMark size={44} />
-          </div>
-          <h1 className="text-2xl font-semibold tracking-tight text-white mb-1">Launchpad</h1>
-          <p className="text-xs text-[#444] font-mono tracking-widest uppercase">Cloud infrastructure</p>
-        </div>
+    <div className="min-h-screen bg-background lg:grid lg:grid-cols-[1.05fr_1fr]">
+      <BrandPanel />
 
-        <div className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-2xl overflow-hidden shadow-2xl shadow-black/60">
-          <div className="flex border-b border-[#1a1a1a]">
-            {(['github', 'creds'] as const).map((t) => (
-              <button key={t} onClick={() => { setTab(t); setStep('login'); }}
-                className={`flex-1 py-3 text-xs font-medium transition-all ${tab === t ? 'text-white border-b border-violet-500 bg-violet-500/5' : 'text-[#444] hover:text-[#888]'
-                  }`}>
-                {t === 'github' ? 'GitHub' : 'Credentials'}
-              </button>
-            ))}
+      <main className="relative flex items-center justify-center overflow-hidden px-4 py-12">
+        <div className="brand-glow pointer-events-none absolute inset-0 lg:hidden" />
+        <motion.div {...rise} className="relative w-full max-w-sm">
+          <div className="mb-8 flex flex-col items-center text-center lg:hidden">
+            <div className="mb-3 inline-flex items-center gap-2.5">
+              <LogoMark size={38} />
+              <span className="font-display text-2xl font-semibold tracking-tight text-foreground">Launchpad</span>
+            </div>
+            <span className="eyebrow">Cloud Infrastructure</span>
           </div>
-          <div className="p-5">
-            {tab === 'github' ? (
-              <div className="space-y-4">
-                <Button onClick={() => authApi.githubLogin()} className="w-full bg-white hover:bg-gray-100 text-black font-medium h-10 text-sm gap-2">
-                  <Github className="h-4 w-4" />
-                  Continue with GitHub
-                </Button>
-                <p className="text-[11px] text-[#333] text-center font-mono">
-                  GitHub users receive <span className="text-violet-400">SUPER_ADMIN</span> access
-                </p>
-              </div>
-            ) : renderCredsContent()}
+
+          <div className="mb-6 hidden lg:block">
+            <span className="eyebrow">Sign in</span>
+            <h1 className="mt-2 font-display text-2xl font-semibold tracking-tight text-foreground">Welcome back</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Pick up where your deploys left off.</p>
           </div>
-        </div>
-      </div>
+
+          <div className="panel overflow-hidden rounded-xl">
+            <div className="flex border-b border-hairline">
+              {(['github', 'creds'] as const).map((t) => (
+                <button key={t} onClick={() => { setTab(t); setStep('login'); }}
+                  className={`relative flex-1 py-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${tab === t
+                    ? 'text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                    }`}>
+                  {t === 'github' ? 'GitHub' : 'Credentials'}
+                  {tab === t && (
+                    <motion.span layoutId="login-tab" className="absolute inset-0 -z-10 border-b border-brand bg-brand-soft" transition={{ type: 'spring', stiffness: 400, damping: 32 }} />
+                  )}
+                </button>
+              ))}
+            </div>
+            <div className="p-5">
+              {tab === 'github' ? (
+                <div className="space-y-4">
+                  <Button onClick={() => authApi.githubLogin()} size="lg" className="w-full gap-2">
+                    <Github className="h-4 w-4" />
+                    Continue with GitHub
+                  </Button>
+                  <p className="text-center font-mono text-[11px] text-muted-foreground">
+                    GitHub users receive <span className="text-brand">SUPER_ADMIN</span> access
+                  </p>
+                </div>
+              ) : renderCredsContent()}
+            </div>
+          </div>
+
+          <p className="mt-6 flex items-center justify-center gap-1.5 text-center text-[11px] text-muted-foreground/70">
+            <Lock className="h-3 w-3" /> Credentials are encrypted in transit
+          </p>
+        </motion.div>
+      </main>
     </div>
+  );
+}
+
+const panelStagger = {
+  animate: { transition: { staggerChildren: 0.12, delayChildren: 0.1 } },
+};
+const panelItem = {
+  initial: { opacity: 0, y: 16 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as const } },
+};
+
+const BULLETS = [
+  { icon: Rocket, title: 'Push to ship', desc: 'Git push builds the image and rolls it out on ECS Fargate.' },
+  { icon: ShieldCheck, title: 'Your account, your keys', desc: 'Everything runs in the AWS account you own. No lock-in.' },
+  { icon: Zap, title: 'Live in minutes', desc: 'A full VPC, load balancer, and registry — provisioned for you.' },
+];
+
+function BrandPanel() {
+  return (
+    <aside className="relative hidden flex-col justify-between overflow-hidden border-r border-hairline p-12 lg:flex">
+      <div className="brand-glow pointer-events-none absolute inset-0" />
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          backgroundImage: 'linear-gradient(oklch(1 0 0 / 4%) 1px,transparent 1px),linear-gradient(90deg,oklch(1 0 0 / 4%) 1px,transparent 1px)',
+          backgroundSize: '46px 46px',
+          maskImage: 'radial-gradient(120% 80% at 20% 0%, #000 30%, transparent 75%)',
+        }}
+      />
+      <motion.div variants={panelStagger} initial="initial" animate="animate" className="relative">
+        <motion.div variants={panelItem} className="flex items-center gap-2.5">
+          <LogoMark size={34} />
+          <span className="font-display text-xl font-semibold tracking-tight text-foreground">Launchpad</span>
+        </motion.div>
+      </motion.div>
+
+      <motion.div variants={panelStagger} initial="initial" animate="animate" className="relative max-w-md">
+        <motion.span variants={panelItem} className="eyebrow">Cloud infrastructure, on autopilot</motion.span>
+        <motion.h2 variants={panelItem} className="mt-3 font-display text-3xl font-semibold leading-tight tracking-tight text-foreground">
+          Deploy to AWS in minutes,<br />not sprints.
+        </motion.h2>
+        <motion.ul variants={panelStagger} className="mt-8 space-y-5">
+          {BULLETS.map((b) => (
+            <motion.li key={b.title} variants={panelItem} className="flex gap-3.5">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-brand/20 bg-brand-soft text-brand">
+                <b.icon className="h-4 w-4" />
+              </span>
+              <div>
+                <p className="text-sm font-medium text-foreground">{b.title}</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{b.desc}</p>
+              </div>
+            </motion.li>
+          ))}
+        </motion.ul>
+
+        <motion.div variants={panelItem} className="mt-10 rounded-xl panel-inset p-4 font-mono text-xs">
+          <div className="mb-3 flex gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-destructive/70" />
+            <span className="h-2.5 w-2.5 rounded-full bg-warning/70" />
+            <span className="h-2.5 w-2.5 rounded-full bg-success/70" />
+          </div>
+          <p className="text-muted-foreground">$ <span className="text-foreground">git push origin main</span></p>
+          <p className="mt-1.5 text-brand">→ building image</p>
+          <p className="text-azure">→ pushing to ECR</p>
+          <p className="flex items-center gap-1.5 text-success">
+            ✓ live at api.your-app.dev
+            <motion.span
+              className="inline-block h-3 w-1.5 bg-success"
+              animate={{ opacity: [1, 1, 0, 0] }}
+              transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+            />
+          </p>
+        </motion.div>
+      </motion.div>
+
+      <motion.div variants={panelStagger} initial="initial" animate="animate" className="relative">
+        <motion.p variants={panelItem} className="flex items-center gap-2 text-xs text-muted-foreground/70">
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+            <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
+          </span>
+          All systems operational
+        </motion.p>
+      </motion.div>
+    </aside>
+  );
+}
+
+function Field({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
+  return (
+    <div className="group bg-surface-1 border border-hairline px-4 py-2.5 transition-colors focus-within:border-brand/40 focus-within:bg-surface-2 first:rounded-t-xl last:rounded-b-xl">
+      <div className="flex items-center gap-2 mb-0.5">
+        <span className="text-muted-foreground/70 group-focus-within:text-brand transition-colors">{icon}</span>
+        <span className="eyebrow">{label}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function BackToLogin({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick}
+      className="w-full inline-flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
+      <ArrowLeft className="w-3.5 h-3.5" /> Back to login
+    </button>
   );
 }
 

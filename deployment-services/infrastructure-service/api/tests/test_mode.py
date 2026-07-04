@@ -1,7 +1,7 @@
-"""Tests for shared.mode — MODE=dev normalization and the C2 dev-mode safety guard.
+"""Tests for shared.mode — MODE=dev normalization and the dev-mode safety guard.
 
 Pure-Python unit tests (no DB). Covers requirements 1 (normalize_mode/is_dev_mode)
-and 2 (enforce_dev_mode_safety hard-exit behaviour).
+and 2 (enforce_dev_mode_safety: dev always mocks; real creds are ignored, not fatal).
 """
 import logging
 
@@ -42,7 +42,7 @@ def test_normalize_mode_substring_dev_is_not_dev():
     assert is_dev_mode("develop") is False
 
 
-# --- Requirement 2: enforce_dev_mode_safety (C2) ---------------------------
+# --- Requirement 2: enforce_dev_mode_safety --------------------------------
 
 @pytest.fixture
 def clean_aws_env(monkeypatch):
@@ -65,12 +65,13 @@ def logger():
         ("AWS_ROLE_ARN", "arn:aws:iam::123456789012:role/Real"),
     ],
 )
-def test_dev_mode_with_real_creds_hard_exits(clean_aws_env, logger, var, value):
+def test_dev_mode_with_real_creds_mocks_without_exit(clean_aws_env, logger, caplog, var, value):
     clean_aws_env.setenv(var, value)
-    with pytest.raises(SystemExit) as exc:
+    with caplog.at_level(logging.WARNING, logger="test_mode"):
         enforce_dev_mode_safety("dev", "infrastructure-service", logger)
-    # The detected var name must be surfaced in the abort message.
-    assert var in str(exc.value)
+    assert "MOCKED" in caplog.text
+    # The ignored real-cred var must still be surfaced so the mock path is never silent.
+    assert var in caplog.text
 
 
 def test_dev_mode_clean_env_does_not_exit(clean_aws_env, logger):

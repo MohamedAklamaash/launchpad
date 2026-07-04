@@ -129,7 +129,7 @@ def test_callback_records_event_with_user_attribution(factory, callback_view, ma
     response = _post_callback(
         factory, callback_view, api_key=plaintext,
         caller_arn="arn:aws:iam::123456789012:user/ops-engineer",
-        script="update_aws_role.sh",
+        script="create_aws_role.sh",
         role_name="LaunchpadDeploymentRole",
         policy_arn="arn:aws:iam::123456789012:policy/LaunchpadDeploymentPolicy",
     )
@@ -138,7 +138,7 @@ def test_callback_records_event_with_user_attribution(factory, callback_view, ma
     assert event.user_id == user.id
     assert event.account_id == "123456789012"
     assert event.caller_arn == "arn:aws:iam::123456789012:user/ops-engineer"
-    assert event.script == "update_aws_role.sh"
+    assert event.script == "create_aws_role.sh"
     key = ScriptApiKey.objects.get(user=user)
     assert key.last_used_at is not None
 

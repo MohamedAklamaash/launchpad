@@ -74,7 +74,7 @@ export const userEventsWorker = new Worker(
                     );
                 }
 
-                const html = getInfraEmailTemplate(event, infra_name, infra_id, user_name, error);
+                const html = getInfraEmailTemplate(event, infra_name, user_name, error);
                 const subject = `Launchpad — Infrastructure ${event.replace(/_/g, ' ')}`;
 
                 logger.info({ job_id: job.id, email, event }, 'Sending infra notification email');

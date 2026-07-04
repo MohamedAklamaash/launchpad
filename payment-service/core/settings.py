@@ -145,6 +145,7 @@ AUTH_USER_MODEL = 'api.User'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 INTERNAL_AUTH_EXEMPT_PATHS = [
+    "/health",
     "/api/v1/healthz",
     "/api/v1/liveness",
     "/api/v1/readiness",

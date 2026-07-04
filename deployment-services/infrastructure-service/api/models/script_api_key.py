@@ -8,9 +8,9 @@ from shared.utils.uuid import uuid7_pk
 
 
 class ScriptApiKey(models.Model):
-    """Long-lived per-user API key that authenticates customer-run scripts
-    (update_aws_role.sh) back to the platform, so we can record WHO ran an IAM
-    refresh. Same storage contract as the onboarding token: only the SHA-256
+    """Long-lived per-user API key that authenticates customer-run refreshes
+    (create_aws_role.sh with a script API key) back to the platform, so we can
+    record WHO ran an IAM refresh. Same storage contract as the onboarding token: only the SHA-256
     hash is persisted; the plaintext (prefix ``lp_``) is shown exactly once."""
 
     id = models.UUIDField(primary_key=True, default=uuid7_pk, editable=False)

@@ -8,11 +8,18 @@ from shared.resilience.http_client import ResilientHttpClient
 from django.db import transaction
 from api.services.deployment_queue import DeploymentQueue
 from api.messaging.producer.producer import ApplicationEventProducer
+from api.services.deployment_lock import DeploymentLock
 
 import os
+import uuid
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+class DeploymentInProgressError(Exception):
+    """Raised when an operation can't proceed because a deploy holds the app's lock."""
+
 
 class ApplicationService:
     """Primary service for managing applications with resource and auth checks."""
@@ -130,8 +137,16 @@ class ApplicationService:
         
         return app
 
-    def get_user_applications(self, user_id: str, infra_id:str):
-        """Get all applications belonging to a user."""
+    def get_user_applications(self, user_id: str, infra_id: str):
+        """List applications in an infra the caller is allowed to view.
+
+        Gate on membership first — the repo falls back to returning ALL apps in the infra
+        when the caller owns none, so without this a non-member could enumerate another
+        tenant's app names/ports by passing their infrastructure_id.
+        """
+        infra = self.infra_repo.get_infrastructure(infra_id)
+        if not infra or not InfrastructurePermissions.can_view_application(infra, user_id):
+            return []
         return self.app_repo.get_all_for_user(user_id, infra_id)
 
     def get_application_details(self, user_id: str, app_id: str):
@@ -157,28 +172,40 @@ class ApplicationService:
         if not InfrastructurePermissions.can_delete_application(infra, user_id):
             raise PermissionError("You don't have permission to delete applications. Required role: SUPER_ADMIN or ADMIN")
 
-        infrastructure_id = str(app.infrastructure_id)
-        service_arn = app.service_arn
-        listener_rule_arn = app.listener_rule_arn
-        target_group_arn = app.target_group_arn
-        task_definition_arn = app.task_definition_arn
+        # Serialize with any in-flight deploy. A running deploy holds this lock and calls
+        # application.save() repeatedly; deleting the row underneath it resurrects it (UUID PK →
+        # save() falls back to INSERT) and orphans the AWS resources the deploy is still creating.
+        lock = DeploymentLock()
+        lock_owner = f"delete-{uuid.uuid4().hex[:8]}"
+        if not lock.acquire(app_id, lock_owner):
+            raise DeploymentInProgressError(
+                "Application is being deployed; try deleting again once the deploy finishes."
+            )
+        try:
+            infrastructure_id = str(app.infrastructure_id)
+            service_arn = app.service_arn
+            listener_rule_arn = app.listener_rule_arn
+            target_group_arn = app.target_group_arn
+            task_definition_arn = app.task_definition_arn
 
-        result = self.app_repo.delete(app_id)
+            result = self.app_repo.delete(app_id)
 
-        if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn]):
-            try:
-                DeploymentQueue.enqueue_cleanup(
-                    app_id=app_id,
-                    infrastructure_id=infrastructure_id,
-                    service_arn=service_arn,
-                    listener_rule_arn=listener_rule_arn,
-                    target_group_arn=target_group_arn,
-                    task_definition_arn=task_definition_arn,
-                )
-            except Exception as e:
-                logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")
+            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn]):
+                try:
+                    DeploymentQueue.enqueue_cleanup(
+                        app_id=app_id,
+                        infrastructure_id=infrastructure_id,
+                        service_arn=service_arn,
+                        listener_rule_arn=listener_rule_arn,
+                        target_group_arn=target_group_arn,
+                        task_definition_arn=task_definition_arn,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")
 
-        ApplicationEventProducer.publish_application_deleted(app_id)
+            ApplicationEventProducer.publish_application_deleted(app_id)
+        finally:
+            lock.release(app_id, lock_owner)
 
         return result
     

@@ -1,6 +1,7 @@
 import logging
 
 import boto3
+from botocore.config import Config
 from api.models.infrastructure import Infrastructure
 from shared.enums.cloud_provider import CloudProvider
 from shared.mode import is_dev_mode
@@ -45,6 +46,7 @@ def authenticate_infrastructure(infrastructure: Infrastructure):
         "sts",
         aws_access_key_id=app_config.aws_access_key_id,
         aws_secret_access_key=app_config.aws_secret_access_key,
+        config=Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2}),
     )
 
     try:

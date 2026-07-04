@@ -11,6 +11,8 @@ class InfraEventProducer:
     EXCHANGE_NAME = "infrastructure.events"
     ROUTING_KEY_INFRA_CREATED = "infrastructure.created"
     ROUTING_KEY_INFRA_UPDATED = "infrastructure.updated"
+    ROUTING_KEY_INFRA_DELETED = "infrastructure.deleted"
+    ROUTING_KEY_INFRA_USER_REMOVED = "infrastructure.user_removed"
     ROUTING_KEY_ENV_UPDATED = "environment.updated"
 
     def __init__(self):
@@ -68,7 +70,12 @@ class InfraEventProducer:
                 "is_cloud_authenticated": is_cloud_authenticated,
                 "is_mock": is_mock,
                 "invited_users": invited_users or [],
-                "metadata": metadata or {},
+                # Never ship live STS credentials over the broker / into the read-model DB.
+                # application-service re-assumes the role itself, so these keys are redundant.
+                "metadata": {
+                    k: v for k, v in (metadata or {}).items()
+                    if k not in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+                },
                 "status": "active",
             },
             "occurred_at": datetime.now(timezone.utc).isoformat(),
@@ -130,6 +137,48 @@ class InfraEventProducer:
             extra={"correlation_id": cid, "infra_id": str(infra_id)},
         )
     
+    def publish_infrastructure_deleted(self, user_id, infra_id, correlation_id=None):
+        """Publish infrastructure.deleted so read-models (application-service) drop the row."""
+        cid = correlation_id or str(uuid.uuid4())
+        event = {
+            "type": self.ROUTING_KEY_INFRA_DELETED,
+            "payload": {
+                "id": str(infra_id),
+                "infra_id": str(infra_id),
+                "user_id": str(user_id),
+            },
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"version": 1, "correlation_id": cid},
+        }
+        logger.info(
+            "Publishing infrastructure.deleted event",
+            extra={"correlation_id": cid, "infra_id": str(infra_id), "user_id": str(user_id)},
+        )
+        self.producer.publish(routing_key=self.ROUTING_KEY_INFRA_DELETED, body=event)
+        logger.info(
+            "Published infrastructure.deleted event",
+            extra={"correlation_id": cid, "infra_id": str(infra_id)},
+        )
+
+    def publish_infrastructure_user_removed(self, infra_id, removed_user_id, correlation_id=None):
+        """Publish infrastructure.user_removed so read-models (application-service) drop the
+        member from their replicated invited_users — otherwise a removed user keeps app access."""
+        cid = correlation_id or str(uuid.uuid4())
+        event = {
+            "type": self.ROUTING_KEY_INFRA_USER_REMOVED,
+            "payload": {
+                "infra_id": str(infra_id),
+                "user_id": str(removed_user_id),
+            },
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"version": 1, "correlation_id": cid},
+        }
+        self.producer.publish(routing_key=self.ROUTING_KEY_INFRA_USER_REMOVED, body=event)
+        logger.info(
+            "Published infrastructure.user_removed event",
+            extra={"correlation_id": cid, "infra_id": str(infra_id), "user_id": str(removed_user_id)},
+        )
+
     def publish_environment_updated(
         self,
         infra_id,

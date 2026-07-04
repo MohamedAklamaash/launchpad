@@ -12,6 +12,16 @@ os.environ['DB_CONN_MAX_AGE'] = '0'
 
 logger = logging.getLogger(__name__)
 
+
+def _publish_infra_deleted(user_id, infra_id):
+    """Propagate a destroy-driven row deletion to read-models (application-service)
+    so they drop the infra; without this a reused (user, name) later collides."""
+    try:
+        from api.messaging.producer.producer import infra_producer
+        infra_producer.publish_infrastructure_deleted(user_id=user_id, infra_id=infra_id)
+    except Exception:
+        logger.error(f"Failed to publish infrastructure.deleted for {infra_id}", exc_info=True)
+
 MAX_PROVISION_WORKERS = int(os.environ.get('INFRA_MAX_PROVISION_WORKERS', '5'))
 MAX_DESTROY_WORKERS = int(os.environ.get('INFRA_MAX_DESTROY_WORKERS', '3'))
 SHUTDOWN_TIMEOUT = int(os.environ.get('INFRA_SHUTDOWN_TIMEOUT', '300'))
@@ -126,17 +136,21 @@ class Command(BaseCommand):
                     env = Environment.objects.get(infrastructure_id=infra_id)
                     if env.status == 'DESTROYED':
                         NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
+                        user_id = infra.user_id
                         with transaction.atomic():
                             env.delete()
                             infra.delete()
                         logger.info(f"Deleted DB records for {infra_id}")
+                        _publish_infra_deleted(user_id, infra_id)
                     else:
                         NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
                 except Environment.DoesNotExist:
                     NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
+                    user_id = infra.user_id
                     with transaction.atomic():
                         infra.delete()
                     logger.info(f"Deleted DB records for {infra_id}")
+                    _publish_infra_deleted(user_id, infra_id)
             except Exception as e:
                 logger.error(f"Destroy failed for {infra_id}: {e}", exc_info=True)
                 if infra:

@@ -31,9 +31,9 @@ The script creates:
   infrastructure's `ExternalId`
 - A callback to Launchpad that verifies the token and starts provisioning
 
-It is idempotent: re-running refreshes the trust policy in place. There is also a
-**refresh script** (`update_aws_role.sh`) for when Launchpad's required permissions widen
-— see [Keeping the policy current](#keeping-the-policy-current).
+It is idempotent: re-running refreshes the policy **and** trust policy in place. Re-running
+it with a script API key is also the refresh path for when Launchpad's required permissions
+widen — see [Keeping the policy current](#keeping-the-policy-current).
 
 ---
 
@@ -220,13 +220,12 @@ echo "Role ARN: arn:aws:iam::${ACCOUNT_ID}:role/LaunchpadDeploymentRole"
 ## Keeping the policy current
 
 When Launchpad adds capabilities, `LaunchpadDeploymentPolicy` may gain actions. If your
-deployments start failing with `AccessDenied`, run the **refresh script**
-(`update_aws_role.sh`) — surfaced in the dashboard as the *Refresh policy script*. It
-re-applies the latest policy **and** trust policy in place; you don't recreate the role.
+deployments start failing with `AccessDenied`, re-run `create_aws_role.sh` — surfaced in
+the dashboard as the *Refresh policy script*. The same idempotent script re-applies the
+latest policy **and** trust policy in place; you don't recreate the role.
 
-The two scripts deliberately keep an identical action list (a CI check,
-`app_scripts/_check_policy_sync.py`, fails the build if they drift), so the refresh never
-narrows your permissions by accident.
+Because one script owns the action list, the bootstrap and refresh paths can never drift
+apart, so a refresh never narrows your permissions by accident.
 
 The refresh snippet also carries a **per-user API key** (`LAUNCHPAD_API_KEY`) and posts to
 a policy-refresh callback so Launchpad records who ran the refresh, against which account,
@@ -340,8 +339,8 @@ If you see permission errors:
    re-run the bootstrap/refresh script to fix the trust policy in place.
 3. **Check Policy Attachment**: Policy must be attached to role
 4. **Check Region**: Some services are region-specific
-5. **Permissions widened?**: Run the refresh script (`update_aws_role.sh`) to pick up
-   newly required actions.
+5. **Permissions widened?**: Re-run `create_aws_role.sh` (the dashboard's *Refresh policy*
+   snippet) to pick up newly required actions.
 
 ### Testing Permissions
 

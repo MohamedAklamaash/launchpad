@@ -2,12 +2,14 @@
 
 import { Suspense, useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ArrowLeft, GitBranch, Globe, Box, Cpu, HardDrive, Hash, FileText } from 'lucide-react';
+import { ArrowLeft, GitBranch, Globe, Box, Cpu, HardDrive, Hash, FileText, Rocket } from 'lucide-react';
 import { EnvEditor } from '@/components/env-editor';
+import { LaunchSequence, PreflightMeter } from '@/components/launch';
 import { applicationApi } from '@/lib/api/applications';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { Infrastructure } from '@/types/infrastructure';
@@ -21,8 +23,11 @@ const CPU_MEMORY_MAP: Record<number, number[]> = {
   4: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
 };
 
-const inputCls = "bg-transparent border-0 h-9 text-sm text-white placeholder:text-[#333] focus-visible:ring-0 pl-3";
-const monoInputCls = inputCls + " font-mono";
+const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
+
+const inputCls = 'bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0';
+const monoInputCls = inputCls + ' font-mono';
+const triggerCls = 'bg-transparent border-0 h-9 text-sm text-foreground focus:ring-0 px-0 shadow-none';
 
 function NewApplicationPageInner() {
   const router = useRouter();
@@ -47,6 +52,13 @@ function NewApplicationPageInner() {
 
   const set = (k: string, v: string | number) => setForm((p) => ({ ...p, [k]: v }));
 
+  const preflight = [
+    form.infrastructure_id.trim().length > 0,
+    /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(form.name),
+    /^https?:\/\/.+/.test(form.project_remote_url.trim()),
+    form.port >= 1024 && form.port <= 65535,
+  ].filter(Boolean).length;
+
   useEffect(() => {
     infrastructureApi.list()
       .then((data) => setInfrastructures(data.filter((i) => i.status === 'ACTIVE')))
@@ -59,7 +71,7 @@ function NewApplicationPageInner() {
     try {
       const envs = envVars.reduce((acc, { key, value }) => { if (key) acc[key] = value; return acc; }, {} as Record<string, string>);
       const app = await applicationApi.create({ ...form, envs });
-      toast.success('Deployment started');
+      toast.success(`Liftoff — ${app.name} is deploying`);
       router.push(`/dashboard/applications/${app.id}`);
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } };
@@ -69,119 +81,118 @@ function NewApplicationPageInner() {
     }
   };
 
-  // const updateEnv = (i: number, field: 'key' | 'value', val: string) =>
-  //   setEnvVars((prev) => prev.map((e, idx) => idx === i ? { ...e, [field]: val } : e));
-
   return (
-    <div className="flex justify-center">
+    <motion.div {...rise} className="flex justify-center">
       <div className="w-full max-w-xl space-y-6">
-        <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-[#555] hover:text-[#aaa] transition-colors">
+        <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
           <ArrowLeft className="w-3.5 h-3.5" /> Back
         </button>
 
-        <div>
-          <h1 className="text-xl font-semibold text-white tracking-tight">Deploy Application</h1>
-          <p className="text-xs text-[#555] mt-1">Deploy from a GitHub repository to your infrastructure</p>
+        <div className="rounded-2xl panel p-5">
+          <LaunchSequence current="configure" />
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Infrastructure + Name */}
+        <div>
+          <span className="eyebrow">Console / Deploy Application</span>
+          <h1 className="mt-2 text-2xl font-display font-semibold text-foreground tracking-tight">Deploy an application</h1>
+          <p className="text-sm text-muted-foreground mt-1.5">Deploy from a GitHub repository to your infrastructure.</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
           <Section label="General">
-            <Row label="Infrastructure" icon={<Box className="w-3.5 h-3.5" />}>
+            <Field icon={<Box className="w-3.5 h-3.5" />} label="Infrastructure">
               <Select value={form.infrastructure_id} onValueChange={(v) => v && set('infrastructure_id', v)} required>
-                <SelectTrigger className="bg-transparent border-0 h-9 text-sm text-white focus:ring-0 px-0 shadow-none">
+                <SelectTrigger className={triggerCls}>
                   <SelectValue placeholder="Select infrastructure" />
                 </SelectTrigger>
-                <SelectContent className="bg-[#0f0f0f] border-[#1a1a1a]">
+                <SelectContent className="bg-popover border-hairline">
                   {infrastructures.map((i) => (
                     <SelectItem key={i.id} value={i.id} className="text-sm">{i.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </Row>
-            <Row label="App Name" icon={<Hash className="w-3.5 h-3.5" />} hint="lowercase, hyphens only">
+            </Field>
+            <Field icon={<Hash className="w-3.5 h-3.5" />} label="App Name" hint="lowercase, hyphens only">
               <Input value={form.name} onChange={(e) => set('name', e.target.value.toLowerCase())}
                 placeholder="my-app" pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?" required className={monoInputCls} />
-            </Row>
-            <Row label="Description" icon={<FileText className="w-3.5 h-3.5" />}>
+            </Field>
+            <Field icon={<FileText className="w-3.5 h-3.5" />} label="Description">
               <Textarea value={form.description} onChange={(e) => set('description', e.target.value)}
                 placeholder="Optional description" rows={2}
-                className="bg-transparent border-0 text-sm text-white placeholder:text-[#333] focus-visible:ring-0 px-0 resize-none min-h-0" />
-            </Row>
+                className="bg-transparent border-0 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0 resize-none min-h-0" />
+            </Field>
           </Section>
 
-          {/* Repository */}
           <Section label="Repository">
-            <Row label="GitHub URL" icon={<Globe className="w-3.5 h-3.5" />}>
+            <Field icon={<Globe className="w-3.5 h-3.5" />} label="GitHub URL">
               <Input value={form.project_remote_url} onChange={(e) => set('project_remote_url', e.target.value)}
                 placeholder="https://github.com/user/repo" required className={monoInputCls} />
-            </Row>
-            <Row label="Branch" icon={<GitBranch className="w-3.5 h-3.5" />}>
+            </Field>
+            <Field icon={<GitBranch className="w-3.5 h-3.5" />} label="Branch">
               <Input value={form.project_branch} onChange={(e) => set('project_branch', e.target.value)}
                 className={monoInputCls} />
-            </Row>
-            <Row label="Dockerfile" icon={<FileText className="w-3.5 h-3.5" />}>
+            </Field>
+            <Field icon={<FileText className="w-3.5 h-3.5" />} label="Dockerfile">
               <Input value={form.dockerfile_path} onChange={(e) => set('dockerfile_path', e.target.value)}
                 className={monoInputCls} />
-            </Row>
-            <Row label="Build Context" icon={<FileText className="w-3.5 h-3.5" />} hint="monorepo root">
+            </Field>
+            <Field icon={<FileText className="w-3.5 h-3.5" />} label="Build Context" hint="monorepo root">
               <Input value={form.build_context} onChange={(e) => set('build_context', e.target.value)}
                 placeholder="e.g. identity-services/ (leave blank for auto)" className={monoInputCls} />
-            </Row>
+            </Field>
           </Section>
 
-          {/* Resources */}
           <Section label="Resources">
-            <Row label="Port" icon={<Hash className="w-3.5 h-3.5" />}>
+            <Field icon={<Hash className="w-3.5 h-3.5" />} label="Port">
               <Input type="number" value={form.port} onChange={(e) => set('port', parseInt(e.target.value))}
                 min={1024} max={65535} className={monoInputCls} />
-            </Row>
-            <Row label="CPU" icon={<Cpu className="w-3.5 h-3.5" />} wide>
+            </Field>
+            <Field icon={<Cpu className="w-3.5 h-3.5" />} label="CPU">
               <Select value={String(form.alloted_cpu)} onValueChange={(v) => {
                 if (!v) return;
                 const cpu = parseFloat(v);
                 set('alloted_cpu', cpu);
                 set('alloted_memory', CPU_MEMORY_MAP[cpu][0]);
               }}>
-                <SelectTrigger className="bg-[#111] border border-[#1a1a1a] h-9 text-sm text-white focus:ring-0 px-3 shadow-none w-40 rounded-lg">
+                <SelectTrigger className={triggerCls + ' font-mono'}>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="bg-[#0f0f0f] border-[#1a1a1a]">
+                <SelectContent className="bg-popover border-hairline">
                   {Object.keys(CPU_MEMORY_MAP).map((c) => (
                     <SelectItem key={c} value={c} className="text-sm font-mono">{c} vCPU</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </Row>
-            <Row label="Memory" icon={<HardDrive className="w-3.5 h-3.5" />} wide>
+            </Field>
+            <Field icon={<HardDrive className="w-3.5 h-3.5" />} label="Memory">
               <Select value={String(form.alloted_memory)} onValueChange={(v) => v && set('alloted_memory', parseFloat(v))}>
-                <SelectTrigger className="bg-[#111] border border-[#1a1a1a] h-9 text-sm text-white focus:ring-0 px-3 shadow-none w-40 rounded-lg">
+                <SelectTrigger className={triggerCls + ' font-mono'}>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent className="bg-[#0f0f0f] border-[#1a1a1a]">
+                <SelectContent className="bg-popover border-hairline">
                   {CPU_MEMORY_MAP[form.alloted_cpu].map((m) => (
                     <SelectItem key={m} value={String(m)} className="text-sm font-mono">{m} GB</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </Row>
+            </Field>
           </Section>
 
           <EnvEditor envs={envVars.map(({ key, value }) => [key, value] as [string, string])} onChange={(rows) => setEnvVars(rows.map(([key, value]) => ({ key, value })))} />
 
+          <PreflightMeter ready={preflight} total={4} />
+
           <div className="flex gap-2 pt-1">
-            <Button type="submit" disabled={loading}
-              className="bg-violet-600 hover:bg-violet-700 h-9 text-sm font-medium px-5">
-              {loading ? 'Deploying…' : 'Deploy Application'}
+            <Button type="submit" size="lg" disabled={loading} className="px-5 gap-1.5">
+              <Rocket className="w-4 h-4" /> {loading ? 'Launching…' : 'Launch application'}
             </Button>
-            <Button type="button" variant="outline" onClick={() => router.back()}
-              className="border-[#1e1e1e] bg-transparent hover:bg-[#111] text-[#888] h-9 text-sm">
+            <Button type="button" variant="outline" size="lg" onClick={() => router.back()}>
               Cancel
             </Button>
           </div>
         </form>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -193,31 +204,26 @@ export default function NewApplicationPage() {
   );
 }
 
-function Section({ label, children, action }: { label: string; children: React.ReactNode; action?: React.ReactNode }) {
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5 px-0.5">
-        <span className="text-[10px] uppercase tracking-widest font-mono text-[#555]">{label}</span>
-        {action}
-      </div>
-      <div className="bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl overflow-hidden divide-y divide-[#1a1a1a]">
-        {children}
-      </div>
+      <span className="eyebrow">{label}</span>
+      <div className="mt-2">{children}</div>
     </div>
   );
 }
 
-function Row({ label, icon, hint, children, wide }: {
-  label: string; icon: React.ReactNode; hint?: string; children: React.ReactNode; wide?: boolean;
+function Field({ icon, label, hint, children }: {
+  icon: React.ReactNode; label: string; hint?: string; children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start gap-3 px-4 py-2.5">
-      <div className={`flex items-center gap-2 ${wide ? 'w-40' : 'w-32'} shrink-0 pt-2`}>
-        <span className="text-[#444]">{icon}</span>
-        <span className="text-xs text-[#555]">{label}</span>
-        {hint && <span className="text-[10px] text-[#333] hidden xl:block">{hint}</span>}
+    <div className="group bg-surface-1 border border-hairline px-4 py-2.5 transition-colors focus-within:border-brand/40 focus-within:bg-surface-2 first:rounded-t-xl last:rounded-b-xl">
+      <div className="flex items-center gap-2 mb-0.5">
+        <span className="text-muted-foreground/70 group-focus-within:text-brand transition-colors">{icon}</span>
+        <span className="eyebrow">{label}</span>
+        {hint && <span className="text-[10px] text-muted-foreground/60 ml-auto font-mono">{hint}</span>}
       </div>
-      <div className="flex-1 min-w-0">{children}</div>
+      {children}
     </div>
   );
 }

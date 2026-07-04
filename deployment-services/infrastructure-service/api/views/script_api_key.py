@@ -29,8 +29,8 @@ class CallbackErrorSerializer(serializers.Serializer):
 @extend_schema(
     summary="Issue (or rotate) the per-user script API key",
     description=(
-        "Mints the API key that authenticates customer-run scripts (update_aws_role.sh) back to "
-        "Launchpad via the policy-refresh callback. Only a hash is stored; the plaintext is "
+        "Mints the API key that authenticates customer-run refreshes (create_aws_role.sh with a "
+        "script API key) back to Launchpad via the policy-refresh callback. Only a hash is stored; the plaintext is "
         "returned exactly once. Issuing again revokes all previously issued keys for the user."
     ),
     request=None,
@@ -54,7 +54,7 @@ def script_api_key_issue(request: HttpRequest):
 @extend_schema(
     summary="Policy-refresh callback from customer's AWS account",
     description=(
-        "Called by app_scripts/update_aws_role.sh after it refreshes LaunchpadDeploymentPolicy / "
+        "Called by app_scripts/create_aws_role.sh after an attributed refresh of LaunchpadDeploymentPolicy / "
         "the trust policy. Authenticated by the per-user script API key (X-API-Key header) so the "
         "platform records WHO ran the refresh, against which AWS account, and when."
     ),
@@ -65,7 +65,7 @@ def script_api_key_issue(request: HttpRequest):
             "infra_id": {"type": "string", "format": "uuid", "description": "Optional infra UUID to link"},
             "account_id": {"type": "string", "description": "AWS Account ID the script ran against"},
             "caller_arn": {"type": "string", "description": "sts get-caller-identity ARN of whoever ran it"},
-            "script": {"type": "string", "description": "Script name, e.g. update_aws_role.sh"},
+            "script": {"type": "string", "description": "Script name, e.g. create_aws_role.sh"},
             "role_name": {"type": "string"},
             "policy_arn": {"type": "string"},
         },
@@ -91,7 +91,9 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
         return Response({'error': 'account_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
     # The infra link is best-effort context, not an auth gate — the API key alone
-    # establishes identity. A bad/missing infra_id still records the refresh.
+    # establishes identity. Scope the lookup to the key owner so a caller can't attribute
+    # a policy-refresh record against an infrastructure they don't own. A bad/missing/
+    # non-owned infra_id still records the refresh (just without the infra link).
     infra = None
     infra_id = request.data.get('infra_id')
     if infra_id:
@@ -100,14 +102,14 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
         except (ValueError, TypeError):
             infra_id = None
         else:
-            infra = Infrastructure.objects.filter(id=infra_id).first()
+            infra = Infrastructure.objects.filter(id=infra_id, user=key.user).first()
 
     event = PolicyRefreshEvent.objects.create(
         user=key.user,
         infrastructure=infra,
         account_id=str(account_id)[:32],
         caller_arn=str(request.data.get('caller_arn') or ''),
-        script=str(request.data.get('script') or 'update_aws_role.sh')[:64],
+        script=str(request.data.get('script') or 'create_aws_role.sh')[:64],
         role_name=str(request.data.get('role_name') or '')[:128],
         policy_arn=str(request.data.get('policy_arn') or ''),
     )

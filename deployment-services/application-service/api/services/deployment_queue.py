@@ -106,6 +106,38 @@ class DeploymentQueue:
         return recovered
 
     @staticmethod
+    def reap_orphaned_processing_jobs(is_claimed=None) -> int:
+        """Re-queue processing jobs whose app has no active deploy lock (worker died mid-deploy,
+        or couldn't acquire the lock). Unlike recover_processing_jobs (startup-only, unconditional),
+        this runs periodically so a long-lived worker no longer strands jobs until restart.
+
+        A job is left alone if it's actively deploying (lock held) or `is_claimed(app_id)` — the
+        latter covers jobs sitting in a live worker's in-memory infra queue that haven't acquired
+        the lock yet, which would otherwise be falsely reaped into a duplicate deploy."""
+        from api.services.deployment_lock import DeploymentLock
+        r = DeploymentQueue.get_redis()
+        lock = DeploymentLock()
+        reaped = 0
+        for raw in r.lrange(DeploymentQueue.PROCESSING_QUEUE, 0, -1):
+            try:
+                job = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            app_id = job.get('app_id')
+            if app_id and (lock.is_locked(app_id) or (is_claimed and is_claimed(app_id))):
+                continue  # a live worker owns it — leave it alone
+            # Orphaned: push back to the main queue first (crash-safe), then drop the processing
+            # copy. If another party already removed it, undo the push so we don't duplicate.
+            r.rpush(DeploymentQueue.QUEUE_NAME, raw)
+            if r.lrem(DeploymentQueue.PROCESSING_QUEUE, 1, raw):
+                reaped += 1
+            else:
+                r.lrem(DeploymentQueue.QUEUE_NAME, 1, raw)
+        if reaped:
+            logger.warning(f"Reaped {reaped} orphaned job(s) from processing queue")
+        return reaped
+
+    @staticmethod
     def dequeue_deployment():
         try:
             r = redis.Redis(connection_pool=_blocking_pool)

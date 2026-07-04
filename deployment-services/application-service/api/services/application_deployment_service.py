@@ -368,7 +368,15 @@ class ApplicationDeploymentService:
             subnet_ids = [subnet['SubnetId'] for subnet in vpc_response['Subnets']]
             
             if not subnet_ids:
-                logger.warning("No private subnets found with Type tag, using all subnets")
+                # Falling back to ALL subnets while assignPublicIp stays DISABLED means a task
+                # landing in a public subnet (no NAT) can't reach ECR and the deploy fails to
+                # pull its image. This is almost always a VPC-tagging gap — surface it loudly.
+                logger.error(
+                    "No subnets tagged Type=private in VPC %s — falling back to all subnets with "
+                    "assignPublicIp=DISABLED. If any are public/NAT-less, ECR image pull will fail. "
+                    "Tag private subnets Type=private and ensure a NAT path.",
+                    environment.vpc_id,
+                )
                 vpc_response = ec2.describe_subnets(
                     Filters=[{'Name': 'vpc-id', 'Values': [environment.vpc_id]}]
                 )

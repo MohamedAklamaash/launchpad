@@ -14,6 +14,10 @@ async def proxy_request(url: str, request: Request) -> Response:
         headers.pop("host", None)
         headers.pop("content-length", None)
         headers.pop("connection", None)
+        # Strip any client-supplied internal token (Starlette lowercases header keys) so the
+        # gateway is the sole source of this trusted S2S header — never forward a second copy.
+        headers.pop("x-internal-token", None)
+        headers.pop("X-INTERNAL-TOKEN", None)
         headers["X-INTERNAL-TOKEN"] = settings.INTERNAL_API_TOKEN
         
         body = await request.body()

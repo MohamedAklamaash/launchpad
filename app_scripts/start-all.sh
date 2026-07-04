@@ -16,6 +16,8 @@ echo "Cleaning up stale processes..."
 pkill -f "tsx watch" 2>/dev/null || true
 pkill -f "manage.py runserver" 2>/dev/null || true
 pkill -f "python app.py" 2>/dev/null || true
+pkill -f "next dev" 2>/dev/null || true
+pkill -f "next-server" 2>/dev/null || true
 sleep 2
 
 echo "Starting Launchpad Microservices..."
@@ -90,6 +92,15 @@ run_django_service "deployment-services/infrastructure-service" 8002 "$DEPLOY_PY
 # Payment Service
 ########################################
 run_django_service "payment-service" 8003 "$ROOT_DIR/payment-service/venv/bin/python"
+
+########################################
+# Frontend (Next.js dashboard)
+########################################
+echo "Starting Frontend (http://localhost:3000)..."
+(
+  cd "$ROOT_DIR/launchpad-frontend" || exit 1
+  pnpm dev
+) &
 
 echo ""
 echo "All services started."

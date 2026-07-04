@@ -9,17 +9,32 @@ if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
   cat <<USAGE
 Usage: $0
 
-Creates the LaunchpadDeploymentRole in YOUR AWS account so the Launchpad
-platform can deploy infrastructure on your behalf via cross-account assume-role.
+Idempotent setup for the LaunchpadDeploymentRole in YOUR AWS account so the
+Launchpad platform can deploy on your behalf via cross-account assume-role.
 
-Environment variables (all optional, sensible defaults applied):
+Safe to run repeatedly. On every run it ensures the role, the deployment
+policy (latest permissions), and the trust policy are up to date:
+  - first run  -> creates the role + policy, then posts the onboarding callback
+  - later runs -> refreshes the policy version + trust policy in place; posts the
+                  policy-refresh callback when a script API key is provided
+
+Which callback fires is decided by the credentials present:
+  - LAUNCHPAD_ONBOARDING_TOKEN set -> onboarding callback (first-time bootstrap)
+  - LAUNCHPAD_API_KEY set          -> policy-refresh callback (attributed refresh)
+
+Environment variables (all optional unless noted):
   LAUNCHPAD_PLATFORM_ACCOUNT_ID    Launchpad platform AWS account ID (default: 221082203366)
   LAUNCHPAD_PLATFORM_USER          Launchpad platform IAM user (default: aklamaash-terraform)
   LAUNCHPAD_EXTERNAL_ID            Per-customer ExternalId binding the trust policy (defaults to LAUNCHPAD_INFRA_ID)
   LAUNCHPAD_REGION                 AWS region for deployment (default: us-east-1)
-  LAUNCHPAD_INFRA_ID               Infra UUID; required for onboarding callback
-  LAUNCHPAD_CALLBACK_URL           Launchpad callback URL; required for onboarding callback
-  LAUNCHPAD_ONBOARDING_TOKEN       Single-use onboarding token; required for onboarding callback
+  LAUNCHPAD_INFRA_ID               Infra UUID; required for either callback
+  LAUNCHPAD_CALLBACK_URL           Launchpad callback URL; required for either callback
+  LAUNCHPAD_ONBOARDING_TOKEN       Single-use onboarding token (first-time bootstrap)
+  LAUNCHPAD_API_KEY                Per-user script API key (attributed policy refresh)
+  LAUNCHPAD_MOCK                   Set to "1" for dev/mock mode: skips every AWS call and just
+                                   posts the callback (zero-cost demo / e2e). Requires
+                                   LAUNCHPAD_ACCOUNT_ID.
+  LAUNCHPAD_ACCOUNT_ID             AWS Account ID to report in mock mode (must match infra.code).
   LAUNCHPAD_ALLOW_NO_EXTERNAL_ID   Escape hatch: set to literally "1" (NOT "true"/"yes") to skip
                                    the ExternalId requirement. Advanced/manual setups only —
                                    weakens cross-account assume-role protection. NOT RECOMMENDED.
@@ -38,6 +53,8 @@ PLATFORM_USER="${LAUNCHPAD_PLATFORM_USER:-aklamaash-terraform}"
 # the trust policy to it by default removes a manual setup step for customers using the dashboard flow.
 ASSUME_EXTERNAL_ID="${LAUNCHPAD_EXTERNAL_ID:-${LAUNCHPAD_INFRA_ID:-}}"
 
+MOCK_MODE="${LAUNCHPAD_MOCK:-0}"
+
 # Region must match where Launchpad provisions; customer's CLI default may differ.
 LAUNCHPAD_REGION="${LAUNCHPAD_REGION:-us-east-1}"
 export AWS_REGION="$LAUNCHPAD_REGION"
@@ -51,12 +68,30 @@ echo "Launchpad AWS Role Setup"
 echo "Region:           ${LAUNCHPAD_REGION}"
 echo "Platform account: ${TRUSTED_ACCOUNT_ID}"
 echo "Platform user:    ${PLATFORM_USER}"
+[ "$MOCK_MODE" = "1" ] && echo "Mode:             MOCK (no AWS calls)"
 echo "=========================================="
 
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+########################################
+# ACCOUNT ID
+########################################
+
+if [ "$MOCK_MODE" = "1" ]; then
+  # Dev/mock: the platform mocks AWS server-side, so the script must not touch
+  # real AWS. The account id is injected by the dashboard (the infra's code).
+  if [ -z "${LAUNCHPAD_ACCOUNT_ID:-}" ]; then
+    echo "ERROR: LAUNCHPAD_MOCK=1 requires LAUNCHPAD_ACCOUNT_ID (the infra's AWS account id)." >&2
+    exit 1
+  fi
+  ACCOUNT_ID="$LAUNCHPAD_ACCOUNT_ID"
+  echo "Mock mode: skipping AWS CLI; using account ${ACCOUNT_ID}."
+else
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+fi
+
+POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
 
 ########################################
-# TRUST POLICY
+# POLICY DOCUMENTS
 ########################################
 
 # ExternalId is mandatory by default — without it, anyone in the Launchpad
@@ -113,31 +148,6 @@ else
   exit 1
 fi
 
-########################################
-# CREATE ROLE (IDEMPOTENT)
-########################################
-
-echo "Checking if role exists..."
-
-if aws iam get-role --role-name ${ROLE_NAME} >/dev/null 2>&1; then
-  # Refresh the trust policy in place — a re-run with a new ExternalId (or a
-  # rotated platform principal) must land on the existing role, otherwise the
-  # backend's AssumeRole (which always sends ExternalId) fails with AccessDenied.
-  echo "Role already exists; refreshing trust policy..."
-  aws iam update-assume-role-policy \
-    --role-name ${ROLE_NAME} \
-    --policy-document file://"$WORK_DIR/trust-policy.json"
-else
-  echo "Creating IAM role..."
-  aws iam create-role \
-    --role-name ${ROLE_NAME} \
-    --assume-role-policy-document file://"$WORK_DIR/trust-policy.json"
-fi
-
-########################################
-# POLICY FOR TERRAFORM INFRA
-########################################
-
 # Permissions granted to Launchpad in YOUR account:
 # - ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure
 # - s3: terraform state bucket + application asset storage
@@ -145,8 +155,6 @@ fi
 # - iam:*: create execution roles for ECS tasks (scoped to launchpad-* roles in code)
 # - kms:*: encrypt state bucket and secrets
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-# NOTE: Action list must stay in sync with the other script (create_aws_role.sh / update_aws_role.sh).
-# LaunchpadDeploymentPolicy first statement. CI guard: app_scripts/_check_policy_sync.py
 cat > "$WORK_DIR/launchpad-policy.json" <<EOF
 {
   "Version": "2012-10-17",
@@ -180,85 +188,152 @@ cat > "$WORK_DIR/launchpad-policy.json" <<EOF
 EOF
 
 ########################################
-# CREATE POLICY (IDEMPOTENT)
+# APPLY IAM (idempotent; skipped in mock mode)
 ########################################
 
-POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
-
-if aws iam get-policy --policy-arn ${POLICY_ARN} >/dev/null 2>&1; then
-  echo "Policy already exists."
+if [ "$MOCK_MODE" = "1" ]; then
+  echo "Mock mode: skipping IAM role/policy changes."
 else
-  echo "Creating deployment policy..."
-  aws iam create-policy \
-    --policy-name ${POLICY_NAME} \
-    --policy-document file://"$WORK_DIR/launchpad-policy.json"
+  echo "Ensuring IAM role..."
+  if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
+    # A re-run with a new ExternalId (or a rotated platform principal) must land on
+    # the existing role, otherwise the backend's AssumeRole (which always sends
+    # ExternalId) fails with AccessDenied.
+    echo "Role exists; refreshing trust policy..."
+    aws iam update-assume-role-policy \
+      --role-name "${ROLE_NAME}" \
+      --policy-document file://"$WORK_DIR/trust-policy.json"
+  else
+    echo "Creating IAM role..."
+    aws iam create-role \
+      --role-name "${ROLE_NAME}" \
+      --assume-role-policy-document file://"$WORK_DIR/trust-policy.json"
+  fi
+
+  echo "Ensuring deployment policy (latest permissions)..."
+  if aws iam get-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1; then
+    DEFAULT_VERSION=$(aws iam get-policy --policy-arn "${POLICY_ARN}" --query 'Policy.DefaultVersionId' --output text)
+
+    # IAM allows at most 5 versions per managed policy. Prune oldest non-default
+    # versions down to 4 before creating so a re-run never fails at the limit.
+    VERSION_COUNT=$(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+      --query 'length(Versions)' --output text)
+    if [ "${VERSION_COUNT}" -ge 5 ]; then
+      echo "Policy has ${VERSION_COUNT} versions (IAM max is 5); pruning oldest non-default..."
+      for OLD_VERSION in $(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+          --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text); do
+        VERSION_COUNT=$(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+          --query 'length(Versions)' --output text)
+        [ "${VERSION_COUNT}" -lt 5 ] && break
+        echo "Deleting policy version ${OLD_VERSION}..."
+        aws iam delete-policy-version --policy-arn "${POLICY_ARN}" --version-id "${OLD_VERSION}"
+      done
+    fi
+
+    echo "Publishing new policy version..."
+    aws iam create-policy-version \
+      --policy-arn "${POLICY_ARN}" \
+      --policy-document file://"$WORK_DIR/launchpad-policy.json" \
+      --set-as-default
+    echo "Deleting previous policy version ${DEFAULT_VERSION}..."
+    aws iam delete-policy-version \
+      --policy-arn "${POLICY_ARN}" \
+      --version-id "${DEFAULT_VERSION}"
+  else
+    echo "Creating deployment policy..."
+    aws iam create-policy \
+      --policy-name "${POLICY_NAME}" \
+      --policy-document file://"$WORK_DIR/launchpad-policy.json"
+  fi
+
+  echo "Attaching policy to role..."
+  aws iam attach-role-policy \
+    --role-name "${ROLE_NAME}" \
+    --policy-arn "${POLICY_ARN}" \
+    2>/dev/null || true
+
+  echo ""
+  echo "Role ARN: arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 fi
-
-########################################
-# ATTACH POLICY TO ROLE
-########################################
-
-echo "Attaching policy to role..."
-
-aws iam attach-role-policy \
-  --role-name ${ROLE_NAME} \
-  --policy-arn ${POLICY_ARN} \
-  2>/dev/null || true
 
 echo ""
 echo "=========================================="
 echo "Launchpad Role Setup Complete"
 echo "=========================================="
 echo ""
-echo "Role ARN:"
-echo "arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
-echo ""
 
 ########################################
-# LAUNCHPAD ONBOARDING CALLBACK (best-effort)
+# CALLBACK
 ########################################
 
-# All three env vars are injected by the dashboard when it generates this script for a specific
-# infra. When run manually (no env vars), we skip the callback rather than failing the script.
-if [ -z "${LAUNCHPAD_INFRA_ID}" ] || [ -z "${LAUNCHPAD_CALLBACK_URL}" ] || [ -z "${LAUNCHPAD_ONBOARDING_TOKEN}" ]; then
-  echo "LAUNCHPAD_INFRA_ID, LAUNCHPAD_CALLBACK_URL or LAUNCHPAD_ONBOARDING_TOKEN not set; skipping onboarding callback."
+# The dashboard injects these when it generates the snippet for a specific infra.
+# Which callback fires depends on which credential is present.
+if [ -z "${LAUNCHPAD_INFRA_ID:-}" ] || [ -z "${LAUNCHPAD_CALLBACK_URL:-}" ]; then
+  echo "LAUNCHPAD_INFRA_ID or LAUNCHPAD_CALLBACK_URL not set; skipping callback."
   echo "If you ran this manually, trigger onboarding from the Launchpad dashboard."
   exit 0
 fi
 
-# Reject plaintext callback URLs — onboarding payload contains the customer's AWS Account ID.
+# Reject plaintext callback URLs — the payload carries the customer's AWS Account ID.
 case "$LAUNCHPAD_CALLBACK_URL" in
   https://*) ;;
   http://localhost*|http://127.0.0.1*) ;;
   *)
-    echo "ERROR: LAUNCHPAD_CALLBACK_URL must be HTTPS (or localhost for dev)."
-    echo "  Got: $LAUNCHPAD_CALLBACK_URL"
+    echo "ERROR: LAUNCHPAD_CALLBACK_URL must be HTTPS (or localhost for dev)." >&2
+    echo "  Got: $LAUNCHPAD_CALLBACK_URL" >&2
     exit 1
     ;;
 esac
 
-echo "Notifying Launchpad at ${LAUNCHPAD_CALLBACK_URL}..."
-
-# Drop -f: with -f curl returns non-zero on 4xx AND skips writing the body, so the actual
-# status was being masked by the `|| echo "000"` fallback.
 RESP_FILE="$WORK_DIR/callback_resp"
-CALLBACK_HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w "%{http_code}" \
-  --connect-timeout 5 --max-time 30 \
-  -X POST "${LAUNCHPAD_CALLBACK_URL}" \
-  -H 'Content-Type: application/json' \
-  -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"onboarding_token\":\"${LAUNCHPAD_ONBOARDING_TOKEN}\"}" \
-  || echo "000")
 
-echo "Callback HTTP status: ${CALLBACK_HTTP_CODE}"
-if [ -f "$RESP_FILE" ]; then
-  echo "Callback response:"
-  cat "$RESP_FILE"
-  echo ""
-fi
+if [ -n "${LAUNCHPAD_ONBOARDING_TOKEN:-}" ]; then
+  echo "Notifying Launchpad (onboarding) at ${LAUNCHPAD_CALLBACK_URL}..."
+  # Drop -f: with -f curl returns non-zero on 4xx AND skips writing the body, so the
+  # actual status would be masked by the `|| echo "000"` fallback.
+  CALLBACK_HTTP_CODE=$(curl -sS -o "$RESP_FILE" -w "%{http_code}" \
+    --connect-timeout 5 --max-time 30 \
+    -X POST "${LAUNCHPAD_CALLBACK_URL}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"onboarding_token\":\"${LAUNCHPAD_ONBOARDING_TOKEN}\"}" \
+    || echo "000")
 
-# 202 = provisioning enqueued, 200 = already queued (idempotent re-run) — both fine.
-if [ "${CALLBACK_HTTP_CODE}" != "202" ] && [ "${CALLBACK_HTTP_CODE}" != "200" ]; then
-  echo "Callback failed; you may need to re-trigger onboarding from the dashboard."
+  echo "Callback HTTP status: ${CALLBACK_HTTP_CODE}"
+  if [ -f "$RESP_FILE" ]; then
+    echo "Callback response:"
+    cat "$RESP_FILE"
+    echo ""
+  fi
+
+  # 202 = provisioning enqueued, 200 = already queued (idempotent re-run) — both fine.
+  if [ "${CALLBACK_HTTP_CODE}" != "202" ] && [ "${CALLBACK_HTTP_CODE}" != "200" ]; then
+    echo "Callback failed; you may need to re-trigger onboarding from the dashboard."
+  fi
+elif [ -n "${LAUNCHPAD_API_KEY:-}" ]; then
+  echo "Reporting policy refresh to Launchpad at ${LAUNCHPAD_CALLBACK_URL}..."
+  if [ "$MOCK_MODE" = "1" ]; then
+    CALLER_ARN="arn:aws:iam::${ACCOUNT_ID}:user/mock"
+  else
+    CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+  fi
+  # Failure here is non-fatal: the IAM refresh already succeeded, and a broken
+  # network path shouldn't push the customer to re-run IAM mutations.
+  if curl --fail --silent --show-error \
+       --connect-timeout 5 --max-time 15 \
+       -X POST "$LAUNCHPAD_CALLBACK_URL" \
+       -H "Content-Type: application/json" \
+       -H "X-API-Key: ${LAUNCHPAD_API_KEY}" \
+       -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"caller_arn\":\"${CALLER_ARN}\",\"script\":\"create_aws_role.sh\",\"role_name\":\"${ROLE_NAME}\",\"policy_arn\":\"${POLICY_ARN}\"}"; then
+    echo ""
+    echo "Refresh recorded with Launchpad."
+  else
+    echo "WARNING: could not report the refresh to Launchpad (network/auth)." >&2
+    echo "         The IAM update itself succeeded. Re-run later or check"   >&2
+    echo "         your LAUNCHPAD_API_KEY / LAUNCHPAD_CALLBACK_URL."          >&2
+  fi
+else
+  echo "Neither LAUNCHPAD_ONBOARDING_TOKEN nor LAUNCHPAD_API_KEY set; skipping callback."
+  echo "Use the dashboard's Bootstrap snippet (first-time) or Refresh snippet (attributed refresh)."
 fi
 
 exit 0

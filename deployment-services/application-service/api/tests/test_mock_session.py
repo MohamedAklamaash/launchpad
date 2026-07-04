@@ -121,3 +121,48 @@ def test_iam_get_role_shape(session):
     role = iam.get_role(RoleName="exec")["Role"]
     assert role["RoleName"] == "exec"
     assert role["Arn"].startswith("arn:aws:iam::")
+
+
+# --- listener rule state (ALB) ---------------------------------------------
+
+def test_alb_listener_rule_reflected_in_describe_and_verify(session, monkeypatch):
+    # Regression: a stateless mock returned describe_rules with empty Actions forever,
+    # so verify_target_group_attached looped to exhaustion and the deploy hung in
+    # DEPLOYING. create_rule must be reflected in describe_rules so verify passes.
+    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
+    alb = ALBClient(session)
+    listener = "arn:aws:elasticloadbalancing:us-east-1:000000000000:listener/app/x/80/l1"
+    tg = "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/mytg/1"
+
+    alb.create_listener_rule(listener, tg, "/app*", priority=1)
+
+    assert alb.verify_target_group_attached(tg, listener, max_retries=2, delay=0) is True
+
+
+def test_alb_delete_rule_removes_it_from_describe(session, monkeypatch):
+    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
+    alb = ALBClient(session)
+    listener = "arn:aws:elasticloadbalancing:us-east-1:000000000000:listener/app/x/80/l2"
+    tg = "arn:aws:elasticloadbalancing:us-east-1:000000000000:targetgroup/mytg/2"
+
+    rule_arn = alb.create_listener_rule(listener, tg, "/app*", priority=1)
+    alb.client.delete_rule(RuleArn=rule_arn)
+
+    rules = alb.client.describe_rules(ListenerArn=listener)["Rules"]
+    assert all(r["RuleArn"] != rule_arn for r in rules)
+
+
+def test_mock_vpc_id_matches_infra_service_scheme(monkeypatch):
+    # Regression (#8): the VpcId the deploy reads back for a target group must equal the
+    # environment.vpc_id the provisioner (infrastructure-service _hex_id) recorded, else every
+    # redeploy sees a VPC mismatch and needlessly deletes + recreates the target group.
+    import hashlib
+    from api.mock.mock_session import MockSession
+
+    infra_id = "019f2c2b-9b19-71a9-8f3e-cd81d13effb9"
+    expected = f"vpc-{hashlib.md5(f'{infra_id}:vpc'.encode()).hexdigest()[:17]}"
+
+    client = MockSession(region="us-west-2", account_id="123456789012", infra_id=infra_id).client("elbv2")
+    tg = client.create_target_group(Name="app-tg", VpcId=expected, Port=80)["TargetGroups"][0]
+    resp = client.describe_target_groups(TargetGroupArns=[tg["TargetGroupArn"]])
+    assert resp["TargetGroups"][0]["VpcId"] == expected

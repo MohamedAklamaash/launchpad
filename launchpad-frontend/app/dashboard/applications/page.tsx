@@ -2,16 +2,33 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Rocket } from 'lucide-react';
+import { Plus, Rocket, Cpu, HardDrive, Network, ArrowUpRight } from 'lucide-react';
 import { ApplicationSummary } from '@/types/application';
 import { Infrastructure } from '@/types/infrastructure';
 import { applicationApi } from '@/lib/api/applications';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { toast } from 'sonner';
 import { Suspense } from 'react';
+
+const STATUS: Record<string, { dot: string; label: string }> = {
+  ACTIVE: { dot: 'bg-success', label: 'text-success' },
+  BUILDING: { dot: 'bg-azure animate-pulse', label: 'text-azure' },
+  DEPLOYING: { dot: 'bg-azure animate-pulse', label: 'text-azure' },
+  PUSHING_IMAGE: { dot: 'bg-azure animate-pulse', label: 'text-azure' },
+  CREATED: { dot: 'bg-warning animate-pulse', label: 'text-warning' },
+  SLEEPING: { dot: 'bg-warning', label: 'text-warning' },
+  FAILED: { dot: 'bg-destructive', label: 'text-destructive' },
+};
+
+const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
+
+const fade = {
+  hidden: { opacity: 0, y: 12 },
+  show: (i: number) => ({ opacity: 1, y: 0, transition: { delay: i * 0.05, duration: 0.35, ease: [0.16, 1, 0.3, 1] as const } }),
+};
 
 export default function ApplicationsPage() {
   return (
@@ -66,25 +83,32 @@ function ApplicationsPageInner() {
     return () => { isActive = false; };
   }, [selectedInfra]);
 
+  const deployHref = `/dashboard/applications/new${selectedInfra ? `?infra=${selectedInfra}` : ''}`;
+  const active = apps.filter((a) => a.status === 'ACTIVE').length;
+  const building = apps.filter((a) => ['BUILDING', 'DEPLOYING', 'PUSHING_IMAGE', 'CREATED'].includes(a.status)).length;
+  const sleeping = apps.filter((a) => a.status === 'SLEEPING').length;
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
+    <motion.div {...rise} className="space-y-10">
+      <div className="flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Applications</h1>
-          <p className="text-[#a3a3a3] mt-1">Manage your deployed applications</p>
+          <span className="eyebrow">Console / Applications</span>
+          <h1 className="mt-2 text-3xl font-display font-semibold text-foreground tracking-tight">Applications</h1>
+          <p className="text-sm text-muted-foreground mt-1.5">Deploy and manage services running on your environments.</p>
         </div>
-        <Button onClick={() => router.push(`/dashboard/applications/new${selectedInfra ? `?infra=${selectedInfra}` : ''}`)}>
-          <Plus className="w-4 h-4 mr-2" /> Deploy Application
+        <Button size="lg" onClick={() => router.push(deployHref)} className="gap-1.5">
+          <Plus className="w-4 h-4" /> Deploy Application
         </Button>
       </div>
 
       {infrastructures.length > 0 && (
-        <div className="mb-6 max-w-xs">
+        <div className="max-w-xs space-y-1.5">
+          <span className="eyebrow">Environment</span>
           <Select value={selectedInfra} onValueChange={(v) => v && handleInfraChange(v)}>
-            <SelectTrigger className="bg-[#141414] border-[#262626]">
+            <SelectTrigger className="w-full">
               <SelectValue placeholder="Select infrastructure" />
             </SelectTrigger>
-            <SelectContent className="bg-[#141414] border-[#262626]">
+            <SelectContent>
               {infrastructures.map((i) => (
                 <SelectItem key={i.id} value={i.id}>{i.name}</SelectItem>
               ))}
@@ -93,36 +117,79 @@ function ApplicationsPageInner() {
         </div>
       )}
 
-      {loading ? (
-        <div className="text-[#a3a3a3]">Loading...</div>
-      ) : apps.length === 0 ? (
-        <Card className="bg-[#141414] border-[#262626] p-12 text-center">
-          <Rocket className="w-12 h-12 text-[#666] mx-auto mb-4" />
-          <p className="text-[#a3a3a3] mb-4">No applications deployed yet</p>
-          <Button onClick={() => router.push(`/dashboard/applications/new${selectedInfra ? `?infra=${selectedInfra}` : ''}`)}>
-            <Plus className="w-4 h-4 mr-2" /> Deploy Application
-          </Button>
-        </Card>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {apps.map((app) => (
-            <Card
-              key={app.id}
-              className="bg-[#141414] border-[#262626] p-5 cursor-pointer hover:bg-[#1a1a1a] transition-colors"
-              onClick={() => router.push(`/dashboard/applications/${app.id}`)}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold">{app.name}</h3>
-              </div>
-              <div className="flex items-center gap-4 text-xs text-[#666]">
-                <span>{app.cpu} vCPU</span>
-                <span>{app.memory} GB</span>
-                <span>Port {app.port}</span>
-              </div>
-            </Card>
+      {!loading && apps.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-px rounded-xl overflow-hidden border border-hairline bg-hairline">
+          {[
+            { label: 'Applications', value: apps.length },
+            { label: 'Active', value: active },
+            { label: 'Building', value: building },
+            { label: 'Sleeping', value: sleeping },
+          ].map((stat) => (
+            <div key={stat.label} className="bg-surface-1 px-5 py-4">
+              <p className="eyebrow">{stat.label}</p>
+              <p className="mt-1.5 text-2xl font-display font-semibold text-foreground tabular-nums">{stat.value}</p>
+            </div>
           ))}
         </div>
       )}
-    </div>
+
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-36 rounded-xl panel animate-pulse" />
+          ))}
+        </div>
+      ) : apps.length === 0 ? (
+        <div className="relative overflow-hidden rounded-2xl panel-inset px-8 py-20 text-center">
+          <div className="pointer-events-none absolute inset-0 brand-glow opacity-60" />
+          <div className="relative">
+            <div className="w-14 h-14 rounded-2xl bg-surface-2 border border-hairline-strong flex items-center justify-center mx-auto mb-5">
+              <Rocket className="w-6 h-6 text-brand" />
+            </div>
+            <p className="text-base font-display font-medium text-foreground mb-1.5">No applications yet</p>
+            <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">Deploy your first service to this environment and ship it straight to AWS.</p>
+            <Button size="lg" onClick={() => router.push(deployHref)} className="gap-1.5">
+              <Plus className="w-4 h-4" /> Deploy Application
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {apps.map((app, i) => {
+            const st = STATUS[app.status] ?? { dot: 'bg-muted-foreground', label: 'text-muted-foreground' };
+            return (
+              <motion.button
+                key={app.id}
+                custom={i}
+                variants={fade}
+                initial="hidden"
+                animate="show"
+                onClick={() => router.push(`/dashboard/applications/${app.id}`)}
+                className="group text-left relative overflow-hidden rounded-xl panel p-5 transition-colors hover:border-brand/30 hover:bg-surface-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+              >
+                <div className="flex items-start justify-between mb-5">
+                  <span className="w-10 h-10 rounded-lg bg-surface-3 border border-hairline flex items-center justify-center">
+                    <Rocket className="w-4 h-4 text-muted-foreground" />
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
+                    <span className={`font-mono text-[10px] uppercase tracking-[0.12em] ${st.label}`}>{app.status}</span>
+                  </span>
+                </div>
+                <h3 className="text-[15px] font-medium text-foreground mb-4 truncate flex items-center gap-1.5">
+                  {app.name}
+                  <ArrowUpRight className="w-3.5 h-3.5 text-muted-foreground opacity-0 -translate-x-1 transition-all group-hover:opacity-100 group-hover:translate-x-0" />
+                </h3>
+                <div className="flex items-center gap-4 text-xs text-muted-foreground font-mono">
+                  <span className="flex items-center gap-1.5"><Cpu className="w-3.5 h-3.5" />{app.cpu} vCPU</span>
+                  <span className="flex items-center gap-1.5"><HardDrive className="w-3.5 h-3.5" />{app.memory} GB</span>
+                  <span className="flex items-center gap-1.5 ml-auto"><Network className="w-3.5 h-3.5" />{app.port}</span>
+                </div>
+              </motion.button>
+            );
+          })}
+        </div>
+      )}
+    </motion.div>
   );
 }

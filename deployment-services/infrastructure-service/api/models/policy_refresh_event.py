@@ -23,7 +23,7 @@ class PolicyRefreshEvent(models.Model):
     )
     account_id = models.CharField(max_length=32)
     caller_arn = models.TextField(blank=True, default="")
-    script = models.CharField(max_length=64, default="update_aws_role.sh")
+    script = models.CharField(max_length=64, default="create_aws_role.sh")
     role_name = models.CharField(max_length=128, blank=True, default="")
     policy_arn = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)

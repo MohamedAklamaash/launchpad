@@ -26,8 +26,8 @@ export default function DashboardLayout({
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#060606]">
-        <div className="w-5 h-5 border-2 border-[#333] border-t-violet-500 rounded-full animate-spin" />
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="w-6 h-6 border-2 border-hairline-strong border-t-brand rounded-full animate-spin" />
       </div>
     );
   }
@@ -37,12 +37,17 @@ export default function DashboardLayout({
   }
 
   return (
-    <div className="flex h-screen bg-[#060606]">
+    <div className="flex h-screen bg-background text-foreground">
       <Sidebar />
       <div className="flex-1 flex flex-col overflow-hidden">
         <Header />
-        <main className="flex-1 overflow-y-auto p-6">
-          {children}
+        <main className="flex-1 overflow-y-auto">
+          <div className="relative">
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-64 brand-glow opacity-70" />
+            <div className="relative mx-auto max-w-6xl px-8 py-8">
+              {children}
+            </div>
+          </div>
         </main>
       </div>
     </div>

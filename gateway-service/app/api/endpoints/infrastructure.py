@@ -70,7 +70,7 @@ async def infrastructure_delete(infra_id: str, request: Request):
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/", request)
 
 
-@router.patch("/{infra_id}", summary="Update infrastructure configuration",
+@router.patch("/{infra_id}/update", summary="Update infrastructure configuration",
               response_model=InfraResponse)
 async def infrastructure_update(infra_id: str, body: InfraUpdateBody, request: Request):
     """Partial update — does not re-provision AWS resources."""
@@ -117,8 +117,8 @@ class ScriptApiKeyResponse(BaseModel):
 @router.post("/script-api-key", summary="Issue (or rotate) the per-user script API key",
              response_model=ScriptApiKeyResponse, status_code=201)
 async def script_api_key_issue(request: Request):
-    """Mints the key that authenticates customer-run scripts (update_aws_role.sh) back to
-    Launchpad. Plaintext returned once; issuing again revokes prior keys."""
+    """Mints the key that authenticates customer-run refreshes (create_aws_role.sh with a
+    script API key) back to Launchpad. Plaintext returned once; issuing again revokes prior keys."""
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/script-api-key/", request
     )
@@ -128,7 +128,7 @@ class PolicyRefreshCallbackBody(BaseModel):
     account_id: str = Field(description="AWS Account ID the script ran against")
     infra_id: Optional[str] = Field(default=None, description="Optional infra UUID to link")
     caller_arn: Optional[str] = Field(default=None, description="sts get-caller-identity ARN of whoever ran the script")
-    script: Optional[str] = Field(default=None, example="update_aws_role.sh")
+    script: Optional[str] = Field(default=None, example="create_aws_role.sh")
     role_name: Optional[str] = Field(default=None)
     policy_arn: Optional[str] = Field(default=None)
 
@@ -136,8 +136,9 @@ class PolicyRefreshCallbackBody(BaseModel):
 @router.post("/policy-refresh/callback", summary="Policy-refresh callback from customer's AWS account",
              status_code=201)
 async def infrastructure_policy_refresh_callback(body: PolicyRefreshCallbackBody, request: Request):
-    """Called by app_scripts/update_aws_role.sh after an IAM refresh. Authenticated by the
-    per-user script API key (X-API-Key header), not a JWT — records who ran the refresh."""
+    """Called by app_scripts/create_aws_role.sh after an attributed IAM refresh (script API key
+    present). Authenticated by the per-user script API key (X-API-Key header), not a JWT — records
+    who ran the refresh."""
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/policy-refresh/callback/", request
     )
