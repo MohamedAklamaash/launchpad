@@ -65,6 +65,16 @@ async def auth_register(body: RegisterBody, request: Request):
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/register", request)
 
 
+@router.get("/invited-users", summary="List users the caller has invited (with verification status)")
+async def auth_list_invited_users(request: Request):
+    return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/invited-users", request)
+
+
+@router.delete("/invited-users/{user_id}", summary="Remove a member from the org (deletes account only if last org)")
+async def auth_remove_member(user_id: str, request: Request):
+    return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/invited-users/{user_id}", request)
+
+
 @router.post("/login", summary="Login with email and password", response_model=AuthTokens)
 async def auth_login(body: LoginBody, request: Request):
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/login", request)

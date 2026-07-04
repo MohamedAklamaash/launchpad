@@ -30,6 +30,7 @@ export interface InvitedUser {
   user_name: string;
   role: 'admin' | 'user' | 'guest';
   infra_id: string[];
-  invited_by: string;
+  invited_by?: string;
+  is_authenticated?: boolean;
   created_at: string;
 }

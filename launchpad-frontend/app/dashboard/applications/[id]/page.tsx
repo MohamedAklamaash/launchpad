@@ -13,6 +13,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { EditAppSheet } from '@/components/edit-app-sheet';
+import { EnvEditor } from '@/components/env-editor';
 
 const POLLING_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
 
@@ -39,6 +40,9 @@ export default function ApplicationDetailPage() {
   const [revealedEnvs, setRevealedEnvs] = useState<Set<string>>(new Set());
   const [webhookCreds, setWebhookCreds] = useState<{ webhook_url: string; secret: string; instructions: string } | null>(null);
   const [webhookLoading, setWebhookLoading] = useState(false);
+  const [editingEnvs, setEditingEnvs] = useState(false);
+  const [envRows, setEnvRows] = useState<[string, string][]>([]);
+  const [savingEnvs, setSavingEnvs] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const user = useAuthStore((s) => s.user);
   const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
@@ -81,6 +85,27 @@ export default function ApplicationDetailPage() {
       toast.error(error.response?.data?.error || 'Failed to generate webhook secret');
     } finally {
       setWebhookLoading(false);
+    }
+  };
+
+  const startEditEnvs = () => {
+    setEnvRows(Object.entries(app?.envs ?? {}));
+    setEditingEnvs(true);
+  };
+
+  const saveEnvs = async () => {
+    setSavingEnvs(true);
+    try {
+      const envs = Object.fromEntries(envRows.filter(([k]) => k.trim()));
+      await applicationApi.update(id, { envs });
+      setApp((prev) => (prev ? { ...prev, envs } : prev));
+      toast.success('Environment variables updated');
+      setEditingEnvs(false);
+    } catch (e: unknown) {
+      const error = e as { response?: { data?: { error?: string } } };
+      toast.error(error.response?.data?.error || 'Failed to update variables');
+    } finally {
+      setSavingEnvs(false);
     }
   };
 
@@ -241,44 +266,19 @@ export default function ApplicationDetailPage() {
         </div>
       </div>
 
-      {app.envs && Object.keys(app.envs).length > 0 && (
-        <div className="rounded-xl panel p-4">
-          <p className="eyebrow mb-3">Environment Variables</p>
-          <div className="space-y-1.5 font-mono">
-            {Object.entries(app.envs).map(([key, value]) => {
-              const revealed = revealedEnvs.has(key);
-              const masked = value.length <= 4
-                ? '*'.repeat(value.length)
-                : `${value.slice(0, Math.ceil(value.length * 0.2))}${'*'.repeat(Math.max(1, value.length - Math.ceil(value.length * 0.4)))}${value.slice(-Math.ceil(value.length * 0.2))}`;
-              return (
-                <div key={key} className="flex items-center gap-2 text-xs">
-                  <span className="text-brand shrink-0">{key}</span>
-                  <span className="text-muted-foreground/60">=</span>
-                  <span className="text-foreground break-all flex-1">{revealed ? value : masked}</span>
-                  <button
-                    onClick={() => setRevealedEnvs(prev => {
-                      const next = new Set(prev);
-                      if (revealed) next.delete(key);
-                      else next.add(key);
-                      return next;
-                    })}
-                    className="shrink-0 text-muted-foreground/60 hover:text-foreground transition-colors ml-1 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded"
-                    title={revealed ? 'Hide' : 'Reveal'}
-                  >
-                    {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       <div className="rounded-xl panel p-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <Github className="w-3.5 h-3.5 text-muted-foreground" />
-            <p className="eyebrow">Auto-deploy on push</p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <span className="w-9 h-9 rounded-lg bg-surface-3 border border-hairline flex items-center justify-center shrink-0">
+              <Github className="w-4 h-4 text-foreground" />
+            </span>
+            <div>
+              <p className="text-sm font-medium text-foreground">Auto-deploy on push</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Redeploy automatically on every push to{' '}
+                <span className="font-mono text-foreground">{app.branch}</span>.
+              </p>
+            </div>
           </div>
           {canEdit && (
             <Button
@@ -286,21 +286,15 @@ export default function ApplicationDetailPage() {
               disabled={webhookLoading}
               variant="outline"
               size="sm"
-              className="gap-1.5"
+              className="gap-1.5 shrink-0"
             >
-              <RefreshCw className="w-3 h-3" />
+              <RefreshCw className={`w-3 h-3 ${webhookLoading ? 'animate-spin' : ''}`} />
               {webhookCreds ? 'Rotate secret' : 'Generate webhook secret'}
             </Button>
           )}
         </div>
-        {!webhookCreds && (
-          <p className="text-xs text-muted-foreground">
-            Generate a secret, then add a webhook in your GitHub repo to redeploy automatically on every push to{' '}
-            <span className="font-mono text-foreground">{app.branch}</span>.
-          </p>
-        )}
         {webhookCreds && (
-          <div className="space-y-3">
+          <div className="space-y-3 mt-4">
             <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2">
               <p className="text-[11px] text-warning">This secret is shown only once. Copy it now and store it safely.</p>
             </div>
@@ -341,6 +335,72 @@ export default function ApplicationDetailPage() {
         )}
       </div>
 
+      {(canEdit || (app.envs && Object.keys(app.envs).length > 0)) && (
+        <div className="rounded-xl panel p-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="eyebrow">Environment Variables</p>
+            <div className="flex items-center gap-3">
+              {editingEnvs ? (
+                <>
+                  <button onClick={() => setEditingEnvs(false)} disabled={savingEnvs}
+                    className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-foreground transition-colors disabled:opacity-40">
+                    Cancel
+                  </button>
+                  <Button size="sm" onClick={saveEnvs} disabled={savingEnvs} className="h-7">
+                    {savingEnvs ? 'Saving…' : 'Save'}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  {app.envs && Object.keys(app.envs).length > 0 && (
+                    <span className="font-mono text-[10px] text-muted-foreground/60">{Object.keys(app.envs).length} vars</span>
+                  )}
+                  {canEdit && (
+                    <button onClick={startEditEnvs}
+                      className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors">
+                      <Pencil className="w-3 h-3" /> Edit
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+          {editingEnvs ? (
+            <EnvEditor envs={envRows} onChange={setEnvRows} hideTitle />
+          ) : app.envs && Object.keys(app.envs).length > 0 ? (
+            <div className="space-y-1.5 font-mono max-h-80 overflow-y-auto pr-1">
+              {Object.entries(app.envs).map(([key, value]) => {
+                const revealed = revealedEnvs.has(key);
+                const masked = value.length <= 4
+                  ? '*'.repeat(value.length)
+                  : `${value.slice(0, Math.ceil(value.length * 0.2))}${'*'.repeat(Math.max(1, value.length - Math.ceil(value.length * 0.4)))}${value.slice(-Math.ceil(value.length * 0.2))}`;
+                return (
+                  <div key={key} className="flex items-center gap-2 text-xs">
+                    <span className="text-brand shrink-0">{key}</span>
+                    <span className="text-muted-foreground/60">=</span>
+                    <span className="text-foreground break-all flex-1">{revealed ? value : masked}</span>
+                    <button
+                      onClick={() => setRevealedEnvs(prev => {
+                        const next = new Set(prev);
+                        if (revealed) next.delete(key);
+                        else next.add(key);
+                        return next;
+                      })}
+                      className="shrink-0 text-muted-foreground/60 hover:text-foreground transition-colors ml-1 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded"
+                      title={revealed ? 'Hide' : 'Reveal'}
+                    >
+                      {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">No environment variables yet. Click Edit to add some.</p>
+          )}
+        </div>
+      )}
+
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
           <DialogHeader>
@@ -367,7 +427,7 @@ export default function ApplicationDetailPage() {
           app={app}
           open={editOpen}
           onClose={() => setEditOpen(false)}
-          onSaved={(updated) => setApp(updated)}
+          onSaved={() => loadApp()}
         />
       )}
     </motion.div>

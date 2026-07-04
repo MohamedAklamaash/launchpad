@@ -1,5 +1,5 @@
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
-import { InvitedUser } from '@/db';
+import { InvitedUser, UserOTP, RefreshToken } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { hashPassword } from '@/utils/handle-password';
 import { HttpError } from '@launchpad/common';
@@ -11,6 +11,52 @@ import {
 import { AUTHENTICATE_INVITED_USER_EVENT } from '@launchpad/common';
 
 export class InvitedUserService extends BaseService {
+    public async listInvitedBy(inviterId: string) {
+        return InvitedUser.findAll({
+            where: { invited_by: inviterId },
+            order: [['created_at', 'DESC']],
+        });
+    }
+
+    // Remove a member from one or more orgs (infras). The account is deleted only when
+    // this leaves them in no orgs — otherwise they keep their account and their other orgs.
+    public async removeFromOrg(
+        callerId: string,
+        callerRole: string,
+        targetUserId: string,
+        infraIds: string[],
+    ) {
+        const RANK: Record<string, number> = { super_admin: 3, admin: 2, user: 1, guest: 0 };
+        return sequelize.transaction(async (transaction) => {
+            const target = await InvitedUser.findByPk(targetUserId, { transaction });
+            if (!target) throw new HttpError(404, 'Member not found');
+
+            if (target.invited_by !== callerId && callerRole !== 'super_admin') {
+                throw new HttpError(403, 'You can only remove members you invited');
+            }
+            if ((RANK[callerRole] ?? 0) <= (RANK[target.role] ?? 0)) {
+                throw new HttpError(
+                    403,
+                    `A ${callerRole.replace('_', ' ')} cannot remove a ${target.role}`,
+                );
+            }
+
+            const toRemove = infraIds.length ? infraIds : target.infra_id;
+            const remaining = target.infra_id.filter((id) => !toRemove.includes(id));
+
+            if (remaining.length === 0) {
+                await UserOTP.destroy({ where: { invited_user_id: target.id }, transaction });
+                await RefreshToken.destroy({ where: { user_id: target.id }, transaction });
+                await target.destroy({ transaction });
+                return { removed: true, deleted_account: true };
+            }
+
+            target.infra_id = remaining;
+            await target.save({ transaction });
+            return { removed: true, deleted_account: false };
+        });
+    }
+
     public async register(input: InvitedUserRegisterInput, super_user: string) {
         const { email, password, user_name, infra_id, role } = input;
         return sequelize.transaction(async (transaction) => {

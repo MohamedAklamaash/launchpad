@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { validateRequest } from '@launchpad/common';
 import {
     RegisterInvitedUser,
+    ListInvitedUsers,
+    RemoveMemberFromOrg,
     LoginUser,
     AuthenticateOTP,
     ForgotPassword,
@@ -75,6 +77,46 @@ authRouter.post(
     validateRequest({ body: registerSchema.shape.body }),
     RegisterInvitedUser,
 );
+
+/**
+ * @swagger
+ * /api/v1/auth/invited-users:
+ *   get:
+ *     summary: List users the caller has invited, with verification status
+ *     tags: [Auth]
+ *     security: [{ bearerAuth: [] }]
+ *     responses:
+ *       200:
+ *         description: Invited users (id, email, user_name, role, infra_id, is_authenticated, created_at)
+ *       401: { description: Unauthorized }
+ */
+authRouter.get('/invited-users', ListInvitedUsers);
+
+/**
+ * @swagger
+ * /api/v1/auth/invited-users/{userId}:
+ *   delete:
+ *     summary: Remove a member from one or more orgs; deletes their account only if it was their last org
+ *     tags: [Auth]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               infra_ids: { type: array, items: { type: string, format: uuid } }
+ *     responses:
+ *       200: { description: "{ removed, deleted_account }" }
+ *       403: { description: Not permitted by role hierarchy }
+ *       404: { description: Member not found }
+ */
+authRouter.delete('/invited-users/:userId', RemoveMemberFromOrg);
 
 /**
  * @swagger

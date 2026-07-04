@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { AuthResponse, User } from '@/types/auth';
+import { AuthResponse, InvitedUser, User } from '@/types/auth';
 
 const AUTH_SERVICE = process.env.NEXT_PUBLIC_AUTH_SERVICE_URL || 'http://localhost:5001';
 
@@ -58,6 +58,18 @@ export const authApi = {
     role: 'admin' | 'user' | 'guest';
   }): Promise<{ message: string; user_id: string; otp?: string }> => {
     const { data } = await apiClient.post('/api/auth/register', payload);
+    return data;
+  },
+
+  // Users the caller has invited, with verification status (is_authenticated)
+  listInvitedUsers: async (): Promise<InvitedUser[]> => {
+    const { data } = await apiClient.get('/api/auth/invited-users');
+    return data;
+  },
+
+  // Remove a member from the given orgs; their account is deleted only if it was their last org
+  removeMemberFromOrg: async (userId: string, infraIds: string[]): Promise<{ removed: boolean; deleted_account: boolean }> => {
+    const { data } = await apiClient.delete(`/api/auth/invited-users/${userId}`, { data: { infra_ids: infraIds } });
     return data;
   },
 };

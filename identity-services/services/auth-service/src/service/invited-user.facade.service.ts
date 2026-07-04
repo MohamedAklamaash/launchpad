@@ -16,6 +16,19 @@ export class InvitedUserFacade {
     private passwordService = new PasswordService();
     private authService = new InvitedUserAuthService();
 
+    public async listInvitedBy(inviterId: string) {
+        return this.userService.listInvitedBy(inviterId);
+    }
+
+    public async removeFromOrg(
+        callerId: string,
+        callerRole: string,
+        targetUserId: string,
+        infraIds: string[],
+    ) {
+        return this.userService.removeFromOrg(callerId, callerRole, targetUserId, infraIds);
+    }
+
     public async register(input: InvitedUserRegisterInput, super_user: string) {
         const { user, otp } = await this.userService.register(input, super_user);
         return { user, otp };

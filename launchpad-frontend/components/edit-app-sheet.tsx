@@ -16,9 +16,9 @@ const MEM_RANGES: Record<number, [number, number]> = {
   0.25: [0.5, 2], 0.5: [1, 4], 1: [2, 8], 2: [4, 16], 4: [8, 30],
 };
 
-const inputCls = 'bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0';
+const inputCls = 'bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6';
 const monoInputCls = inputCls + ' font-mono';
-const triggerCls = 'bg-transparent border-0 h-9 text-sm text-foreground focus:ring-0 px-0 shadow-none font-mono';
+const triggerCls = 'bg-transparent border-0 h-9 text-sm text-foreground focus:ring-0 pl-6 pr-2 shadow-none font-mono';
 
 interface Props {
   app: Application;

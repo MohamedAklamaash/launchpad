@@ -9,6 +9,7 @@ type EnvRow = [string, string];
 interface Props {
   envs: EnvRow[];
   onChange: (envs: EnvRow[]) => void;
+  hideTitle?: boolean;
 }
 
 function parseEnvText(text: string): EnvRow[] {
@@ -27,7 +28,7 @@ function parseEnvText(text: string): EnvRow[] {
   return rows;
 }
 
-export function EnvEditor({ envs, onChange }: Props) {
+export function EnvEditor({ envs, onChange, hideTitle }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const setRow = (i: number, k: string, v: string) =>
@@ -64,8 +65,8 @@ export function EnvEditor({ envs, onChange }: Props) {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2 px-0.5">
-        <span className="eyebrow">Environment Variables</span>
+      <div className={`flex items-center ${hideTitle ? 'justify-end' : 'justify-between'} mb-2 px-0.5`}>
+        {!hideTitle && <span className="eyebrow">Environment Variables</span>}
         <div className="flex items-center gap-3">
           <button type="button" onClick={() => fileRef.current?.click()} className={actionCls}>
             <Upload className="w-3 h-3" /> .env file
