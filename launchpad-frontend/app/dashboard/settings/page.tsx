@@ -1,38 +1,87 @@
-'use client';
+"use client";
 
-import { useEffect, useMemo, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Github, Users, CreditCard, User as UserIcon, Server, Rocket, Trash2 } from 'lucide-react';
-import Image from 'next/image';
-import { useAuthStore } from '@/lib/store/auth';
-import { infrastructureApi } from '@/lib/api/infrastructures';
-import { applicationApi } from '@/lib/api/applications';
-import { authApi } from '@/lib/api/auth';
-import { Infrastructure } from '@/types/infrastructure';
-import { InvitedUser } from '@/types/auth';
-import { Button } from '@/components/ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { toast } from 'sonner';
+import { useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Github,
+  Users,
+  CreditCard,
+  User as UserIcon,
+  Server,
+  Rocket,
+  Trash2,
+  UserPlus,
+  Copy,
+  Check,
+} from "lucide-react";
+import Image from "next/image";
+import { useAuthStore } from "@/lib/store/auth";
+import { infrastructureApi } from "@/lib/api/infrastructures";
+import { applicationApi } from "@/lib/api/applications";
+import { authApi } from "@/lib/api/auth";
+import { Infrastructure } from "@/types/infrastructure";
+import { InvitedUser } from "@/types/auth";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
+
+type InviteRole = "admin" | "user" | "guest";
+const ROLE_HINTS: { value: InviteRole; label: string; hint: string }[] = [
+  { value: "admin", label: "Admin", hint: "Deploy & manage apps" },
+  { value: "user", label: "User", hint: "View only" },
+  { value: "guest", label: "Guest", hint: "Limited access" },
+];
+const emptyInvite = {
+  infra_id: "",
+  email: "",
+  user_name: "",
+  password: "",
+  role: "user" as InviteRole,
+};
 
 const ROLE_STYLES: Record<string, string> = {
-  super_admin: 'border-brand/30 bg-brand-soft text-brand',
-  admin: 'border-azure/30 bg-azure/10 text-azure',
-  user: 'border-success/30 bg-success/10 text-success',
-  guest: 'border-hairline bg-surface-1 text-muted-foreground',
+  super_admin: "border-brand/30 bg-brand-soft text-brand",
+  admin: "border-azure/30 bg-azure/10 text-azure",
+  user: "border-success/30 bg-success/10 text-success",
+  guest: "border-hairline bg-surface-1 text-muted-foreground",
 };
-const RANK: Record<string, number> = { super_admin: 3, admin: 2, user: 1, guest: 0 };
-const roleLabel = (r: string) => r.replace('_', ' ');
+const RANK: Record<string, number> = {
+  super_admin: 3,
+  admin: 2,
+  user: 1,
+  guest: 0,
+};
+const roleLabel = (r: string) => r.replace("_", " ");
 
-const fade = { initial: { opacity: 0, y: 8 }, animate: { opacity: 1, y: 0 }, exit: { opacity: 0, y: -8 }, transition: { duration: 0.2 } };
+const fade = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -8 },
+  transition: { duration: 0.2 },
+};
 
-type TabKey = 'profile' | 'organization' | 'billing';
+type TabKey = "profile" | "organization" | "billing";
 
 interface Member {
   id: string;
   email: string;
   user_name: string;
   role: string;
-  infras: string[];
+  infraRoles: { name: string; role: string }[];
   infraIds: string[];
   pending: boolean;
 }
@@ -42,22 +91,36 @@ export default function SettingsPage() {
   const [infras, setInfras] = useState<Infrastructure[]>([]);
   const [invited, setInvited] = useState<InvitedUser[]>([]);
   const [appCount, setAppCount] = useState<number | null>(null);
-  const [tab, setTab] = useState<TabKey>('profile');
+  const [tab, setTab] = useState<TabKey>("profile");
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
   const [removing, setRemoving] = useState(false);
-  const canSeeOrg = user?.role === 'super_admin' || user?.role === 'admin';
-  const myRank = RANK[user?.role ?? 'guest'] ?? 0;
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteForm, setInviteForm] = useState(emptyInvite);
+  const [inviting, setInviting] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const canSeeOrg = user?.role === "super_admin" || user?.role === "admin";
+  const canInvite = user?.role === "super_admin";
+  const myRank = RANK[user?.role ?? "guest"] ?? 0;
 
   useEffect(() => {
-    infrastructureApi.list()
+    infrastructureApi
+      .list()
       .then(async (list) => {
         setInfras(list);
-        const appLists = await Promise.all(list.map((i) => applicationApi.list(i.id).catch(() => [])));
+        const appLists = await Promise.all(
+          list.map((i) => applicationApi.list(i.id).catch(() => [])),
+        );
         setAppCount(appLists.reduce((n, a) => n + a.length, 0));
       })
       .catch(() => setAppCount(0));
     if (canSeeOrg) {
-      authApi.listInvitedUsers().then(setInvited).catch(() => toast.error('Failed to load members', { id: 'settings-members' }));
+      authApi
+        .listInvitedUsers()
+        .then(setInvited)
+        .catch(() =>
+          toast.error("Failed to load members", { id: "settings-members" }),
+        );
     }
   }, [canSeeOrg]);
 
@@ -72,37 +135,106 @@ export default function SettingsPage() {
         role: u.role,
         pending: u.is_authenticated === false,
         infraIds: u.infra_id ?? [],
-        infras: (u.infra_id ?? []).map((id) => infraName.get(id) ?? id.slice(0, 8)),
+        infraRoles: (u.infra_id ?? []).map((id) => ({
+          name: infraName.get(id) ?? id.slice(0, 8),
+          role: u.roles?.[id] ?? u.role,
+        })),
       }));
   }, [invited, infras, user?.id]);
 
   const pendingCount = members.filter((m) => m.pending).length;
+  const inviteInfra = infras.find((i) => i.id === inviteForm.infra_id);
+
+  const openInvite = () => {
+    setInviteUrl(null);
+    setInviteForm({ ...emptyInvite, infra_id: infras[0]?.id ?? "" });
+    setInviteOpen(true);
+  };
+
+  const handleInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteForm.infra_id) return;
+    setInviting(true);
+    try {
+      await authApi.inviteUser(inviteForm);
+      setInviteUrl(
+        `${window.location.origin}/login?email=${encodeURIComponent(inviteForm.email)}`,
+      );
+      toast.success(
+        `Invited ${inviteForm.user_name} to ${inviteInfra?.name ?? "the infrastructure"}`,
+      );
+      setInvited(await authApi.listInvitedUsers());
+    } catch (err: unknown) {
+      const e = err as {
+        response?: { data?: { message?: string; error?: string } };
+      };
+      toast.error(
+        e.response?.data?.message ||
+          e.response?.data?.error ||
+          "Failed to invite",
+      );
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const inviteElsewhere = () => {
+    setInviteUrl(null);
+    setInviteForm((f) => ({
+      ...f,
+      infra_id: infras.find((i) => i.id !== f.infra_id)?.id ?? f.infra_id,
+      role: "user",
+    }));
+  };
+
+  const copyInviteUrl = () => {
+    if (!inviteUrl) return;
+    navigator.clipboard.writeText(inviteUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const doRemove = async () => {
     if (!removeTarget) return;
     setRemoving(true);
     try {
       const owned = new Set(infras.map((i) => i.id));
-      const scopedInfraIds = removeTarget.infraIds.filter((id) => owned.has(id));
+      const scopedInfraIds = removeTarget.infraIds.filter((id) =>
+        owned.has(id),
+      );
       if (scopedInfraIds.length === 0) {
-        toast.error('You do not manage any organization this member belongs to');
+        toast.error(
+          "You do not manage any organization this member belongs to",
+        );
         return;
       }
       await authApi.removeMemberFromOrg(removeTarget.id, scopedInfraIds);
       const results = await Promise.allSettled(
-        scopedInfraIds.map((id) => infrastructureApi.removeUser(id, removeTarget.id)),
+        scopedInfraIds.map((id) =>
+          infrastructureApi.removeUser(id, removeTarget.id),
+        ),
       );
-      const failed = results.filter((r) => r.status === 'rejected').length;
+      const failed = results.filter((r) => r.status === "rejected").length;
       if (failed > 0) {
-        toast.error(`Removed from ${scopedInfraIds.length - failed} of ${scopedInfraIds.length} organizations — retry to clear the rest`);
+        toast.error(
+          `Removed from ${scopedInfraIds.length - failed} of ${scopedInfraIds.length} organizations — retry to clear the rest`,
+        );
       } else {
-        toast.success(`${removeTarget.user_name} removed from the organization`);
+        toast.success(
+          `${removeTarget.user_name} removed from the organization`,
+        );
       }
       setInvited(await authApi.listInvitedUsers());
       setRemoveTarget(null);
     } catch (e: unknown) {
-      const err = e as { response?: { data?: { message?: string; error?: string } } };
-      toast.error(err.response?.data?.message || err.response?.data?.error || 'Failed to remove member');
+      const err = e as {
+        response?: { data?: { message?: string; error?: string } };
+      };
+      toast.error(
+        err.response?.data?.message ||
+          err.response?.data?.error ||
+          "Failed to remove member",
+      );
     } finally {
       setRemoving(false);
     }
@@ -110,116 +242,220 @@ export default function SettingsPage() {
 
   if (!user) return null;
 
-  const tabs: { key: TabKey; label: string; icon: typeof UserIcon; show: boolean }[] = [
-    { key: 'profile', label: 'Profile', icon: UserIcon, show: true },
-    { key: 'organization', label: 'Organization', icon: Users, show: canSeeOrg },
-    { key: 'billing', label: 'Billing', icon: CreditCard, show: true },
+  const tabs: {
+    key: TabKey;
+    label: string;
+    icon: typeof UserIcon;
+    show: boolean;
+  }[] = [
+    { key: "profile", label: "Profile", icon: UserIcon, show: true },
+    {
+      key: "organization",
+      label: "Organization",
+      icon: Users,
+      show: canSeeOrg,
+    },
+    { key: "billing", label: "Billing", icon: CreditCard, show: true },
   ];
 
   return (
     <div className="space-y-8">
       <div>
         <span className="eyebrow">Console / Settings</span>
-        <h1 className="mt-2 text-2xl font-display font-semibold text-foreground tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground mt-1.5">Your profile, organization, and account.</p>
+        <h1 className="mt-2 text-2xl font-display font-semibold text-foreground tracking-tight">
+          Settings
+        </h1>
+        <p className="text-sm text-muted-foreground mt-1.5">
+          Your profile, organization, and account.
+        </p>
       </div>
 
       <div className="flex flex-col md:flex-row gap-8">
         <nav className="md:w-52 shrink-0 flex md:flex-col gap-1">
-          {tabs.filter((t) => t.show).map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-left transition-colors ${
-                tab === key ? 'bg-surface-2 text-foreground border border-hairline' : 'text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent'
-              }`}
-            >
-              <Icon className={`w-4 h-4 ${tab === key ? 'text-brand' : ''}`} />
-              {label}
-              {key === 'organization' && pendingCount > 0 && (
-                <span className="ml-auto font-mono text-[10px] px-1.5 py-0.5 rounded border border-warning/30 bg-warning/10 text-warning">{pendingCount}</span>
-              )}
-            </button>
-          ))}
+          {tabs
+            .filter((t) => t.show)
+            .map(({ key, label, icon: Icon }) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-left transition-colors ${
+                  tab === key
+                    ? "bg-surface-2 text-foreground border border-hairline"
+                    : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent"
+                }`}
+              >
+                <Icon
+                  className={`w-4 h-4 ${tab === key ? "text-brand" : ""}`}
+                />
+                {label}
+                {key === "organization" && pendingCount > 0 && (
+                  <span className="ml-auto font-mono text-[10px] px-1.5 py-0.5 rounded border border-warning/30 bg-warning/10 text-warning">
+                    {pendingCount}
+                  </span>
+                )}
+              </button>
+            ))}
         </nav>
 
         <div className="flex-1 min-w-0 max-w-2xl">
           <AnimatePresence mode="wait">
             <motion.div key={tab} {...fade}>
-              {tab === 'profile' && (
+              {tab === "profile" && (
                 <section className="space-y-3">
                   <p className="eyebrow">Profile</p>
                   <div className="rounded-2xl panel p-5">
                     <div className="flex items-center gap-4">
                       <span className="w-14 h-14 rounded-full overflow-hidden ring-1 ring-hairline-strong shrink-0 flex items-center justify-center bg-surface-2">
-                        {user.profile_url
-                          ? <Image src={user.profile_url} alt={user.user_name} width={56} height={56} className="w-14 h-14 object-cover" />
-                          : <UserIcon className="w-6 h-6 text-muted-foreground" />}
+                        {user.profile_url ? (
+                          <Image
+                            src={user.profile_url}
+                            alt={user.user_name}
+                            width={56}
+                            height={56}
+                            className="w-14 h-14 object-cover"
+                          />
+                        ) : (
+                          <UserIcon className="w-6 h-6 text-muted-foreground" />
+                        )}
                       </span>
                       <div className="min-w-0">
-                        <p className="text-base font-medium text-foreground truncate">{user.user_name}</p>
-                        <p className="text-sm text-muted-foreground truncate">{user.email}</p>
+                        <p className="text-base font-medium text-foreground truncate">
+                          {user.user_name}
+                        </p>
+                        <p className="text-sm text-muted-foreground truncate">
+                          {user.email}
+                        </p>
                       </div>
-                      <span className={`ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${ROLE_STYLES[user.role] ?? ROLE_STYLES.guest}`}>
+                      <span
+                        className={`ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${ROLE_STYLES[user.role] ?? ROLE_STYLES.guest}`}
+                      >
                         {roleLabel(user.role)}
                       </span>
                     </div>
 
                     <div className="mt-5 grid grid-cols-3 gap-3">
-                      <Stat icon={Server} tint="text-brand" label="Infrastructures" value={infras.length} />
-                      <Stat icon={Rocket} tint="text-azure" label="Applications" value={appCount} />
-                      {canSeeOrg && <Stat icon={Users} tint="text-success" label="Members" value={members.length + 1} />}
+                      <Stat
+                        icon={Server}
+                        tint="text-brand"
+                        label="Infrastructures"
+                        value={infras.length}
+                      />
+                      <Stat
+                        icon={Rocket}
+                        tint="text-azure"
+                        label="Applications"
+                        value={appCount}
+                      />
+                      {canSeeOrg && (
+                        <Stat
+                          icon={Users}
+                          tint="text-success"
+                          label="Members"
+                          value={members.length + 1}
+                        />
+                      )}
                     </div>
 
                     <div className="mt-4 rounded-xl panel-inset divide-y divide-hairline">
                       {user.metadata?.github?.username && (
                         <Row label="GitHub">
-                          <span className="flex items-center gap-1.5 text-foreground/80"><Github className="w-3.5 h-3.5" />{user.metadata.github.username}</span>
+                          <span className="flex items-center gap-1.5 text-foreground/80">
+                            <Github className="w-3.5 h-3.5" />
+                            {user.metadata.github.username}
+                          </span>
                         </Row>
                       )}
                       <Row label="Member since">
-                        <span className="text-foreground/80">{new Date(user.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+                        <span className="text-foreground/80">
+                          {new Date(user.created_at).toLocaleDateString(
+                            undefined,
+                            { year: "numeric", month: "long", day: "numeric" },
+                          )}
+                        </span>
                       </Row>
                     </div>
                   </div>
                 </section>
               )}
 
-              {tab === 'organization' && canSeeOrg && (
+              {tab === "organization" && canSeeOrg && (
                 <section className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p className="eyebrow">Organization</p>
-                    <span className="font-mono text-[10px] text-muted-foreground/60">
-                      {members.length + 1} {members.length === 0 ? 'member' : 'members'}{pendingCount > 0 ? ` · ${pendingCount} pending` : ''}
-                    </span>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-baseline gap-2.5 min-w-0">
+                      <p className="eyebrow">Organization</p>
+                      <span className="font-mono text-[10px] text-muted-foreground/60 truncate">
+                        {members.length + 1}{" "}
+                        {members.length === 0 ? "member" : "members"}
+                        {pendingCount > 0 ? ` · ${pendingCount} pending` : ""}
+                      </span>
+                    </div>
+                    {canInvite && (
+                      <Button
+                        size="sm"
+                        onClick={openInvite}
+                        disabled={infras.length === 0}
+                        className="gap-1.5 shrink-0"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" /> Invite member
+                      </Button>
+                    )}
                   </div>
                   <div className="rounded-2xl panel divide-y divide-hairline">
-                    <MemberRow name={user.user_name} email={user.email} role={user.role} profileUrl={user.profile_url} tag="You · Owner" />
+                    <MemberRow
+                      name={user.user_name}
+                      email={user.email}
+                      role={user.role}
+                      profileUrl={user.profile_url}
+                      tag="You · Owner"
+                    />
                     {members.map((m) => (
                       <MemberRow
                         key={m.id}
                         name={m.user_name}
                         email={m.email}
                         role={m.role}
-                        tag={m.infras.join(', ')}
+                        infraRoles={m.infraRoles}
                         pending={m.pending}
-                        onRemove={myRank > (RANK[m.role] ?? 0) ? () => setRemoveTarget(m) : undefined}
+                        onRemove={
+                          myRank > (RANK[m.role] ?? 0)
+                            ? () => setRemoveTarget(m)
+                            : undefined
+                        }
                       />
                     ))}
                     {members.length === 0 && (
-                      <div className="px-5 py-6 text-center">
-                        <p className="text-xs text-muted-foreground">No one else has been invited yet. Invite teammates from an infrastructure&apos;s page.</p>
+                      <div className="px-5 py-8 text-center">
+                        <p className="text-sm text-foreground">
+                          No teammates yet
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1 mb-4 max-w-xs mx-auto">
+                          {canInvite
+                            ? "Invite people into any of your infrastructures with a role scoped to that infrastructure."
+                            : "Only the owner can invite members."}
+                        </p>
+                        {canInvite && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={openInvite}
+                            disabled={infras.length === 0}
+                            className="gap-1.5"
+                          >
+                            <UserPlus className="w-3.5 h-3.5" /> Invite member
+                          </Button>
+                        )}
                       </div>
                     )}
                   </div>
                   <p className="text-[11px] text-muted-foreground/70 px-1">
                     <span className="inline-block w-1.5 h-1.5 rounded-full bg-warning align-middle mr-1.5" />
-                    Pending means the invite hasn&apos;t been accepted (email not verified) yet.
+                    Pending means the invite hasn&apos;t been accepted (email
+                    not verified) yet.
                   </p>
                 </section>
               )}
 
-              {tab === 'billing' && (
+              {tab === "billing" && (
                 <section className="space-y-3">
                   <p className="eyebrow">Billing</p>
                   <div className="rounded-2xl panel-inset px-5 py-12 text-center">
@@ -227,7 +463,10 @@ export default function SettingsPage() {
                       <CreditCard className="w-5 h-5 text-muted-foreground" />
                     </div>
                     <p className="text-sm text-foreground">No invoices yet</p>
-                    <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">Plan, payment history, and invoices will appear here once billing is enabled for your account.</p>
+                    <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+                      Plan, payment history, and invoices will appear here once
+                      billing is enabled for your account.
+                    </p>
                   </div>
                 </section>
               )}
@@ -236,37 +475,244 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <Dialog open={!!removeTarget} onOpenChange={(o) => { if (!o) setRemoveTarget(null); }}>
+      <Dialog
+        open={!!removeTarget}
+        onOpenChange={(o) => {
+          if (!o) setRemoveTarget(null);
+        }}
+      >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">Remove member</DialogTitle>
+            <DialogTitle className="text-base font-display font-semibold">
+              Remove member
+            </DialogTitle>
           </DialogHeader>
           <p className="text-xs text-muted-foreground">
-            Remove <span className="text-foreground font-medium">{removeTarget?.user_name}</span> from the organization? They lose access to your infrastructures. Their account is deleted only if this was their last organization.
+            Remove{" "}
+            <span className="text-foreground font-medium">
+              {removeTarget?.user_name}
+            </span>{" "}
+            from the organization? They lose access to your infrastructures.
+            Their account is deleted only if this was their last organization.
           </p>
           <div className="flex gap-2 justify-end mt-2">
-            <Button variant="outline" onClick={() => setRemoveTarget(null)}>Cancel</Button>
-            <Button variant="destructive" onClick={doRemove} disabled={removing} className="gap-1.5">
-              <Trash2 className="w-3.5 h-3.5" />{removing ? 'Removing…' : 'Remove'}
+            <Button variant="outline" onClick={() => setRemoveTarget(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={doRemove}
+              disabled={removing}
+              className="gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {removing ? "Removing…" : "Remove"}
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base font-display font-semibold">
+              {inviteUrl ? "Invitation ready" : "Invite member"}
+            </DialogTitle>
+          </DialogHeader>
+          {inviteUrl ? (
+            <div className="space-y-4">
+              <p className="text-xs text-muted-foreground">
+                <span className="text-foreground font-medium">
+                  {inviteForm.user_name}
+                </span>{" "}
+                was invited to{" "}
+                <span className="text-foreground font-medium">
+                  {inviteInfra?.name}
+                </span>{" "}
+                as{" "}
+                <span
+                  className={`font-mono uppercase tracking-[0.1em] ${ROLE_STYLES[inviteForm.role]?.split(" ").pop()}`}
+                >
+                  {inviteForm.role}
+                </span>
+                . Share this sign-in link and the temporary password you set.
+              </p>
+              <div className="rounded-xl panel-inset p-3 flex items-center gap-3">
+                <p className="flex-1 text-xs font-mono text-muted-foreground break-all">
+                  {inviteUrl}
+                </p>
+                <button
+                  onClick={copyInviteUrl}
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  title="Copy link"
+                >
+                  {copied ? (
+                    <Check className="w-4 h-4 text-success" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+              <div className="flex gap-2">
+                {infras.length > 1 && (
+                  <Button
+                    variant="outline"
+                    onClick={inviteElsewhere}
+                    className="flex-1 gap-1.5"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" /> Add to another
+                  </Button>
+                )}
+                <Button onClick={() => setInviteOpen(false)} className="flex-1">
+                  Done
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <form onSubmit={handleInvite} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label className="eyebrow">Infrastructure</Label>
+                <Select
+                  value={inviteForm.infra_id}
+                  onValueChange={(v) => {
+                    if (v) setInviteForm({ ...inviteForm, infra_id: v });
+                  }}
+                >
+                  <SelectTrigger className="h-9 text-sm w-full">
+                    <SelectValue placeholder="Select an infrastructure">
+                      {inviteInfra?.name}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {infras.map((i) => (
+                      <SelectItem
+                        key={i.id}
+                        value={i.id}
+                        className="text-sm py-2"
+                      >
+                        {i.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="eyebrow">Email</Label>
+                  <Input
+                    type="email"
+                    placeholder="user@example.com"
+                    value={inviteForm.email}
+                    onChange={(e) =>
+                      setInviteForm({ ...inviteForm, email: e.target.value })
+                    }
+                    required
+                    className="h-9 text-sm"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="eyebrow">Username</Label>
+                  <Input
+                    type="text"
+                    placeholder="johndoe"
+                    value={inviteForm.user_name}
+                    onChange={(e) =>
+                      setInviteForm({
+                        ...inviteForm,
+                        user_name: e.target.value,
+                      })
+                    }
+                    required
+                    className="h-9 text-sm"
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="eyebrow">Temporary password</Label>
+                <Input
+                  type="password"
+                  placeholder="Min 6 characters"
+                  value={inviteForm.password}
+                  onChange={(e) =>
+                    setInviteForm({ ...inviteForm, password: e.target.value })
+                  }
+                  required
+                  minLength={6}
+                  className="h-9 text-sm"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="eyebrow">Role in this infrastructure</Label>
+                <Select
+                  value={inviteForm.role}
+                  onValueChange={(v) =>
+                    setInviteForm({ ...inviteForm, role: v as InviteRole })
+                  }
+                >
+                  <SelectTrigger className="h-9 text-sm w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="w-[var(--radix-select-trigger-width)]">
+                    {ROLE_HINTS.map((r) => (
+                      <SelectItem
+                        key={r.value}
+                        value={r.value}
+                        className="text-sm py-2.5"
+                      >
+                        <span className="font-medium">{r.label}</span>
+                        <span className="text-muted-foreground">
+                          {" "}
+                          — {r.hint}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                type="submit"
+                disabled={inviting || !inviteForm.infra_id}
+                className="w-full mt-1"
+              >
+                {inviting ? "Sending…" : "Send invite"}
+              </Button>
+            </form>
+          )}
         </DialogContent>
       </Dialog>
     </div>
   );
 }
 
-function Stat({ icon: Icon, label, value, tint }: { icon: typeof UserIcon; label: string; value: number | null; tint: string }) {
+function Stat({
+  icon: Icon,
+  label,
+  value,
+  tint,
+}: {
+  icon: typeof UserIcon;
+  label: string;
+  value: number | null;
+  tint: string;
+}) {
   return (
     <div className="rounded-xl panel-inset p-4">
       <Icon className={`w-4 h-4 ${tint} mb-3`} />
       <p className="eyebrow">{label}</p>
-      <p className="mt-1 text-lg font-display font-semibold text-foreground">{value ?? '—'}</p>
+      <p className="mt-1 text-lg font-display font-semibold text-foreground">
+        {value ?? "—"}
+      </p>
     </div>
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="flex items-center justify-between gap-4 px-4 py-2.5">
       <span className="text-xs text-muted-foreground">{label}</span>
@@ -275,32 +721,88 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function MemberRow({ name, email, role, profileUrl, tag, pending, onRemove }: {
-  name: string; email: string; role: string; profileUrl?: string; tag?: string; pending?: boolean; onRemove?: () => void;
+function MemberRow({
+  name,
+  email,
+  role,
+  profileUrl,
+  tag,
+  infraRoles,
+  pending,
+  onRemove,
+}: {
+  name: string;
+  email: string;
+  role: string;
+  profileUrl?: string;
+  tag?: string;
+  infraRoles?: { name: string; role: string }[];
+  pending?: boolean;
+  onRemove?: () => void;
 }) {
   return (
     <div className="flex items-center gap-3 px-5 py-3.5">
       <span className="w-9 h-9 rounded-full overflow-hidden ring-1 ring-hairline shrink-0 flex items-center justify-center bg-surface-2">
-        {profileUrl
-          ? <Image src={profileUrl} alt={name} width={36} height={36} className="w-9 h-9 object-cover" />
-          : <Users className="w-4 h-4 text-muted-foreground" />}
+        {profileUrl ? (
+          <Image
+            src={profileUrl}
+            alt={name}
+            width={36}
+            height={36}
+            className="w-9 h-9 object-cover"
+          />
+        ) : (
+          <Users className="w-4 h-4 text-muted-foreground" />
+        )}
       </span>
       <div className="min-w-0">
         <p className="text-sm font-medium text-foreground truncate">{name}</p>
         <p className="text-xs text-muted-foreground truncate">{email}</p>
       </div>
       <div className="ml-auto flex items-center gap-3 shrink-0">
-        {tag && <span className="hidden sm:inline font-mono text-[10px] text-muted-foreground/60 truncate max-w-[140px]">{tag}</span>}
-        <span className={`flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] ${pending ? 'text-warning' : 'text-success'}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${pending ? 'bg-warning' : 'bg-success'}`} />
-          {pending ? 'Pending' : 'Active'}
+        {tag && (
+          <span className="hidden sm:inline font-mono text-[10px] text-muted-foreground/60 truncate max-w-[140px]">
+            {tag}
+          </span>
+        )}
+        <span
+          className={`flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] ${pending ? "text-warning" : "text-success"}`}
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${pending ? "bg-warning" : "bg-success"}`}
+          />
+          {pending ? "Pending" : "Active"}
         </span>
-        <span className={`font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${ROLE_STYLES[role] ?? ROLE_STYLES.guest}`}>
-          {roleLabel(role)}
-        </span>
+        {infraRoles ? (
+          <div className="flex flex-wrap justify-end gap-1.5 max-w-[200px] sm:max-w-[300px]">
+            {infraRoles.map((ir) => (
+              <span
+                key={ir.name}
+                className={`flex items-center gap-1.5 font-mono text-[10px] px-2 py-0.5 rounded-md border ${ROLE_STYLES[ir.role] ?? ROLE_STYLES.guest}`}
+              >
+                <span className="normal-case tracking-normal text-muted-foreground/80 truncate max-w-[90px]">
+                  {ir.name}
+                </span>
+                <span className="opacity-40">·</span>
+                <span className="uppercase tracking-[0.1em]">
+                  {roleLabel(ir.role)}
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span
+            className={`font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${ROLE_STYLES[role] ?? ROLE_STYLES.guest}`}
+          >
+            {roleLabel(role)}
+          </span>
+        )}
         {onRemove && (
-          <button onClick={onRemove} title="Remove from organization"
-            className="text-muted-foreground/50 hover:text-destructive transition-colors">
+          <button
+            onClick={onRemove}
+            title="Remove from organization"
+            className="text-muted-foreground/50 hover:text-destructive transition-colors"
+          >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         )}

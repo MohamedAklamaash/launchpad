@@ -14,6 +14,7 @@ export interface AuthUserRegisteredPayload extends EventPayload {
     created_at: Date;
     infra_id: string[];
     role: string;
+    roles?: Record<string, string>;
     profile_url?: string;
     updated_at: Date;
     metadata?: Record<string, unknown>;

@@ -3,6 +3,7 @@ export interface User {
   email: string;
   user_name: string;
   role: 'super_admin' | 'admin' | 'user' | 'guest';
+  roles?: Record<string, string>;
   profile_url?: string;
   infra_id: string[];
   metadata?: {
@@ -29,6 +30,7 @@ export interface InvitedUser {
   email: string;
   user_name: string;
   role: 'admin' | 'user' | 'guest';
+  roles?: Record<string, string>;
   infra_id: string[];
   invited_by?: string;
   is_authenticated?: boolean;
