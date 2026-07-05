@@ -4,6 +4,7 @@ import { sequelize } from '@/db/sequalize';
 import { hashPassword } from '@/utils/handle-password';
 import { HttpError } from '@launchpad/common';
 import { InvitedUserRegisterInput, USER_ROLE } from '@/types/auth.invited_user.types';
+import { ROLE_RANK, clampInvitedRole, primaryRole } from '@/utils/role';
 import {
     PublishUserRegistered,
     userAuthenticationQueue,
@@ -18,15 +19,15 @@ export class InvitedUserService extends BaseService {
         });
     }
 
-    // Remove a member from one or more orgs (infras). The account is deleted only when
-    // this leaves them in no orgs — otherwise they keep their account and their other orgs.
+    // Remove a member from one or more orgs (infras). Rank is compared per-infra: the caller
+    // must outrank the target's role IN that infra. The account is deleted only when this
+    // leaves them in no orgs — otherwise they keep their account and their other orgs.
     public async removeFromOrg(
         callerId: string,
         callerRole: string,
         targetUserId: string,
         infraIds: string[],
     ) {
-        const RANK: Record<string, number> = { super_admin: 3, admin: 2, user: 1, guest: 0 };
         return sequelize.transaction(async (transaction) => {
             const target = await InvitedUser.findByPk(targetUserId, {
                 transaction,
@@ -34,18 +35,25 @@ export class InvitedUserService extends BaseService {
             });
             if (!target) throw new HttpError(404, 'Member not found');
 
-            if (target.invited_by !== callerId && callerRole !== 'super_admin') {
+            if (target.invited_by !== callerId && callerRole !== USER_ROLE.SUPER_ADMIN) {
                 throw new HttpError(403, 'You can only remove members you invited');
             }
-            if ((RANK[callerRole] ?? 0) <= (RANK[target.role] ?? 0)) {
-                throw new HttpError(
-                    403,
-                    `A ${callerRole.replace('_', ' ')} cannot remove a ${target.role}`,
-                );
+
+            const nextRoles = { ...(target.roles ?? {}) };
+            const toRemove = infraIds.length ? infraIds : Object.keys(nextRoles);
+
+            for (const infra of toRemove) {
+                const targetRole = nextRoles[infra] ?? target.role;
+                if ((ROLE_RANK[callerRole] ?? 0) <= (ROLE_RANK[targetRole] ?? 0)) {
+                    throw new HttpError(
+                        403,
+                        `A ${callerRole.replace('_', ' ')} cannot remove a ${targetRole} from this organization`,
+                    );
+                }
             }
 
-            const toRemove = infraIds.length ? infraIds : target.infra_id;
-            const remaining = target.infra_id.filter((id) => !toRemove.includes(id));
+            for (const infra of toRemove) delete nextRoles[infra];
+            const remaining = Object.keys(nextRoles);
 
             if (remaining.length === 0) {
                 await UserOTP.destroy({ where: { invited_user_id: target.id }, transaction });
@@ -54,7 +62,9 @@ export class InvitedUserService extends BaseService {
                 return { removed: true, deleted_account: true };
             }
 
+            target.roles = nextRoles;
             target.infra_id = remaining;
+            target.role = primaryRole(nextRoles);
             await target.save({ transaction });
             return { removed: true, deleted_account: false };
         });
@@ -62,7 +72,8 @@ export class InvitedUserService extends BaseService {
 
     public async register(input: InvitedUserRegisterInput, super_user: string) {
         const { email, password, user_name, infra_id, role } = input;
-        return sequelize.transaction(async (transaction) => {
+        const invitedRole = clampInvitedRole(role);
+        const committed = await sequelize.transaction(async (transaction) => {
             const existingUser = await InvitedUser.findOne({ where: { email }, transaction });
             const existingUserName = await InvitedUser.findOne({
                 where: { user_name },
@@ -72,22 +83,30 @@ export class InvitedUserService extends BaseService {
                 throw new HttpError(409, 'Username already taken');
             }
             let user: InvitedUser;
+            let requiresVerification = true;
 
             if (existingUser) {
-                if (!existingUser.infra_id.includes(infra_id)) {
-                    existingUser.infra_id = [...existingUser.infra_id, infra_id];
-                    existingUser.is_authenticated = false;
-                    user = await existingUser.save({ transaction });
-                } else {
-                    if (!existingUser.is_authenticated) {
-                        user = existingUser; // User exists but not authenticated, proceed to resend OTP
-                    } else {
-                        throw new HttpError(
-                            409,
-                            'User already registered and authenticated in this infra',
-                        );
-                    }
+                const nextRoles = { ...(existingUser.roles ?? {}) };
+                const isNewInfra = !(infra_id in nextRoles);
+
+                if (
+                    !isNewInfra &&
+                    existingUser.is_authenticated &&
+                    nextRoles[infra_id] === invitedRole
+                ) {
+                    throw new HttpError(
+                        409,
+                        'User already registered and authenticated in this infra',
+                    );
                 }
+
+                nextRoles[infra_id] = invitedRole;
+                existingUser.roles = nextRoles;
+                existingUser.infra_id = Object.keys(nextRoles);
+                existingUser.role = primaryRole(nextRoles);
+                if (isNewInfra) existingUser.is_authenticated = false;
+                requiresVerification = isNewInfra || !existingUser.is_authenticated;
+                user = await existingUser.save({ transaction });
             } else {
                 const passwordHash = await hashPassword(password);
                 user = await InvitedUser.create(
@@ -95,43 +114,56 @@ export class InvitedUserService extends BaseService {
                         email,
                         user_name: user_name,
                         infra_id: [infra_id],
+                        roles: { [infra_id]: invitedRole },
                         password_hash: passwordHash,
-                        role: role as USER_ROLE,
+                        role: invitedRole,
                         is_authenticated: false,
                         invited_by: super_user,
                     },
                     { transaction },
                 );
             }
-            const otpRecord = await this.createOTP(user.id, infra_id, transaction);
-            // publish notify event here
+
+            let otp: string | undefined;
+            if (requiresVerification) {
+                const otpRecord = await this.createOTP(user.id, infra_id, transaction);
+                otp = otpRecord.otp;
+            }
+
+            return { user, otp };
+        });
+
+        // Emit side effects only after the transaction commits — a rollback must not
+        // enqueue an OTP email or publish a user/roles event for state that never persisted.
+        const { user, otp } = committed;
+        if (otp) {
             await userAuthenticationQueue.add(AUTHENTICATE_INVITED_USER_EVENT, {
                 user_id: user.id,
                 email,
-                otp: otpRecord.otp,
+                otp,
                 infra_id,
                 source: 'mail',
                 user_name,
             });
+        }
 
-            try {
-                PublishUserRegistered({
-                    id: user.id,
-                    email,
-                    user_name,
-                    created_at: user.created_at,
-                    infra_id: user.infra_id,
-                    role,
-                    updated_at: user.updated_at,
-                    metadata: {},
-                    invited_by: super_user,
-                });
-            } catch (pubError) {
-                console.error('Failed to publish user registered event', pubError);
-                // Do not fail transaction if publishing fails, or maybe we should? best effort for now.
-            }
+        try {
+            PublishUserRegistered({
+                id: user.id,
+                email,
+                user_name,
+                created_at: user.created_at,
+                infra_id: user.infra_id,
+                role: user.role,
+                roles: user.roles,
+                updated_at: user.updated_at,
+                metadata: {},
+                invited_by: super_user,
+            });
+        } catch (pubError) {
+            console.error('Failed to publish user registered event', pubError);
+        }
 
-            return { user, otp: otpRecord.otp };
-        });
+        return { user, otp };
     }
 }

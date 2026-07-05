@@ -9,19 +9,21 @@ class InfrastructurePermissions:
     def get_user_role(infrastructure, user_id):
         if str(infrastructure.user_id) == str(user_id):
             return UserRole.SUPER_ADMIN
-        # Authorize strictly on per-infra membership. The previous `invited_by` fallback
-        # granted access to EVERY infra owned by the inviter — leaking other infras'
-        # application env-vars/secrets to a user invited to just one of them.
-        member = infrastructure.invited_users.filter(id=user_id).first()
-        if member is None:
-            return None
-        # Honor the role the member was invited with (an invited ADMIN can manage this infra's
-        # apps; a USER stays read-only) — the previous hardcoded USER made every invite view-only.
-        # Cap at ADMIN: a non-owner is never owner-level on an infra they don't own, whatever
-        # their global role happens to be.
-        if member.role == UserRole.SUPER_ADMIN:
-            return UserRole.ADMIN
-        return member.role or UserRole.USER
+        from api.models.infrastructure_user_role import InfrastructureUserRole
+        # Role is per-infra: the same user can be ADMIN here and USER elsewhere. Read the
+        # membership edge, not the user's global role.
+        entry = InfrastructureUserRole.objects.filter(
+            infrastructure=infrastructure, user_id=user_id
+        ).first()
+        if entry is not None:
+            # A non-owner is never owner-level on an infra they don't own.
+            if entry.role == UserRole.SUPER_ADMIN:
+                return UserRole.ADMIN
+            return entry.role or UserRole.USER
+        # Membership without a role row yet (event still in flight) stays least-privileged.
+        if infrastructure.invited_users.filter(id=user_id).exists():
+            return UserRole.USER
+        return None
 
     @staticmethod
     def can_create_application(infrastructure, user_id):

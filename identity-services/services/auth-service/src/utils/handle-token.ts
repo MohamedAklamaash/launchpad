@@ -21,6 +21,7 @@ export interface AccessTokenPayload {
     email: string;
     user_name: string;
     role: string;
+    roles?: Record<string, string>;
     scope?: string;
 }
 

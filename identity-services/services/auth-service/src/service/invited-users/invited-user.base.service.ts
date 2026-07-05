@@ -26,37 +26,36 @@ export abstract class BaseService {
             email: string;
             user_name: string;
             role: string | USER_ROLE;
+            roles?: Record<string, string>;
             infra_id: string[];
             created_at?: Date;
             profile_url?: string;
         },
         refreshTokenId: string,
     ): AuthResponse {
+        const tokenClaims = {
+            sub: user.id,
+            email: user.email,
+            user_name: user.user_name,
+            role: user.role,
+            roles: user.roles,
+        };
         return {
             user: {
                 id: user.id,
                 email: user.email,
                 user_name: user.user_name,
                 role: user.role as USER_ROLE,
+                roles: user.roles,
                 infra_id: user.infra_id || [],
                 createdAt: user.created_at
                     ? user.created_at.toISOString()
                     : new Date().toISOString(),
                 profile_url: user.profile_url,
             } as UserData,
-            accessToken: signAccessToken({
-                sub: user.id,
-                email: user.email,
-                user_name: user.user_name,
-                role: user.role,
-            }),
+            accessToken: signAccessToken(tokenClaims),
             refreshToken: signRefreshToken({ sub: user.id, tokenId: refreshTokenId }),
-            access_token: signAccessToken({
-                sub: user.id,
-                email: user.email,
-                user_name: user.user_name,
-                role: user.role,
-            }),
+            access_token: signAccessToken(tokenClaims),
             refresh_token: signRefreshToken({ sub: user.id, tokenId: refreshTokenId }),
         };
     }

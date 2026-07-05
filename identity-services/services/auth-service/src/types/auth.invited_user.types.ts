@@ -29,6 +29,7 @@ export interface UserData {
     email: string;
     user_name: string;
     role: USER_ROLE;
+    roles?: Record<string, USER_ROLE>;
     infra_id: string[];
     createdAt: string;
     profile_url?: string;

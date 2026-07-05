@@ -11,6 +11,7 @@ export interface InvitedUserAttributes {
     user_name: string;
     password_hash: string;
     role: USER_ROLE;
+    roles: Record<string, USER_ROLE>;
     forgot_password: boolean;
     is_authenticated: boolean;
     opt_id: string;
@@ -20,7 +21,7 @@ export interface InvitedUserAttributes {
 
 export type InvitedUserCreationAttributes = Optional<
     InvitedUserAttributes,
-    'id' | 'created_at' | 'updated_at' | 'forgot_password' | 'is_authenticated' | 'opt_id'
+    'id' | 'created_at' | 'updated_at' | 'forgot_password' | 'is_authenticated' | 'opt_id' | 'roles'
 >;
 
 export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreationAttributes> {
@@ -31,6 +32,7 @@ export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreatio
     declare user_name: string;
     declare password_hash: string;
     declare role: USER_ROLE;
+    declare roles: Record<string, USER_ROLE>;
     declare forgot_password: boolean;
     declare is_authenticated: boolean;
     declare opt_id: string;
@@ -69,6 +71,11 @@ InvitedUser.init(
         role: {
             type: DataTypes.ENUM(...Object.values(USER_ROLE)),
             allowNull: false,
+        },
+        roles: {
+            type: DataTypes.JSONB,
+            allowNull: false,
+            defaultValue: {},
         },
         forgot_password: {
             type: DataTypes.BOOLEAN,

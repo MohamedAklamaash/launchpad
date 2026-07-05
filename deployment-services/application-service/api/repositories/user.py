@@ -29,7 +29,7 @@ class UserRepository:
         if not user_id:
             raise ValueError("User ID is required for upsert operation")
 
-        defaults = {k: v for k, v in user_data.items() if k not in ("id", "infra_id")}
+        defaults = {k: v for k, v in user_data.items() if k not in ("id", "infra_id", "roles")}
 
         try:
             # Commit the user independently of invite linking. auth.user.registered and
@@ -65,11 +65,20 @@ class UserRepository:
         if not (infra_ids and user_data.get("invited_by")):
             return []
         from api.models.infrastructure import Infrastructure
+        from api.models.infrastructure_user_role import InfrastructureUserRole
+        roles = user_data.get("roles") or {}
         missing = []
         for iid in infra_ids:
             infra = Infrastructure.objects.filter(id=iid).first()
             if infra:
                 infra.invited_users.add(user)
+                role = roles.get(str(iid)) or user_data.get("role")
+                if role:
+                    InfrastructureUserRole.objects.update_or_create(
+                        infrastructure=infra,
+                        user=user,
+                        defaults={"role": role},
+                    )
             else:
                 missing.append(str(iid))
         return missing

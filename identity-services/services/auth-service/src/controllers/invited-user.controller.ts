@@ -67,6 +67,7 @@ export const ListInvitedUsers = async (req: Request, res: Response) => {
                 email: u.email,
                 user_name: u.user_name,
                 role: u.role,
+                roles: u.roles,
                 infra_id: u.infra_id,
                 is_authenticated: u.is_authenticated,
                 created_at: u.created_at,

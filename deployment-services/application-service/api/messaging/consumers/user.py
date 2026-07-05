@@ -67,6 +67,7 @@ class AuthEventConsumer:
         email = payload.get("email")
         user_name = payload.get("user_name")
         role = payload.get("role")
+        roles = payload.get("roles", {})
         invited_by = payload.get("invited_by")
         metadata = payload.get("metadata", {})
         infra_id = payload.get("infra_id", [])
@@ -98,6 +99,7 @@ class AuthEventConsumer:
                     "email": email,
                     "user_name": user_name,
                     "role": role,
+                    "roles": roles,
                     "is_active": True,
                     "metadata": metadata,
                     "invited_by": invited_by,
