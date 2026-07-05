@@ -81,7 +81,7 @@ interface Member {
   email: string;
   user_name: string;
   role: string;
-  infraRoles: { name: string; role: string }[];
+  infraRoles: { id: string; name: string; role: string }[];
   infraIds: string[];
   pending: boolean;
 }
@@ -136,6 +136,7 @@ export default function SettingsPage() {
         pending: u.is_authenticated === false,
         infraIds: u.infra_id ?? [],
         infraRoles: (u.infra_id ?? []).map((id) => ({
+          id,
           name: infraName.get(id) ?? id.slice(0, 8),
           role: u.roles?.[id] ?? u.role,
         })),
@@ -187,11 +188,15 @@ export default function SettingsPage() {
     }));
   };
 
-  const copyInviteUrl = () => {
+  const copyInviteUrl = async () => {
     if (!inviteUrl) return;
-    navigator.clipboard.writeText(inviteUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Couldn't copy — select and copy the link manually");
+    }
   };
 
   const doRemove = async () => {
@@ -208,16 +213,24 @@ export default function SettingsPage() {
         );
         return;
       }
-      await authApi.removeMemberFromOrg(removeTarget.id, scopedInfraIds);
+      // Remove infra-side membership first, then clear the auth-side (which may delete the
+      // account on the last org) ONLY for the infras that succeeded — so the two systems never
+      // diverge and any failure leaves the member visible to retry.
       const results = await Promise.allSettled(
         scopedInfraIds.map((id) =>
-          infrastructureApi.removeUser(id, removeTarget.id),
+          infrastructureApi.removeUser(id, removeTarget.id).then(() => id),
         ),
       );
-      const failed = results.filter((r) => r.status === "rejected").length;
+      const removed = results.flatMap((r) =>
+        r.status === "fulfilled" ? [r.value] : [],
+      );
+      if (removed.length > 0) {
+        await authApi.removeMemberFromOrg(removeTarget.id, removed);
+      }
+      const failed = scopedInfraIds.length - removed.length;
       if (failed > 0) {
         toast.error(
-          `Removed from ${scopedInfraIds.length - failed} of ${scopedInfraIds.length} organizations — retry to clear the rest`,
+          `Removed from ${removed.length} of ${scopedInfraIds.length} infrastructures — reopen to retry the rest`,
         );
       } else {
         toast.success(
@@ -736,7 +749,7 @@ function MemberRow({
   role: string;
   profileUrl?: string;
   tag?: string;
-  infraRoles?: { name: string; role: string }[];
+  infraRoles?: { id: string; name: string; role: string }[];
   pending?: boolean;
   onRemove?: () => void;
 }) {
@@ -777,7 +790,7 @@ function MemberRow({
           <div className="flex flex-wrap justify-end gap-1.5 max-w-[200px] sm:max-w-[300px]">
             {infraRoles.map((ir) => (
               <span
-                key={ir.name}
+                key={ir.id}
                 className={`flex items-center gap-1.5 font-mono text-[10px] px-2 py-0.5 rounded-md border ${ROLE_STYLES[ir.role] ?? ROLE_STYLES.guest}`}
               >
                 <span className="normal-case tracking-normal text-muted-foreground/80 truncate max-w-[90px]">

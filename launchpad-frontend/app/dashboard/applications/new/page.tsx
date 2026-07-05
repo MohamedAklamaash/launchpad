@@ -146,7 +146,7 @@ function NewApplicationPageInner() {
                 <div>
                   <Field icon={<Box className="w-3.5 h-3.5" />} label="Infrastructure">
                     <Select value={form.infrastructure_id} onValueChange={(v) => v && set('infrastructure_id', v)} required>
-                      <SelectTrigger className={triggerCls}><SelectValue placeholder="Select infrastructure" /></SelectTrigger>
+                      <SelectTrigger className={triggerCls}><SelectValue placeholder="Select infrastructure">{infraName}</SelectValue></SelectTrigger>
                       <SelectContent className="bg-popover border-hairline">
                         {infrastructures.map((i) => (
                           <SelectItem key={i.id} value={i.id} className="text-sm">{i.name}</SelectItem>

@@ -106,7 +106,9 @@ function ApplicationsPageInner() {
           <span className="eyebrow">Environment</span>
           <Select value={selectedInfra} onValueChange={(v) => v && handleInfraChange(v)}>
             <SelectTrigger className="w-full">
-              <SelectValue placeholder="Select infrastructure" />
+              <SelectValue placeholder="Select infrastructure">
+                {infrastructures.find((i) => i.id === selectedInfra)?.name}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {infrastructures.map((i) => (

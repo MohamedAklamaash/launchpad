@@ -73,7 +73,7 @@ export class InvitedUserService extends BaseService {
     public async register(input: InvitedUserRegisterInput, super_user: string) {
         const { email, password, user_name, infra_id, role } = input;
         const invitedRole = clampInvitedRole(role);
-        return sequelize.transaction(async (transaction) => {
+        const committed = await sequelize.transaction(async (transaction) => {
             const existingUser = await InvitedUser.findOne({ where: { email }, transaction });
             const existingUserName = await InvitedUser.findOne({
                 where: { user_name },
@@ -128,34 +128,42 @@ export class InvitedUserService extends BaseService {
             if (requiresVerification) {
                 const otpRecord = await this.createOTP(user.id, infra_id, transaction);
                 otp = otpRecord.otp;
-                await userAuthenticationQueue.add(AUTHENTICATE_INVITED_USER_EVENT, {
-                    user_id: user.id,
-                    email,
-                    otp: otpRecord.otp,
-                    infra_id,
-                    source: 'mail',
-                    user_name,
-                });
-            }
-
-            try {
-                PublishUserRegistered({
-                    id: user.id,
-                    email,
-                    user_name,
-                    created_at: user.created_at,
-                    infra_id: user.infra_id,
-                    role: user.role,
-                    roles: user.roles,
-                    updated_at: user.updated_at,
-                    metadata: {},
-                    invited_by: super_user,
-                });
-            } catch (pubError) {
-                console.error('Failed to publish user registered event', pubError);
             }
 
             return { user, otp };
         });
+
+        // Emit side effects only after the transaction commits — a rollback must not
+        // enqueue an OTP email or publish a user/roles event for state that never persisted.
+        const { user, otp } = committed;
+        if (otp) {
+            await userAuthenticationQueue.add(AUTHENTICATE_INVITED_USER_EVENT, {
+                user_id: user.id,
+                email,
+                otp,
+                infra_id,
+                source: 'mail',
+                user_name,
+            });
+        }
+
+        try {
+            PublishUserRegistered({
+                id: user.id,
+                email,
+                user_name,
+                created_at: user.created_at,
+                infra_id: user.infra_id,
+                role: user.role,
+                roles: user.roles,
+                updated_at: user.updated_at,
+                metadata: {},
+                invited_by: super_user,
+            });
+        } catch (pubError) {
+            console.error('Failed to publish user registered event', pubError);
+        }
+
+        return { user, otp };
     }
 }
