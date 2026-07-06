@@ -74,6 +74,9 @@ jobs:
       - name: Unit tests (auth-service)
         run: pnpm --filter auth-service test
 
+      - name: Unit tests (notification-service)
+        run: pnpm --filter notification-service test
+
   test-python:
     name: Tests (deployment-services)
     runs-on: ubuntu-latest
