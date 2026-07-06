@@ -1,6 +1,7 @@
 import logging
 from django.db import transaction, IntegrityError
 from api.models.user import User as UserModel
+from shared.enums.user_role import UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +73,20 @@ class UserRepository:
             infra = Infrastructure.objects.filter(id=iid).first()
             if infra:
                 infra.invited_users.add(user)
-                role = roles.get(str(iid)) or user_data.get("role")
-                if role:
-                    InfrastructureUserRole.objects.update_or_create(
-                        infrastructure=infra,
-                        user=user,
-                        defaults={"role": role},
-                    )
+                # Per-infra role only — never the user's global role, which would grant their
+                # highest role on every infra. An absent or unrecognized entry defaults to USER on
+                # create, but an existing edge is only rewritten when the event carries an explicit
+                # valid role, so a replayed/sparse/malformed event can't downgrade a live ADMIN.
+                raw = roles.get(str(iid))
+                role = raw if raw in UserRole.values else None
+                edge, created = InfrastructureUserRole.objects.get_or_create(
+                    infrastructure=infra,
+                    user=user,
+                    defaults={"role": role or UserRole.USER},
+                )
+                if not created and role and edge.role != role:
+                    edge.role = role
+                    edge.save(update_fields=["role"])
             else:
                 missing.append(str(iid))
         return missing

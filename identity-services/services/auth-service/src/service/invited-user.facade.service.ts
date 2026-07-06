@@ -21,12 +21,11 @@ export class InvitedUserFacade {
     }
 
     public async removeFromOrg(
-        callerId: string,
-        callerRole: string,
+        callerOwnedInfras: string[],
         targetUserId: string,
         infraIds: string[],
     ) {
-        return this.userService.removeFromOrg(callerId, callerRole, targetUserId, infraIds);
+        return this.userService.removeFromOrg(callerOwnedInfras, targetUserId, infraIds);
     }
 
     public async register(input: InvitedUserRegisterInput, super_user: string) {

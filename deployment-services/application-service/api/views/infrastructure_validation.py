@@ -1,9 +1,11 @@
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from rest_framework import serializers
+from rest_framework import serializers, status
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
+from api.models.infrastructure import Infrastructure
 from api.services.infrastructure_validation import InfrastructureValidation
+from api.services.infrastructure_permissions import InfrastructurePermissions
 
 
 class ValidationResponseSerializer(serializers.Serializer):
@@ -20,6 +22,14 @@ class ValidationResponseSerializer(serializers.Serializer):
 )
 @api_view(['GET'])
 def infrastructure_validation(request, infra_id):
+    try:
+        infra = Infrastructure.objects.get(id=infra_id)
+    except Infrastructure.DoesNotExist:
+        return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
+    # A non-member must not learn another tenant's app count or deletability. 404 (not 403)
+    # so the endpoint never confirms an infra id the caller has no relationship to.
+    if InfrastructurePermissions.get_user_role(infra, request.user.id) is None:
+        return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
     can_delete, error_message = InfrastructureValidation.can_delete_infrastructure(infra_id)
     app_count = InfrastructureValidation.get_infrastructure_apps_count(infra_id)
     return Response({"can_delete": can_delete, "app_count": app_count, "error_message": error_message})

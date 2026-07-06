@@ -3,8 +3,8 @@ import { InvitedUser, UserOTP, RefreshToken } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { hashPassword } from '@/utils/handle-password';
 import { HttpError } from '@launchpad/common';
-import { InvitedUserRegisterInput, USER_ROLE } from '@/types/auth.invited_user.types';
-import { ROLE_RANK, clampInvitedRole, primaryRole } from '@/utils/role';
+import { InvitedUserRegisterInput } from '@/types/auth.invited_user.types';
+import { authorizeMemberRemoval, clampInvitedRole, primaryRole } from '@/utils/role';
 import {
     PublishUserRegistered,
     userAuthenticationQueue,
@@ -19,12 +19,11 @@ export class InvitedUserService extends BaseService {
         });
     }
 
-    // Remove a member from one or more orgs (infras). Rank is compared per-infra: the caller
-    // must outrank the target's role IN that infra. The account is deleted only when this
-    // leaves them in no orgs — otherwise they keep their account and their other orgs.
+    // Remove a member from one or more orgs (infras). The caller may only act on infras they
+    // own; an empty request means "every org I own that this member belongs to". The account is
+    // deleted only when this leaves them in no orgs — otherwise they keep their other orgs.
     public async removeFromOrg(
-        callerId: string,
-        callerRole: string,
+        callerOwnedInfras: string[],
         targetUserId: string,
         infraIds: string[],
     ) {
@@ -35,22 +34,13 @@ export class InvitedUserService extends BaseService {
             });
             if (!target) throw new HttpError(404, 'Member not found');
 
-            if (target.invited_by !== callerId && callerRole !== USER_ROLE.SUPER_ADMIN) {
-                throw new HttpError(403, 'You can only remove members you invited');
-            }
-
             const nextRoles = { ...(target.roles ?? {}) };
-            const toRemove = infraIds.length ? infraIds : Object.keys(nextRoles);
-
-            for (const infra of toRemove) {
-                const targetRole = nextRoles[infra] ?? target.role;
-                if ((ROLE_RANK[callerRole] ?? 0) <= (ROLE_RANK[targetRole] ?? 0)) {
-                    throw new HttpError(
-                        403,
-                        `A ${callerRole.replace('_', ' ')} cannot remove a ${targetRole} from this organization`,
-                    );
-                }
-            }
+            const { toRemove, error } = authorizeMemberRemoval(
+                callerOwnedInfras,
+                nextRoles,
+                infraIds,
+            );
+            if (error) throw new HttpError(error.status, error.message);
 
             for (const infra of toRemove) delete nextRoles[infra];
             const remaining = Object.keys(nextRoles);

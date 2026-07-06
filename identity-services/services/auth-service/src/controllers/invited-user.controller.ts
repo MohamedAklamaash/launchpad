@@ -84,14 +84,14 @@ export const RemoveMemberFromOrg = async (req: Request, res: Response) => {
     try {
         const token = getAuthHeader(req);
         const payload = verifyAccessToken(token);
-        if (payload.role !== USER_ROLE.SUPER_ADMIN && payload.role !== USER_ROLE.ADMIN) {
-            throw new HttpError(403, 'Only admins can remove members');
-        }
+        const super_user = await superAdminMiddleware(payload);
         const { userId } = req.params as { userId: string };
         const { infra_ids } = (req.body ?? {}) as { infra_ids?: string[] };
+        if (infra_ids !== undefined && !Array.isArray(infra_ids)) {
+            throw new HttpError(400, 'infra_ids must be an array');
+        }
         const result = await invitedUserFacade.removeFromOrg(
-            payload.sub,
-            payload.role,
+            super_user.infra_id,
             userId,
             infra_ids ?? [],
         );
