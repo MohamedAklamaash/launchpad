@@ -90,7 +90,7 @@ export const RemoveMemberFromOrg = async (req: Request, res: Response) => {
         const result = await invitedUserFacade.removeFromOrg(
             super_user.infra_id,
             userId,
-            infra_ids ?? [],
+            Array.isArray(infra_ids) ? infra_ids : [],
         );
         return res.status(200).json(result);
     } catch (error: unknown) {

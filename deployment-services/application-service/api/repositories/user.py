@@ -73,14 +73,19 @@ class UserRepository:
             infra = Infrastructure.objects.filter(id=iid).first()
             if infra:
                 infra.invited_users.add(user)
-                # Per-infra role only. Falling back to the user's global role would grant their
-                # highest role on every infra they're invited to — least-privilege USER instead.
-                role = roles.get(str(iid)) or UserRole.USER
-                InfrastructureUserRole.objects.update_or_create(
+                # Per-infra role only — never the user's global role, which would grant their
+                # highest role on every infra. A missing entry defaults to USER on create, but an
+                # existing edge is only rewritten when the event carries an explicit role, so a
+                # replayed/legacy event with a sparse roles map can't downgrade a live ADMIN.
+                role = roles.get(str(iid))
+                edge, created = InfrastructureUserRole.objects.get_or_create(
                     infrastructure=infra,
                     user=user,
-                    defaults={"role": role},
+                    defaults={"role": role or UserRole.USER},
                 )
+                if not created and role and edge.role != role:
+                    edge.role = role
+                    edge.save(update_fields=["role"])
             else:
                 missing.append(str(iid))
         return missing

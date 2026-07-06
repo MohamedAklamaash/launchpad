@@ -71,6 +71,26 @@ jobs:
       - name: TypeScript
         run: pnpm -r --workspace-root=false exec tsc --noEmit
 
+      - name: Unit tests (auth-service)
+        run: pnpm --filter auth-service test
+
+  test-python:
+    name: Tests (application-service)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r deployment-services/requirements.txt pytest==9.1.1 pytest-django==4.12.0
+
+      - name: application-service tests
+        run: python -m pytest -q
+        working-directory: deployment-services/application-service
+
   check-frontend:
     name: Lint & Typecheck (frontend)
     runs-on: ubuntu-latest

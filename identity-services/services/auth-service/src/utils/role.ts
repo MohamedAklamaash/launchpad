@@ -43,7 +43,7 @@ export const authorizeMemberRemoval = (
         };
     }
     const scope = requestedInfraIds.length ? requestedInfraIds : Object.keys(targetRoles);
-    const toRemove = scope.filter((infra) => owned.has(infra) && infra in targetRoles);
+    const toRemove = scope.filter((infra) => owned.has(infra) && Object.hasOwn(targetRoles, infra));
     if (!toRemove.length) {
         return {
             toRemove: [],
