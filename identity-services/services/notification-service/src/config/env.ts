@@ -34,6 +34,9 @@ const envSchema = z.object({
 
     AUTH_SERVICE_URL: z.string(),
     GATEWAY_SERVICE_URL: z.string(),
+    // Public dashboard URL for CTA buttons in lifecycle emails. Optional: when unset, emails
+    // simply omit the button rather than link somewhere broken.
+    DASHBOARD_URL: z.string().url().optional(),
 });
 
 export const env = createEnv(envSchema, {

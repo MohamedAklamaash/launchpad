@@ -7,7 +7,7 @@ import {
 } from '@launchpad/common';
 import { getAuthEmailTemplate } from '@/templates/auth-email.template';
 import { getForgotPasswordTemplate } from '@/templates/forgot-password.template';
-import { getInfraEmailTemplate } from '@/templates/infra-email.template';
+import { getInfraEmailTemplate, getInfraEmailSubject } from '@/templates/infra-email.template';
 import { sendMail } from '@/service/mail.service';
 import { notificationService } from '@/service/notification.service';
 import { env } from '@/config/env';
@@ -74,8 +74,14 @@ export const userEventsWorker = new Worker(
                     );
                 }
 
-                const html = getInfraEmailTemplate(event, infra_name, user_name, error);
-                const subject = `Launchpad — Infrastructure ${event.replace(/_/g, ' ')}`;
+                const html = getInfraEmailTemplate(
+                    event,
+                    infra_name,
+                    user_name,
+                    error,
+                    env.DASHBOARD_URL,
+                );
+                const subject = getInfraEmailSubject(event, infra_name);
 
                 logger.info({ job_id: job.id, email, event }, 'Sending infra notification email');
                 await sendMail(email, subject, html);
