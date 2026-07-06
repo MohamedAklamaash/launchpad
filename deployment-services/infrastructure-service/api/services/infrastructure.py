@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import logging
 from django.db import transaction
@@ -13,6 +14,17 @@ from api.models.environment import Environment
 from api.services.infra_queue import InfraQueue
 
 logger = logging.getLogger(__name__)
+
+_AWS_ACCOUNT_ID = re.compile(r"\d{12}")
+
+
+def normalize_account_id(code) -> str:
+    """AWS account ids are exactly 12 digits. Reject anything else at the boundary — a malformed
+    code otherwise fails deep in AssumeRole and poisons derived S3/DynamoDB backend names."""
+    account_id = str(code).strip()
+    if not _AWS_ACCOUNT_ID.fullmatch(account_id):
+        raise ValueError("AWS Account ID must be exactly 12 digits.")
+    return account_id
 
 cloud_cb = CircuitBreaker(
     name="CloudProviderAPI",
@@ -68,6 +80,7 @@ class InfrastructureService:
             raise ValueError("Only AWS is currently supported as a cloud provider.")
         if not infra_data.get("code"):
             raise ValueError("AWS Account ID is required in the 'code' field for AWS infrastructure.")
+        infra_data["code"] = normalize_account_id(infra_data["code"])
 
         dev_mode = is_dev_mode(app_config.mode)
         infra_data.pop("is_mock", None)
@@ -206,15 +219,23 @@ class InfrastructureService:
         if 'max_cpu' in update_data or 'max_memory' in update_data:
             new_cpu = float(update_data.get('max_cpu', infra.max_cpu))
             new_mem = float(update_data.get('max_memory', infra.max_memory))
-            
+
             # Note: Infrastructure service doesn't have Application model
             # Validation against current usage should be done in application service
             # or via an API call to application service
             # For now, we'll allow the update and rely on application service validation
-            
+
             infra.max_cpu = new_cpu
             infra.max_memory = new_mem
             update_fields.extend(['max_cpu', 'max_memory'])
+
+        if 'code' in update_data:
+            # Correcting a typo'd account id is only safe before onboarding; afterwards the assumed
+            # role, state backend, and provisioned resources are all bound to the original account.
+            if infra.is_cloud_authenticated:
+                raise ValueError("Account ID cannot be changed after onboarding.")
+            infra.code = normalize_account_id(update_data['code'])
+            update_fields.append('code')
         
         if update_fields:
             infra.save(update_fields=update_fields)
