@@ -28,6 +28,7 @@ class InfrastructureSerializer:
             max_cpu=instance.max_cpu,
             max_memory=instance.max_memory,
             is_cloud_authenticated=instance.is_cloud_authenticated,
+            code=instance.code,
             metadata=instance.metadata,
             created_at=instance.created_at,
             updated_at=instance.updated_at,
