@@ -25,10 +25,12 @@ export const renderEmail = (opts: EmailOptions): string => {
     } = opts;
     const year = new Date().getFullYear();
 
+    // Padding on the <td>, not the <a>: Outlook's Word engine drops top/bottom padding on an
+    // inline anchor, which would collapse the button to text height. bgcolor guards the washout.
     const ctaHtml = cta
         ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:30px 0 0;">
-             <tr><td style="border-radius:10px;background:#2e8fe6;">
-               <a href="${cta.url}" target="_blank" style="display:inline-block;padding:13px 32px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:10px;">${cta.label}</a>
+             <tr><td bgcolor="#2e8fe6" style="border-radius:10px;background:#2e8fe6;padding:13px 32px;text-align:center;">
+               <a href="${cta.url}" target="_blank" style="font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;">${cta.label}</a>
              </td></tr>
            </table>`
         : '';
@@ -41,17 +43,17 @@ export const renderEmail = (opts: EmailOptions): string => {
   <meta name="color-scheme" content="dark">
   <title>${heading}</title>
 </head>
-<body style="margin:0;padding:0;background:#09090b;">
+<body bgcolor="#09090b" style="margin:0;padding:0;background:#09090b;">
   <span style="display:none;max-height:0;overflow:hidden;opacity:0;color:#09090b;">${preheader}</span>
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#09090b;padding:32px 16px;">
-    <tr><td align="center">
-      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#131316;border:1px solid #26262b;border-radius:18px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
-        <tr><td style="height:3px;background:linear-gradient(90deg,#1f6fc4,#2e8fe6,#7dd3fc);font-size:0;line-height:0;">&nbsp;</td></tr>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#09090b" style="background:#09090b;">
+    <tr><td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" bgcolor="#131316" style="max-width:600px;width:100%;background:#131316;border:1px solid #26262b;border-radius:18px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+        <tr><td style="height:3px;background:#2e8fe6;background:linear-gradient(90deg,#1f6fc4,#2e8fe6,#7dd3fc);font-size:0;line-height:0;">&nbsp;</td></tr>
         <tr><td style="padding:22px 40px;border-bottom:1px solid #26262b;background:radial-gradient(120% 160% at 0% 0%, rgba(46,143,230,0.12), transparent 60%);">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
             <td style="vertical-align:middle;">
               <table role="presentation" cellpadding="0" cellspacing="0"><tr>
-                <td style="width:38px;height:38px;border-radius:10px;background:linear-gradient(140deg,#2e8fe6,#0b5aa0);text-align:center;vertical-align:middle;font-size:18px;line-height:38px;color:#ffffff;">&#9650;</td>
+                <td bgcolor="#2e8fe6" style="width:38px;height:38px;border-radius:10px;background:#2e8fe6;background:linear-gradient(140deg,#2e8fe6,#0b5aa0);text-align:center;vertical-align:middle;font-size:18px;line-height:38px;color:#ffffff;">&#9650;</td>
                 <td style="padding-left:12px;vertical-align:middle;color:#f4f4f5;font-size:18px;font-weight:700;letter-spacing:-0.3px;">Launchpad</td>
               </tr></table>
             </td>
@@ -67,8 +69,8 @@ export const renderEmail = (opts: EmailOptions): string => {
           ${ctaHtml}
           ${contentHtml}
         </td></tr>
-        <tr><td style="padding:22px 40px;border-top:1px solid #26262b;background:#0e0e10;">
-          <p style="margin:0;font-size:12px;line-height:1.6;color:#71717a;">This is a transactional message for your Launchpad account.<br>&copy; ${year} Launchpad &mdash; deploy to your own AWS account in minutes.</p>
+        <tr><td bgcolor="#0e0e10" style="padding:22px 40px;border-top:1px solid #26262b;background:#0e0e10;">
+          <p style="margin:0;font-size:12px;line-height:1.6;color:#8a8a94;">This is a transactional message for your Launchpad account.<br>&copy; ${year} Launchpad &mdash; deploy to your own AWS account in minutes.</p>
         </td></tr>
       </table>
     </td></tr>

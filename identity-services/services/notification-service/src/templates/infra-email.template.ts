@@ -11,7 +11,7 @@ const EVENT_LABELS: Record<
         title: 'Your environment is live',
         color: '#34d399',
         label: 'Active',
-        intro: 'is live. Your AWS environment is ready — you can start shipping applications to it.',
+        intro: 'is live and ready — you can start shipping applications to it.',
     },
     provision_failure: {
         eyebrow: 'Environment · Provisioning',
@@ -112,14 +112,14 @@ export const getInfraEmailTemplate = (
     const detailsCard = `<div style="margin:26px 0 0;padding:20px 22px;background:#0e0e10;border:1px solid #26262b;border-radius:12px;">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
           <tr>
-            <td style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:1px;color:#71717a;text-transform:uppercase;">Environment</td>
+            <td style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:1px;color:#8a8a94;text-transform:uppercase;">Environment</td>
             <td align="right" style="font-size:14px;font-weight:600;color:#f4f4f5;">${name}</td>
           </tr>
           <tr>
-            <td style="padding-top:14px;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:1px;color:#71717a;text-transform:uppercase;">Status</td>
+            <td style="padding-top:14px;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:1px;color:#8a8a94;text-transform:uppercase;">Status</td>
             <td align="right" style="padding-top:14px;">
               <span style="display:inline-block;padding:4px 13px;border-radius:999px;border:1px solid ${color};color:${color};font-size:12px;font-weight:600;">
-                <span style="display:inline-block;width:7px;height:7px;border-radius:999px;background:${color};vertical-align:middle;margin-right:6px;"></span>${label}
+                <span style="color:${color};font-size:9px;vertical-align:middle;">&#9679;</span>&nbsp;${label}
               </span>
             </td>
           </tr>
@@ -130,7 +130,7 @@ export const getInfraEmailTemplate = (
     const guidanceCard =
         isFailure && guidance
             ? `<div style="margin:16px 0 0;padding:18px 20px;background:#0e0e10;border:1px solid #26262b;border-left:3px solid ${color};border-radius:10px;">
-             <div style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:1px;color:#71717a;text-transform:uppercase;margin:0 0 8px;">What to do next</div>
+             <div style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:1px;color:#8a8a94;text-transform:uppercase;margin:0 0 8px;">What to do next</div>
              <p style="margin:0;font-size:14px;line-height:1.6;color:#d4d4d8;">${guidance}</p>
            </div>`
             : '';
