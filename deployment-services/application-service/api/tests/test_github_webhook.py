@@ -81,6 +81,16 @@ def test_push_to_untracked_branch_ignored(mock_enqueue, app_row):
 
 @pytest.mark.django_db
 @patch("api.views.application.DeploymentQueue.enqueue_deployment")
+def test_malformed_form_payload_is_400_not_500(mock_enqueue, app_row):
+    app, secret = app_row
+    body = urlencode({"payload": '"a bare string, not an object"'})
+    resp = _post(app.id, body, "application/x-www-form-urlencoded", secret)
+    assert resp.status_code == 400
+    mock_enqueue.assert_not_called()
+
+
+@pytest.mark.django_db
+@patch("api.views.application.DeploymentQueue.enqueue_deployment")
 def test_empty_tracked_branch_ignores_instead_of_deploying_every_branch(mock_enqueue, app_row):
     app, secret = app_row
     app.project_branch = ""

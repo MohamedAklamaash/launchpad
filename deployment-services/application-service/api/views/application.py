@@ -445,6 +445,8 @@ def application_github_webhook(request, app_id: str):
         try:
             payload = json.loads(payload['payload'])
         except (TypeError, ValueError):
+            payload = None
+        if not isinstance(payload, dict):
             logger.warning(f"GitHub webhook for app {app_id}: unparseable form payload")
             return Response({"error": "Invalid payload"}, status=status.HTTP_400_BAD_REQUEST)
 

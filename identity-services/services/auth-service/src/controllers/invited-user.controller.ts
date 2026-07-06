@@ -88,7 +88,7 @@ export const RemoveMemberFromOrg = async (req: Request, res: Response) => {
         const { userId } = req.params as { userId: string };
         const { infra_ids } = (req.body ?? {}) as { infra_ids?: string[] };
         const result = await invitedUserFacade.removeFromOrg(
-            super_user.infra_id ?? [],
+            super_user.infra_id,
             userId,
             infra_ids ?? [],
         );
