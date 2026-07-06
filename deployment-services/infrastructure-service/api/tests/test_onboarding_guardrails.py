@@ -78,7 +78,7 @@ def test_reprovision_allowed_when_onboarded(make_infra, _stub_infra_queue):
 
 # ---- account id validation ----
 
-@pytest.mark.parametrize("bad", ["abc", "123", "1234567890123", "111-111-1111", " 12345678901"])
+@pytest.mark.parametrize("bad", ["abc", "123", "1234567890123", "111-111-1111", " 12345678901", "١٢٣٤٥٦٧٨٩٠١٢"])
 def test_create_rejects_malformed_account_id(make_user, bad):
     from api.services.infrastructure import InfrastructureService
 
@@ -140,4 +140,26 @@ def test_update_rejects_malformed_code_before_onboarding(make_infra):
     with pytest.raises(ValueError):
         InfrastructureService().update_infrastructure_config(
             user_id=infra.user_id, infra_id=infra.id, update_data={"code": "not-an-account"}
+        )
+
+
+def test_update_rejects_empty_code(make_infra):
+    from api.services.infrastructure import InfrastructureService
+
+    infra = make_infra(is_cloud_authenticated=False)
+    with pytest.raises(ValueError):
+        InfrastructureService().update_infrastructure_config(
+            user_id=infra.user_id, infra_id=infra.id, update_data={"code": ""}
+        )
+
+
+def test_non_owner_cannot_change_code(make_infra, make_user):
+    from api.services.infrastructure import InfrastructureService
+
+    infra = make_infra(is_cloud_authenticated=False)
+    outsider = make_user()
+    infra.invited_users.add(outsider)
+    with pytest.raises(PermissionError):
+        InfrastructureService().update_infrastructure_config(
+            user_id=outsider.id, infra_id=infra.id, update_data={"code": "222222222222"}
         )

@@ -15,7 +15,7 @@ from api.services.infra_queue import InfraQueue
 
 logger = logging.getLogger(__name__)
 
-_AWS_ACCOUNT_ID = re.compile(r"\d{12}")
+_AWS_ACCOUNT_ID = re.compile(r"[0-9]{12}")
 
 
 def normalize_account_id(code) -> str:
