@@ -55,6 +55,7 @@ class InfrastructureResponse:
     invited_users: List[Any]
     status: str = "UNKNOWN"
     is_mock: bool = False
+    code: Optional[str] = None
 
     def to_dict(self):
         data = asdict(self)

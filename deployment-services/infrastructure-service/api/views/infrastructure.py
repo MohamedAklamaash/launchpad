@@ -56,6 +56,7 @@ class InfraUpdateSerializer(serializers.Serializer):
     name = serializers.CharField(required=False)
     max_cpu = serializers.FloatField(required=False, help_text="New CPU units ceiling")
     max_memory = serializers.FloatField(required=False, help_text="New memory ceiling in MB")
+    code = serializers.CharField(required=False, help_text="AWS Account ID; correctable only before onboarding")
 
 class ErrorSerializer(serializers.Serializer):
     error = serializers.CharField()
@@ -183,6 +184,14 @@ def infrastructure_reprovision(request: HttpRequest, infra_id):
     # so without this an invited (view-only) user could force a real Terraform re-run.
     if str(infra['user_id']) != str(request.user.id):
         return Response({'error': 'Only the infrastructure owner can reprovision it'}, status=status.HTTP_403_FORBIDDEN)
+    # Reprovision re-runs Terraform, which needs assumed-role credentials. An un-onboarded infra has
+    # none, so provisioning would only ever fail into ERROR — reject with an actionable message.
+    if not infra.get('is_cloud_authenticated'):
+        return Response(
+            {'error': 'Infrastructure is not onboarded yet. Run the AWS onboarding script to create '
+                      'the deployment role; provisioning starts automatically once it succeeds.'},
+            status=status.HTTP_409_CONFLICT,
+        )
     try:
         env = Environment.objects.get(infrastructure_id=infra_id)
         if env.status in ('PROVISIONING', 'DESTROYING'):

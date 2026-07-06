@@ -75,7 +75,7 @@ jobs:
         run: pnpm --filter auth-service test
 
   test-python:
-    name: Tests (application-service)
+    name: Tests (deployment-services)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -92,6 +92,10 @@ jobs:
       - name: application-service tests
         run: python -m pytest -q
         working-directory: deployment-services/application-service
+
+      - name: infrastructure-service tests
+        run: python -m pytest -q
+        working-directory: deployment-services/infrastructure-service
 
   check-frontend:
     name: Lint & Typecheck (frontend)
