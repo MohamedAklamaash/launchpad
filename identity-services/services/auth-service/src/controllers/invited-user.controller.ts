@@ -87,10 +87,13 @@ export const RemoveMemberFromOrg = async (req: Request, res: Response) => {
         const super_user = await superAdminMiddleware(payload);
         const { userId } = req.params as { userId: string };
         const { infra_ids } = (req.body ?? {}) as { infra_ids?: string[] };
+        if (infra_ids !== undefined && !Array.isArray(infra_ids)) {
+            throw new HttpError(400, 'infra_ids must be an array');
+        }
         const result = await invitedUserFacade.removeFromOrg(
             super_user.infra_id,
             userId,
-            Array.isArray(infra_ids) ? infra_ids : [],
+            infra_ids ?? [],
         );
         return res.status(200).json(result);
     } catch (error: unknown) {

@@ -74,10 +74,11 @@ class UserRepository:
             if infra:
                 infra.invited_users.add(user)
                 # Per-infra role only — never the user's global role, which would grant their
-                # highest role on every infra. A missing entry defaults to USER on create, but an
-                # existing edge is only rewritten when the event carries an explicit role, so a
-                # replayed/legacy event with a sparse roles map can't downgrade a live ADMIN.
-                role = roles.get(str(iid))
+                # highest role on every infra. An absent or unrecognized entry defaults to USER on
+                # create, but an existing edge is only rewritten when the event carries an explicit
+                # valid role, so a replayed/sparse/malformed event can't downgrade a live ADMIN.
+                raw = roles.get(str(iid))
+                role = raw if raw in UserRole.values else None
                 edge, created = InfrastructureUserRole.objects.get_or_create(
                     infrastructure=infra,
                     user=user,

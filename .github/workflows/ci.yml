@@ -83,6 +83,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: deployment-services/requirements.txt
 
       - name: Install dependencies
         run: pip install -r deployment-services/requirements.txt pytest==9.1.1 pytest-django==4.12.0

@@ -65,3 +65,24 @@ def test_non_member_gets_no_role(make):
     infra, _, member = make()
     assert InfrastructurePermissions.get_user_role(infra, member.id) is None
     assert InfrastructurePermissions.can_view_application(infra, member.id) is False
+
+
+@pytest.mark.django_db
+def test_role_on_one_infra_grants_nothing_on_another_infra_of_same_owner(schema_db):
+    from api.models.user import User
+    from api.models.infrastructure import Infrastructure
+    from api.models.infrastructure_user_role import InfrastructureUserRole
+
+    owner = User.objects.create(id=uuid.uuid4(), email=f"o-{uuid.uuid4()}@e.io", user_name="o")
+    infra_a = Infrastructure.objects.create(
+        user=owner, name="a", cloud_provider="aws", max_cpu=1, max_memory=1, code="111111111111"
+    )
+    infra_b = Infrastructure.objects.create(
+        user=owner, name="b", cloud_provider="aws", max_cpu=1, max_memory=1, code="222222222222"
+    )
+    member = User.objects.create(id=uuid.uuid4(), email=f"m-{uuid.uuid4()}@e.io", user_name="m")
+    InfrastructureUserRole.objects.create(infrastructure=infra_b, user=member, role=UserRole.ADMIN)
+    infra_b.invited_users.add(member)
+
+    assert InfrastructurePermissions.get_user_role(infra_a, member.id) is None
+    assert InfrastructurePermissions.can_view_application(infra_a, member.id) is False
