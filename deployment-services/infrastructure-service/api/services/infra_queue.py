@@ -1,3 +1,4 @@
+import os
 import socket
 import redis
 import json
@@ -8,6 +9,13 @@ from django.db import models
 from datetime import timedelta
 
 logger = logging.getLogger(__name__)
+
+# A DB lock is considered abandoned once it hasn't been refreshed for this long. The provisioning
+# worker heartbeats the lock every INFRA_LOCK_HEARTBEAT_SECONDS while a job is dispatched, so a
+# live job (running or queued in the executor) never crosses this window — only a crashed worker's
+# lock goes stale. Keep it well above the heartbeat interval so a transient DB blip can't strand a
+# live job. The reaper re-enqueues on the same window (see run_worker.STUCK_THRESHOLD).
+DB_LOCK_STALENESS_SECONDS = int(os.environ.get("INFRA_DB_LOCK_STALENESS_SECONDS", "900"))
 
 _BLPOP_TIMEOUT = 5
 
@@ -76,10 +84,17 @@ class InfraQueue:
     
     @staticmethod
     def enqueue_destroy(infra_id: str):
-        """Add destroy job to queue"""
+        """Add destroy job to queue (deduplicated on the shared per-infra lock, so a
+        double-click or event replay can't spawn concurrent terraform destroys)."""
+        lock_key = f"{LOCK_PREFIX}{infra_id}"
+        if _redis().exists(lock_key):
+            logger.warning(f"Destroy job {infra_id} already queued or processing, skipping")
+            return False
         job = {"infra_id": infra_id, "action": "destroy"}
         _redis().rpush(DESTROY_QUEUE, json.dumps(job))
+        _redis().setex(lock_key, LOCK_TTL, "queued")
         logger.info(f"Enqueued destroy job for {infra_id}")
+        return True
     
     @staticmethod
     def dequeue_provision(timeout: int = _BLPOP_TIMEOUT):
@@ -110,12 +125,19 @@ class InfraQueue:
         lock_key = f"{LOCK_PREFIX}{infra_id}"
         _redis().delete(lock_key)
         logger.info(f"Released lock for {infra_id}")
+
+    @staticmethod
+    def has_lock(infra_id: str) -> bool:
+        """Whether the Redis dedup key is still set — i.e. the job is enqueued or in flight.
+        The reaper uses this as the authoritative 'is it lost' signal for a row with no DB lock,
+        instead of guessing from timestamps."""
+        return bool(_redis().exists(f"{LOCK_PREFIX}{infra_id}"))
     
     @staticmethod
     def acquire_db_lock(infra_id: str, worker_id: str) -> bool:
         """Acquire application-level lock using conditional update (no DB row lock)."""
         from api.models.environment import Environment
-        stale_threshold = timezone.now() - timedelta(hours=1)
+        stale_threshold = timezone.now() - timedelta(seconds=DB_LOCK_STALENESS_SECONDS)
         updated = Environment.objects.filter(
             infrastructure_id=infra_id
         ).filter(
@@ -124,15 +146,42 @@ class InfraQueue:
         if not updated:
             logger.warning(f"Infrastructure {infra_id} is already locked")
         return bool(updated)
-    
+
     @staticmethod
-    def release_db_lock(infra_id: str):
-        """Release database-level lock"""
+    def refresh_db_lock(infra_id: str, worker_id: str) -> bool:
+        """Heartbeat: push the lock's freshness forward, but only while this worker still owns it.
+        Owner-scoping means a refresh that races a handover (another worker stole a stale lock)
+        matches zero rows and no-ops instead of clobbering the new owner."""
+        from api.models.environment import Environment
+        updated = Environment.objects.filter(
+            infrastructure_id=infra_id, locked_by=worker_id
+        ).update(locked_at=timezone.now())
+        return bool(updated)
+
+    @staticmethod
+    def release_db_lock(infra_id: str, worker_id: str = None):
+        """Release the DB lock. With worker_id, release only if this worker still holds it, so a
+        job that overran the staleness window and was handed off can't wipe the new owner's lock.
+        Without worker_id (startup/reaper cleanup of a known-dead worker), release unconditionally."""
         from api.models.environment import Environment
         try:
-            Environment.objects.filter(infrastructure_id=infra_id).update(
-                locked_at=None,
-                locked_by=None
-            )
+            qs = Environment.objects.filter(infrastructure_id=infra_id)
+            if worker_id is not None:
+                qs = qs.filter(locked_by=worker_id)
+            qs.update(locked_at=None, locked_by=None)
         except Exception as e:
             logger.error(f"Failed to release DB lock for {infra_id}: {e}")
+
+    @staticmethod
+    def bump_reap_count(infra_id: str) -> int:
+        """Count how many times the reaper has re-driven this infra, so a job that keeps hard-
+        crashing the worker mid-run can be parked in ERROR instead of re-running terraform against
+        the customer account forever. Cleared on a clean finish."""
+        key = f"reap:count:{infra_id}"
+        count = _redis().incr(key)
+        _redis().expire(key, DB_LOCK_STALENESS_SECONDS * 4)
+        return int(count)
+
+    @staticmethod
+    def clear_reap_count(infra_id: str):
+        _redis().delete(f"reap:count:{infra_id}")
