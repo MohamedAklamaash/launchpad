@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import logging
 
 from django.conf import settings
@@ -427,6 +428,7 @@ def application_github_webhook(request, app_id: str):
 
     # Constant-time compare avoids leaking the secret via timing side channels.
     if not hmac.compare_digest(signature_header, expected_signature):
+        logger.warning(f"GitHub webhook signature mismatch for app {app_id}")
         return Response({"error": "Invalid signature"}, status=status.HTTP_401_UNAUTHORIZED)
 
     # GitHub sends a "ping" when the webhook is first configured; ack it without enqueuing.
@@ -435,11 +437,28 @@ def application_github_webhook(request, app_id: str):
     if event_type != 'push':
         return Response({"status": "ignored", "event": event_type}, status=status.HTTP_200_OK)
 
-    # Only redeploy when the push targets the branch this app actually tracks.
+    # GitHub's default content type (application/x-www-form-urlencoded) wraps the JSON body in a
+    # `payload` form field; application/json sends it directly. Unwrap the form case so the ref
+    # check sees the real event instead of silently treating every push as branch-less.
     payload = request.data if isinstance(request.data, dict) else {}
+    if 'ref' not in payload and 'payload' in payload:
+        try:
+            payload = json.loads(payload['payload'])
+        except (TypeError, ValueError):
+            logger.warning(f"GitHub webhook for app {app_id}: unparseable form payload")
+            return Response({"error": "Invalid payload"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # An app with no tracked branch has no deploy target — ignore rather than deploy every branch.
+    if not app.project_branch:
+        logger.info(f"GitHub webhook for app {app_id}: no tracked branch configured; ignoring push")
+        return Response({"status": "ignored", "reason": "no tracked branch configured"},
+                        status=status.HTTP_200_OK)
+
+    # Only redeploy when the push targets the branch this app actually tracks.
     pushed_ref = payload.get('ref', '')
-    expected_ref = f"refs/heads/{app.project_branch}" if app.project_branch else None
-    if expected_ref and pushed_ref != expected_ref:
+    expected_ref = f"refs/heads/{app.project_branch}"
+    if pushed_ref != expected_ref:
+        logger.info(f"GitHub webhook for app {app_id}: ignoring push to {pushed_ref} (tracks {expected_ref})")
         return Response(
             {"status": "ignored", "reason": f"pushed ref {pushed_ref} != tracked {expected_ref}"},
             status=status.HTTP_200_OK,

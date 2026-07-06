@@ -1,6 +1,7 @@
 import logging
 from django.db import transaction, IntegrityError
 from api.models.user import User as UserModel
+from shared.enums.user_role import UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +73,14 @@ class UserRepository:
             infra = Infrastructure.objects.filter(id=iid).first()
             if infra:
                 infra.invited_users.add(user)
-                role = roles.get(str(iid)) or user_data.get("role")
-                if role:
-                    InfrastructureUserRole.objects.update_or_create(
-                        infrastructure=infra,
-                        user=user,
-                        defaults={"role": role},
-                    )
+                # Per-infra role only. Falling back to the user's global role would grant their
+                # highest role on every infra they're invited to — least-privilege USER instead.
+                role = roles.get(str(iid)) or UserRole.USER
+                InfrastructureUserRole.objects.update_or_create(
+                    infrastructure=infra,
+                    user=user,
+                    defaults={"role": role},
+                )
             else:
                 missing.append(str(iid))
         return missing
