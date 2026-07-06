@@ -201,6 +201,31 @@ def infrastructure_reprovision(request: HttpRequest, infra_id):
 
 
 @extend_schema(
+    summary="Re-issue the onboarding token for a not-yet-onboarded infrastructure",
+    description=(
+        "Mints a fresh single-use onboarding token (and returns it once) so a customer whose "
+        "token expired or was already consumed can retry onboarding without recreating the infra. "
+        "Rejected once the infra is onboarded."
+    ),
+    parameters=[OpenApiParameter("infra_id", OpenApiTypes.STR, OpenApiParameter.PATH)],
+    request=None,
+    responses={200: InfraCreateResponseSerializer, 403: ErrorSerializer, 404: ErrorSerializer, 409: ErrorSerializer},
+)
+@csrf_exempt
+@api_view(['POST'])
+def infrastructure_reissue_token(request: HttpRequest, infra_id):
+    try:
+        result = infrastructure_service.reissue_onboarding_token(user_id=request.user.id, infra_id=infra_id)
+        if result is None:
+            return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(result, status=status.HTTP_200_OK)
+    except PermissionError as e:
+        return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_409_CONFLICT)
+
+
+@extend_schema(
     summary="Onboarding callback from customer's AWS account",
     description=(
         "Called by app_scripts/create_aws_role.sh after the customer creates LaunchpadDeploymentRole in "

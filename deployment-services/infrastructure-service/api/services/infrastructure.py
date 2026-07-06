@@ -102,6 +102,21 @@ class InfrastructureService:
         serialized_infra["onboarding_token"] = onboarding_token
         return serialized_infra
 
+    def reissue_onboarding_token(self, user_id, infra_id):
+        """Mint a fresh onboarding token for an infra that isn't onboarded yet, so a user can
+        recover from an expired or already-consumed token without deleting and recreating."""
+        infra = self.repo.get_by_id(user_id, infra_id)
+        if not infra:
+            return None
+        if not InfrastructurePermissions.can_update_infrastructure(infra, user_id):
+            raise PermissionError("Only the infrastructure owner can reissue its onboarding token")
+        if infra.is_cloud_authenticated:
+            raise ValueError("Infrastructure is already onboarded; no onboarding token is needed.")
+        onboarding_token = infra.issue_onboarding_token()
+        serialized_infra = InfrastructureSerializer.serialize_instance(infra)
+        serialized_infra["onboarding_token"] = onboarding_token
+        return serialized_infra
+
     def delete_infrastructure(self, user_id, infra_id):
         """Delete infrastructure — enqueues async destroy for ACTIVE infra, immediate delete otherwise."""
         infra = self.repo.get_by_id(user_id, infra_id)
@@ -131,7 +146,16 @@ class InfrastructureService:
                 if env.status == 'ACTIVE':
                     env.status = 'DESTROYING'
                     env.save(update_fields=['status'])
-                    InfraQueue.enqueue_destroy(str(infra_id))
+                    # A stale per-infra lock (crashed worker) would make enqueue_destroy a silent
+                    # no-op, leaving the env DESTROYING with no job. A destroy intent must win over a
+                    # dead provision lock, so force it and re-enqueue. In the rare window where a
+                    # provision just acquired the lock but hasn't written status=PROVISIONING yet
+                    # (env still reads ACTIVE), this force can drop that live provision's dedup key;
+                    # the destroy then loses acquire_db_lock to the heartbeated provision and the
+                    # env ends ACTIVE — honest state, and a re-delete succeeds.
+                    if not InfraQueue.enqueue_destroy(str(infra_id)):
+                        InfraQueue.release_lock(str(infra_id))
+                        InfraQueue.enqueue_destroy(str(infra_id))
                     logger.info(f"Infrastructure {infra_id} destroy enqueued")
                     return True  # Don't delete DB records yet — worker handles that
 

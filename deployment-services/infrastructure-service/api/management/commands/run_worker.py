@@ -3,10 +3,12 @@ import time
 import uuid
 import signal
 import logging
+import threading
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, Future
 from django.core.management.base import BaseCommand
 from django.db import connections, transaction
+from api.services.infra_queue import DB_LOCK_STALENESS_SECONDS
 
 os.environ['DB_CONN_MAX_AGE'] = '0'
 
@@ -26,6 +28,137 @@ MAX_PROVISION_WORKERS = int(os.environ.get('INFRA_MAX_PROVISION_WORKERS', '5'))
 MAX_DESTROY_WORKERS = int(os.environ.get('INFRA_MAX_DESTROY_WORKERS', '3'))
 SHUTDOWN_TIMEOUT = int(os.environ.get('INFRA_SHUTDOWN_TIMEOUT', '300'))
 PROVISION_PER_DESTROY = int(os.environ.get('INFRA_PROVISION_PER_DESTROY', '1'))
+# The reaper re-enqueues a job whose lock hasn't been heartbeated for this long. Clamped to the DB
+# lock staleness: re-enqueuing sooner than acquire_db_lock will grant the lock just churns the
+# queue, and both windows must agree on when a job counts as crashed.
+STUCK_THRESHOLD = max(int(os.environ.get('INFRA_STUCK_THRESHOLD_SECONDS', str(DB_LOCK_STALENESS_SECONDS))),
+                      DB_LOCK_STALENESS_SECONDS)
+REAP_INTERVAL = int(os.environ.get('INFRA_REAP_INTERVAL_SECONDS', '120'))
+# The running/queued job refreshes its lock this often; must be well under DB_LOCK_STALENESS_SECONDS
+# so a live job never looks crashed to the reaper or acquire_db_lock.
+LOCK_HEARTBEAT_SECONDS = int(os.environ.get('INFRA_LOCK_HEARTBEAT_SECONDS', '60'))
+# A job the reaper has re-driven this many times is treated as poison and parked in ERROR rather
+# than re-run against the customer account indefinitely.
+MAX_REAP_ATTEMPTS = int(os.environ.get('INFRA_MAX_REAP_ATTEMPTS', '5'))
+
+
+class LockHeartbeat:
+    """Keeps a dispatched job's DB lock fresh from dispatch until the job finishes, so a job that
+    is running (or waiting in the executor) is never mistaken for a crashed one and stolen by
+    another worker — which would run terraform twice against a single customer account.
+
+    The whole crash-safety design leans on this thread staying alive, so a transient DB error
+    (connection drop, failover — plausible across an hours-long apply with per-thread connections)
+    must NOT kill it: it recycles the connection and keeps beating."""
+
+    def __init__(self, infra_id, lock_token, interval=LOCK_HEARTBEAT_SECONDS):
+        self._infra_id = infra_id
+        self._lock_token = lock_token
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def _run(self):
+        from api.services.infra_queue import InfraQueue
+        try:
+            while not self._stop.wait(self._interval):
+                try:
+                    if not InfraQueue.refresh_db_lock(self._infra_id, self._lock_token):
+                        logger.warning(f"Heartbeat: lock for {self._infra_id} no longer owned")
+                except Exception:
+                    logger.warning(f"Heartbeat refresh failed for {self._infra_id}; retrying", exc_info=True)
+                    _close_db()
+        finally:
+            _close_db()
+
+    def stop(self):
+        self._stop.set()
+
+
+def reap_stuck_environments(stale_threshold_seconds):
+    """Re-enqueue environments stuck mid-flight past the staleness window.
+
+    A hard worker crash loses the in-memory job while the Environment stays PROVISIONING/
+    DESTROYING, and startup recovery only fires on the next restart. Running this periodically
+    re-drives a stuck row without waiting for a bounce. Re-execution is safe: a live job heartbeats
+    its lock (LockHeartbeat), so only a genuinely crashed one crosses the window here, and
+    acquire_db_lock's matching staleness gate is the single arbiter of who actually runs.
+    """
+    from datetime import timedelta
+    from django.db.models import Q
+    from django.utils import timezone
+    from api.models.environment import Environment
+    from api.services.infra_queue import InfraQueue
+    from api.services.notification import NotificationService
+
+    cutoff = timezone.now() - timedelta(seconds=stale_threshold_seconds)
+    # A stale DB lock means a crashed run. A null DB lock is ambiguous: it's either a job still
+    # waiting in the queue (its Redis dedup key is set) or one whose queue entry was lost (key
+    # gone). The dedup key — not a timestamp — is the authoritative signal, so the null case is
+    # filtered per-row below (updated_at is unreliable: save(update_fields=['status']) never bumps
+    # it, so an ACTIVE->DESTROYING row would look aged the instant it's enqueued).
+    stuck = Environment.objects.filter(
+        status__in=['PROVISIONING', 'DESTROYING'],
+    ).filter(
+        Q(locked_at__lt=cutoff) | Q(locked_at__isnull=True)
+    ).select_related('infrastructure')
+
+    reaped = 0
+    for env in stuck:
+        infra_id = str(env.infrastructure_id)
+        if env.locked_at is None and InfraQueue.has_lock(infra_id):
+            # No DB lock but the dedup key is still set: the job is queued and waiting its turn,
+            # not lost. Reaping now would just duplicate it.
+            continue
+        if InfraQueue.bump_reap_count(infra_id) > MAX_REAP_ATTEMPTS:
+            logger.error(f"Reaper giving up on {infra_id} after {MAX_REAP_ATTEMPTS} attempts; parking in ERROR")
+            Environment.objects.filter(infrastructure_id=infra_id).update(
+                status='ERROR', locked_at=None, locked_by=None,
+                error_message=f"{env.status} abandoned after {MAX_REAP_ATTEMPTS} recovery attempts",
+            )
+            InfraQueue.release_lock(infra_id)
+            InfraQueue.clear_reap_count(infra_id)
+            try:
+                infra = env.infrastructure
+                NotificationService.send_provision_failure(
+                    str(infra.user_id), infra_id, infra.name,
+                    f"{env.status.capitalize()} could not be recovered")
+            except Exception:
+                logger.error(f"Failed to notify abandonment for {infra_id}", exc_info=True)
+            continue
+        # Release only the Redis dedup lock so the job can be re-queued. The DB lock is left intact:
+        # acquire_db_lock's staleness window is the single execution gate, so a genuinely-live job
+        # keeps a heartbeated lock the re-dispatch can't steal.
+        InfraQueue.release_lock(infra_id)
+        if env.status == 'DESTROYING':
+            InfraQueue.enqueue_destroy(infra_id)
+        else:
+            InfraQueue.enqueue_provision(infra_id)
+        logger.warning(f"Reaper re-enqueued stuck {env.status} environment {infra_id}")
+        reaped += 1
+    return reaped
+
+
+def ensure_infra_created_published(infra):
+    """Self-heal a swallowed onboarding-callback publish. The callback publishes infra.created
+    best-effort; on a broker hiccup it logs and proceeds, leaving read-models (application-service)
+    without the infra so later app deploys fail. Re-publish when provisioning runs — the consumer
+    is idempotent on infra_id, so a redundant event is harmless."""
+    if not infra.is_cloud_authenticated:
+        return
+    try:
+        from api.messaging.producer.producer import infra_producer
+        infra_producer.publish_infra_created(
+            user_id=infra.user_id, infra_id=infra.id, name=infra.name,
+            cloud_provider=infra.cloud_provider, max_cpu=infra.max_cpu, max_memory=infra.max_memory,
+            code=infra.code, is_cloud_authenticated=infra.is_cloud_authenticated, is_mock=infra.is_mock,
+            metadata=infra.metadata or {},
+        )
+    except Exception:
+        logger.error(f"Failed to (re)publish infra.created for {infra.id}", exc_info=True)
 
 
 def _close_db():
@@ -91,13 +224,15 @@ class Command(BaseCommand):
         else:
             logger.info(f"Worker {worker_id} skipping recovery — another worker is handling it")
 
-        def run_provision(infra_id):
+        def run_provision(infra_id, lock_token):
             infra = None
             try:
                 infra = Infrastructure.objects.get(id=infra_id)
+                ensure_infra_created_published(infra)
                 TerraformWorker.provision(infra_id)
                 env = Environment.objects.get(infrastructure_id=infra_id)
                 if env.status == 'ACTIVE':
+                    InfraQueue.clear_reap_count(infra_id)
                     NotificationService.send_provision_success(str(infra.user_id), infra_id, infra.name)
                 elif env.status == 'ERROR':
                     NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
@@ -109,11 +244,11 @@ class Command(BaseCommand):
                     except Exception:
                         pass
             finally:
-                InfraQueue.release_db_lock(infra_id)
+                InfraQueue.release_db_lock(infra_id, lock_token)
                 InfraQueue.release_lock(infra_id)
                 _close_db()
 
-        def run_destroy(infra_id, worker_id):
+        def run_destroy(infra_id, lock_token):
             infra = None
             try:
                 # Call destroy FIRST so it can handle missing Infrastructure rows
@@ -135,6 +270,7 @@ class Command(BaseCommand):
                 try:
                     env = Environment.objects.get(infrastructure_id=infra_id)
                     if env.status == 'DESTROYED':
+                        InfraQueue.clear_reap_count(infra_id)
                         NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
                         user_id = infra.user_id
                         with transaction.atomic():
@@ -159,26 +295,36 @@ class Command(BaseCommand):
                     except Exception:
                         pass
             finally:
-                InfraQueue.release_db_lock(infra_id)
+                InfraQueue.release_db_lock(infra_id, lock_token)
                 InfraQueue.release_lock(infra_id)
                 _close_db()
+
+        # A lock is owned by a per-dispatch token, not the process id, so if this same worker
+        # re-acquires an infra it previously ran, the earlier job's release can't wipe the new
+        # job's lock (its token differs). worker_id stays as the token prefix for traceability.
+        def _new_lock_token():
+            return f"{worker_id}:{uuid.uuid4().hex[:8]}"
 
         def dispatch_provision():
             job = InfraQueue.dequeue_provision(timeout=1)
             if not job:
                 return False
             infra_id = job['infra_id']
-            if not InfraQueue.acquire_db_lock(infra_id, worker_id):
+            lock_token = _new_lock_token()
+            if not InfraQueue.acquire_db_lock(infra_id, lock_token):
                 logger.warning(f"Could not acquire lock for {infra_id}, re-enqueueing")
                 InfraQueue.enqueue_provision(infra_id)
                 return False
+            heartbeat = LockHeartbeat(infra_id, lock_token)
+            heartbeat.start()
             try:
-                future: Future = provision_pool.submit(run_provision, infra_id)
-                future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'provision'))
+                future: Future = provision_pool.submit(run_provision, infra_id, lock_token)
+                future.add_done_callback(lambda f: (heartbeat.stop(), _log_future_exception(f, infra_id, 'provision')))
                 pending_futures.append(future)
                 return True
             except Exception:
-                InfraQueue.release_db_lock(infra_id)
+                heartbeat.stop()
+                InfraQueue.release_db_lock(infra_id, lock_token)
                 InfraQueue.release_lock(infra_id)
                 logger.error(f"Failed to submit provision job for {infra_id}", exc_info=True)
                 raise
@@ -188,24 +334,40 @@ class Command(BaseCommand):
             if not job:
                 return False
             infra_id = job['infra_id']
-            if not InfraQueue.acquire_db_lock(infra_id, worker_id):
+            lock_token = _new_lock_token()
+            if not InfraQueue.acquire_db_lock(infra_id, lock_token):
                 logger.warning(f"Could not acquire destroy lock for {infra_id}, re-enqueueing")
                 InfraQueue.enqueue_destroy(infra_id)
                 return False
+            heartbeat = LockHeartbeat(infra_id, lock_token)
+            heartbeat.start()
             try:
-                future: Future = destroy_pool.submit(run_destroy, infra_id, worker_id)
-                future.add_done_callback(lambda f: _log_future_exception(f, infra_id, 'destroy'))
+                future: Future = destroy_pool.submit(run_destroy, infra_id, lock_token)
+                future.add_done_callback(lambda f: (heartbeat.stop(), _log_future_exception(f, infra_id, 'destroy')))
                 pending_futures.append(future)
                 return True
             except Exception:
-                InfraQueue.release_db_lock(infra_id)
+                heartbeat.stop()
+                InfraQueue.release_db_lock(infra_id, lock_token)
                 InfraQueue.release_lock(infra_id)
                 logger.error(f"Failed to submit destroy job for {infra_id}", exc_info=True)
                 raise
 
+        reap_lock_key = "infra:worker:reap_lock"
         provision_counter = 0
+        last_reap = time.monotonic()
         while running:
             try:
+                # Periodically re-drive stuck jobs. A short-lived Redis lock rate-limits it to
+                # once per interval across all workers, so a fleet doesn't reap in lockstep.
+                if time.monotonic() - last_reap >= REAP_INTERVAL:
+                    last_reap = time.monotonic()
+                    if r.set(reap_lock_key, worker_id, nx=True, ex=max(REAP_INTERVAL - 5, 10)):
+                        try:
+                            reap_stuck_environments(STUCK_THRESHOLD)
+                        except Exception:
+                            logger.error("Reaper sweep failed", exc_info=True)
+
                 # Always drain destroy queue first (non-blocking), then provision
                 had_destroy = dispatch_destroy()
                 if had_destroy:
