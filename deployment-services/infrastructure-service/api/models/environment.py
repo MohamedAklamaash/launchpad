@@ -29,13 +29,16 @@ class Environment(models.Model):
             ('PENDING', 'Pending'),
             ('PROVISIONING', 'Provisioning'),
             ('ACTIVE', 'Active'),
+            ('UPDATING', 'Updating'),
             ('ERROR', 'Error'),
             ('DESTROYING', 'Destroying'),
             ('DESTROYED', 'Destroyed'),
         ],
         default='PENDING'
     )
-    
+
+    first_activated_at = models.DateTimeField(null=True, blank=True)
+
     logs = models.TextField(null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
     retry_count = models.IntegerField(default=0)

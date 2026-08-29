@@ -2,6 +2,7 @@ import os
 import re
 import uuid
 import logging
+import ipaddress
 from django.db import transaction
 from api.repositories.infrastructure import InfrastructureRepository
 from api.serializers.infrastructure import InfrastructureSerializer
@@ -16,6 +17,7 @@ from api.services.infra_queue import InfraQueue
 logger = logging.getLogger(__name__)
 
 _AWS_ACCOUNT_ID = re.compile(r"[0-9]{12}")
+_AWS_REGION = re.compile(r"[a-z]{2}-(gov-)?[a-z]+-\d")
 
 
 def normalize_account_id(code) -> str:
@@ -25,6 +27,20 @@ def normalize_account_id(code) -> str:
     if not _AWS_ACCOUNT_ID.fullmatch(account_id):
         raise ValueError("AWS Account ID must be exactly 12 digits.")
     return account_id
+
+
+def validate_vpc_cidr(value) -> None:
+    """Reject anything that isn't a strict CIDR literal."""
+    try:
+        ipaddress.ip_network(str(value), strict=True)
+    except ValueError:
+        raise ValueError("Invalid vpc_cidr")
+
+
+def validate_aws_region(value) -> None:
+    """Reject anything not shaped like an AWS region name."""
+    if not isinstance(value, str) or not _AWS_REGION.fullmatch(value):
+        raise ValueError("Invalid aws_region")
 
 cloud_cb = CircuitBreaker(
     name="CloudProviderAPI",
@@ -71,6 +87,15 @@ class InfrastructureService:
                 k: v for k, v in infra_data["metadata"].items()
                 if k not in {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
             }
+            # vpc_cidr and aws_region are f-string-interpolated into generated HCL by the
+            # terraform worker, so a crafted value could close the block and inject arbitrary
+            # config into a subprocess. Shape-validate them at the boundary.
+            vpc_cidr = infra_data["metadata"].get("vpc_cidr")
+            if vpc_cidr is not None:
+                validate_vpc_cidr(vpc_cidr)
+            aws_region = infra_data["metadata"].get("aws_region")
+            if aws_region is not None:
+                validate_aws_region(aws_region)
         if infra_data.get("cloud_provider"):
             infra_data["cloud_provider"] = infra_data["cloud_provider"].lower()
         cloud_provider = infra_data.get("cloud_provider")
@@ -130,6 +155,21 @@ class InfrastructureService:
         serialized_infra["onboarding_token"] = onboarding_token
         return serialized_infra
 
+    def _enqueue_env_destroy(self, env, infra_id):
+        env.status = 'DESTROYING'
+        env.save(update_fields=['status'])
+        # A stale per-infra lock (crashed worker) would make enqueue_destroy a silent
+        # no-op, leaving the env DESTROYING with no job. A destroy intent must win over a
+        # dead provision lock, so force it and re-enqueue. In the rare window where a
+        # provision just acquired the lock but hasn't written status=PROVISIONING yet
+        # (env still reads ACTIVE), this force can drop that live provision's dedup key;
+        # the destroy then loses acquire_db_lock to the heartbeated provision and the
+        # env ends ACTIVE — honest state, and a re-delete succeeds.
+        if not InfraQueue.enqueue_destroy(str(infra_id)):
+            InfraQueue.release_lock(str(infra_id))
+            InfraQueue.enqueue_destroy(str(infra_id))
+        logger.info(f"Infrastructure {infra_id} destroy enqueued")
+
     def delete_infrastructure(self, user_id, infra_id):
         """Delete infrastructure — enqueues async destroy for ACTIVE infra, immediate delete otherwise."""
         infra = self.repo.get_by_id(user_id, infra_id)
@@ -148,34 +188,31 @@ class InfrastructureService:
             try:
                 env = Environment.objects.get(infrastructure_id=infra_id)
 
-                # PROVISIONING/DESTROYING have a Terraform run in flight — deleting now
-                # would orphan or race live AWS resources, so block.
-                if env.status == 'PROVISIONING':
-                    raise ValueError(f"Cannot delete while status is {env.status}. Wait for provisioning to complete.")
+                # PROVISIONING/UPDATING/DESTROYING have a Terraform run in flight —
+                # deleting now would orphan or race live AWS resources, so block.
+                if env.status in ('PROVISIONING', 'UPDATING'):
+                    raise ValueError(f"Cannot delete while status is {env.status}. Wait for the operation to complete.")
 
                 if env.status == 'DESTROYING':
                     raise ValueError("Infrastructure is already being destroyed.")
 
-                if env.status == 'ACTIVE':
-                    env.status = 'DESTROYING'
-                    env.save(update_fields=['status'])
-                    # A stale per-infra lock (crashed worker) would make enqueue_destroy a silent
-                    # no-op, leaving the env DESTROYING with no job. A destroy intent must win over a
-                    # dead provision lock, so force it and re-enqueue. In the rare window where a
-                    # provision just acquired the lock but hasn't written status=PROVISIONING yet
-                    # (env still reads ACTIVE), this force can drop that live provision's dedup key;
-                    # the destroy then loses acquire_db_lock to the heartbeated provision and the
-                    # env ends ACTIVE — honest state, and a re-delete succeeds.
-                    if not InfraQueue.enqueue_destroy(str(infra_id)):
-                        InfraQueue.release_lock(str(infra_id))
-                        InfraQueue.enqueue_destroy(str(infra_id))
-                    logger.info(f"Infrastructure {infra_id} destroy enqueued")
+                # ERROR only means "no live resources" when it was reached before any
+                # AssumeRole/apply ever happened (e.g. a never-onboarded PENDING infra
+                # re-enqueued by startup recovery). Once onboarded or ever activated, a
+                # real apply may have partially run — including a failed rollback-destroy
+                # — so treat it like ACTIVE: async destroy is a safe no-op on empty state.
+                never_provisioned = (
+                    env.status == 'ERROR'
+                    and not infra.is_cloud_authenticated
+                    and env.first_activated_at is None
+                )
+                if env.status == 'ACTIVE' or (env.status == 'ERROR' and not never_provisioned):
+                    self._enqueue_env_destroy(env, infra_id)
                     return True  # Don't delete DB records yet — worker handles that
 
-                # PENDING (created, onboarding not finished — no AssumeRole, no Terraform),
-                # ERROR, or DESTROYED: no live AWS resources, delete immediately. Without
-                # this a customer who created an infra but never ran the bootstrap script
-                # would be stuck with an undeletable PENDING record.
+                # PENDING, DESTROYED, or never-provisioned ERROR: no live AWS resources,
+                # delete immediately. Without this a customer who created an infra but
+                # never ran the bootstrap script would be stuck with an undeletable record.
                 logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records")
                 env.delete()
 
