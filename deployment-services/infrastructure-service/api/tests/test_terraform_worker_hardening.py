@@ -178,11 +178,26 @@ def test_output_fetch_failure_on_activated_environment_stays_active(make_infra_e
     assert "reading outputs failed" in env.error_message
 
 
-def test_output_fetch_failure_on_first_provision_reports_error(make_infra_env):
+def test_output_fetch_failure_on_first_provision_stays_provisioning(make_infra_env):
+    """Self-healing: an unconfirmed first apply must stay reap-eligible, never ERROR or ACTIVE."""
     infra, env = make_infra_env()
     _save_outputs_after_failed_output_fetch(infra)
     env.refresh_from_db()
-    assert env.status == "ERROR"
+    assert env.status == "PROVISIONING"
+    assert env.first_activated_at is None
+
+
+def test_provision_survives_output_fetch_hiccup_on_first_apply(make_infra_env):
+    """End-to-end: a successful first apply whose output read fails must stay re-drivable."""
+    infra, env = make_infra_env(status="PENDING")
+    apply_ok = {"success": True, "logs": "[COMMAND] apply ok"}
+    output_fail = {"success": False, "error": "state lock timeout", "logs": ""}
+    with patch("api.services.terraform_worker.authenticate_infrastructure"), \
+            patch.object(TerraformWorker, "_exec_tf", side_effect=[apply_ok, output_fail]):
+        TerraformWorker.provision(str(infra.id))
+    env.refresh_from_db()
+    assert env.status == "PROVISIONING"
+    assert env.first_activated_at is None
 
 
 # ---- #6 provision-failure gate on a previously-activated environment ----

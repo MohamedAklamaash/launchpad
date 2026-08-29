@@ -377,12 +377,6 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 TerraformWorker._handle_provision_failure(infra_id, result, tf_vars, credentials, region, account_id, retry_count)
                 return
 
-            # Stamp activation the moment apply succeeds — real resources now exist even
-            # if the output-parsing step below fails, and the auto-destroy gate in
-            # _handle_provision_failure must see that on the very next run.
-            Environment.objects.filter(infrastructure_id=infra_id, first_activated_at__isnull=True).update(
-                first_activated_at=timezone.now()
-            )
             TerraformWorker._save_outputs(infra_id, result, tf_vars, credentials, region, account_id)
             logger.info(f"Infrastructure {infra_id} provisioned successfully")
 
@@ -540,19 +534,24 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     target=_publish_env_delayed, kwargs=_env_kwargs, daemon=True
                 ).start())
         else:
-            # Apply already succeeded — real resources exist — so a failure to read
-            # them back must never regress an activated environment to ERROR.
             logger.error(f"Failed to fetch terraform outputs for {infra_id}: {output_result.get('error')}")
             combined_logs = (apply_result.get("logs", "") + "\n[OUTPUT FETCH FAILED]\n"
                               + output_result.get("error", ""))[-MAX_LOG_CHARS:]
-            with transaction.atomic():
-                env = Environment.objects.get(infrastructure_id=infra_id)
-                status = "ACTIVE" if env.first_activated_at is not None else "ERROR"
-                Environment.objects.filter(infrastructure_id=infra_id).update(
-                    status=status,
-                    logs=combined_logs,
-                    error_message=f"Apply succeeded but reading outputs failed: {output_result.get('error', 'Unknown error')}",
-                )
+            env = Environment.objects.get(infrastructure_id=infra_id)
+            if env.first_activated_at is not None:
+                # Env was live before this run — a failure to read outputs back must
+                # never regress it to ERROR; restore it, don't leave it PROVISIONING.
+                with transaction.atomic():
+                    Environment.objects.filter(infrastructure_id=infra_id).update(
+                        status="ACTIVE", logs=combined_logs,
+                        error_message=f"Apply succeeded but reading outputs failed: {output_result.get('error', 'Unknown error')}",
+                    )
+            else:
+                # First-time provision: apply succeeded but we couldn't confirm it, so
+                # first_activated_at stays unstamped. Leave status as PROVISIONING —
+                # the reaper re-drives it and a retried apply is a safe no-op.
+                with transaction.atomic():
+                    Environment.objects.filter(infrastructure_id=infra_id).update(logs=combined_logs)
 
     @staticmethod
     def _pre_destroy_cleanup(credentials: dict, region: str, infra_id: str):
