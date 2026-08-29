@@ -101,7 +101,7 @@ def reap_stuck_environments(stale_threshold_seconds):
     # filtered per-row below (updated_at is unreliable: save(update_fields=['status']) never bumps
     # it, so an ACTIVE->DESTROYING row would look aged the instant it's enqueued).
     stuck = Environment.objects.filter(
-        status__in=['PROVISIONING', 'DESTROYING'],
+        status__in=['PROVISIONING', 'UPDATING', 'DESTROYING'],
     ).filter(
         Q(locked_at__lt=cutoff) | Q(locked_at__isnull=True)
     ).select_related('infrastructure')
@@ -114,18 +114,29 @@ def reap_stuck_environments(stale_threshold_seconds):
             # not lost. Reaping now would just duplicate it.
             continue
         if InfraQueue.bump_reap_count(infra_id) > MAX_REAP_ATTEMPTS:
-            logger.error(f"Reaper giving up on {infra_id} after {MAX_REAP_ATTEMPTS} attempts; parking in ERROR")
+            # An UPDATING environment that was live before this run still has real
+            # resources serving traffic — park it back to ACTIVE, not ERROR. A stuck
+            # DESTROYING run may have already torn down some resources, so it must not
+            # be reported healthy; park it ERROR like any other abandoned run.
+            if env.first_activated_at is not None and env.status != 'DESTROYING':
+                park_status = 'ACTIVE'
+                park_message = f"{env.status} update could not be recovered after {MAX_REAP_ATTEMPTS} attempts; environment returned to ACTIVE"
+            else:
+                park_status = 'ERROR'
+                park_message = f"{env.status} abandoned after {MAX_REAP_ATTEMPTS} recovery attempts"
+            logger.error(f"Reaper giving up on {infra_id} after {MAX_REAP_ATTEMPTS} attempts; parking in {park_status}")
             Environment.objects.filter(infrastructure_id=infra_id).update(
-                status='ERROR', locked_at=None, locked_by=None,
-                error_message=f"{env.status} abandoned after {MAX_REAP_ATTEMPTS} recovery attempts",
+                status=park_status, locked_at=None, locked_by=None,
+                error_message=park_message,
             )
             InfraQueue.release_lock(infra_id)
             InfraQueue.clear_reap_count(infra_id)
             try:
                 infra = env.infrastructure
-                NotificationService.send_provision_failure(
-                    str(infra.user_id), infra_id, infra.name,
-                    f"{env.status.capitalize()} could not be recovered")
+                notify = NotificationService.send_destroy_failure if env.status == 'DESTROYING' \
+                    else NotificationService.send_provision_failure
+                notify(str(infra.user_id), infra_id, infra.name,
+                       f"{env.status.capitalize()} could not be recovered")
             except Exception:
                 logger.error(f"Failed to notify abandonment for {infra_id}", exc_info=True)
             continue
@@ -202,7 +213,7 @@ class Command(BaseCommand):
         if r.set(recovery_lock_key, worker_id, nx=True, ex=60):
             try:
                 from api.services.infra_queue import DESTROY_QUEUE
-                for env in Environment.objects.filter(status__in=['PENDING', 'PROVISIONING']).select_related('infrastructure'):
+                for env in Environment.objects.filter(status__in=['PENDING', 'PROVISIONING', 'UPDATING']).select_related('infrastructure'):
                     infra_id_str = str(env.infrastructure_id)
                     InfraQueue.release_lock(infra_id_str)
                     already_queued = any(infra_id_str in item for item in r.lrange(PROVISION_QUEUE, 0, -1))
@@ -233,7 +244,10 @@ class Command(BaseCommand):
                 env = Environment.objects.get(infrastructure_id=infra_id)
                 if env.status == 'ACTIVE':
                     InfraQueue.clear_reap_count(infra_id)
-                    NotificationService.send_provision_success(str(infra.user_id), infra_id, infra.name)
+                    if env.error_message:
+                        NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message)
+                    else:
+                        NotificationService.send_provision_success(str(infra.user_id), infra_id, infra.name)
                 elif env.status == 'ERROR':
                     NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
             except Exception as e:
