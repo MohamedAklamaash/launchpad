@@ -261,9 +261,9 @@ def test_delete_active_enqueues_destroy_and_keeps_rows(make_infra):
 @pytest.mark.parametrize("onboarded,stamp_activated", [(True, False), (False, True)])
 def test_delete_error_after_real_apply_enqueues_destroy(make_infra, onboarded, stamp_activated):
     """ERROR after onboarding or a prior activation must async-destroy, not orphan resources."""
-    from django.utils import timezone
     from api.models.environment import Environment
     from api.models.infrastructure import Infrastructure
+    from django.utils import timezone
 
     infra = make_infra(is_cloud_authenticated=onboarded)
     if stamp_activated:

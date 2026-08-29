@@ -389,7 +389,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             with transaction.atomic():
                 if env is not None and env.first_activated_at is not None:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
-                        status="ACTIVE", error_message=f"Update failed: {str(e)}"
+                        status="ACTIVE", error_message=f"Update failed: {e!s}"
                     )
                 else:
                     Environment.objects.filter(infrastructure_id=infra_id).update(

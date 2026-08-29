@@ -145,7 +145,7 @@ def test_reaper_parks_stuck_destroy_in_error_not_active(make_env):
         first_activated_at=timezone.now() - timedelta(days=7),
     )
     with patch("api.services.notification.NotificationService") as N:
-        count, Q = _reap(3600, reap_count=99)
+        count, _ = _reap(3600, reap_count=99)
     assert count == 0
     env.refresh_from_db()
     assert env.status == "ERROR"
