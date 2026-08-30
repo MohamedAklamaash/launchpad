@@ -35,6 +35,7 @@ class AppDetailSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     name = serializers.CharField()
     description = serializers.CharField(allow_null=True)
+    infrastructure_id = serializers.UUIDField()
     status = serializers.ChoiceField(choices=["CREATED","BUILDING","DEPLOYING","ACTIVE","SLEEPING","FAILED"])
     is_sleeping = serializers.BooleanField()
     cpu = serializers.FloatField()
@@ -182,6 +183,7 @@ class ApplicationDetailDeleteView(APIView):
             return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
         return Response({
             "id": str(app.id), "name": app.name, "description": app.description,
+            "infrastructure_id": str(app.infrastructure_id),
             "status": app.status, "is_sleeping": app.is_sleeping,
             "cpu": app.alloted_cpu, "memory": app.alloted_memory, "storage": app.alloted_storage,
             "port": app.port, "url": app.project_remote_url, "branch": app.project_branch,

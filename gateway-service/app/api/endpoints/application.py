@@ -28,6 +28,7 @@ class AppDetailResponse(BaseModel):
     id: str
     name: str
     description: Optional[str] = None
+    infrastructure_id: str
     status: str = Field(description="CREATED | BUILDING | DEPLOYING | ACTIVE | SLEEPING | FAILED")
     is_sleeping: bool
     cpu: float

@@ -25,7 +25,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck } from 'lucide-react';
 import { Infrastructure, InvitedUserSummary } from '@/types/infrastructure';
 import { ApplicationSummary } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
@@ -33,6 +33,8 @@ import { applicationApi } from '@/lib/api/applications';
 import { authApi } from '@/lib/api/auth';
 import { useAuthStore } from '@/lib/store/auth';
 import { toast } from 'sonner';
+import { DatabasesSection } from '@/components/databases-section';
+import { PolicyRefreshDialog } from '@/components/policy-refresh-dialog';
 
 const ROLE_COLORS: Record<string, string> = {
   super_admin: 'text-brand',
@@ -75,6 +77,7 @@ export default function InfrastructureDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [reprovisioning, setReprovisioning] = useState(false);
+  const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -372,6 +375,8 @@ export default function InfrastructureDetailPage() {
         )}
       </div>
 
+      <DatabasesSection infraId={id} environmentActive={infra.status === 'ACTIVE'} canManage={isOwner} />
+
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
         <SheetContent className="w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto resize-x">
           <SheetHeader className="mb-6">
@@ -423,6 +428,23 @@ export default function InfrastructureDetailPage() {
                 </div>
               </div>
             </div>
+
+            {isOwner && infra.is_cloud_authenticated && (
+              <div className="space-y-2">
+                <p className="eyebrow px-1">AWS Permissions</p>
+                <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-foreground">Refresh IAM Policy</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Re-apply the latest deployment policy if actions start failing with AccessDenied.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
+                    <ShieldCheck className="w-3.5 h-3.5" /> Refresh
+                  </Button>
+                </div>
+              </div>
+            )}
 
             <div className="space-y-2">
               <p className="eyebrow px-1">Users ({infra.invited_users?.length ?? 0})</p>
@@ -553,6 +575,8 @@ export default function InfrastructureDetailPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <PolicyRefreshDialog open={refreshPolicyOpen} onOpenChange={setRefreshPolicyOpen} infraId={id} />
     </motion.div>
   );
 }
