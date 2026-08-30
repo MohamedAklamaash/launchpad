@@ -105,3 +105,19 @@ class NotificationService:
     @staticmethod
     def send_destroy_failure(user_id: str, infra_id: str, infra_name: str, error: str):
         _notify("destroy_failure", user_id, infra_id, infra_name, error)
+
+    @staticmethod
+    def send_database_create_success(user_id: str, infra_id: str, infra_name: str):
+        _notify("database_create_success", user_id, infra_id, infra_name)
+
+    @staticmethod
+    def send_database_create_failure(user_id: str, infra_id: str, infra_name: str, error: str):
+        _notify("database_create_failure", user_id, infra_id, infra_name, error)
+
+    @staticmethod
+    def send_database_delete_success(user_id: str, infra_id: str, infra_name: str):
+        _notify("database_delete_success", user_id, infra_id, infra_name)
+
+    @staticmethod
+    def send_database_delete_failure(user_id: str, infra_id: str, infra_name: str, error: str):
+        _notify("database_delete_failure", user_id, infra_id, infra_name, error)

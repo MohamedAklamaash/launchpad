@@ -1,7 +1,6 @@
 import logging
 import json
 import re
-import hashlib
 from api.models import Application, Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from aws.session import create_boto3_session
@@ -10,6 +9,10 @@ from aws.ecs import ECSClient
 from aws.alb import ALBClient
 from aws.ecr import ECRClient
 from botocore.exceptions import ClientError
+from shared.aws.app_security_group import (
+    app_security_group_name,
+    get_or_create_app_security_group as _shared_get_or_create_app_sg,
+)
 import time
 
 logger = logging.getLogger(__name__)
@@ -312,29 +315,10 @@ class ApplicationDeploymentService:
         return target_group_arn
     
     def _get_app_sg_name(self, application: Application) -> str:
-        suffix = hashlib.md5(str(application.infrastructure_id).encode()).hexdigest()[:8]
-        return f"infra-{str(application.infrastructure_id)[:8]}-{suffix}-fargate-sg"
+        return app_security_group_name(application.infrastructure_id)
 
     def _get_or_create_app_security_group(self, ec2, application: Application, environment: Environment, alb_sg_id: str) -> str:
-        sg_name = self._get_app_sg_name(application)
-
-        existing = ec2.describe_security_groups(
-            Filters=[
-                {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
-                {'Name': 'group-name', 'Values': [sg_name]}
-            ]
-        )['SecurityGroups']
-
-        if existing:
-            sg_id = existing[0]['GroupId']
-            logger.info(f"Reusing existing app security group {sg_name} ({sg_id})")
-        else:
-            sg_id = ec2.create_security_group(
-                GroupName=sg_name,
-                Description=f"Security group for app {application.name} in infra {application.infrastructure_id}",
-                VpcId=environment.vpc_id
-            )['GroupId']
-            logger.info(f"Created app security group {sg_name} ({sg_id})")
+        sg_id = _shared_get_or_create_app_sg(ec2, application.infrastructure_id, environment.vpc_id)
 
         for port in {80, application.port}:
             try:

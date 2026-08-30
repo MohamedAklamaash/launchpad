@@ -207,6 +207,13 @@ class InfrastructureService:
                     and env.first_activated_at is None
                 )
                 if env.status == 'ACTIVE' or (env.status == 'ERROR' and not never_provisioned):
+                    from api.models.database import Database
+                    live_dbs = Database.objects.filter(environment=env).exclude(status='DELETED')
+                    if live_dbs.exists():
+                        raise ValueError(
+                            f"Cannot delete infrastructure. {live_dbs.count()} database(s) still "
+                            "exist. Delete all databases first."
+                        )
                     self._enqueue_env_destroy(env, infra_id)
                     return True  # Don't delete DB records yet — worker handles that
 

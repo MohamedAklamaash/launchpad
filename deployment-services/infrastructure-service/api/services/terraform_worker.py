@@ -1,5 +1,6 @@
 import os
 import time
+import uuid
 import threading
 import subprocess
 import logging
@@ -11,10 +12,13 @@ from django.db import transaction
 from django.utils import timezone
 from api.models.infrastructure import Infrastructure
 from api.models.environment import Environment
+from api.models.database import Database
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from api.services.infrastructure import validate_vpc_cidr, validate_aws_region
+from api.validators import validate_database_name
 from api.common.envs.application import app_config
-from api.mock.aws_fixtures import resolve_region, synthesize_environment_outputs
+from api.mock.aws_fixtures import resolve_region, synthesize_environment_outputs, synthesize_database_outputs
+from shared.aws.app_security_group import get_or_create_app_security_group
 from shared.mode import is_dev_mode
 
 logger = logging.getLogger(__name__)
@@ -23,6 +27,18 @@ TF_MODULES_DIR = Path(__file__).resolve().parent.parent.parent / "infra" / "aws"
 MAX_RETRIES = 3
 MOCK_PROVISION_DELAY_SECONDS = 4
 MAX_LOG_CHARS = 256_000
+
+# Live (non-terminal) statuses whose Database row still gets a module block emitted into
+# generated config. DELETING/DELETED are excluded on purpose: omitting the block is what
+# makes terraform plan the destroy for a DELETING row.
+_LIVE_DB_STATUSES_FOR_CONFIG = ['PENDING', 'PROVISIONING', 'ACTIVE', 'ERROR']
+
+_ENGINE_MODULE_SOURCE = {
+    'postgres': 'rds',
+    'mysql': 'rds',
+    'redis': 'elasticache',
+    'docdb': 'docdb',
+}
 
 
 class TerraformWorker:
@@ -194,10 +210,124 @@ class TerraformWorker:
             shutil.rmtree(work_dir, ignore_errors=True)
     
     @staticmethod
+    def _ensure_app_security_group(credentials: dict, region: str, vpc_id: str, infra_id: str) -> str:
+        """Get-or-create the per-infra Fargate app SG so its id exists before a DB module's
+        ingress rule can reference it — for both a brand-new and an already-provisioned env."""
+        ec2 = boto3.client(
+            "ec2", region_name=region,
+            aws_access_key_id=credentials.get("aws_access_key_id"),
+            aws_secret_access_key=credentials.get("aws_secret_access_key"),
+            aws_session_token=credentials.get("aws_session_token"),
+        )
+        return get_or_create_app_security_group(ec2, infra_id, vpc_id)
+
+    @staticmethod
+    def _db_module_blocks(infra_id: str, env_name: str, app_sg_id: str) -> str:
+        """One Terraform module block (+ outputs) per live Database row for this
+        environment. A row not included here (DELETING/DELETED) has no module block, so
+        terraform plans its destroy on the next apply."""
+        live_dbs = TerraformWorker._live_dbs_for_infra(infra_id)
+
+        blocks = []
+        for db in live_dbs:
+            # Defense-in-depth: re-check at the interpolation sink, not just the create-time
+            # API boundary — a row written before this check existed must not still reach here.
+            validate_database_name(db.name)
+            mod = db.module_name()
+            source = TerraformWorker._ENGINE_MODULE_SOURCE[db.engine]
+
+            if db.engine in ("postgres", "mysql"):
+                blocks.append(f"""
+module "{mod}" {{
+  source                    = "./modules/rds"
+  environment                = "{env_name}"
+  engine                     = "{db.engine}"
+  engine_version              = "{db.engine_version}"
+  instance_class              = "{db.instance_class}"
+  allocated_storage           = {db.allocated_storage}
+  db_name                     = "{db.name}"
+  vpc_id                      = module.vpc.vpc_id
+  private_subnet_ids          = module.vpc.private_subnet_ids
+  app_security_group_id       = "{app_sg_id}"
+  final_snapshot_identifier   = "{db.final_snapshot_id}"
+
+  depends_on = [module.vpc]
+}}
+
+output "{mod}_endpoint" {{ value = module.{mod}.endpoint }}
+output "{mod}_port" {{ value = module.{mod}.port }}
+output "{mod}_secret_arn" {{ value = module.{mod}.secret_arn }}
+""")
+            elif db.engine == "redis":
+                blocks.append(f"""
+module "{mod}" {{
+  source                    = "./modules/elasticache"
+  environment                = "{env_name}"
+  engine_version              = "{db.engine_version}"
+  node_type                   = "{db.instance_class}"
+  db_name                     = "{db.name}"
+  vpc_id                      = module.vpc.vpc_id
+  private_subnet_ids          = module.vpc.private_subnet_ids
+  app_security_group_id       = "{app_sg_id}"
+
+  depends_on = [module.vpc]
+}}
+
+output "{mod}_endpoint" {{ value = module.{mod}.endpoint }}
+output "{mod}_port" {{ value = module.{mod}.port }}
+output "{mod}_secret_arn" {{ value = module.{mod}.secret_arn }}
+""")
+            elif db.engine == "docdb":
+                blocks.append(f"""
+module "{mod}" {{
+  source                    = "./modules/docdb"
+  environment                = "{env_name}"
+  engine_version              = "{db.engine_version}"
+  instance_class              = "{db.instance_class}"
+  allocated_storage           = {db.allocated_storage}
+  db_name                     = "{db.name}"
+  vpc_id                      = module.vpc.vpc_id
+  private_subnet_ids          = module.vpc.private_subnet_ids
+  app_security_group_id       = "{app_sg_id}"
+  final_snapshot_identifier   = "{db.final_snapshot_id}"
+
+  depends_on = [module.vpc]
+}}
+
+output "{mod}_endpoint" {{ value = module.{mod}.endpoint }}
+output "{mod}_port" {{ value = module.{mod}.port }}
+output "{mod}_secret_arn" {{ value = module.{mod}.secret_arn }}
+""")
+        return "\n".join(blocks)
+
+    @staticmethod
+    def _live_dbs_for_infra(infra_id: str):
+        """Live Database rows for infra_id, or empty if infra_id isn't a real UUID (a
+        few worker tests exercise `_exec_tf` in isolation with a synthetic id)."""
+        try:
+            uuid.UUID(str(infra_id))
+        except (ValueError, AttributeError, TypeError):
+            return Database.objects.none()
+        return Database.objects.filter(
+            environment__infrastructure_id=infra_id,
+            status__in=_LIVE_DB_STATUSES_FOR_CONFIG,
+        )
+
+    @staticmethod
+    def _db_secret_arn_refs(infra_id: str) -> str:
+        """HCL list literal of `module.<db>.secret_arn` references, for the exec-role
+        policy's `db_secret_arns` variable. A direct module-output reference (not a
+        precomputed ARN string) since RDS/DocDB secret ARNs only exist post-apply."""
+        refs = [f"module.{db.module_name()}.secret_arn" for db in TerraformWorker._live_dbs_for_infra(infra_id)]
+        return "[" + ", ".join(refs) + "]"
+
+    @staticmethod
     def _generate_config(vars: dict, infra_id: str, bucket: str, table: str, region: str, suffix: str) -> str:
         """Generate Terraform config with unique resource names"""
         env_name = f"infra-{infra_id[:8]}-{suffix}"
-        
+        db_blocks = TerraformWorker._db_module_blocks(infra_id, env_name, vars.get("db_app_sg_id", ""))
+        db_secret_arns = TerraformWorker._db_secret_arn_refs(infra_id)
+
         return f"""
 terraform {{
   backend "s3" {{
@@ -210,7 +340,11 @@ terraform {{
   required_providers {{
     aws = {{
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = ">=5.13,<6.0"
+    }}
+    random = {{
+      source  = "hashicorp/random"
+      version = ">=3.6,<4.0"
     }}
   }}
 }}
@@ -235,8 +369,9 @@ module "vpc" {{
 }}
 
 module "iam" {{
-  source      = "./modules/iam"
-  environment = "{env_name}"
+  source          = "./modules/iam"
+  environment     = "{env_name}"
+  db_secret_arns  = {db_secret_arns}
 }}
 
 module "ecs" {{
@@ -271,7 +406,7 @@ output "target_group_arn" {{ value = module.alb.target_group_arn }}
 output "ecr_repository_url" {{ value = module.ecr.repository_url }}
 output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_role_arn }}
 output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
-"""
+{db_blocks}"""
     
     @staticmethod
     def _is_transient_error(error: str) -> bool:
@@ -291,7 +426,8 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
     def _mock_provision(infra_id: str, infra: Infrastructure):
         with transaction.atomic():
             env = Environment.objects.select_for_update().get(infrastructure_id=infra_id)
-            env.status = "PROVISIONING"
+            is_update = env.first_activated_at is not None
+            env.status = "UPDATING" if is_update else "PROVISIONING"
             env.save(update_fields=['status'])
 
         logger.warning(
@@ -302,6 +438,15 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
 
         region = resolve_region(infra)
         outputs = synthesize_environment_outputs(infra, region)
+        # Dev mode skips the real EC2 boto3 call for the app SG — synthesize a
+        # deterministic id so the DB rows still get a host/port/secret_arn to display.
+        live_dbs = list(Database.objects.filter(
+            environment_id=env.id, status__in=_LIVE_DB_STATUSES_FOR_CONFIG
+        ))
+        account_id = infra.code or "mock"
+        for db in live_dbs:
+            outputs.update(synthesize_database_outputs(db, region=region, account_id=account_id))
+
         TerraformWorker._save_outputs(
             infra_id,
             {"logs": "[MOCK] synthesized environment outputs", "outputs": outputs},
@@ -322,10 +467,10 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 raise ValueError("Refusing mock provisioning against a real infrastructure")
 
             if infra.is_mock:
-                env = Environment.objects.get(infrastructure_id=infra_id)
-                if env.status == "ACTIVE":
-                    logger.warning(f"Infrastructure {infra_id} already active")
-                    return
+                # ACTIVE no longer short-circuits: a DB create/delete on an already-active
+                # mock infra legitimately re-enqueues provision() to reconcile the new
+                # module set. The only thing that decides PROVISIONING vs UPDATING is
+                # first_activated_at (never current status — see _mock_provision).
                 authenticate_infrastructure(infra)
                 infra.refresh_from_db()
                 TerraformWorker._mock_provision(infra_id, infra)
@@ -333,16 +478,18 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
 
             with transaction.atomic():
                 env = Environment.objects.select_for_update().get(infrastructure_id=infra_id)
-                if env.status == "ACTIVE":
-                    logger.warning(f"Infrastructure {infra_id} already active")
-                    return
-                env.status = "PROVISIONING"
+                # Keyed on first_activated_at, not current status: a reaped run's status may
+                # already read UPDATING/PROVISIONING rather than the ACTIVE it started from,
+                # and stomping it to PROVISIONING here would erase the UPDATING marker the
+                # rollback gate below depends on.
+                is_update = env.first_activated_at is not None
+                env.status = "UPDATING" if is_update else "PROVISIONING"
                 env.retry_count = retry_count
                 env.save(update_fields=['status', 'retry_count'])
 
             authenticate_infrastructure(infra)
             infra.refresh_from_db()
-            
+
             metadata = infra.metadata or {}
             # Re-validate at the interpolation sink, not just the create-time boundary —
             # a row written before this check existed must not still reach _generate_config.
@@ -358,15 +505,28 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 "aws_secret_access_key": metadata.get("aws_secret_access_key", ""),
                 "aws_session_token": metadata.get("aws_session_token", "")
             }
-            
+
+            # A live database needs the per-infra app SG to exist before its ingress rule
+            # can reference it. Only touched when there's actually a DB to reconcile — a
+            # plain env provision/reprovision with no databases never calls EC2.
+            db_app_sg_id = ""
+            live_db_count = Database.objects.filter(
+                environment_id=env.id, status__in=_LIVE_DB_STATUSES_FOR_CONFIG
+            ).count()
+            if live_db_count and env.vpc_id:
+                db_app_sg_id = TerraformWorker._ensure_app_security_group(
+                    credentials, region, env.vpc_id, str(infra_id)
+                )
+
             tf_vars = {
                 "environment": f"cli-{infra_id}",
                 "owner": str(infra.user_id),
                 "project": "launchpad-infra",
                 "aws_region": region,
-                "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16")
+                "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16"),
+                "db_app_sg_id": db_app_sg_id,
             }
-            
+
             logger.info(f"Running terraform apply for {infra_id}")
             result = TerraformWorker._exec_tf(
                 ["terraform", "apply", "-auto-approve", "-no-color", "-input=false"],
@@ -391,6 +551,9 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     Environment.objects.filter(infrastructure_id=infra_id).update(
                         status="ACTIVE", error_message=f"Update failed: {e!s}"
                     )
+                    Database.objects.filter(
+                        environment=env, status__in=['PENDING', 'PROVISIONING', 'DELETING']
+                    ).update(status='ERROR', error_message=f"Update failed: {e!s}")
                 else:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
                         status="ERROR", error_message=str(e)
@@ -429,6 +592,12 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     logs=((env.logs or "") + "\n[FAILED UPDATE]\n" + logs)[-MAX_LOG_CHARS:],
                     error_message=f"Update failed; environment restored to ACTIVE: {error}",
                 )
+                # Rows mid-flight in this apply have no confirmed outcome — never leave
+                # them silently stuck; ERROR is retryable (create again, or delete works
+                # from ERROR too).
+                Database.objects.filter(
+                    environment=env, status__in=['PENDING', 'PROVISIONING', 'DELETING']
+                ).update(status='ERROR', error_message=f"Update failed: {error}")
             return
 
         logger.error(f"Permanent failure, triggering destroy for {infra_id}")
@@ -450,6 +619,51 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 status="ERROR", logs=combined_logs, error_message=f"{error}\n\nCleanup: {cleanup_status}"
             )
     
+    @staticmethod
+    def _reconcile_databases(env: Environment, outputs: dict) -> list:
+        """Update every non-DELETED Database row for this environment against a
+        successful apply's outputs, and return the {id,name,engine,host,port,secret_arn,
+        status} list to publish on environment.updated v3. Must run inside the same
+        transaction as the environment save that calls it.
+
+        A DELETING row has no module block in the generated config (see
+        `_db_module_blocks`), so a successful apply means terraform already destroyed it
+        — mark it DELETED. Any other row gets its host/port/secret_arn refreshed from
+        this apply's outputs; one apply can satisfy several PENDING rows at once.
+        """
+        payload = []
+        for db in Database.objects.select_for_update().filter(environment=env).exclude(status='DELETED'):
+            if db.status == 'DELETING':
+                db.status = 'DELETED'
+                db.host = None
+                db.port = None
+                db.save(update_fields=['status', 'host', 'port', 'updated_at'])
+                continue
+
+            mod = db.module_name()
+            endpoint = outputs.get(f"{mod}_endpoint", {}).get("value")
+            if endpoint:
+                db.host = endpoint
+                port = outputs.get(f"{mod}_port", {}).get("value")
+                db.port = int(port) if port is not None else db.port
+                db.secret_arn = outputs.get(f"{mod}_secret_arn", {}).get("value")
+                db.status = 'ACTIVE'
+                db.error_message = None
+                db.save(update_fields=['host', 'port', 'secret_arn', 'status', 'error_message', 'updated_at'])
+            elif db.status not in ('ACTIVE',):
+                # Row was PENDING/PROVISIONING and its module produced no output — the
+                # apply succeeded overall but this specific resource didn't come up.
+                db.status = 'ERROR'
+                db.error_message = 'Apply succeeded but produced no output for this database'
+                db.save(update_fields=['status', 'error_message', 'updated_at'])
+
+            payload.append({
+                'id': str(db.id), 'name': db.name, 'engine': db.engine,
+                'host': db.host, 'port': db.port, 'secret_arn': db.secret_arn,
+                'status': db.status,
+            })
+        return payload
+
     @staticmethod
     def _save_outputs(infra_id, apply_result, tf_vars, credentials, region, account_id, mock_outputs=None):
         """Get terraform outputs and save to database"""
@@ -490,7 +704,9 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 env.save()
 
                 infra = Infrastructure.objects.get(id=infra_id)
-                
+
+                databases_payload = TerraformWorker._reconcile_databases(env, outputs)
+
                 from api.messaging.producer.producer import infra_producer
                 transaction.on_commit(lambda: infra_producer.publish_infra_created(
                     user_id=infra.user_id,
@@ -526,6 +742,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     target_group_arn=env.target_group_arn,
                     ecr_repository_url=env.ecr_repository_url,
                     ecs_task_execution_role_arn=env.ecs_task_execution_role_arn,
+                    databases=databases_payload,
                 )
                 def _publish_env_delayed(**kwargs):
                     time.sleep(3)
@@ -546,6 +763,15 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                         status="ACTIVE", logs=combined_logs,
                         error_message=f"Apply succeeded but reading outputs failed: {output_result.get('error', 'Unknown error')}",
                     )
+                # Any Database row mid-flight in this apply has an unconfirmed outcome —
+                # ACTIVE has no reaper coverage, so without a re-enqueue here a row could
+                # stay PENDING forever with nothing left to re-drive it. A retried apply
+                # against unchanged config is a safe terraform no-op.
+                if Database.objects.filter(
+                    environment=env, status__in=['PENDING', 'PROVISIONING', 'DELETING']
+                ).exists():
+                    from api.services.infra_queue import InfraQueue
+                    InfraQueue.enqueue_provision(str(infra_id))
             else:
                 # First-time provision: apply succeeded but we couldn't confirm it, so
                 # first_activated_at stays unstamped. Leave status as PROVISIONING —
@@ -636,6 +862,24 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
     def destroy(infra_id: str):
         """Destroy infrastructure"""
         try:
+            # Defense-in-depth: the primary guard lives at the service layer
+            # (delete_infrastructure, before this job is ever enqueued). Re-checked here
+            # so this method is safe even if invoked some other way — must run before the
+            # DESTROYING status update and before any AWS-touching cleanup.
+            live_dbs = Database.objects.filter(
+                environment__infrastructure_id=infra_id
+            ).exclude(status='DELETED')
+            if live_dbs.exists():
+                logger.error(
+                    f"Refusing to destroy infra {infra_id}: {live_dbs.count()} live database row(s)"
+                )
+                with transaction.atomic():
+                    Environment.objects.filter(infrastructure_id=infra_id).update(
+                        status="ERROR",
+                        error_message=f"Destroy blocked: {live_dbs.count()} database(s) must be deleted first",
+                    )
+                return
+
             with transaction.atomic():
                 Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYING")
             
