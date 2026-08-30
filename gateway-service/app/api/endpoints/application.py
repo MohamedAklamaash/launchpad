@@ -38,6 +38,7 @@ class AppDetailResponse(BaseModel):
     branch: str
     dockerfile_path: str
     envs: Dict[str, str] = {}
+    attached_database_ids: List[str] = []
     deployment_url: Optional[str] = None
     build_id: Optional[str] = None
     error_message: Optional[str] = None
@@ -59,6 +60,11 @@ class AppUpdateBody(BaseModel):
     port: Optional[int] = None
     project_branch: Optional[str] = None
     dockerfile_path: Optional[str] = None
+    attached_database_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Full replacement list of managed database ids to inject into this app. "
+                     "Does not trigger a redeploy — redeploy to apply.",
+    )
 
 class AppUpdateResponse(BaseModel):
     id: str
@@ -68,6 +74,7 @@ class AppUpdateResponse(BaseModel):
     alloted_cpu: float
     alloted_memory: float
     port: int
+    attached_database_ids: List[str] = []
     updated_at: str
 
 class QueuedResponse(BaseModel):

@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.endpoints import auth, user, notification, infrastructure, payment, application
+from app.api.endpoints import auth, user, notification, infrastructure, payment, application, database
 
 api_router = APIRouter()
 
@@ -12,3 +12,4 @@ api_router.include_router(infrastructure.aws_router)
 api_router.include_router(payment.router)
 api_router.include_router(application.router)
 api_router.include_router(application.webhook_router)
+api_router.include_router(database.router)

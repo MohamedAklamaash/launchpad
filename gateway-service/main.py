@@ -4,7 +4,7 @@ from app.api.router import api_router
 from app.core.config import settings
 from fastapi.responses import JSONResponse
 import logging
-from constants import EXEMPT_PATHS
+from constants import is_rate_limit_exempt
 
 app = FastAPI(
     title="Gateway Service",
@@ -49,7 +49,7 @@ async def shutdown():
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    if request.url.path not in EXEMPT_PATHS:
+    if not is_rate_limit_exempt(request.method, request.url.path):
         try:
             await rate_limiter.check_rate_limit(request)
         except HTTPException as exc:
