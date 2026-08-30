@@ -255,23 +255,61 @@ class ApplicationDeploymentService:
         codebuild.wait_for_build(build_id)
         logger.info(f"Build {build_id} completed successfully")
     
+    def _database_env_prefix(self, db_name: str) -> str:
+        return re.sub(r'[^A-Z0-9]', '_', db_name.upper())
+
+    def _build_database_injections(self, application: Application) -> tuple[dict, list]:
+        """Build the plain-env and ECS `secrets` entries for every attached database.
+        Injected names always win over `application.envs` on collision — the caller
+        strips them from `envs` before merging."""
+        from api.models.database import Database
+
+        attached_ids = application.attached_database_ids or []
+        if not attached_ids:
+            return {}, []
+
+        plain_env = {}
+        secrets = []
+        for db in Database.objects.filter(id__in=attached_ids, status='ACTIVE'):
+            prefix = self._database_env_prefix(db.name)
+            plain_env[f"{prefix}_HOST"] = db.host or ""
+            plain_env[f"{prefix}_PORT"] = str(db.port or "")
+
+            if not db.secret_arn:
+                continue
+
+            if db.engine == "redis":
+                plain_env[f"{prefix}_TLS"] = "true"
+                secrets.append({"name": f"{prefix}_AUTH_TOKEN", "valueFrom": f"{db.secret_arn}:auth_token::"})
+            else:
+                plain_env[f"{prefix}_DB"] = db.name
+                secrets.append({"name": f"{prefix}_USERNAME", "valueFrom": f"{db.secret_arn}:username::"})
+                secrets.append({"name": f"{prefix}_PASSWORD", "valueFrom": f"{db.secret_arn}:password::"})
+
+        return plain_env, secrets
+
     def _create_task_definition(self, session, application: Application, environment: Environment):
         ecs = ECSClient(session)
         ecr = ECRClient(session)
         logs = session.client('logs')
-        
+
         log_group_name = f"/ecs/{_slug(application.name)}-task"
         try:
             logs.create_log_group(logGroupName=log_group_name)
             logger.info(f"Created log group {log_group_name}")
         except logs.exceptions.ResourceAlreadyExistsException:
             logger.info(f"Log group {log_group_name} already exists")
-        
+
         image_tag = f"{_slug(application.name)}-latest"
         image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
-        
-        envs = {**(application.envs or {}), 'PORT': str(application.port)}
-        
+
+        db_env, db_secrets = self._build_database_injections(application)
+        # Injected names win: strip any application.envs key a database injection
+        # would otherwise collide with, so the connection info a customer sees is
+        # never silently shadowed by their own env var of the same name.
+        base_envs = {k: v for k, v in (application.envs or {}).items() if k not in db_env}
+        envs = {**base_envs, **db_env, 'PORT': str(application.port)}
+
         task_def_arn = ecs.create_task_definition(
             family=f"{_slug(application.name)}-task",
             image=image_uri,
@@ -280,7 +318,8 @@ class ApplicationDeploymentService:
             envs=envs,
             execution_role_arn=environment.ecs_task_execution_role_arn,
             container_port=application.port,
-            app_name=_slug(application.name)
+            app_name=_slug(application.name),
+            secrets=db_secrets,
         )
         
         logger.info(f"Created task definition {task_def_arn}")

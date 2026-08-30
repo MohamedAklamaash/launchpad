@@ -34,6 +34,10 @@ class InfrastructurePermissions:
         return InfrastructurePermissions.get_user_role(infrastructure, user_id) in [UserRole.SUPER_ADMIN, UserRole.ADMIN]
 
     @staticmethod
+    def can_attach_database(infrastructure, user_id):
+        return InfrastructurePermissions.get_user_role(infrastructure, user_id) in [UserRole.SUPER_ADMIN, UserRole.ADMIN]
+
+    @staticmethod
     def can_delete_application(infrastructure, user_id):
         return InfrastructurePermissions.get_user_role(infrastructure, user_id) in [UserRole.SUPER_ADMIN, UserRole.ADMIN]
 

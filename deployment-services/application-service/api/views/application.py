@@ -45,6 +45,7 @@ class AppDetailSerializer(serializers.Serializer):
     branch = serializers.CharField()
     dockerfile_path = serializers.CharField()
     envs = serializers.DictField(child=serializers.CharField())
+    attached_database_ids = serializers.ListField(child=serializers.UUIDField())
     deployment_url = serializers.CharField(allow_null=True)
     build_id = serializers.CharField(allow_null=True)
     error_message = serializers.CharField(allow_null=True)
@@ -76,6 +77,10 @@ class AppUpdateSerializer(serializers.Serializer):
     port = serializers.IntegerField(required=False)
     project_branch = serializers.CharField(required=False)
     dockerfile_path = serializers.CharField(required=False)
+    attached_database_ids = serializers.ListField(
+        child=serializers.UUIDField(), required=False,
+        help_text="Full replacement list. Does not trigger a redeploy — redeploy to apply.",
+    )
 
 class AppUpdateResponseSerializer(serializers.Serializer):
     id = serializers.UUIDField()
@@ -85,6 +90,7 @@ class AppUpdateResponseSerializer(serializers.Serializer):
     alloted_cpu = serializers.FloatField()
     alloted_memory = serializers.FloatField()
     port = serializers.IntegerField()
+    attached_database_ids = serializers.ListField(child=serializers.UUIDField())
     updated_at = serializers.DateTimeField()
 
 class QueuedResponseSerializer(serializers.Serializer):
@@ -180,6 +186,7 @@ class ApplicationDetailDeleteView(APIView):
             "cpu": app.alloted_cpu, "memory": app.alloted_memory, "storage": app.alloted_storage,
             "port": app.port, "url": app.project_remote_url, "branch": app.project_branch,
             "dockerfile_path": app.dockerfile_path, "build_context": app.build_context or "", "envs": app.envs,
+            "attached_database_ids": app.attached_database_ids or [],
             "deployment_url": app.deployment_url, "build_id": app.build_id,
             "error_message": app.error_message if app.status not in ('ACTIVE', 'SLEEPING') else None,
             "created_at": app.created_at.isoformat() if app.created_at else None,
@@ -226,6 +233,7 @@ class ApplicationUpdateView(APIView):
                 "id": str(updated.id), "name": updated.name, "description": updated.description,
                 "envs": updated.envs, "alloted_cpu": updated.alloted_cpu,
                 "alloted_memory": updated.alloted_memory, "port": updated.port,
+                "attached_database_ids": updated.attached_database_ids or [],
                 "updated_at": updated.updated_at.isoformat(),
             })
         except PermissionError as e:

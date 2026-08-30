@@ -4,7 +4,7 @@ import uuid
 import logging
 from django.db import transaction, connection, OperationalError
 from django.core.exceptions import ObjectDoesNotExist
-from api.models import Environment, Infrastructure
+from api.models import Database, Environment, Infrastructure
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaConsumer
 
@@ -114,6 +114,11 @@ class EnvironmentEventConsumer:
                         "ecs_task_execution_role_arn": payload.get("ecs_task_execution_role_arn"),
                     }
                 )
+                # v2 payloads simply have no "databases" key — omitting it here (rather
+                # than defaulting to []) leaves the existing read-model rows untouched,
+                # so a v2 producer can never wipe out v3 database state.
+                if "databases" in payload:
+                    self._reconcile_databases(env, payload["databases"])
 
             log.info(
                 f"Environment {'created' if created else 'updated'} successfully — ACKing",
@@ -157,6 +162,28 @@ class EnvironmentEventConsumer:
                 )
                 time.sleep(delay)
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+    def _reconcile_databases(self, env, databases: list):
+        """Full-replace sync: infrastructure-service publishes the complete live list
+        every apply, so anything in the read-model but absent from this payload has
+        been deleted there — drop it here too rather than tracking deletes separately."""
+        incoming_ids = {str(d["id"]) for d in databases if d.get("id")}
+        Database.objects.filter(environment=env).exclude(id__in=incoming_ids).delete()
+        for d in databases:
+            if not d.get("id"):
+                continue
+            Database.objects.update_or_create(
+                id=d["id"],
+                defaults={
+                    "environment": env,
+                    "name": d.get("name", ""),
+                    "engine": d.get("engine", ""),
+                    "host": d.get("host"),
+                    "port": d.get("port"),
+                    "secret_arn": d.get("secret_arn"),
+                    "status": d.get("status", "PENDING"),
+                },
+            )
 
     def start(self):
         """Start consuming messages."""
