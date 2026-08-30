@@ -5,3 +5,8 @@ ignore = [
     "E702",   # statement ends with semicolon
     "E741",   # ambiguous variable name
 ]
+
+[lint.per-file-ignores]
+# Django generates these; numeric-prefixed filenames and literal dependency/operation
+# lists are the framework's own convention, not something to rewrite.
+"**/migrations/*.py" = ["RUF012", "N999"]

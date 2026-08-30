@@ -1,7 +1,8 @@
-from dataclasses import dataclass
-from dotenv import load_dotenv
-from urllib.parse import urlparse
 import os
+from dataclasses import dataclass
+from urllib.parse import urlparse
+
+from dotenv import load_dotenv
 
 load_dotenv()
 

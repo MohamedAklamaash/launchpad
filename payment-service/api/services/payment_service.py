@@ -1,12 +1,13 @@
-import stripe
 import logging
-from django.utils import timezone
+import os
+
+import stripe
+from api.common.enums.billing_status import BillingStatus
+from api.common.env.application import app_config
 from api.repositories.billing import BillingRepository
 from api.repositories.infrastructure import InfrastructureRepository
-from api.common.env.application import app_config
-from api.common.enums.billing_status import BillingStatus
+from django.utils import timezone
 from shared.resilience.circuit_breaker import CircuitBreaker
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,9 @@ stripe.api_key = app_config.stripe_secret_key
 
 stripe_cb = CircuitBreaker(
     name="StripeAPI",
-    failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", 5)),
-    timeout=float(os.environ.get("CB_TIMEOUT_MS", 30000)) / 1000.0,
-    success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", 2))
+    failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", "5")),
+    timeout=float(os.environ.get("CB_TIMEOUT_MS", "30000")) / 1000.0,
+    success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", "2"))
 )
 
 class PaymentService:
@@ -108,10 +109,10 @@ class PaymentService:
             )
         except ValueError as e:
             logger.error(f"Invalid webhook payload: {e}")
-            raise e
+            raise
         except stripe.error.SignatureVerificationError as e:
             logger.error(f"Invalid webhook signature: {e}")
-            raise e
+            raise
 
         if event['type'] == 'checkout.session.completed':
             session = event['data']['object']

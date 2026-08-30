@@ -1,10 +1,12 @@
 import json
-import uuid
 import logging
-from django.db import transaction, connection, ProgrammingError, OperationalError
-from api.repositories.infrastructure import InfrastructureRepository
-from api.common.env.application import app_config
+import uuid
+
+from django.db import OperationalError, ProgrammingError, connection, transaction
 from shared.resilience import ResilientPikaConsumer
+
+from api.common.env.application import app_config
+from api.repositories.infrastructure import InfrastructureRepository
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +42,9 @@ class InfraEventConsumer:
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
-            log.error(
+            log.exception(
                 "JSON decode failed — discarding",
                 extra={"correlation_id": correlation_id, "error": str(exc)},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
@@ -86,7 +87,7 @@ class InfraEventConsumer:
 
         except Exception as exc:
             transient = self._is_transient(exc)
-            log.error(
+            log.exception(
                 "Error processing infra event — %s",
                 "NACKing with requeue (transient)" if transient else "NACKing without requeue (permanent)",
                 extra={
@@ -95,7 +96,6 @@ class InfraEventConsumer:
                     "error": str(exc),
                     "exc_type": type(exc).__name__,
                 },
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
 

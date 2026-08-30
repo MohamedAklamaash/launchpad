@@ -1,8 +1,10 @@
+import logging
+
 from rest_framework.authentication import BaseAuthentication
-from api.common.utils.jwt import decode_jwt
+
 from api.common.env.application import app_config
 from api.common.errors.exception import HttpError
-import logging
+from api.common.utils.jwt import decode_jwt
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,6 @@ class JWTAuthentication(BaseAuthentication):
         try:
             user = decode_jwt(token, app_config.jwt_secret)
             return (user, token)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - any malformed/expired token must fail closed to unauthenticated
             logger.error(f"JWT Verification Error (DRF): {e}")
             return None
