@@ -1,3 +1,5 @@
+import hashlib
+
 from django.db import models
 from shared.utils.uuid import uuid7_pk
 
@@ -65,8 +67,14 @@ class Database(models.Model):
         ]
 
     def module_name(self) -> str:
-        """Deterministic per-row Terraform module block name."""
-        return f"db_{self.id.hex[:8]}"
+        """Deterministic per-row Terraform module block name.
+
+        Hashed rather than a raw slice of the UUID: this id is uuid7, whose leading
+        bits are a millisecond timestamp, not randomness — two rows created close
+        together (e.g. the same request) would otherwise collide on the same module
+        name and silently clobber each other's HCL block.
+        """
+        return f"db_{hashlib.md5(str(self.id).encode()).hexdigest()[:8]}"
 
     def snapshot_identifier(self) -> str:
         return f"lp-final-{self.id}"

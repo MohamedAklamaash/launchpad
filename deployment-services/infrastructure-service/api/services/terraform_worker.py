@@ -1,23 +1,28 @@
+import hashlib
+import json
+import logging
 import os
+import subprocess
+import threading
 import time
 import uuid
-import threading
-import subprocess
-import logging
-import boto3
-import json
-import hashlib
 from pathlib import Path
+
+import boto3
+from api.cloud_providers.aws.authenticate import authenticate_infrastructure
+from api.common.envs.application import app_config
+from api.mock.aws_fixtures import (
+    resolve_region,
+    synthesize_database_outputs,
+    synthesize_environment_outputs,
+)
+from api.models.database import Database
+from api.models.environment import Environment
+from api.models.infrastructure import Infrastructure
+from api.services.infrastructure import validate_aws_region, validate_vpc_cidr
+from api.validators import validate_database_name
 from django.db import transaction
 from django.utils import timezone
-from api.models.infrastructure import Infrastructure
-from api.models.environment import Environment
-from api.models.database import Database
-from api.cloud_providers.aws.authenticate import authenticate_infrastructure
-from api.services.infrastructure import validate_vpc_cidr, validate_aws_region
-from api.validators import validate_database_name
-from api.common.envs.application import app_config
-from api.mock.aws_fixtures import resolve_region, synthesize_environment_outputs, synthesize_database_outputs
 from shared.aws.app_security_group import get_or_create_app_security_group
 from shared.mode import is_dev_mode
 
@@ -32,13 +37,6 @@ MAX_LOG_CHARS = 256_000
 # generated config. DELETING/DELETED are excluded on purpose: omitting the block is what
 # makes terraform plan the destroy for a DELETING row.
 _LIVE_DB_STATUSES_FOR_CONFIG = ['PENDING', 'PROVISIONING', 'ACTIVE', 'ERROR']
-
-_ENGINE_MODULE_SOURCE = {
-    'postgres': 'rds',
-    'mysql': 'rds',
-    'redis': 'elasticache',
-    'docdb': 'docdb',
-}
 
 
 class TerraformWorker:
@@ -201,7 +199,7 @@ class TerraformWorker:
             return {"success": True, "output": result.stdout, "logs": "\n".join(logs)}
         
         except Exception as e:
-            error_msg = f"Terraform execution failed: {str(e)}"
+            error_msg = f"Terraform execution failed: {e!s}"
             logs.append(f"[ERROR] {error_msg}")
             return {"success": False, "error": error_msg, "logs": "\n".join(logs)}
         
@@ -234,7 +232,6 @@ class TerraformWorker:
             # API boundary — a row written before this check existed must not still reach here.
             validate_database_name(db.name)
             mod = db.module_name()
-            source = TerraformWorker._ENGINE_MODULE_SOURCE[db.engine]
 
             if db.engine in ("postgres", "mysql"):
                 blocks.append(f"""
@@ -541,7 +538,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             logger.info(f"Infrastructure {infra_id} provisioned successfully")
 
         except Exception as e:
-            logger.error(f"Provisioning failed for {infra_id}: {str(e)}", exc_info=True)
+            logger.error(f"Provisioning failed for {infra_id}: {e!s}", exc_info=True)
             # An environment that has ever activated must not be reported dead over an
             # error that happened before any destructive step ran (e.g. AssumeRole
             # failing on a reprovision) — restore it instead of flipping to ERROR.
@@ -957,4 +954,4 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     logger.error(f"Destroy failed for {infra_id}: {result.get('error')}")
         
         except Exception as e:
-            logger.error(f"Destroy failed for {infra_id}: {str(e)}", exc_info=True)
+            logger.error(f"Destroy failed for {infra_id}: {e!s}", exc_info=True)
