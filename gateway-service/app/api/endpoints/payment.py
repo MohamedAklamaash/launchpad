@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
-from typing import Optional
-from app.services.proxy import proxy_request
+
 from app.core.config import settings
+from app.services.proxy import proxy_request
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -49,7 +49,7 @@ async def payment_webhook(request: Request):
 
 
 @router.get("/success", summary="Payment success redirect", status_code=302)
-async def payment_success(session_id: Optional[str] = None, *, request: Request):
+async def payment_success(session_id: str | None = None, *, request: Request):
     """
     Query param `session_id` (optional) — Stripe Checkout Session ID.
     """
