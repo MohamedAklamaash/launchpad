@@ -46,7 +46,11 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
 
   useEffect(() => {
     databaseApi.list(app.infrastructure_id)
-      .then((dbs) => setDatabases(dbs.filter((d) => d.status === 'ACTIVE')))
+      .then((dbs) => {
+        setDatabases(dbs.filter((d) => d.status === 'ACTIVE'));
+        const liveIds = new Set(dbs.map((d) => d.id));
+        setAttachedIds((prev) => prev.filter((id) => liveIds.has(id)));
+      })
       .catch(() => setDatabases([]));
   }, [app.infrastructure_id]);
 
