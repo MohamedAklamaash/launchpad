@@ -43,7 +43,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     objects = UserManager()
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = ["user_name"]  # noqa: RUF012 - Django's own AbstractUser convention
+    REQUIRED_FIELDS = ["user_name"]
 
     def __str__(self):
         return self.email

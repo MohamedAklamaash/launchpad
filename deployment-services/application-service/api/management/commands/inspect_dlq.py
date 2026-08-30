@@ -1,6 +1,8 @@
 import json
 import logging
+
 from django.core.management.base import BaseCommand
+
 from api.services.deployment_queue import DeploymentQueue
 
 logger = logging.getLogger(__name__)

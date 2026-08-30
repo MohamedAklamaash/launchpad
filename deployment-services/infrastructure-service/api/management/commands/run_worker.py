@@ -1,14 +1,15 @@
+import concurrent.futures
+import logging
 import os
+import signal
+import threading
 import time
 import uuid
-import signal
-import logging
-import threading
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
+
+from api.services.infra_queue import DB_LOCK_STALENESS_SECONDS
 from django.core.management.base import BaseCommand
 from django.db import connections, transaction
-from api.services.infra_queue import DB_LOCK_STALENESS_SECONDS
 
 os.environ['DB_CONN_MAX_AGE'] = '0'
 
@@ -22,7 +23,7 @@ def _publish_infra_deleted(user_id, infra_id):
         from api.messaging.producer.producer import infra_producer
         infra_producer.publish_infrastructure_deleted(user_id=user_id, infra_id=infra_id)
     except Exception:
-        logger.error(f"Failed to publish infrastructure.deleted for {infra_id}", exc_info=True)
+        logger.exception(f"Failed to publish infrastructure.deleted for {infra_id}")
 
 MAX_PROVISION_WORKERS = int(os.environ.get('INFRA_MAX_PROVISION_WORKERS', '5'))
 MAX_DESTROY_WORKERS = int(os.environ.get('INFRA_MAX_DESTROY_WORKERS', '3'))
@@ -88,11 +89,12 @@ def reap_stuck_environments(stale_threshold_seconds):
     acquire_db_lock's matching staleness gate is the single arbiter of who actually runs.
     """
     from datetime import timedelta
-    from django.db.models import Q
-    from django.utils import timezone
+
     from api.models.environment import Environment
     from api.services.infra_queue import InfraQueue
     from api.services.notification import NotificationService
+    from django.db.models import Q
+    from django.utils import timezone
 
     cutoff = timezone.now() - timedelta(seconds=stale_threshold_seconds)
     # A stale DB lock means a crashed run. A null DB lock is ambiguous: it's either a job still
@@ -138,7 +140,7 @@ def reap_stuck_environments(stale_threshold_seconds):
                 notify(str(infra.user_id), infra_id, infra.name,
                        f"{env.status.capitalize()} could not be recovered")
             except Exception:
-                logger.error(f"Failed to notify abandonment for {infra_id}", exc_info=True)
+                logger.exception(f"Failed to notify abandonment for {infra_id}")
             continue
         # Release only the Redis dedup lock so the job can be re-queued. The DB lock is left intact:
         # acquire_db_lock's staleness window is the single execution gate, so a genuinely-live job
@@ -169,7 +171,7 @@ def ensure_infra_created_published(infra):
             metadata=infra.metadata or {},
         )
     except Exception:
-        logger.error(f"Failed to (re)publish infra.created for {infra.id}", exc_info=True)
+        logger.exception(f"Failed to (re)publish infra.created for {infra.id}")
 
 
 def _close_db():
@@ -182,11 +184,11 @@ class Command(BaseCommand):
     help = 'Run the infrastructure provisioning worker'
 
     def handle(self, *args, **options):
-        from api.services.infra_queue import InfraQueue
-        from api.services.terraform_worker import TerraformWorker
-        from api.services.notification import NotificationService
-        from api.models.infrastructure import Infrastructure
         from api.models.environment import Environment
+        from api.models.infrastructure import Infrastructure
+        from api.services.infra_queue import InfraQueue
+        from api.services.notification import NotificationService
+        from api.services.terraform_worker import TerraformWorker
 
         worker_id = str(uuid.uuid4())[:8]
         running = True
@@ -208,7 +210,8 @@ class Command(BaseCommand):
 
         # Re-enqueue stuck jobs — only one worker should do this at startup
         recovery_lock_key = "infra:worker:recovery_lock"
-        from api.services.infra_queue import _redis as _get_redis, PROVISION_QUEUE
+        from api.services.infra_queue import PROVISION_QUEUE
+        from api.services.infra_queue import _redis as _get_redis
         r = _get_redis()
         if r.set(recovery_lock_key, worker_id, nx=True, ex=60):
             try:
@@ -251,11 +254,11 @@ class Command(BaseCommand):
                 elif env.status == 'ERROR':
                     NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
             except Exception as e:
-                logger.error(f"Provision failed for {infra_id}: {e}", exc_info=True)
+                logger.exception(f"Provision failed for {infra_id}")
                 if infra:
                     try:
                         NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, str(e))
-                    except Exception:
+                    except Exception:  # noqa: S110 - best-effort notification, must not mask the original failure
                         pass
             finally:
                 InfraQueue.release_db_lock(infra_id, lock_token)
@@ -277,8 +280,8 @@ class Command(BaseCommand):
                         deleted, _ = Environment.objects.filter(infrastructure_id=infra_id).delete()
                         if deleted:
                             logger.info(f"Cleaned up {deleted} orphaned Environment record(s) for {infra_id}")
-                    except Exception as env_exc:
-                        logger.error(f"Failed to clean up Environment for {infra_id}: {env_exc}", exc_info=True)
+                    except Exception:
+                        logger.exception(f"Failed to clean up Environment for {infra_id}")
                     return
 
                 try:
@@ -302,11 +305,11 @@ class Command(BaseCommand):
                     logger.info(f"Deleted DB records for {infra_id}")
                     _publish_infra_deleted(user_id, infra_id)
             except Exception as e:
-                logger.error(f"Destroy failed for {infra_id}: {e}", exc_info=True)
+                logger.exception(f"Destroy failed for {infra_id}")
                 if infra:
                     try:
                         NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, str(e))
-                    except Exception:
+                    except Exception:  # noqa: S110 - best-effort notification, must not mask the original failure
                         pass
             finally:
                 InfraQueue.release_db_lock(infra_id, lock_token)
@@ -340,7 +343,7 @@ class Command(BaseCommand):
                 heartbeat.stop()
                 InfraQueue.release_db_lock(infra_id, lock_token)
                 InfraQueue.release_lock(infra_id)
-                logger.error(f"Failed to submit provision job for {infra_id}", exc_info=True)
+                logger.exception(f"Failed to submit provision job for {infra_id}")
                 raise
 
         def dispatch_destroy():
@@ -364,7 +367,7 @@ class Command(BaseCommand):
                 heartbeat.stop()
                 InfraQueue.release_db_lock(infra_id, lock_token)
                 InfraQueue.release_lock(infra_id)
-                logger.error(f"Failed to submit destroy job for {infra_id}", exc_info=True)
+                logger.exception(f"Failed to submit destroy job for {infra_id}")
                 raise
 
         reap_lock_key = "infra:worker:reap_lock"
@@ -380,7 +383,7 @@ class Command(BaseCommand):
                         try:
                             reap_stuck_environments(STUCK_THRESHOLD)
                         except Exception:
-                            logger.error("Reaper sweep failed", exc_info=True)
+                            logger.exception("Reaper sweep failed")
 
                 # Always drain destroy queue first (non-blocking), then provision
                 had_destroy = dispatch_destroy()
@@ -398,7 +401,7 @@ class Command(BaseCommand):
                 if isinstance(e, (TimeoutError, RedisTimeout)):
                     logger.warning(f"Redis timeout in worker loop, continuing: {e}")
                 else:
-                    logger.error(f"Worker loop error: {e}", exc_info=True)
+                    logger.exception("Worker loop error")
                 _close_db()
 
         logger.info("Waiting for in-flight jobs to complete...")

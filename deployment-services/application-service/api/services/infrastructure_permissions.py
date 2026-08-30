@@ -1,5 +1,6 @@
-from shared.enums.user_role import UserRole
 import logging
+
+from shared.enums.user_role import UserRole
 
 logger = logging.getLogger(__name__)
 

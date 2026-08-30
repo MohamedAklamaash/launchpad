@@ -1,8 +1,10 @@
 import logging
+
+from aws.session import create_boto3_session
+
 from api.models.application import Application
 from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
-from aws.session import create_boto3_session
 
 logger = logging.getLogger(__name__)
 

@@ -1,6 +1,7 @@
-from rest_framework import serializers
-from django.core.validators import URLValidator, RegexValidator
 import re
+
+from django.core.validators import RegexValidator, URLValidator
+from rest_framework import serializers
 
 # DNS label validator (for application names)
 dns_label_validator = RegexValidator(

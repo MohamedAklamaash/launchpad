@@ -1,5 +1,5 @@
-import logging
 import base64
+import logging
 import os
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,7 @@ class ECSClient:
                 ],
                 'command': [
                     '/bin/sh', '-c',
+                    (
                     'echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/nginx.conf && '
                     'nginx -t && nginx -g "daemon off;" & '
                     'NGINX_PID=$! && '
@@ -132,6 +133,7 @@ class ECSClient:
                     '  fi; '
                     '  sleep 15; '
                     'done'
+                    )
                 ],
                 'logConfiguration': {
                     'logDriver': 'awslogs',

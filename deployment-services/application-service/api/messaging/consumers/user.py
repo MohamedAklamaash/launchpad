@@ -1,10 +1,11 @@
 import json
+import logging
 import time
 import uuid
-import logging
-from django.db import connection, OperationalError
-from api.repositories.user import UserRepository, PendingInvitedInfrastructure
+
 from api.common.envs.application import app_config
+from api.repositories.user import PendingInvitedInfrastructure, UserRepository
+from django.db import OperationalError, connection
 from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
@@ -53,10 +54,9 @@ class AuthEventConsumer:
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
-            log.error(
+            log.exception(
                 "JSON decode failed — discarding unparseable message",
                 extra={"correlation_id": correlation_id, "error": str(exc)},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
@@ -140,7 +140,7 @@ class AuthEventConsumer:
 
         except Exception as exc:
             transient = self._is_transient(exc)
-            log.error(
+            log.exception(
                 "Error processing auth event — %s",
                 "NACKing with requeue (transient)" if transient else "NACKing without requeue (permanent)",
                 extra={
@@ -149,7 +149,6 @@ class AuthEventConsumer:
                     "error": str(exc),
                     "exc_type": type(exc).__name__,
                 },
-                exc_info=True,
             )
             ch.basic_nack(
                 delivery_tag=method.delivery_tag,

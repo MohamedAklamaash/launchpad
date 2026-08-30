@@ -24,8 +24,7 @@ def get_allowed_hosts():
     allowed_hosts = [host.strip() for host in hosts_env.split(',') if host.strip()]
     
     # Enable wildcard for development if explicitly set
-    if os.environ.get('ALLOWED_HOSTS_ENABLE_WILDCARD', '').lower() == 'true':
-        if '*' not in allowed_hosts:
-            allowed_hosts.insert(0, '*')
+    if os.environ.get('ALLOWED_HOSTS_ENABLE_WILDCARD', '').lower() == 'true' and '*' not in allowed_hosts:
+        allowed_hosts.insert(0, '*')
     
     return allowed_hosts

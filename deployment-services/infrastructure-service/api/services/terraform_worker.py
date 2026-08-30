@@ -1,20 +1,21 @@
-import os
-import time
-import threading
-import subprocess
-import logging
-import boto3
-import json
 import hashlib
+import json
+import logging
+import os
+import subprocess
+import threading
+import time
 from pathlib import Path
-from django.db import transaction
-from django.utils import timezone
-from api.models.infrastructure import Infrastructure
-from api.models.environment import Environment
+
+import boto3
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
-from api.services.infrastructure import validate_vpc_cidr, validate_aws_region
 from api.common.envs.application import app_config
 from api.mock.aws_fixtures import resolve_region, synthesize_environment_outputs
+from api.models.environment import Environment
+from api.models.infrastructure import Infrastructure
+from api.services.infrastructure import validate_aws_region, validate_vpc_cidr
+from django.db import transaction
+from django.utils import timezone
 from shared.mode import is_dev_mode
 
 logger = logging.getLogger(__name__)
@@ -163,7 +164,8 @@ class TerraformWorker:
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
-                env=env
+                env=env,
+                check=False
             )
             logs.append(f"[INIT]\n{init_result.stdout}\n{init_result.stderr}")
             
@@ -175,7 +177,8 @@ class TerraformWorker:
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
-                env=env
+                env=env,
+                check=False
             )
             logs.append(f"[COMMAND]\n{result.stdout}\n{result.stderr}")
             
@@ -185,7 +188,7 @@ class TerraformWorker:
             return {"success": True, "output": result.stdout, "logs": "\n".join(logs)}
         
         except Exception as e:
-            error_msg = f"Terraform execution failed: {str(e)}"
+            error_msg = f"Terraform execution failed: {e!s}"
             logs.append(f"[ERROR] {error_msg}")
             return {"success": False, "error": error_msg, "logs": "\n".join(logs)}
         
@@ -381,7 +384,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             logger.info(f"Infrastructure {infra_id} provisioned successfully")
 
         except Exception as e:
-            logger.error(f"Provisioning failed for {infra_id}: {str(e)}", exc_info=True)
+            logger.exception(f"Provisioning failed for {infra_id}")
             # An environment that has ever activated must not be reported dead over an
             # error that happened before any destructive step ran (e.g. AssumeRole
             # failing on a reprovision) — restore it instead of flipping to ERROR.
@@ -514,19 +517,19 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 if _sg_id and not _re.match(r'^sg-[0-9a-f]{8,17}$', _sg_id):
                     logger.error(f"Invalid ALB SG ID format '{_sg_id}' for infra {infra_id} — skipping publish")
                     _sg_id = None
-                _env_kwargs = dict(
-                    infra_id=infra_id,
-                    environment_id=_env_id,
-                    status="ACTIVE",
-                    vpc_id=env.vpc_id,
-                    cluster_arn=env.cluster_arn,
-                    alb_arn=env.alb_arn,
-                    alb_dns=env.alb_dns,
-                    alb_security_group_id=_sg_id,
-                    target_group_arn=env.target_group_arn,
-                    ecr_repository_url=env.ecr_repository_url,
-                    ecs_task_execution_role_arn=env.ecs_task_execution_role_arn,
-                )
+                _env_kwargs = {
+                    "infra_id": infra_id,
+                    "environment_id": _env_id,
+                    "status": "ACTIVE",
+                    "vpc_id": env.vpc_id,
+                    "cluster_arn": env.cluster_arn,
+                    "alb_arn": env.alb_arn,
+                    "alb_dns": env.alb_dns,
+                    "alb_security_group_id": _sg_id,
+                    "target_group_arn": env.target_group_arn,
+                    "ecr_repository_url": env.ecr_repository_url,
+                    "ecs_task_execution_role_arn": env.ecs_task_execution_role_arn,
+                }
                 def _publish_env_delayed(**kwargs):
                     time.sleep(3)
                     infra_producer.publish_environment_updated(**kwargs)
@@ -594,7 +597,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     try:
                         ec2.detach_network_interface(AttachmentId=attachment["AttachmentId"], Force=True)
                         time.sleep(2)
-                    except Exception:
+                    except Exception:  # noqa: S110 - best-effort detach, the delete below is the real signal
                         pass
                 try:
                     ec2.delete_network_interface(NetworkInterfaceId=eni_id)
@@ -712,5 +715,5 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     )
                     logger.error(f"Destroy failed for {infra_id}: {result.get('error')}")
         
-        except Exception as e:
-            logger.error(f"Destroy failed for {infra_id}: {str(e)}", exc_info=True)
+        except Exception:
+            logger.exception(f"Destroy failed for {infra_id}")

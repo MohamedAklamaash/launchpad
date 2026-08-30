@@ -50,7 +50,7 @@ class RateLimiter:
 
         except HTTPException:
             raise
-        except Exception as e:  # noqa: BLE001 - fail-open: a rate-limiter bug must never break the gateway
+        except Exception as e:  # fail-open: a rate-limiter bug must never break the gateway
             logger.error(f"Rate limiting error: {e}")
 
     async def close(self):

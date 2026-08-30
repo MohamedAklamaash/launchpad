@@ -1,11 +1,12 @@
 import json
+import logging
 import time
 import uuid
-import logging
-from django.db import transaction, connection, OperationalError
-from django.core.exceptions import ObjectDoesNotExist
-from api.models import Environment, Infrastructure
+
 from api.common.envs.application import app_config
+from api.models import Environment, Infrastructure
+from django.core.exceptions import ObjectDoesNotExist
+from django.db import OperationalError, connection, transaction
 from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
@@ -43,10 +44,9 @@ class EnvironmentEventConsumer:
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
-            log.error(
+            log.exception(
                 "JSON decode failed — discarding unparseable message",
                 extra={"correlation_id": correlation_id, "error": str(exc)},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
@@ -99,7 +99,7 @@ class EnvironmentEventConsumer:
                 return
 
             with transaction.atomic():
-                env, created = Environment.objects.update_or_create(
+                _env, created = Environment.objects.update_or_create(
                     id=env_id,
                     defaults={
                         "infrastructure_id": infra_id,
@@ -128,32 +128,29 @@ class EnvironmentEventConsumer:
             # whole queue under prefetch_count=1.
             transient = isinstance(exc, (ObjectDoesNotExist, OperationalError))
             if not transient:
-                log.error(
+                log.exception(
                     "Error persisting environment event — NACKing without requeue (permanent)",
                     extra={"correlation_id": correlation_id, "environment_id": env_id,
                            "infrastructure_id": infra_id, "error": str(exc)},
-                    exc_info=True,
                 )
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
             retry_count = self._retry_counts.get(env_id, 0)
             if retry_count >= self.MAX_RETRIES:
-                log.error(
+                log.exception(
                     "Error persisting environment event — max retries exceeded, discarding",
                     extra={"correlation_id": correlation_id, "environment_id": env_id, "error": str(exc)},
-                    exc_info=True,
                 )
                 self._retry_counts.pop(env_id, None)
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             else:
                 self._retry_counts[env_id] = retry_count + 1
                 delay = min(2 ** retry_count, 30)
-                log.error(
+                log.exception(
                     "Error persisting environment event — NACKing with requeue (attempt %d/%d, delay %ds)",
                     retry_count + 1, self.MAX_RETRIES, delay,
                     extra={"correlation_id": correlation_id, "environment_id": env_id, "error": str(exc)},
-                    exc_info=True,
                 )
                 time.sleep(delay)
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)

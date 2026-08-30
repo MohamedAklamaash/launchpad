@@ -1,7 +1,9 @@
 import logging
-from django.db import transaction, IntegrityError
-from api.models.user import User as UserModel
+
+from django.db import IntegrityError, transaction
 from shared.enums.user_role import UserRole
+
+from api.models.user import User as UserModel
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +44,9 @@ class UserRepository:
                     defaults=defaults,
                 )
         except IntegrityError as exc:
-            logger.error(
+            logger.exception(
                 "IntegrityError during user upsert",
                 extra={"user_id": str(user_id), "error": str(exc)},
-                exc_info=True,
             )
             raise
 

@@ -4,9 +4,23 @@ ignore = [
     "E701",   # multiple statements on one line
     "E702",   # statement ends with semicolon
     "E741",   # ambiguous variable name
+    # Audited every hit across all four services: workers, AMQP consumers, and view/service
+    # boundaries deliberately catch broadly to log-and-continue, NACK-and-requeue, or fail
+    # closed/open at a network or AWS boundary — not swallowed bugs. Narrowing 60+ call sites
+    # to specific exception types would be a behavior change, not a lint fix.
+    "BLE001", # blind-except
 ]
 
 [lint.per-file-ignores]
 # Django generates these; numeric-prefixed filenames and literal dependency/operation
 # lists are the framework's own convention, not something to rewrite.
 "**/migrations/*.py" = ["RUF012", "N999"]
+# The service directory name is hyphenated (matches every other service in this repo)
+# and is load-bearing across CI, docs, and deploy tooling — not renaming it for a lint rule.
+"deployment-services/infrastructure-service/**/__init__.py" = ["N999"]
+# No custom exception hierarchy exists in this codebase yet; introducing one is a design
+# decision, not a lint fix — tracked separately from this pass.
+"deployment-services/application-service/**" = ["TRY002"]
+# Django's own Meta.unique_together / Meta.indexes / REQUIRED_FIELDS conventions —
+# framework-mandated list literals, never mutated at runtime.
+"**/models/*.py" = ["RUF012"]

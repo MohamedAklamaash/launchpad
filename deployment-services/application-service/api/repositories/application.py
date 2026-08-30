@@ -1,5 +1,7 @@
-from api.models.application import Application
 from django.db import models
+
+from api.models.application import Application
+
 
 class ApplicationRepository:
     """Repository for Application model operations."""

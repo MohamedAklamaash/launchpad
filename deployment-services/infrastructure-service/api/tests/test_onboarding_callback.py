@@ -1,7 +1,7 @@
 import sys
 import types
 import uuid
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from rest_framework.test import APIRequestFactory
@@ -169,6 +169,7 @@ def test_returns_403_when_token_already_used(factory, view, make_infra):
 
 def test_returns_403_when_token_expired(factory, view, make_infra):
     from datetime import timedelta
+
     from django.utils import timezone
 
     infra = make_infra(code="123456789012")

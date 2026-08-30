@@ -57,7 +57,7 @@ def create_checkout_session(request):
             return Response({'error': 'amount and infrastructure_id are required'}, status=status.HTTP_400_BAD_REQUEST)
         session = payment_service.create_checkout_session(user, amount, infra_id)
         return Response({'checkout_url': session.url, 'session_id': session.id})
-    except Exception as e:  # noqa: BLE001 - view boundary, must return a JSON error not a 500 stack trace
+    except Exception as e:  # view boundary, must return a JSON error not a 500 stack trace
         logger.error(f"Error in create_checkout_session: {e}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -82,7 +82,7 @@ def process_payment(request):
                             status=status.HTTP_400_BAD_REQUEST)
         result = payment_service.process_direct_payment(user, amount, payment_method_id, infra_id)
         return Response(result, status=status.HTTP_200_OK if result.get('success') else status.HTTP_400_BAD_REQUEST)
-    except Exception as e:  # noqa: BLE001 - view boundary, must return a JSON error not a 500 stack trace
+    except Exception as e:  # view boundary, must return a JSON error not a 500 stack trace
         logger.error(f"Error in process_payment: {e}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -102,7 +102,7 @@ def stripe_webhook(request):
     try:
         payment_service.handle_webhook(request.body, sig_header)
         return Response(status=status.HTTP_200_OK)
-    except Exception as e:  # noqa: BLE001 - Stripe library raises varied error types, all must map to 400
+    except Exception as e:  # Stripe library raises varied error types, all must map to 400
         logger.error(f"Webhook error: {e}")
         return Response(status=status.HTTP_400_BAD_REQUEST)
 
@@ -121,7 +121,7 @@ def payment_success(request):
     if session_id:
         try:
             payment_service.verify_session(session_id)
-        except Exception as e:  # noqa: BLE001 - best-effort verify, the redirect must proceed either way
+        except Exception as e:  # best-effort verify, the redirect must proceed either way
             logger.error(f"Failed to verify session {session_id}: {e}")
     from api.common.env.application import app_config
     return redirect(f"{app_config.frontend_url}/payment/success?session_id={session_id}")

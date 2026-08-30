@@ -1,8 +1,10 @@
 import logging
 import re
-from api.models import Application, Environment
-from aws.session import create_boto3_session
+
 from aws.alb import ALBClient
+from aws.session import create_boto3_session
+
+from api.models import Application, Environment
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,7 @@ class ApplicationCleanupService:
             logger.info(f"Successfully cleaned up AWS resources for application {application.name}")
             
         except Exception as e:
-            logger.error(f"Failed to cleanup AWS resources for {application.name}: {str(e)}")
+            logger.error(f"Failed to cleanup AWS resources for {application.name}: {e!s}")
             raise
     
     def _delete_ecs_service(self, session, cluster_arn, service_arn):

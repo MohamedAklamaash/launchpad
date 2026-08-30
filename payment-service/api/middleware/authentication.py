@@ -49,6 +49,6 @@ class JWTAuthentication(BaseAuthentication):
         try:
             user = decode_jwt(token, app_config.jwt_secret)
             return (user, token)
-        except Exception as e:  # noqa: BLE001 - any malformed/expired token must fail closed to unauthenticated
+        except Exception as e:  # any malformed/expired token must fail closed to unauthenticated
             logger.error(f"JWT Verification Error (DRF): {e}")
             return None

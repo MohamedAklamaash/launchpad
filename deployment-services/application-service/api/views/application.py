@@ -256,7 +256,9 @@ class ApplicationDeployView(APIView):
             if not app:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
             from api.repositories.infrastructure import InfrastructureRepository
-            from api.services.infrastructure_permissions import InfrastructurePermissions
+            from api.services.infrastructure_permissions import (
+                InfrastructurePermissions,
+            )
             infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
             if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
@@ -289,7 +291,9 @@ class ApplicationRetryDeployView(APIView):
             if not app:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
             from api.repositories.infrastructure import InfrastructureRepository
-            from api.services.infrastructure_permissions import InfrastructurePermissions
+            from api.services.infrastructure_permissions import (
+                InfrastructurePermissions,
+            )
             infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
             if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)

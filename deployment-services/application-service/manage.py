@@ -3,6 +3,7 @@
 import os
 import sys
 from pathlib import Path
+
 from api.common.envs.application import app_config
 
 # added the parent directory to sys.path to allow importing from 'shared'

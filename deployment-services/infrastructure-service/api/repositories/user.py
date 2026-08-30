@@ -1,5 +1,6 @@
 from api.models.user import User as UserModel
 
+
 class UserRepository:
     def get_user(self, user_id):
         try:

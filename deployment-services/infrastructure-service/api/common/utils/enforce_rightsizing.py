@@ -1,10 +1,12 @@
 import logging
+
 import boto3
-from api.repositories.infrastructure import InfrastructureRepository
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from api.common.envs.application import app_config
+from api.repositories.infrastructure import InfrastructureRepository
 from shared.enums.cloud_provider import CloudProvider
 from shared.mode import is_dev_mode
+
 
 def enforce_rightsizing():
     logger = logging.getLogger(__name__)
@@ -94,7 +96,7 @@ def enforce_rightsizing():
                     
             processed_count += 1
             
-        except Exception as e:
-            logger.error(f"Error querying Optimizer for Infra {infra.id}: {e}", exc_info=True)
+        except Exception:
+            logger.exception(f"Error querying Optimizer for Infra {infra.id}")
 
     logger.info(f"Finished. Enforced recommendations for {processed_count} infrastructures.")

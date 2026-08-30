@@ -37,8 +37,8 @@ def make_user(db):
 
 @pytest.fixture
 def make_infra(db, make_user):
-    from api.models.infrastructure import Infrastructure
     from api.models.environment import Environment
+    from api.models.infrastructure import Infrastructure
 
     def _make(*, is_cloud_authenticated=False, code="123456789012"):
         infra = Infrastructure.objects.create(
