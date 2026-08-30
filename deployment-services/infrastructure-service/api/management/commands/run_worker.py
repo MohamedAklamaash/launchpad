@@ -245,13 +245,13 @@ class Command(BaseCommand):
             for db in Database.objects.filter(id__in=pending_dbs.keys()):
                 was_delete = pending_dbs[str(db.id)] == 'DELETING'
                 if db.status == 'DELETED':
-                    NotificationService.send_database_delete_success(str(infra.user_id), str(infra.id), infra.name)
+                    NotificationService.send_database_delete_success(str(infra.user_id), str(infra.id), infra.name, db.name)
                 elif db.status == 'ACTIVE':
-                    NotificationService.send_database_create_success(str(infra.user_id), str(infra.id), infra.name)
+                    NotificationService.send_database_create_success(str(infra.user_id), str(infra.id), infra.name, db.name)
                 elif db.status == 'ERROR':
                     notify = NotificationService.send_database_delete_failure if was_delete \
                         else NotificationService.send_database_create_failure
-                    notify(str(infra.user_id), str(infra.id), infra.name, db.error_message or 'Unknown error')
+                    notify(str(infra.user_id), str(infra.id), infra.name, db.error_message or 'Unknown error', db.name)
 
         def run_provision(infra_id, lock_token):
             infra = None
