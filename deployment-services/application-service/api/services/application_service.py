@@ -87,6 +87,7 @@ class ApplicationService:
         "id", "user", "status", "version", "github_webhook_secret",
         "task_definition_arn", "service_arn", "target_group_arn", "listener_rule_arn",
         "deployment_url", "build_id", "error_message", "is_sleeping", "desired_count",
+        "runtime_refs",
         "created_at", "updated_at",
     })
 
@@ -187,10 +188,11 @@ class ApplicationService:
             listener_rule_arn = app.listener_rule_arn
             target_group_arn = app.target_group_arn
             task_definition_arn = app.task_definition_arn
+            runtime_refs = app.runtime_refs
 
             result = self.app_repo.delete(app_id)
 
-            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn]):
+            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn, runtime_refs]):
                 try:
                     DeploymentQueue.enqueue_cleanup(
                         app_id=app_id,
@@ -199,6 +201,8 @@ class ApplicationService:
                         listener_rule_arn=listener_rule_arn,
                         target_group_arn=target_group_arn,
                         task_definition_arn=task_definition_arn,
+                        runtime=(runtime_refs or {}).get('runtime'),
+                        refs=runtime_refs,
                     )
                 except Exception as e:
                     logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")

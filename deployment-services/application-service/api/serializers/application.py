@@ -1,6 +1,15 @@
 from rest_framework import serializers
 from django.core.validators import URLValidator, RegexValidator
+from shared.enums.orchestrator import ComputeType
 import re
+
+FARGATE_CPU_MEMORY = {
+    0.25: (0.5, 2.0),
+    0.5: (1.0, 4.0),
+    1.0: (2.0, 8.0),
+    2.0: (4.0, 16.0),
+    4.0: (8.0, 30.0),
+}
 
 # DNS label validator (for application names)
 dns_label_validator = RegexValidator(
@@ -80,27 +89,24 @@ class ApplicationCreateSerializer(serializers.Serializer):
         """Cross-field validation"""
         cpu = data.get('alloted_cpu', 0.25)
         memory = data.get('alloted_memory', 0.5)
-        
-        # Validate Fargate CPU/Memory combinations
-        valid_combinations = {
-            0.25: (0.5, 2.0),
-            0.5: (1.0, 4.0),
-            1.0: (2.0, 8.0),
-            2.0: (4.0, 16.0),
-            4.0: (8.0, 30.0)
-        }
-        
-        if cpu not in valid_combinations:
+
+        # Kubernetes accepts any positive request; only Fargate has a fixed CPU/memory matrix.
+        if self.context.get('compute_type') == ComputeType.EKS:
+            if cpu <= 0 or memory <= 0:
+                raise serializers.ValidationError("CPU and memory must be greater than zero")
+            return data
+
+        if cpu not in FARGATE_CPU_MEMORY:
             raise serializers.ValidationError(
-                f"Invalid CPU value. Must be one of: {list(valid_combinations.keys())}"
+                f"Invalid CPU value. Must be one of: {list(FARGATE_CPU_MEMORY.keys())}"
             )
-        
-        min_mem, max_mem = valid_combinations[cpu]
+
+        min_mem, max_mem = FARGATE_CPU_MEMORY[cpu]
         if not (min_mem <= memory <= max_mem):
             raise serializers.ValidationError(
                 f"For {cpu} vCPU, memory must be between {min_mem}GB and {max_mem}GB"
             )
-        
+
         return data
 
 

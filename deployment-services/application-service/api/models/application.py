@@ -24,7 +24,7 @@ class Application(models.Model):
     github_webhook_secret = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
-        unique_together = [('user', 'infrastructure', 'name')]  # App name unique per infra
+        unique_together = [('infrastructure', 'name')]  # k8s object names derive from name alone
         indexes = [
             models.Index(fields=['user', 'infrastructure']),
             models.Index(fields=['status']),
@@ -63,6 +63,9 @@ class Application(models.Model):
     deployment_url = models.CharField(max_length=512, null=True, blank=True)
     build_id = models.CharField(max_length=255, null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
+
+    # Kubernetes object handles for EKS deploys; null for ECS (ARN columns above).
+    runtime_refs = models.JSONField(null=True, blank=True)
     
     # Sleep/wake management
     is_sleeping = models.BooleanField(default=False)

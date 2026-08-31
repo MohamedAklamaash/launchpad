@@ -71,7 +71,7 @@ class DeploymentQueue:
     @staticmethod
     def enqueue_cleanup(app_id: str, infrastructure_id: str, service_arn: str = None,
                         listener_rule_arn: str = None, target_group_arn: str = None,
-                        task_definition_arn: str = None):
+                        task_definition_arn: str = None, runtime: str = None, refs: dict = None):
         try:
             job = {
                 "app_id": str(app_id),
@@ -83,6 +83,11 @@ class DeploymentQueue:
                 "task_definition_arn": task_definition_arn,
                 "retry_count": 0,
             }
+            # An absent "runtime" means the legacy ECS ARN shape, so jobs enqueued by the
+            # previous release stay valid across deploy.
+            if runtime:
+                job["runtime"] = runtime
+                job["refs"] = refs
             DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
             logger.info(f"Enqueued cleanup for application {app_id}")
         except Exception as e:

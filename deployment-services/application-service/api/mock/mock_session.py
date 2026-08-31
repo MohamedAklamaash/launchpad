@@ -225,6 +225,19 @@ class MockClient:
     def authorize_security_group_ingress(self, **kwargs):
         return {}
 
+    def describe_cluster(self, **kwargs):
+        name = kwargs.get("name", "cluster")
+        return {
+            "cluster": {
+                "name": name,
+                "arn": self._arn(f"cluster/{name}"),
+                "endpoint": f"https://{_suffix(name)}.mock.eks.{self._region}.amazonaws.com",
+                # base64 of "mock-ca" — shared/k8s/client.py b64-decodes this on the real path.
+                "certificateAuthority": {"data": "bW9jay1jYQ=="},
+                "status": "ACTIVE",
+            }
+        }
+
     def assume_role(self, **kwargs):
         from datetime import datetime, timedelta, timezone
 
