@@ -146,7 +146,7 @@ def test_redeploy_is_idempotent_and_unwinds_nothing_preexisting(application, dep
     mock_k8s.get_mock_apis(str(application.infrastructure_id)).state.available_replicas = 0
     monkeypatch.setattr(deployer_mod, "ROLLOUT_TIMEOUT_SECONDS", 0)
 
-    with pytest.raises(Exception):
+    with pytest.raises(deployer_mod.RolloutFailed):
         deploy(application)
 
     # Everything already existed, so the unwind owns nothing and the live app survives.
@@ -171,7 +171,7 @@ def test_rollout_failure_harvests_events_and_unwinds_in_reverse(application, dep
         lambda apis, ref: (deleted.append(ref["kind"]), real_delete(apis, ref))[1],
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(deployer_mod.RolloutFailed):
         deploy(application)
 
     application.refresh_from_db()
