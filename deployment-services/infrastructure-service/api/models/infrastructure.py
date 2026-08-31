@@ -6,6 +6,7 @@ from django.db import models
 from django.conf import settings
 from django.utils import timezone
 from shared.enums.cloud_provider import CloudProvider
+from shared.enums.orchestrator import ComputeType
 from shared.utils.uuid import uuid7_pk
 
 # Onboarding tokens are short-lived: the customer is expected to run the bootstrap
@@ -28,6 +29,11 @@ class Infrastructure(models.Model):
     cloud_provider = models.CharField(
         max_length=30,
         choices = CloudProvider.choices
+    )
+    compute_type = models.CharField(
+        max_length=30,
+        choices=ComputeType.choices,
+        default=ComputeType.ECS_FARGATE,
     )
     max_cpu = models.FloatField()
     max_memory = models.FloatField()

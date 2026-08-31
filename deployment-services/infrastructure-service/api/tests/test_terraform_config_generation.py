@@ -1,0 +1,184 @@
+"""Golden tests for the terraform root-config builders (H3 trust boundary).
+
+The ECS builder output is pinned string-identical to the pre-EKS generator; the EKS
+builder is selected only by the compute_type argument (fed from the model column,
+never from caller-settable vars), allowlists cluster_version, and hard-refuses an
+open or empty public-endpoint CIDR list.
+"""
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from api.services import terraform_worker as tw_mod
+from api.services.terraform_worker import TerraformWorker
+from shared.enums.orchestrator import ComputeType
+
+INFRA_ID = "11111111-2222-3333-4444-555555555555"
+ACCOUNT_ID = "123456789012"
+VARS = {"aws_region": "us-east-1", "owner": "user-1", "vpc_cidr": "10.0.0.0/16"}
+ARGS = (INFRA_ID, "bucket-x", "table-x", "us-east-1", "abcd1234")
+
+GOLDEN_ECS = '''
+terraform {
+  backend "s3" {
+    bucket         = "bucket-x"
+    key            = "infra/11111111-2222-3333-4444-555555555555/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "table-x"
+    encrypt        = true
+  }
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+  
+  default_tags {
+    tags = {
+      Environment   = "infra-11111111-abcd1234"
+      InfraID       = "11111111-2222-3333-4444-555555555555"
+      ManagedBy     = "launchpad"
+      Owner         = "user-1"
+    }
+  }
+}
+
+module "vpc" {
+  source      = "./modules/vpc"
+  environment = "infra-11111111-abcd1234"
+  vpc_cidr    = "10.0.0.0/16"
+}
+
+module "iam" {
+  source      = "./modules/iam"
+  environment = "infra-11111111-abcd1234"
+}
+
+module "ecs" {
+  source             = "./modules/ecs"
+  environment        = "infra-11111111-abcd1234"
+  vpc_id             = module.vpc.vpc_id
+  private_subnet_ids = module.vpc.private_subnet_ids
+  
+  depends_on = [module.vpc]
+}
+
+module "alb" {
+  source                 = "./modules/alb"
+  environment            = "infra-11111111-abcd1234"
+  vpc_id                 = module.vpc.vpc_id
+  public_subnet_ids      = module.vpc.public_subnet_ids
+  alb_security_group_id  = module.vpc.alb_security_group_id
+  
+  depends_on = [module.vpc]
+}
+
+module "ecr" {
+  source      = "./modules/ecr"
+  environment = "infra-11111111-abcd1234"
+}
+
+output "vpc_id" { value = module.vpc.vpc_id }
+output "cluster_arn" { value = module.ecs.cluster_arn }
+output "alb_arn" { value = module.alb.alb_arn }
+output "alb_dns" { value = module.alb.alb_dns }
+output "target_group_arn" { value = module.alb.target_group_arn }
+output "ecr_repository_url" { value = module.ecr.repository_url }
+output "ecs_task_execution_role_arn" { value = module.iam.ecs_task_execution_role_arn }
+output "alb_security_group_id" { value = module.vpc.alb_security_group_id }
+'''
+
+
+@pytest.fixture
+def eks_cidrs(settings):
+    settings.EKS_PUBLIC_ACCESS_CIDRS = ["203.0.113.0/24", "198.51.100.7/32"]
+    return settings
+
+
+def test_ecs_config_is_string_identical_to_golden():
+    assert TerraformWorker._generate_config_ecs(VARS, *ARGS) == GOLDEN_ECS
+
+
+def test_dispatcher_selects_ecs_from_compute_type():
+    config = TerraformWorker._generate_config(VARS, *ARGS, ComputeType.ECS_FARGATE, ACCOUNT_ID)
+    assert config == GOLDEN_ECS
+
+
+def test_dispatcher_ignores_compute_type_smuggled_via_vars():
+    tainted = {**VARS, "compute_type": "eks"}
+    config = TerraformWorker._generate_config(tainted, *ARGS, ComputeType.ECS_FARGATE, ACCOUNT_ID)
+    assert config == GOLDEN_ECS
+
+
+def test_eks_config_shape(eks_cidrs):
+    config = TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, ACCOUNT_ID)
+    assert 'module "eks"' in config
+    assert 'module "vpc"' in config
+    assert 'module "iam"' in config
+    assert 'module "ecr"' in config
+    assert 'module "alb"' not in config
+    assert 'module "ecs"' not in config
+    assert 'enable_elb_subnet_tags = true' in config
+    assert '">= 5.79"' in config
+    assert 'cluster_name         = "infra-11111111-abcd1234"' in config
+    assert 'cluster_version      = "1.31"' in config
+    assert 'public_access_cidrs  = ["203.0.113.0/24", "198.51.100.7/32"]' in config
+    assert f'arn:aws:iam::{ACCOUNT_ID}:role/LaunchpadDeploymentRole' in config
+    assert 'output "cluster_name"' in config
+    assert 'output "ecr_repository_url"' in config
+
+
+def test_eks_config_allowlists_cluster_version(eks_cidrs):
+    ok = TerraformWorker._generate_config(
+        {**VARS, "cluster_version": "1.30"}, *ARGS, ComputeType.EKS, ACCOUNT_ID
+    )
+    assert 'cluster_version      = "1.30"' in ok
+    for bad in ("1.28", "1.31 ", 'evil"', "latest"):
+        with pytest.raises(ValueError, match="cluster_version"):
+            TerraformWorker._generate_config(
+                {**VARS, "cluster_version": bad}, *ARGS, ComputeType.EKS, ACCOUNT_ID
+            )
+
+
+def test_eks_config_refuses_empty_or_open_cidrs(settings):
+    settings.EKS_PUBLIC_ACCESS_CIDRS = []
+    with pytest.raises(ValueError, match="EKS_PUBLIC_ACCESS_CIDRS"):
+        TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, ACCOUNT_ID)
+    settings.EKS_PUBLIC_ACCESS_CIDRS = ["203.0.113.0/24", "0.0.0.0/0"]
+    with pytest.raises(ValueError, match="EKS_PUBLIC_ACCESS_CIDRS"):
+        TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, ACCOUNT_ID)
+
+
+def test_exec_tf_env_allowlist(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "super-secret")
+    monkeypatch.setenv("INTERNAL_API_TOKEN", "internal-secret")
+    monkeypatch.setenv("TF_LOG", "TRACE")
+    captured = {}
+
+    def fake_run(cmd, cwd, capture_output, text, env):
+        captured.clear()
+        captured.update(env)
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    with patch.object(tw_mod.subprocess, "run", fake_run):
+        result = TerraformWorker._exec_tf(
+            ["terraform", "output", "-json"],
+            VARS,
+            {"aws_access_key_id": "AKIATEST", "aws_secret_access_key": "s", "aws_session_token": "t"},
+            INFRA_ID, "us-east-1", ACCOUNT_ID, ComputeType.ECS_FARGATE,
+            ensure_backend=False,
+        )
+
+    assert result["success"]
+    assert "JWT_SECRET" not in captured
+    assert "INTERNAL_API_TOKEN" not in captured
+    assert captured["AWS_ACCESS_KEY_ID"] == "AKIATEST"
+    assert captured["TF_LOG"] == "TRACE"
+    assert "PATH" in captured
+    for key in captured:
+        assert key in ("PATH", "HOME") or key.startswith(("TF_", "AWS_")), key

@@ -10,6 +10,7 @@ class InfrastructureCreateInput:
     max_cpu: float
     max_memory: float
     metadata: Optional[Dict[str, Any]] = None
+    compute_type: str = "ecs_fargate"
 
 @dataclass
 class InfrastructureUpdateInput:
@@ -56,6 +57,7 @@ class InfrastructureResponse:
     status: str = "UNKNOWN"
     is_mock: bool = False
     code: Optional[str] = None
+    compute_type: str = "ecs_fargate"
 
     def to_dict(self):
         data = asdict(self)

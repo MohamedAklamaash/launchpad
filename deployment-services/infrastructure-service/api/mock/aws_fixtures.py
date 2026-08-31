@@ -1,6 +1,8 @@
 import hashlib
 from datetime import datetime, timedelta, timezone
 
+from shared.enums.orchestrator import ComputeType
+
 DEFAULT_REGION = "us-west-2"
 MOCK_ACCOUNT_ID = "000000000000"
 MOCK_CREDENTIAL_TTL = timedelta(hours=12)
@@ -36,10 +38,21 @@ def synthesize_assumed_role_metadata(infra) -> dict:
     }
 
 
-def synthesize_environment_outputs(infra, region: str) -> dict:
+def synthesize_environment_outputs(infra, region: str, compute_type) -> dict:
     suffix = _suffix(infra.id)
     account_id = infra.code or MOCK_ACCOUNT_ID
     env_name = f"infra-{str(infra.id)[:8]}-{suffix}"
+    if compute_type == ComputeType.EKS:
+        return {
+            "vpc_id": _hex_id("vpc", infra.id, "vpc"),
+            "cluster_arn": f"arn:aws:eks:{region}:{account_id}:cluster/{env_name}",
+            "alb_dns": f"dev-mock-{suffix}.{region}.elb.amazonaws.com",
+            "ecr_repository_url": f"{account_id}.dkr.ecr.{region}.amazonaws.com/{env_name}",
+            "alb_arn": None,
+            "alb_security_group_id": None,
+            "target_group_arn": None,
+            "ecs_task_execution_role_arn": None,
+        }
     return {
         "vpc_id": _hex_id("vpc", infra.id, "vpc"),
         "cluster_arn": f"arn:aws:ecs:{region}:{account_id}:cluster/{env_name}-cluster",

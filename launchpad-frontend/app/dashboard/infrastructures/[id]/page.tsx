@@ -242,6 +242,9 @@ export default function InfrastructureDetailPage() {
             <span className={`font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${st.badge}`}>
               {infra.status}
             </span>
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border border-hairline bg-surface-1 text-muted-foreground">
+              {infra.compute_type === 'eks' ? 'Kubernetes' : 'ECS Fargate'}
+            </span>
             {infra.is_mock && (
               <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border border-brand/30 bg-brand-soft text-brand">
                 Mock / Dev

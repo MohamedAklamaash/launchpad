@@ -54,6 +54,11 @@ def _force_mode(dev: bool):
     return patch.object(auth_mod, "is_dev_mode", return_value=dev)
 
 
+# Credentials are returned to the caller and never persisted: metadata is redacted only at
+# the API boundary, so a stored copy would still reach DB backups and replicas.
+_CRED_KEYS = {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
+
+
 # --- SEAM 1: dev mode mock path -------------------------------------------
 
 def test_dev_mode_synthesizes_creds_and_never_calls_boto3(make_infra):
@@ -61,13 +66,15 @@ def test_dev_mode_synthesizes_creds_and_never_calls_boto3(make_infra):
 
     with _force_mode(True), patch.object(auth_mod, "boto3") as boto3_mock:
         boto3_mock.client.side_effect = AssertionError("boto3.client must not be called in dev mode")
-        auth_mod.authenticate_infrastructure(infra)
+        creds = auth_mod.authenticate_infrastructure(infra)
+
+    assert creds["aws_access_key_id"].startswith("ASIAMOCK")
+    assert creds["aws_session_token"]
 
     infra.refresh_from_db()
     assert infra.is_cloud_authenticated is True
     assert infra.metadata["is_mock"] is True
-    assert infra.metadata["aws_access_key_id"].startswith("ASIAMOCK")
-    assert "aws_session_token" in infra.metadata
+    assert not _CRED_KEYS & infra.metadata.keys()
 
 
 def test_prod_mode_calls_real_sts_assume_role(make_infra):
@@ -86,13 +93,16 @@ def test_prod_mode_calls_real_sts_assume_role(make_infra):
 
     with _force_mode(False), patch.object(auth_mod, "boto3") as boto3_mock:
         boto3_mock.client.return_value = fake_sts
-        auth_mod.authenticate_infrastructure(infra)
+        creds = auth_mod.authenticate_infrastructure(infra)
 
     boto3_mock.client.assert_called_once()
     fake_sts.assume_role.assert_called_once()
+    assert fake_sts.assume_role.call_args.kwargs["DurationSeconds"] == 7200
+    assert creds["aws_access_key_id"] == "AKIAREAL"
+
     infra.refresh_from_db()
-    assert infra.metadata["aws_access_key_id"] == "AKIAREAL"
     assert infra.is_cloud_authenticated is True
+    assert not _CRED_KEYS & infra.metadata.keys()
 
 
 # --- H3 promotion guard ----------------------------------------------------

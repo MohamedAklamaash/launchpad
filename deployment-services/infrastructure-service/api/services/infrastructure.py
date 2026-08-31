@@ -2,12 +2,14 @@ import os
 import re
 import uuid
 import logging
+from django.conf import settings
 from django.db import transaction
 from api.repositories.infrastructure import InfrastructureRepository
 from api.serializers.infrastructure import InfrastructureSerializer
 from api.services.infrastructure_permissions import InfrastructurePermissions
 from shared.resilience.circuit_breaker import CircuitBreaker
 from shared.enums.cloud_provider import CloudProvider
+from shared.enums.orchestrator import ComputeType
 from shared.mode import is_dev_mode
 from api.common.envs.application import app_config
 from api.models.environment import Environment
@@ -62,8 +64,18 @@ class InfrastructureService:
         # without this filter a caller could set server-controlled fields directly
         # (is_cloud_authenticated, onboarding_token_*, id, user) and subvert the
         # onboarding state machine.
-        ALLOWED_CREATE_FIELDS = {"name", "cloud_provider", "max_cpu", "max_memory", "code", "metadata"}
+        ALLOWED_CREATE_FIELDS = {"name", "cloud_provider", "compute_type", "max_cpu", "max_memory", "code", "metadata"}
         infra_data = {k: v for k, v in infra_data.items() if k in ALLOWED_CREATE_FIELDS}
+        # Pop-then-reinsert: an explicit null must fall back to the model default instead of
+        # splatting compute_type=None into the constructor.
+        compute_type = infra_data.pop("compute_type", None)
+        if compute_type is not None:
+            compute_type = str(compute_type).lower()
+            if compute_type not in ComputeType.values:
+                raise ValueError(f"Invalid compute_type. Must be one of: {', '.join(ComputeType.values)}.")
+            if compute_type == ComputeType.EKS and not settings.EKS_ENABLED:
+                raise ValueError("EKS support is not enabled on this platform.")
+            infra_data["compute_type"] = compute_type
         if isinstance(infra_data.get("metadata"), dict):
             # Never let a caller seed credential keys into metadata (it's serialized back
             # out, and the worker treats these keys as live STS creds).
@@ -176,6 +188,25 @@ class InfrastructureService:
                 # ERROR, or DESTROYED: no live AWS resources, delete immediately. Without
                 # this a customer who created an infra but never ran the bootstrap script
                 # would be stuck with an undeletable PENDING record.
+                #
+                # ERROR is the exception under EKS: a half-applied cluster leaves a billed,
+                # internet-reachable control plane holding a cluster-admin access entry, and
+                # dropping our record here would orphan it with nothing left to find it by.
+                # Reap first and refuse the delete if the reap fails, so it stays retryable.
+                if env.status == 'ERROR' and infra.compute_type == ComputeType.EKS:
+                    from api.services.eks_teardown import cleanup_eks_orphans
+                    try:
+                        cleanup_eks_orphans(infra)
+                    except Exception as exc:
+                        logger.error(
+                            f"EKS orphan cleanup failed for {infra_id}; refusing delete",
+                            exc_info=True,
+                        )
+                        raise ValueError(
+                            "Could not clean up EKS resources in your AWS account. "
+                            "Verify the deployment role is still valid and retry the delete."
+                        ) from exc
+
                 logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records")
                 env.delete()
 
@@ -233,9 +264,12 @@ class InfrastructureService:
         if not InfrastructurePermissions.can_update_infrastructure(infra, user_id):
             raise PermissionError("Only the infrastructure owner can update it")
         
+        if 'compute_type' in update_data:
+            raise ValueError("compute_type is immutable after creation.")
+
         # Validate updatable fields
         update_fields = []
-        
+
         if 'name' in update_data:
             infra.name = update_data['name']
             update_fields.append('name')

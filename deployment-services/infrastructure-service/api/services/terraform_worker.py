@@ -5,14 +5,23 @@ import subprocess
 import logging
 import boto3
 import json
-import hashlib
 from pathlib import Path
+from django.conf import settings
 from django.db import transaction
 from api.models.infrastructure import Infrastructure
 from api.models.environment import Environment
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from api.common.envs.application import app_config
+from api.common import naming
 from api.mock.aws_fixtures import resolve_region, synthesize_environment_outputs
+from api.services.eks_bootstrap import (
+    EksBootstrapError,
+    EksBootstrapTimeout,
+    bootstrap_eks_environment,
+    phase_marker,
+)
+from api.services.eks_teardown import cleanup_eks_orphans
+from shared.enums.orchestrator import ComputeType
 from shared.mode import is_dev_mode
 
 logger = logging.getLogger(__name__)
@@ -20,6 +29,8 @@ logger = logging.getLogger(__name__)
 TF_MODULES_DIR = Path(__file__).resolve().parent.parent.parent / "infra" / "aws"
 MAX_RETRIES = 3
 MOCK_PROVISION_DELAY_SECONDS = 4
+EKS_SUPPORTED_CLUSTER_VERSIONS = {"1.29", "1.30", "1.31"}
+DEFAULT_EKS_CLUSTER_VERSION = "1.31"
 
 
 class TerraformWorker:
@@ -28,7 +39,7 @@ class TerraformWorker:
     @staticmethod
     def _generate_unique_suffix(infra_id: str) -> str:
         """Generate unique suffix for resource names"""
-        return hashlib.md5(str(infra_id).encode()).hexdigest()[:8]
+        return naming.unique_suffix(infra_id)
     
     @staticmethod
     def _ensure_backend(credentials: dict, region: str, account_id: str) -> tuple[str, str]:
@@ -104,7 +115,7 @@ class TerraformWorker:
     
     @staticmethod
     def _exec_tf(cmd: list, env_vars: dict, credentials: dict, infra_id: str, region: str, account_id: str,
-                 ensure_backend: bool = True) -> dict:
+                 compute_type: str, ensure_backend: bool = True) -> dict:
         """Execute terraform with proper logging and cleanup"""
         bucket = f"launchpad-tf-state-{account_id}-{region}"
         table = f"launchpad-tf-locks-{account_id}-{region}"
@@ -112,7 +123,9 @@ class TerraformWorker:
             bucket, table = TerraformWorker._ensure_backend(credentials, region, account_id)
 
         unique_suffix = TerraformWorker._generate_unique_suffix(infra_id)
-        tf_config = TerraformWorker._generate_config(env_vars, infra_id, bucket, table, region, unique_suffix)
+        tf_config = TerraformWorker._generate_config(
+            env_vars, infra_id, bucket, table, region, unique_suffix, compute_type, account_id
+        )
 
         work_dir = Path(f"/dev/shm/tf-{infra_id}")
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -132,7 +145,10 @@ class TerraformWorker:
                     shutil.copytree(module, work_dir / "modules" / module.name, dirs_exist_ok=True)
 
             env = {
-                **os.environ,
+                key: value for key, value in os.environ.items()
+                if key in ("PATH", "HOME") or key.startswith("TF_")
+            }
+            env.update({
                 "AWS_ACCESS_KEY_ID": credentials.get("aws_access_key_id", ""),
                 "AWS_SECRET_ACCESS_KEY": credentials.get("aws_secret_access_key", ""),
                 "AWS_SESSION_TOKEN": credentials.get("aws_session_token", ""),
@@ -140,7 +156,7 @@ class TerraformWorker:
                 "TF_IN_AUTOMATION": "1",
                 "TF_INPUT": "0",
                 "TF_PLUGIN_CACHE_DIR": str(plugin_cache_dir),
-            }
+            })
             
             init_result = subprocess.run(
                 ["terraform", "init", "-no-color", "-input=false"],
@@ -178,7 +194,14 @@ class TerraformWorker:
             shutil.rmtree(work_dir, ignore_errors=True)
     
     @staticmethod
-    def _generate_config(vars: dict, infra_id: str, bucket: str, table: str, region: str, suffix: str) -> str:
+    def _generate_config(vars: dict, infra_id: str, bucket: str, table: str, region: str, suffix: str,
+                         compute_type: str, account_id: str) -> str:
+        if compute_type == ComputeType.EKS:
+            return TerraformWorker._generate_config_eks(vars, infra_id, bucket, table, region, suffix, account_id)
+        return TerraformWorker._generate_config_ecs(vars, infra_id, bucket, table, region, suffix)
+
+    @staticmethod
+    def _generate_config_ecs(vars: dict, infra_id: str, bucket: str, table: str, region: str, suffix: str) -> str:
         """Generate Terraform config with unique resource names"""
         env_name = f"infra-{infra_id[:8]}-{suffix}"
         
@@ -256,7 +279,91 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
 output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_role_arn }}
 output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
 """
-    
+
+    @staticmethod
+    def _generate_config_eks(vars: dict, infra_id: str, bucket: str, table: str, region: str, suffix: str,
+                             account_id: str) -> str:
+        env_name = f"infra-{infra_id[:8]}-{suffix}"
+
+        cluster_version = str(vars.get("cluster_version", DEFAULT_EKS_CLUSTER_VERSION))
+        if cluster_version not in EKS_SUPPORTED_CLUSTER_VERSIONS:
+            raise ValueError(
+                f"Unsupported EKS cluster_version {cluster_version!r}; "
+                f"allowed: {sorted(EKS_SUPPORTED_CLUSTER_VERSIONS)}"
+            )
+        public_access_cidrs = list(settings.EKS_PUBLIC_ACCESS_CIDRS)
+        if not public_access_cidrs or "0.0.0.0/0" in public_access_cidrs:
+            raise ValueError(
+                "EKS_PUBLIC_ACCESS_CIDRS must be a non-empty list that does not contain 0.0.0.0/0"
+            )
+        provisioner_role_arn = f"arn:aws:iam::{account_id}:role/LaunchpadDeploymentRole"
+
+        return f"""
+terraform {{
+  backend "s3" {{
+    bucket         = "{bucket}"
+    key            = "infra/{infra_id}/terraform.tfstate"
+    region         = "{region}"
+    dynamodb_table = "{table}"
+    encrypt        = true
+  }}
+  required_providers {{
+    aws = {{
+      source  = "hashicorp/aws"
+      version = ">= 5.79"
+    }}
+  }}
+}}
+
+provider "aws" {{
+  region = "{vars.get('aws_region', 'us-west-2')}"
+
+  default_tags {{
+    tags = {{
+      Environment   = "{env_name}"
+      InfraID       = "{infra_id}"
+      ManagedBy     = "launchpad"
+      Owner         = "{vars.get('owner', 'unknown')}"
+    }}
+  }}
+}}
+
+module "vpc" {{
+  source                 = "./modules/vpc"
+  environment            = "{env_name}"
+  vpc_cidr               = "{vars.get('vpc_cidr', '10.0.0.0/16')}"
+  enable_elb_subnet_tags = true
+}}
+
+module "iam" {{
+  source      = "./modules/iam"
+  environment = "{env_name}"
+}}
+
+module "eks" {{
+  source               = "./modules/eks"
+  environment          = "{env_name}"
+  cluster_name         = "{env_name}"
+  cluster_version      = "{cluster_version}"
+  subnet_ids           = module.vpc.private_subnet_ids
+  public_access_cidrs  = {json.dumps(public_access_cidrs)}
+  provisioner_role_arn = "{provisioner_role_arn}"
+
+  depends_on = [module.vpc]
+}}
+
+module "ecr" {{
+  source      = "./modules/ecr"
+  environment = "{env_name}"
+}}
+
+output "vpc_id" {{ value = module.vpc.vpc_id }}
+output "cluster_arn" {{ value = module.eks.cluster_arn }}
+output "cluster_name" {{ value = module.eks.cluster_name }}
+output "cluster_endpoint" {{ value = module.eks.cluster_endpoint }}
+output "ecr_repository_url" {{ value = module.ecr.repository_url }}
+"""
+
     @staticmethod
     def _is_transient_error(error: str) -> bool:
         """Check if error is transient and retryable"""
@@ -267,7 +374,9 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             "InternalError",
             "connection",
             "timeout",
-            "TooManyRequests"
+            "timed out",
+            "TooManyRequests",
+            "ResourceInUseException"
         ]
         return any(pattern.lower() in error.lower() for pattern in transient_patterns)
     
@@ -285,11 +394,12 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
         time.sleep(MOCK_PROVISION_DELAY_SECONDS)
 
         region = resolve_region(infra)
-        outputs = synthesize_environment_outputs(infra, region)
+        outputs = synthesize_environment_outputs(infra, region, infra.compute_type)
         TerraformWorker._save_outputs(
             infra_id,
             {"logs": "[MOCK] synthesized environment outputs", "outputs": outputs},
             tf_vars={}, credentials={}, region=region, account_id=infra.code or "mock",
+            compute_type=infra.compute_type,
             mock_outputs=outputs,
         )
         logger.info(f"MOCK infrastructure {infra_id} provisioned successfully")
@@ -324,38 +434,52 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 env.retry_count = retry_count
                 env.save(update_fields=['status', 'retry_count'])
 
-            authenticate_infrastructure(infra)
+            credentials = authenticate_infrastructure(infra)
             infra.refresh_from_db()
-            
+
             metadata = infra.metadata or {}
             region = metadata.get("aws_region", "us-west-2")
             account_id = infra.code or "default"
-            
-            credentials = {
-                "aws_access_key_id": metadata.get("aws_access_key_id", ""),
-                "aws_secret_access_key": metadata.get("aws_secret_access_key", ""),
-                "aws_session_token": metadata.get("aws_session_token", "")
-            }
-            
+            compute_type = infra.compute_type
+
             tf_vars = {
                 "environment": f"cli-{infra_id}",
                 "owner": str(infra.user_id),
                 "project": "launchpad-infra",
                 "aws_region": region,
-                "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16")
+                "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16"),
+                "cluster_version": metadata.get("cluster_version", DEFAULT_EKS_CLUSTER_VERSION)
             }
             
             logger.info(f"Running terraform apply for {infra_id}")
             result = TerraformWorker._exec_tf(
                 ["terraform", "apply", "-auto-approve", "-no-color", "-input=false"],
-                tf_vars, credentials, str(infra_id), region, account_id
+                tf_vars, credentials, str(infra_id), region, account_id, compute_type
             )
             
             if not result["success"]:
-                TerraformWorker._handle_provision_failure(infra_id, result, tf_vars, credentials, region, account_id, retry_count)
+                TerraformWorker._handle_provision_failure(infra_id, result, tf_vars, credentials, region, account_id, retry_count, compute_type)
                 return
-            
-            TerraformWorker._save_outputs(infra_id, result, tf_vars, credentials, region, account_id)
+
+            if compute_type == ComputeType.EKS:
+                result["logs"] = result.get("logs", "") + "\n" + phase_marker("apply")
+
+            try:
+                TerraformWorker._save_outputs(infra_id, result, tf_vars, credentials, region, account_id, compute_type)
+            except EksBootstrapTimeout as e:
+                TerraformWorker._handle_provision_failure(
+                    infra_id,
+                    {"error": str(e), "logs": result.get("logs", "") + "\n" + e.logs},
+                    tf_vars, credentials, region, account_id, MAX_RETRIES, compute_type
+                )
+                return
+            except EksBootstrapError as e:
+                TerraformWorker._handle_provision_failure(
+                    infra_id,
+                    {"error": str(e), "logs": result.get("logs", "") + "\n" + e.logs},
+                    tf_vars, credentials, region, account_id, retry_count, compute_type
+                )
+                return
             logger.info(f"Infrastructure {infra_id} provisioned successfully")
         
         except Exception as e:
@@ -366,7 +490,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 )
     
     @staticmethod
-    def _handle_provision_failure(infra_id, result, tf_vars, credentials, region, account_id, retry_count):
+    def _handle_provision_failure(infra_id, result, tf_vars, credentials, region, account_id, retry_count, compute_type):
         """Handle provision failure with retry or rollback"""
         error = result.get("error", "Unknown error")
         logs = result.get("logs", "")
@@ -385,9 +509,16 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             return
         
         logger.error(f"Permanent failure, triggering destroy for {infra_id}")
+        if compute_type == ComputeType.EKS:
+            try:
+                reap_logs = cleanup_eks_orphans(Infrastructure.objects.get(id=infra_id), credentials=credentials)
+                if reap_logs:
+                    logs += "\n" + reap_logs
+            except Exception as e:
+                logger.warning(f"EKS orphan reap before rollback destroy failed (non-fatal): {e}")
         destroy_result = TerraformWorker._exec_tf(
             ["terraform", "destroy", "-auto-approve", "-no-color", "-input=false"],
-            tf_vars, credentials, str(infra_id), region, account_id
+            tf_vars, credentials, str(infra_id), region, account_id, compute_type
         )
         
         if destroy_result["success"]:
@@ -404,7 +535,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             )
     
     @staticmethod
-    def _save_outputs(infra_id, apply_result, tf_vars, credentials, region, account_id, mock_outputs=None):
+    def _save_outputs(infra_id, apply_result, tf_vars, credentials, region, account_id, compute_type, mock_outputs=None):
         """Get terraform outputs and save to database"""
         if mock_outputs is not None:
             output_result = {
@@ -415,23 +546,44 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
         else:
             output_result = TerraformWorker._exec_tf(
                 ["terraform", "output", "-json"],
-                tf_vars, credentials, str(infra_id), region, account_id
+                tf_vars, credentials, str(infra_id), region, account_id, compute_type
             )
 
         if output_result["success"]:
             outputs = json.loads(output_result["output"])
             combined_logs = apply_result.get("logs", "") + "\n[OUTPUT]\n" + output_result.get("logs", "")
-            
+
+            alb_dns = outputs.get("alb_dns", {}).get("value")
+            if compute_type == ComputeType.EKS and mock_outputs is None:
+                bootstrap = bootstrap_eks_environment(
+                    Infrastructure.objects.get(id=infra_id),
+                    credentials=credentials,
+                    region=region,
+                    cluster_name=outputs.get("cluster_name", {}).get("value"),
+                )
+                alb_dns = bootstrap.alb_dns
+                combined_logs += "\n[BOOTSTRAP]\n" + bootstrap.logs
+
             with transaction.atomic():
                 env = Environment.objects.get(infrastructure_id=infra_id)
-                env.vpc_id = outputs.get("vpc_id", {}).get("value")
-                env.cluster_arn = outputs.get("cluster_arn", {}).get("value")
-                env.alb_arn = outputs.get("alb_arn", {}).get("value")
-                env.alb_dns = outputs.get("alb_dns", {}).get("value")
-                env.alb_security_group_id = outputs.get("alb_security_group_id", {}).get("value")
-                env.target_group_arn = outputs.get("target_group_arn", {}).get("value")
-                env.ecr_repository_url = outputs.get("ecr_repository_url", {}).get("value")
-                env.ecs_task_execution_role_arn = outputs.get("ecs_task_execution_role_arn", {}).get("value")
+                if compute_type == ComputeType.EKS:
+                    env.vpc_id = outputs.get("vpc_id", {}).get("value")
+                    env.cluster_arn = outputs.get("cluster_arn", {}).get("value")
+                    env.ecr_repository_url = outputs.get("ecr_repository_url", {}).get("value")
+                    env.alb_dns = alb_dns
+                    env.alb_arn = None
+                    env.alb_security_group_id = None
+                    env.target_group_arn = None
+                    env.ecs_task_execution_role_arn = None
+                else:
+                    env.vpc_id = outputs.get("vpc_id", {}).get("value")
+                    env.cluster_arn = outputs.get("cluster_arn", {}).get("value")
+                    env.alb_arn = outputs.get("alb_arn", {}).get("value")
+                    env.alb_dns = outputs.get("alb_dns", {}).get("value")
+                    env.alb_security_group_id = outputs.get("alb_security_group_id", {}).get("value")
+                    env.target_group_arn = outputs.get("target_group_arn", {}).get("value")
+                    env.ecr_repository_url = outputs.get("ecr_repository_url", {}).get("value")
+                    env.ecs_task_execution_role_arn = outputs.get("ecs_task_execution_role_arn", {}).get("value")
                 env.status = "ACTIVE"
                 env.logs = combined_logs
                 env.save()
@@ -482,11 +634,19 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 ).start())
     
     @staticmethod
-    def _pre_destroy_cleanup(credentials: dict, region: str, infra_id: str):
+    def _pre_destroy_cleanup(credentials: dict, region: str, infra) -> str:
         """Pre-clean resources that block Terraform destroy."""
         if is_dev_mode(app_config.mode):
             logger.warning("MOCK pre-destroy cleanup skipped in dev mode")
-            return
+            return ""
+        infra_id = str(infra.id)
+
+        eks_reap_logs = ""
+        if infra.compute_type == ComputeType.EKS:
+            try:
+                eks_reap_logs = cleanup_eks_orphans(infra, credentials=credentials)
+            except Exception as e:
+                logger.warning(f"EKS pre-destroy reap failed (non-fatal): {e}")
         import boto3
         boto_kwargs = {
             "region_name": region,
@@ -560,6 +720,8 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
         except Exception as e:
             logger.warning(f"Cross-SG rule cleanup failed (non-fatal): {e}")
 
+        return eks_reap_logs
+
     @staticmethod
     def destroy(infra_id: str):
         """Destroy infrastructure"""
@@ -595,48 +757,50 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             region = metadata.get("aws_region", "us-west-2")
             account_id = infra.code or "default"
 
+            # Credentials are no longer persisted, so there is no stored fallback to degrade to.
+            # Continuing with empty creds would skip the EKS orphan reap and then fail inside
+            # terraform anyway; raising leaves the env DESTROYING for the reaper to retry.
             try:
-                authenticate_infrastructure(infra)
+                credentials = authenticate_infrastructure(infra)
                 infra.refresh_from_db()
                 metadata = infra.metadata or {}
                 logger.info(f"Re-authenticated infrastructure {infra_id} for destroy")
             except Exception as e:
-                logger.warning(f"Re-auth failed for {infra_id}: {e} — proceeding with stored credentials")
+                raise RuntimeError(
+                    f"Cannot destroy {infra_id}: AssumeRole failed ({type(e).__name__})"
+                ) from e
 
-            credentials = {
-                "aws_access_key_id": metadata.get("aws_access_key_id", ""),
-                "aws_secret_access_key": metadata.get("aws_secret_access_key", ""),
-                "aws_session_token": metadata.get("aws_session_token", ""),
-                "account_id": account_id,
-            }
+            credentials["account_id"] = account_id
 
-            TerraformWorker._pre_destroy_cleanup(credentials, region, infra_id)
+            pre_destroy_logs = TerraformWorker._pre_destroy_cleanup(credentials, region, infra)
 
             tf_vars = {
                 "environment": f"cli-{infra_id}",
                 "owner": str(infra.user_id),
                 "project": "launchpad-infra",
                 "aws_region": region,
-                "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16")
+                "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16"),
+                "cluster_version": metadata.get("cluster_version", DEFAULT_EKS_CLUSTER_VERSION)
             }
 
             result = TerraformWorker._exec_tf(
                 ["terraform", "destroy", "-auto-approve", "-no-color", "-input=false"],
-                tf_vars, credentials, str(infra_id), region, account_id,
+                tf_vars, credentials, str(infra_id), region, account_id, infra.compute_type,
                 ensure_backend=False  # bucket already exists from provision
             )
-            
+
+            destroy_logs = (pre_destroy_logs + "\n" if pre_destroy_logs else "") + result.get("logs", "")
             with transaction.atomic():
                 if result["success"]:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
-                        status="DESTROYED", logs=result.get("logs", "")
+                        status="DESTROYED", logs=destroy_logs
                     )
                     logger.info(f"Infrastructure {infra_id} destroyed")
                 else:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
                         status="ERROR",
                         error_message=f"Destroy failed: {result.get('error')}",
-                        logs=result.get("logs", "")
+                        logs=destroy_logs
                     )
                     logger.error(f"Destroy failed for {infra_id}: {result.get('error')}")
         

@@ -92,6 +92,9 @@ class InfraEventConsumer:
                         "user_id": user_id,
                         "name": payload.get("name") or "",
                         "cloud_provider": payload.get("cloud_provider") or "",
+                        # Absent/null in payloads from pre-EKS producers; the repo skips
+                        # invalid values so the column keeps its default.
+                        "compute_type": payload.get("compute_type"),
                         "max_cpu": payload.get("max_cpu", 0),
                         "max_memory": payload.get("max_memory", 0),
                         "code": payload.get("code"),

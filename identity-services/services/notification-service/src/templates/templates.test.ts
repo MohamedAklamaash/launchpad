@@ -50,6 +50,78 @@ test('summarizeInfraError classifies known failure categories', () => {
     assert.match(summarizeInfraError('something totally unexpected happened')!, /full log/i);
 });
 
+// Realistic raw EKS failures — the cluster ARN, account id, OIDC issuer, node role names and the
+// cluster API endpoint are all directly sensitive and must never reach an inbox.
+const RAW_EKS_ERRORS: Record<string, string> = {
+    access_entry: `Error: creating EKS Access Entry (infra-019ccc43): operation error EKS: CreateAccessEntry,
+StatusCode: 403, api error AccessDeniedException: User: arn:aws:iam::123456789012:role/LaunchpadDeploymentRole
+is not authorized to perform: eks:CreateAccessEntry on resource: arn:aws:eks:us-east-1:123456789012:cluster/infra-019ccc43`,
+    cluster_timeout: `Error: waiting for EKS Cluster (infra-019ccc43) create: timeout while waiting for state to become 'ACTIVE'
+(last state: 'CREATING') arn:aws:eks:us-east-1:123456789012:cluster/infra-019ccc43
+oidc issuer https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF0123456789ABCDEF0123456789`,
+    addon_cni: `Error: creating EKS Add-On (infra-019ccc43:vpc-cni): InvalidParameterException: Addon version specified is not
+supported, node role arn:aws:iam::123456789012:role/infra-019ccc43-node-role, amazon-vpc-cni enable-network-policy-controller`,
+    node_capacity: `karpenter nodepool general-purpose FailedScheduling: 0/0 nodes are available:
+insufficient capacity in availability zone us-east-1a for node role arn:aws:iam::123456789012:role/infra-019ccc43-node-role`,
+    k8s_api_unreachable: `Unable to connect to the server: dial tcp: lookup 0123456789abcdef.gr7.us-east-1.eks.amazonaws.com: i/o timeout
+  File "/app/api/services/eks_bootstrap.py", line 88, in _wait_for_alb`,
+};
+
+const EKS_LEAKED_TOKENS = [
+    '123456789012',
+    'arn:aws:iam',
+    'arn:aws:eks',
+    'infra-019ccc43',
+    'LaunchpadDeploymentRole',
+    'oidc.eks.us-east-1.amazonaws.com',
+    '0123456789abcdef.gr7.us-east-1.eks.amazonaws.com',
+    'eks_bootstrap.py',
+];
+
+test('summarizeInfraError classifies EKS failure buckets', () => {
+    assert.match(
+        summarizeInfraError(RAW_EKS_ERRORS.access_entry)!,
+        /Kubernetes cluster in your AWS account/,
+    );
+    assert.match(summarizeInfraError(RAW_EKS_ERRORS.cluster_timeout)!, /did not finish creating/);
+    assert.match(summarizeInfraError(RAW_EKS_ERRORS.addon_cni)!, /cluster component failed/);
+    assert.match(
+        summarizeInfraError(RAW_EKS_ERRORS.node_capacity)!,
+        /compute capacity for the cluster nodes/,
+    );
+    assert.match(
+        summarizeInfraError(RAW_EKS_ERRORS.k8s_api_unreachable)!,
+        /could not reach your Kubernetes cluster's API/,
+    );
+});
+
+test('an unmatched EKS error falls through to the generic fallback', () => {
+    const raw = `Error: unexpected EKS reconcile wobble for arn:aws:eks:us-east-1:123456789012:cluster/infra-019ccc43`;
+    const summary = summarizeInfraError(raw);
+    assert.match(summary!, /full log/);
+    assert.ok(!summary!.includes('arn:aws:eks'), 'fallback leaked the cluster ARN');
+    assert.ok(!summary!.includes('123456789012'), 'fallback leaked the account id');
+});
+
+test('no EKS bucket echoes raw error text into the summary or the email', () => {
+    for (const [bucket, raw] of Object.entries(RAW_EKS_ERRORS)) {
+        const summary = summarizeInfraError(raw);
+        assert.ok(summary, `expected a summary for ${bucket}`);
+        const html = getInfraEmailTemplate(
+            'provision_failure',
+            'prod-infra',
+            'Mohamed',
+            raw,
+            'https://app.example.com/dashboard',
+        );
+        for (const token of EKS_LEAKED_TOKENS) {
+            assert.ok(!summary!.includes(token), `${bucket} summary leaked: ${token}`);
+            assert.ok(!html.includes(token), `${bucket} email leaked: ${token}`);
+        }
+        assert.ok(!html.includes('<pre'), `${bucket} email must not render a raw error dump`);
+    }
+});
+
 test('a failure email never contains raw AWS identifiers or stack traces', () => {
     const html = getInfraEmailTemplate(
         'provision_failure',

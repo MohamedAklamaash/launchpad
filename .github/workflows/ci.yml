@@ -126,3 +126,25 @@ jobs:
 
       - name: TypeScript
         run: npx tsc --noEmit
+
+  check-terraform:
+    name: Format & Validate (terraform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive deployment-services/infrastructure-service/infra/aws
+
+      - name: Terraform validate (modules)
+        run: |
+          for module in deployment-services/infrastructure-service/infra/aws/modules/*/; do
+            echo "::group::${module}"
+            terraform -chdir="${module}" init -backend=false -input=false
+            terraform -chdir="${module}" validate
+            echo "::endgroup::"
+          done

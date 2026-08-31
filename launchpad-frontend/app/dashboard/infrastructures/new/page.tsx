@@ -5,10 +5,10 @@ import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, ArrowRight, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert, Rocket } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert, Rocket, Layers } from 'lucide-react';
 import { LaunchSequence } from '@/components/launch';
 import { infrastructureApi, AwsRegion } from '@/lib/api/infrastructures';
-import { InfrastructureCreateResponse } from '@/types/infrastructure';
+import { ComputeType, InfrastructureCreateResponse } from '@/types/infrastructure';
 import { resolveOnboardingScript, getOnboardingMisconfiguration } from '@/lib/onboarding-scripts';
 import { toast } from 'sonner';
 
@@ -19,8 +19,13 @@ const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, tran
 const STEPS = [
   { title: 'Identity', sub: 'Pre-flight', blurb: 'Name the environment and link your AWS account.' },
   { title: 'Region', sub: 'Placement', blurb: 'Choose where this environment is deployed.' },
-  { title: 'Resources', sub: 'Compute', blurb: 'Set the CPU and memory ceilings.' },
+  { title: 'Resources', sub: 'Compute', blurb: 'Pick the compute target and set the CPU and memory ceilings.' },
 ] as const;
+
+const COMPUTE_OPTIONS: { value: ComputeType; label: string; blurb: string }[] = [
+  { value: 'ecs_fargate', label: 'ECS Fargate', blurb: 'Serverless containers on ECS' },
+  { value: 'eks', label: 'Kubernetes', blurb: 'EKS Auto Mode cluster' },
+];
 
 export default function NewInfrastructurePage() {
   const router = useRouter();
@@ -40,6 +45,7 @@ export default function NewInfrastructurePage() {
     max_cpu: 4,
     max_memory: 8,
     code: '',
+    compute_type: 'ecs_fargate' as ComputeType,
     aws_region: 'us-east-1',
   });
 
@@ -62,13 +68,15 @@ export default function NewInfrastructurePage() {
   const checks = {
     name: formData.name.trim().length > 0,
     code: formData.code.trim().length === 12,
+    compute: COMPUTE_OPTIONS.some((o) => o.value === formData.compute_type),
     cpu: formData.max_cpu > 0,
     memory: formData.max_memory > 0,
   };
-  const stepValid = [checks.name && checks.code, true, checks.cpu && checks.memory];
+  const stepValid = [checks.name && checks.code, true, checks.compute && checks.cpu && checks.memory];
   const firstInvalid = stepValid.findIndex((v) => !v);
   const gate = firstInvalid === -1 ? STEPS.length - 1 : firstInvalid;
   const readyCount = Object.values(checks).filter(Boolean).length;
+  const totalChecks = Object.keys(checks).length;
   const isLast = step === STEPS.length - 1;
 
   useEffect(() => {
@@ -121,6 +129,7 @@ export default function NewInfrastructurePage() {
       `export LAUNCHPAD_CALLBACK_URL=${API_GATEWAY_URL}/api/infrastructures/onboarding/callback`,
       `export LAUNCHPAD_ONBOARDING_TOKEN=${createdInfra.onboarding_token}`,
       `export LAUNCHPAD_EXTERNAL_ID=${createdInfra.id}`,
+      `export LAUNCHPAD_COMPUTE_TYPE=${createdInfra.compute_type}`,
       ...mockEnv,
     ]
     : [];
@@ -348,6 +357,21 @@ export default function NewInfrastructurePage() {
 
               {step === 2 && (
                 <div>
+                  <Field icon={<Layers className="w-3.5 h-3.5" />} label="Compute Target" hint="immutable after create">
+                    <div className="flex gap-2 py-1 pl-6">
+                      {COMPUTE_OPTIONS.map((o) => (
+                        <button
+                          key={o.value}
+                          type="button"
+                          onClick={() => set('compute_type', o.value)}
+                          className={`flex-1 rounded-lg border px-3 py-2 text-left transition-colors ${formData.compute_type === o.value ? 'border-brand/60 bg-brand-soft' : 'border-hairline bg-surface-1 hover:bg-surface-2'}`}
+                        >
+                          <p className={`text-xs font-medium ${formData.compute_type === o.value ? 'text-brand' : 'text-foreground'}`}>{o.label}</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">{o.blurb}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </Field>
                   <Field icon={<Cpu className="w-3.5 h-3.5" />} label="Max CPU" hint="vCPU">
                     <Input type="number" step="0.25" min={0.25} value={Number.isNaN(formData.max_cpu) ? '' : formData.max_cpu}
                       onChange={(e) => set('max_cpu', e.target.value === '' ? NaN : parseFloat(e.target.value))}
@@ -369,11 +393,11 @@ export default function NewInfrastructurePage() {
             </Button>
             <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
               Stage {String(step + 1).padStart(2, '0')} / {String(STEPS.length).padStart(2, '0')}
-              <span className="ml-2 text-muted-foreground/50">{readyCount}/4 ready</span>
+              <span className="ml-2 text-muted-foreground/50">{readyCount}/{totalChecks} ready</span>
             </span>
             <div className="ml-auto">
               {isLast ? (
-                <Button type="submit" size="lg" disabled={loading || readyCount < 4} className="px-5 gap-1.5">
+                <Button type="submit" size="lg" disabled={loading || readyCount < totalChecks} className="px-5 gap-1.5">
                   <Rocket className="w-4 h-4" /> {loading ? 'Igniting…' : 'Ignite provisioning'}
                 </Button>
               ) : (

@@ -62,7 +62,7 @@ def _redis():
 PROVISION_QUEUE = "infra:provision"
 DESTROY_QUEUE = "infra:destroy"
 LOCK_PREFIX = "lock:infra:"
-LOCK_TTL = 3600  # 1 hour
+LOCK_TTL = int(os.environ.get("INFRA_DEDUP_LOCK_TTL", "7200"))
 
 
 class InfraQueue:

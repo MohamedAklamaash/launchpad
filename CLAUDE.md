@@ -8,15 +8,18 @@ cross-account IAM AssumeRole (`LaunchpadDeploymentRole`, ExternalId = infrastruc
 | Path | Stack | Role |
 |---|---|---|
 | `gateway-service/` | FastAPI | Public API gateway. Proxies `/api/*` to backend services, injects `X-INTERNAL-TOKEN`, Redis-backed rate limiting. Does NOT verify JWTs — passes `Authorization` through. |
-| `deployment-services/infrastructure-service/` | Django/DRF | Customer AWS account onboarding (`Infrastructure` model, onboarding tokens, STS AssumeRole in `api/cloud_providers/aws/authenticate.py`), environment provisioning queue. |
-| `deployment-services/application-service/` | Django/DRF | Application CRUD, GitHub webhooks (per-app HMAC secret), deployments via ECS/ECR/CodeBuild (`aws/` clients). |
+| `deployment-services/infrastructure-service/` | Django/DRF | Customer AWS account onboarding (`Infrastructure` model, onboarding tokens, STS AssumeRole in `api/cloud_providers/aws/authenticate.py`), environment provisioning queue. `Infrastructure.compute_type` picks the compute target: `ecs_fargate` (default) or `eks` — set at create, immutable after, `eks` gated by `EKS_ENABLED`. Customer-account Terraform lives in `infra/aws/` *inside this service* (modules: vpc, ecs, ecr, alb, iam, security, secrets, eks). |
+| `deployment-services/application-service/` | Django/DRF | Application CRUD, GitHub webhooks (per-app HMAC secret), deployments via ECS/ECR/CodeBuild (`aws/` clients); EKS infras deploy via the Kubernetes API instead of ECS. |
 | `deployment-services/shared/` | Python | Cross-service middleware: `middleware/authentication.py` (JWT), `middleware/internal_auth.py` (`X-INTERNAL-TOKEN`), AMQP resilience helpers. |
 | `identity-services/` | pnpm TS monorepo | `services/auth-service` (issues/verifies JWTs), `services/user-service`, `services/notification-service` (Resend email), `packages/common`. |
 | `payment-service/` | Django/DRF | Stripe billing. |
 | `launchpad-frontend/` | Next.js (app router) | Dashboard. Onboarding script snippets generated in `lib/onboarding-scripts.ts`. |
 | `app_scripts/` | bash | Customer-run onboarding script (`create_aws_role.sh`) — one idempotent script for both first-time bootstrap and later policy refresh; picks the callback by which credential is injected (`MODE=dev` sets `LAUNCHPAD_MOCK=1` to skip AWS entirely). |
 | `infra/.docker/` | docker compose | Local dev stack: Postgres, MySQL, Mongo, Redis, RabbitMQ, Prometheus/Grafana. Ports come from `.env`; `docker-compose.override.yml` is applied automatically. |
-| `infra/aws/` | Terraform | Platform infrastructure modules (vpc, ecs, ecr, alb, iam, secrets). |
+
+There is no repo-root `infra/aws/`. All Terraform lives at
+`deployment-services/infrastructure-service/infra/aws/` and provisions the **customer's**
+account only (nothing provisions platform infrastructure).
 
 ## Auth model
 
@@ -27,8 +30,8 @@ cross-account IAM AssumeRole (`LaunchpadDeploymentRole`, ExternalId = infrastruc
 
 ## Onboarding flow
 
-1. Dashboard `POST /api/infrastructures/` → gateway → infrastructure-service creates infra + PENDING environment, mints onboarding token (returned once).
-2. Frontend renders a `create_aws_role.sh` command with `LAUNCHPAD_INFRA_ID`, `LAUNCHPAD_ONBOARDING_TOKEN`, `LAUNCHPAD_EXTERNAL_ID`, `LAUNCHPAD_CALLBACK_URL` exported.
+1. Dashboard `POST /api/infrastructures/` → gateway → infrastructure-service creates infra + PENDING environment (with the chosen `compute_type`), mints onboarding token (returned once).
+2. Frontend renders a `create_aws_role.sh` command with `LAUNCHPAD_INFRA_ID`, `LAUNCHPAD_ONBOARDING_TOKEN`, `LAUNCHPAD_EXTERNAL_ID`, `LAUNCHPAD_CALLBACK_URL`, `LAUNCHPAD_COMPUTE_TYPE` exported. `LAUNCHPAD_COMPUTE_TYPE` defaults to `ecs_fargate`; `eks` adds the scoped EKS statements to the IAM policy.
 3. Customer runs the script in their AWS account: creates role + policy, then POSTs `{infra_id, account_id, onboarding_token}` to `/api/infrastructures/onboarding/callback` (no JWT; token-authenticated).
 4. Callback verifies `infra.code == account_id` and the token hash, runs `authenticate_infrastructure` (AssumeRole with ExternalId), burns the token, publishes `infra.created` to RabbitMQ, enqueues provisioning.
 5. Re-running `create_aws_role.sh` with a script API key (the dashboard's *Refresh policy* snippet) refreshes the IAM policy + trust policy in place for already-onboarded accounts and posts the policy-refresh callback.
@@ -43,6 +46,7 @@ Each Python service has an `env.example`. Identity services: `pnpm install` at `
 ## CI (.github/workflows/ci.yml)
 
 - Python services (gateway, payment, deployment-services): `python -m compileall <dir> -q` and `ruff check <dir>` (config: root `ruff.toml`).
+- terraform: `terraform fmt -check -recursive` over `deployment-services/infrastructure-service/infra/aws`, then `init -backend=false && validate` per module (no plan/apply — CI has no AWS credentials).
 - identity-services: `pnpm install --frozen-lockfile`, `pnpm --filter @launchpad/common build`, `pnpm format` (prettier --check), `pnpm lint`, `pnpm -r --workspace-root=false exec tsc --noEmit`.
 - frontend: lint + typecheck.
 

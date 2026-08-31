@@ -71,7 +71,9 @@ Responsible for:
 - container registry
 - runtime compute
 
-Resources created inside the user's account:
+Resources created inside the user's account (per the infrastructure's `compute_type`):
+
+**ECS Fargate** (`compute_type = ecs_fargate`, the default):
 
 - VPC
 - Subnets (public + private)
@@ -84,6 +86,19 @@ Resources created inside the user's account:
 - ECS Tasks
 - Security Groups
 - IAM Roles
+
+**Kubernetes** (`compute_type = eks`):
+
+- VPC
+- Subnets (public + private)
+- NAT Gateway
+- Internet Gateway
+- EKS Auto Mode cluster
+- Application Load Balancer (created by the AWS Load Balancer Controller from a bootstrap Ingress)
+- ECR Repository
+- Per-application namespaces (Deployment + nginx sidecar, Service, Ingress, ConfigMap)
+- Security Groups
+- IAM Roles (cluster + node roles, split access entries)
 
 ---
 
@@ -105,9 +120,13 @@ Each user can create **Infrastructure** objects.
 
 Infrastructure represents a **dedicated AWS environment** owned by the user.
 
+The compute target is chosen at creation via `compute_type` — `ecs_fargate` (default)
+or `eks` — and is immutable afterwards. `eks` is gated by the server-side `EKS_ENABLED`
+flag. Both targets share the same status lifecycle, URL scheme, and failure semantics.
+
 Creating infrastructure provisions a full cloud environment.
 
-Terraform provisions:
+Terraform provisions (ECS Fargate):
 
 - VPC
 - Public and private subnets
@@ -120,6 +139,18 @@ Terraform provisions:
 - IAM roles (ECS task execution role)
 - Security groups (ALB security group)
 
+Terraform provisions (Kubernetes):
+
+- The same VPC/networking and ECR resources
+- EKS Auto Mode cluster (`infra-*` naming, API authentication mode, restricted public
+  access CIDRs, control-plane logging)
+- Cluster and node IAM roles, split access entries (cluster-admin for provisioning,
+  namespace-scoped for the deploy worker)
+
+The ALB for a Kubernetes infrastructure is not a Terraform output — it is created by the
+AWS Load Balancer Controller when a post-apply bootstrap step applies an IngressClass and
+placeholder Ingress, then polled for its DNS name and written to `Environment.alb_dns`.
+
 Infrastructure provisioning occurs inside the **user's AWS account**.
 
 The platform assumes a role in the user's account using:
@@ -131,8 +162,8 @@ sts:AssumeRole
 **IAM Setup**:
 - User creates `LaunchpadDeploymentRole` in their AWS account
 - Role trusts platform IAM user: `aklamaash-terraform` (account 221082203366)
-- Platform stores temporary credentials (1 hour TTL) in infrastructure metadata
-- Credentials auto-refresh on expiry
+- Temporary session credentials (up to 2 hours) are minted fresh per operation and held
+  only in worker memory — never persisted
 
 ---
 
@@ -387,7 +418,7 @@ Security groups control traffic between ALB and containers.
 Application builds run in AWS CodeBuild within the user's account.
 
 **IAM isolation**:
-Platform uses AssumeRole with temporary credentials (1 hour TTL).
+Platform uses AssumeRole with temporary credentials (up to 2 hours, never persisted).
 
 **Security Group Rules**:
 - ALB → Container: tcp:{application.port} (auto-created)

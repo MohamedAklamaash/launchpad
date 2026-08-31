@@ -10,6 +10,11 @@ router = APIRouter(prefix="/infrastructures", tags=["Infrastructures"])
 class InfraCreateBody(BaseModel):
     name: str = Field(example="prod-infra")
     cloud_provider: str = Field(example="AWS", description="Only AWS is supported")
+    compute_type: Optional[str] = Field(
+        default=None,
+        example="ecs_fargate",
+        description="Compute target: ecs_fargate (default) or eks. Immutable after creation.",
+    )
     max_cpu: float = Field(example=4096, description="Total CPU units ceiling across all apps (1024 = 1 vCPU)")
     max_memory: float = Field(example=8192, description="Total memory ceiling in MB across all apps")
     code: str = Field(example="123456789012", description="AWS Account ID where infrastructure will be provisioned")

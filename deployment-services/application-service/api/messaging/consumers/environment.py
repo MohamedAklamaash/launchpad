@@ -6,6 +6,7 @@ from django.db import transaction, connection, OperationalError
 from django.core.exceptions import ObjectDoesNotExist
 from api.models import Environment, Infrastructure
 from api.common.envs.application import app_config
+from shared.enums.orchestrator import ComputeType
 from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,14 @@ class EnvironmentEventConsumer:
                         "ecs_task_execution_role_arn": payload.get("ecs_task_execution_role_arn"),
                     }
                 )
+                # environment.updated also carries the infra's compute_type (absent/null from
+                # pre-EKS producers) — sync the mirror column so a missed infrastructure.created
+                # doesn't leave it stale.
+                compute_type = payload.get("compute_type")
+                if compute_type in ComputeType.values:
+                    Infrastructure.objects.filter(id=infra_id).exclude(
+                        compute_type=compute_type
+                    ).update(compute_type=compute_type)
 
             log.info(
                 f"Environment {'created' if created else 'updated'} successfully — ACKing",
