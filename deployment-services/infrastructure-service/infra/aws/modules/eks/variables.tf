@@ -28,8 +28,8 @@ variable "public_access_cidrs" {
   type        = list(string)
 
   validation {
-    condition     = length(var.public_access_cidrs) > 0 && !contains(var.public_access_cidrs, "0.0.0.0/0")
-    error_message = "public_access_cidrs must be non-empty and must not contain 0.0.0.0/0."
+    condition     = length(var.public_access_cidrs) > 0 && alltrue([for c in var.public_access_cidrs : tonumber(split("/", c)[1]) >= 16])
+    error_message = "public_access_cidrs must be non-empty and every entry must be /16 or narrower."
   }
 }
 

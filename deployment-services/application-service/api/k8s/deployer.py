@@ -134,6 +134,8 @@ class EKSDeployer:
         self.slug = require_k8s_safe_slug(application.name)
         self.namespace = namespace_for(self.slug)
         self.cluster_name = cluster_name_from_arn(environment.cluster_arn)
+        # Matches the default the terraform vpc module is given for this infrastructure.
+        self.vpc_cidr = (self.infrastructure.metadata or {}).get("vpc_cidr", "10.0.0.0/16")
 
     def deploy(self, image_uri: str, created_resources: list) -> dict:
         # Persist the handles before creating anything: a worker that dies mid-deploy must
@@ -184,10 +186,11 @@ class EKSDeployer:
             )
         )
         created = self._create(lambda: apis.core.create_namespace(namespace), "Namespace", self.namespace)
-        if created:
-            self._create_quota(apis)
-            self._create_limit_range(apis)
-            self._create_network_policies(apis)
+        # Run unconditionally: if any of these failed after the namespace was created, the
+        # 409 path would otherwise leave it running forever with no quota and no policies.
+        self._create_quota(apis)
+        self._create_limit_range(apis)
+        self._create_network_policies(apis)
         return created
 
     def _create_quota(self, apis):
@@ -233,13 +236,27 @@ class EKSDeployer:
                 spec=k8s.V1NetworkPolicySpec(pod_selector=k8s.V1LabelSelector(), policy_types=["Ingress"]),
             ),
             k8s.V1NetworkPolicy(
-                metadata=k8s.V1ObjectMeta(name="allow-alb-to-nginx"),
+                metadata=k8s.V1ObjectMeta(name="allow-serving-port"),
                 spec=k8s.V1NetworkPolicySpec(
                     pod_selector=k8s.V1LabelSelector(match_labels={"app": self.slug}),
                     policy_types=["Ingress"],
                     ingress=[
+                        # The ALB targets pod IPs from outside the cluster, so it cannot be
+                        # expressed as a peer. Restrict the reachable surface to this
+                        # namespace plus that external path rather than leaving `from`
+                        # empty, which would match every source on the cluster.
                         k8s.V1NetworkPolicyIngressRule(
-                            ports=[k8s.V1NetworkPolicyPort(port=NGINX_PORT, protocol="TCP")]
+                            _from=[
+                                k8s.V1NetworkPolicyPeer(
+                                    namespace_selector=k8s.V1LabelSelector(
+                                        match_labels={"kubernetes.io/metadata.name": self.namespace}
+                                    )
+                                ),
+                                k8s.V1NetworkPolicyPeer(
+                                    ip_block=k8s.V1IPBlock(cidr=self.vpc_cidr)
+                                ),
+                            ],
+                            ports=[k8s.V1NetworkPolicyPort(port=NGINX_PORT, protocol="TCP")],
                         )
                     ],
                 ),

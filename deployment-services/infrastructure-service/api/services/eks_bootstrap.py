@@ -113,16 +113,10 @@ def _enable_network_policy_enforcement(api, lines: list):
             lines,
         )
 
-    custom = k8s.CustomObjectsApi(api)
-    node_class = custom.get_cluster_custom_object("eks.amazonaws.com", "v1", "nodeclasses", "default")
-    if node_class.get("spec", {}).get("networkPolicy") != "DefaultAllow":
-        custom.patch_cluster_custom_object(
-            "eks.amazonaws.com", "v1", "nodeclasses", "default",
-            {"spec": {"networkPolicy": "DefaultAllow"}},
-        )
-        lines.append("[k8s] set NodeClass/default spec.networkPolicy=DefaultAllow")
-    else:
-        lines.append("[k8s] NodeClass/default network policy already enforced")
+    # The ConfigMap above is the documented enable step for Auto Mode. NodeClass
+    # spec.networkPolicy is an optional knob whose default is already DefaultAllow, so
+    # writing that value would change nothing while reading like enforcement was turned
+    # on. Enforcement is proven by the sandbox connectivity check, not by this call.
 
 
 def _ensure_ingress_class(api, group_name: str, lines: list):

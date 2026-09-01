@@ -9,6 +9,11 @@ from django.db import transaction
 from api.services.deployment_queue import DeploymentQueue
 from api.messaging.producer.producer import ApplicationEventProducer
 from api.services.deployment_lock import DeploymentLock
+from api.common.naming import app_slug, require_k8s_safe_slug
+from api.models.application import Application
+from api.models.infrastructure import Infrastructure
+from shared.enums.orchestrator import ComputeType
+from api.serializers.application import FARGATE_CPU_MEMORY
 
 import os
 import uuid
@@ -91,6 +96,51 @@ class ApplicationService:
         "created_at", "updated_at",
     })
 
+    @staticmethod
+    def _reserve_slug(infra, name, exclude_application_id=None):
+        """Every Kubernetes object name derives from app_slug(name), which lowercases and
+        rewrites punctuation. The DB constraint is on `name`, so "MyApp" and "myapp" are
+        two rows that collapse onto one namespace and silently overwrite each other's
+        workload — across users, since an ADMIN may deploy onto someone else's infra.
+        Reject the collision here, under a row lock so two concurrent creates cannot race."""
+        if not name:
+            raise ValueError("Application name is required")
+
+        infra_compute = getattr(infra, "compute_type", ComputeType.ECS_FARGATE)
+        if infra_compute == ComputeType.EKS:
+            # Fail before CodeBuild rather than inside the deployer, which runs after the
+            # customer has already paid for an image that could never be deployed.
+            slug = require_k8s_safe_slug(name)
+        else:
+            slug = app_slug(name)
+
+        with transaction.atomic():
+            Infrastructure.objects.select_for_update().filter(id=infra.id).first()
+            clashes = Application.objects.filter(infrastructure_id=infra.id)
+            if exclude_application_id:
+                clashes = clashes.exclude(id=exclude_application_id)
+            for existing in clashes.only("id", "name"):
+                if app_slug(existing.name) == slug:
+                    raise ValueError(
+                        f"An application named '{existing.name}' already exists on this "
+                        f"infrastructure and resolves to the same identifier '{slug}'."
+                    )
+        return slug
+
+    @staticmethod
+    def _validate_compute_shape(infra, cpu, memory):
+        """The create path builds the model directly, so serializer validation never runs.
+        Kubernetes accepts any positive request; only Fargate has a fixed CPU/memory matrix."""
+        if cpu <= 0 or memory <= 0:
+            raise ValueError("CPU and memory must be greater than zero")
+        if getattr(infra, "compute_type", ComputeType.ECS_FARGATE) == ComputeType.EKS:
+            return
+        if cpu not in FARGATE_CPU_MEMORY:
+            raise ValueError(f"Invalid CPU value. Must be one of: {list(FARGATE_CPU_MEMORY.keys())}")
+        min_mem, max_mem = FARGATE_CPU_MEMORY[cpu]
+        if not (min_mem <= memory <= max_mem):
+            raise ValueError(f"For {cpu} vCPU, memory must be between {min_mem} and {max_mem} GB")
+
     @transaction.atomic
     def create_application(self, user, data: dict):
         """Create a new application after validating user authorization and infra capacity."""
@@ -125,6 +175,10 @@ class ApplicationService:
         project_remote_url = data.get("project_remote_url", "")
         if not project_remote_url:
             raise ValueError("Project remote url is required")
+
+        self._reserve_slug(infra, data.get("name"))
+        self._validate_compute_shape(infra, requested_cpu, requested_mem)
+
         data["user"] = user
         app = self.app_repo.create(data)
         
@@ -240,6 +294,7 @@ class ApplicationService:
             new_name = update_data['name'].strip()
             if not new_name:
                 raise ValueError("Name cannot be empty")
+            self._reserve_slug(infra, new_name, exclude_application_id=app.id)
             app.name = new_name
             update_fields.append('name')
 

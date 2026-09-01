@@ -192,8 +192,8 @@ if [ "$COMPUTE_TYPE" = "eks" ]; then
     {
       "Effect": "Deny",
       "Action": [
-        "eks:*AccessEntry*",
-        "eks:*AccessPolicy*"
+        "eks:*AccessEntr*",
+        "eks:*AccessPolic*"
       ],
       "NotResource": [
         "arn:aws:eks:*:${ACCOUNT_ID}:cluster/infra-*",

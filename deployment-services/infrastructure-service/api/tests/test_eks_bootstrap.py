@@ -30,10 +30,7 @@ def test_get_or_create_raises_other_errors():
 def test_enable_network_policy_creates_missing_config_map(monkeypatch):
     core = MagicMock()
     core.read_namespaced_config_map.side_effect = _not_found()
-    custom = MagicMock()
-    custom.get_cluster_custom_object.return_value = {"spec": {}}
     monkeypatch.setattr(eb.k8s, "CoreV1Api", lambda api: core)
-    monkeypatch.setattr(eb.k8s, "CustomObjectsApi", lambda api: custom)
 
     lines = []
     eb._enable_network_policy_enforcement(object(), lines)
@@ -42,10 +39,6 @@ def test_enable_network_policy_creates_missing_config_map(monkeypatch):
     namespace, config_map = core.create_namespaced_config_map.call_args.args
     assert namespace == "kube-system"
     assert config_map.data == {"enable-network-policy-controller": "true"}
-    custom.patch_cluster_custom_object.assert_called_once_with(
-        "eks.amazonaws.com", "v1", "nodeclasses", "default",
-        {"spec": {"networkPolicy": "DefaultAllow"}},
-    )
 
 
 def test_enable_network_policy_is_idempotent_when_already_enabled(monkeypatch):
@@ -53,16 +46,12 @@ def test_enable_network_policy_is_idempotent_when_already_enabled(monkeypatch):
     core.read_namespaced_config_map.return_value = SimpleNamespace(
         data={"enable-network-policy-controller": "true"}
     )
-    custom = MagicMock()
-    custom.get_cluster_custom_object.return_value = {"spec": {"networkPolicy": "DefaultAllow"}}
     monkeypatch.setattr(eb.k8s, "CoreV1Api", lambda api: core)
-    monkeypatch.setattr(eb.k8s, "CustomObjectsApi", lambda api: custom)
 
     eb._enable_network_policy_enforcement(object(), [])
 
     core.patch_namespaced_config_map.assert_not_called()
     core.create_namespaced_config_map.assert_not_called()
-    custom.patch_cluster_custom_object.assert_not_called()
 
 
 def test_ensure_bootstrap_ingress_is_rerun_safe(monkeypatch):

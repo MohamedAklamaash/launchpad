@@ -42,22 +42,51 @@ H5 `expires_in=60` + signed `x-k8s-aws-id` → `shared/k8s/token.py`, asserted i
 M1 `EKS_ENABLED` at dispatch → `run_worker.py`. M2 split access entries → `modules/eks`.
 M3 pod security → `deployer.py`. M4 no captured-group interpolation → `infra-email.template.ts`.
 
+## Post-implementation audit — done
+
+A second security audit ran against the *implementation* (not the design) and returned
+BLOCK with 1 CRITICAL and 3 HIGH. All are now fixed:
+
+| Finding | Fix |
+|---|---|
+| CRITICAL: uniqueness enforced on `name`, not the derived slug — `"MyApp"` vs `"myapp"` collapse onto one namespace and silently overwrite another user's workload | `ApplicationService._reserve_slug`, under `select_for_update` on the infra row; covers create **and** rename; 3 regression tests |
+| HIGH-2: caller-controlled `metadata` interpolated unescaped into generated HCL = RCE on the provisioning worker | `validate_infra_metadata` allow-lists keys and validates region/CIDR/version at the create boundary; EKS builder interpolates via `json.dumps` |
+| HIGH-3: NodeClass `spec.networkPolicy=DefaultAllow` patch was a no-op writing the default value | Removed. The `amazon-vpc-cni` ConfigMap **is** the documented Auto Mode enable step and stays |
+| HIGH-4: all three teardown paths called the reap, but the reap never deletes the cluster | ERROR-state EKS now routes to a real `terraform destroy` and stays `DESTROYING`, instead of reap-and-drop |
+| MEDIUM-1: `allow-alb-to-nginx` had no `from`, matching every source | Scoped to own namespace + VPC CIDR, renamed `allow-serving-port` |
+| MEDIUM-2: quota/limits/policies only applied when the namespace was newly created | Applied unconditionally (all 409-tolerant), so a partial failure self-heals |
+| MEDIUM-5: compute-type CPU/memory gating was dead code (serializer never runs) | `_validate_compute_shape` on the real create path |
+| LOW-1: `Deny` wildcards missed the plural List APIs | `eks:*AccessEntr*` / `eks:*AccessPolic*` |
+| LOW-2: `0.0.0.0/0` refusal was a literal match (`0.0.0.0/1`+`128.0.0.0/1` walked through) | `ipaddress` parse + `/16` minimum prefix, in Python and in the TF validation block |
+
+**HIGH-1 not fixed, deliberately**: the same customer policy grants `iam:*` on `*`, so the
+EKS scoping is defense-in-depth rather than a containment boundary. Pre-existing, not
+introduced here. Do not describe the scoping as a boundary in customer-facing docs. Tracked
+as a follow-up: scope `iam:*` to `role/launchpad-*` + `infra-*`, with `PassRole` limited to
+those and a `Deny` against `LaunchpadDeploymentRole` itself.
+
+**Audit finding that did not reproduce**: the refresh-policy snippet omitting
+`LAUNCHPAD_COMPUTE_TYPE`. `resolveOnboardingScript`'s `refresh` variant exists in the
+library but no UI renders it, so there is no live snippet to fix; the manual instruction in
+`USER_ONBOARDING_GUIDE.md` is the correct coverage until that UI exists.
+
 ## Remaining work
 
-1. **Commit + push Phase 4**, update PR body (drop the "Phase 4 still landing" line).
-2. **ruff** — Phase 4 was killed *during* its ruff check; never completed. Note the repo-wide
-   run reports ~449 findings on **unmodified main** (local ruff 0.16.5 is much stricter than
-   whatever CI last ran; CI does an unpinned `pip install ruff`). Compare per-file against a
-   HEAD baseline rather than reading the raw count.
-3. **Pipeline not yet run**: `reviewer` on the full diff, then `security-auditor` (must
-   re-check C1/C2/H1/H5 *as implemented* vs. promised — they were BLOCK-level and are now
-   code written by agents that only read the plan).
-4. **Runtime verification never done.** No flow has been exercised. Use `MODE=dev` /
-   `LAUNCHPAD_MOCK=1` mock mode + the local multi-tenant harness for
-   onboarding→provision→deploy→destroy on an EKS infra. Workers must be started via
-   `app_scripts/start-workers.sh` — they die if backgrounded from a tool call.
-5. **`terraform validate`** was run by the Phase 3 agent using a terraform binary it downloaded
-   into its scratchpad; terraform is not installed on this machine. Re-verify if that matters.
+1. **Runtime verification against real AWS.** Mock-mode E2E now exists
+   (`test_eks_e2e_mock.py`: create → onboard → provision → ACTIVE → destroy), but nothing has
+   run against a real account. Workers must be started via `app_scripts/start-workers.sh` —
+   they die if backgrounded from a tool call.
+2. **NetworkPolicy enforcement can only be proven on a live cluster.** A manifest-shape test
+   passes against an unenforced policy. Make a real denied-connection check part of the
+   sandbox smoke test before flipping `EKS_ENABLED`.
+3. **Code review never completed** — the reviewer agent died to a rate limit before
+   reporting. The security audit completed; a general correctness review did not.
+4. **ruff**: 524 findings on this branch vs **497 on unmodified `main`** with the same ruff
+   version (0.16.5). The +27 are all in rule classes the codebase already carries (RUF012 on
+   migrations, I001, BLE001). CI does an unpinned `pip install ruff`, so CI is red on main
+   independently of this work.
+5. **`terraform validate`** was run by an agent using a terraform binary it downloaded;
+   terraform is not installed on this machine. Re-verify if that matters.
 
 ## Decisions taken (do not re-litigate)
 

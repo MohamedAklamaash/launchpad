@@ -96,7 +96,7 @@ def test_full_eks_deploy_reaches_active(application, deploy):
     assert ("resourcequota", "launchpad-quota") in kinds
     assert ("limitrange", "launchpad-limits") in kinds
     assert ("networkpolicy", "default-deny-ingress") in kinds
-    assert ("networkpolicy", "allow-alb-to-nginx") in kinds
+    assert ("networkpolicy", "allow-serving-port") in kinds
     assert ("networkpolicy", "allow-egress") in kinds
     assert ("configmap", "myapp-nginx") in kinds
     assert ("deployment", "myapp") in kinds

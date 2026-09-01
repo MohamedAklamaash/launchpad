@@ -1,5 +1,6 @@
 import os
 import re
+import ipaddress
 import uuid
 import logging
 from django.conf import settings
@@ -14,6 +15,7 @@ from shared.mode import is_dev_mode
 from api.common.envs.application import app_config
 from api.models.environment import Environment
 from api.services.infra_queue import InfraQueue
+from api.services.terraform_worker import EKS_SUPPORTED_CLUSTER_VERSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,39 @@ def normalize_account_id(code) -> str:
     if not _AWS_ACCOUNT_ID.fullmatch(account_id):
         raise ValueError("AWS Account ID must be exactly 12 digits.")
     return account_id
+
+_AWS_REGION = re.compile(r"[a-z]{2}-[a-z]+-\d")
+_ALLOWED_METADATA_KEYS = {"aws_region", "vpc_cidr", "cluster_version"}
+
+
+def validate_infra_metadata(metadata: dict) -> dict:
+    """Allow-list and validate caller-supplied metadata.
+
+    These values are interpolated into generated Terraform HCL that the provisioning
+    worker then executes, so an unvalidated value is remote code execution on the
+    worker — not merely a bad plan. Anything not on the allow-list is dropped, which
+    also keeps credential keys out.
+    """
+    cleaned = {k: v for k, v in metadata.items() if k in _ALLOWED_METADATA_KEYS}
+
+    region = cleaned.get("aws_region")
+    if region is not None and not _AWS_REGION.fullmatch(str(region)):
+        raise ValueError("Invalid aws_region.")
+
+    cidr = cleaned.get("vpc_cidr")
+    if cidr is not None:
+        try:
+            ipaddress.ip_network(str(cidr), strict=True)
+        except ValueError as exc:
+            raise ValueError("Invalid vpc_cidr.") from exc
+        cleaned["vpc_cidr"] = str(cidr)
+
+    version = cleaned.get("cluster_version")
+    if version is not None and str(version) not in EKS_SUPPORTED_CLUSTER_VERSIONS:
+        raise ValueError(f"Invalid cluster_version. Must be one of: {', '.join(sorted(EKS_SUPPORTED_CLUSTER_VERSIONS))}.")
+
+    return cleaned
+
 
 cloud_cb = CircuitBreaker(
     name="CloudProviderAPI",
@@ -77,12 +112,7 @@ class InfrastructureService:
                 raise ValueError("EKS support is not enabled on this platform.")
             infra_data["compute_type"] = compute_type
         if isinstance(infra_data.get("metadata"), dict):
-            # Never let a caller seed credential keys into metadata (it's serialized back
-            # out, and the worker treats these keys as live STS creds).
-            infra_data["metadata"] = {
-                k: v for k, v in infra_data["metadata"].items()
-                if k not in {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
-            }
+            infra_data["metadata"] = validate_infra_metadata(infra_data["metadata"])
         if infra_data.get("cloud_provider"):
             infra_data["cloud_provider"] = infra_data["cloud_provider"].lower()
         cloud_provider = infra_data.get("cloud_provider")
@@ -191,21 +221,18 @@ class InfrastructureService:
                 #
                 # ERROR is the exception under EKS: a half-applied cluster leaves a billed,
                 # internet-reachable control plane holding a cluster-admin access entry, and
-                # dropping our record here would orphan it with nothing left to find it by.
-                # Reap first and refuse the delete if the reap fails, so it stays retryable.
-                if env.status == 'ERROR' and infra.compute_type == ComputeType.EKS:
-                    from api.services.eks_teardown import cleanup_eks_orphans
-                    try:
-                        cleanup_eks_orphans(infra)
-                    except Exception as exc:
-                        logger.error(
-                            f"EKS orphan cleanup failed for {infra_id}; refusing delete",
-                            exc_info=True,
-                        )
-                        raise ValueError(
-                            "Could not clean up EKS resources in your AWS account. "
-                            "Verify the deployment role is still valid and retry the delete."
-                        ) from exc
+                # only terraform destroy removes it — reaping the controller-created ALBs is
+                # not enough. Route to the real destroy so the record survives in DESTROYING
+                # until teardown succeeds, instead of being dropped with nothing left to
+                # find the cluster by.
+                if env.status == 'ERROR' and infra.compute_type == ComputeType.EKS and not infra.is_mock:
+                    env.status = 'DESTROYING'
+                    env.save(update_fields=['status'])
+                    if not InfraQueue.enqueue_destroy(str(infra_id)):
+                        InfraQueue.release_lock(str(infra_id))
+                        InfraQueue.enqueue_destroy(str(infra_id))
+                    logger.info(f"EKS infrastructure {infra_id} in ERROR: destroy enqueued instead of record delete")
+                    return True
 
                 logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records")
                 env.delete()

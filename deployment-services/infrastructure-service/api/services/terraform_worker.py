@@ -1,4 +1,5 @@
 import os
+import ipaddress
 import time
 import threading
 import subprocess
@@ -31,6 +32,7 @@ MAX_RETRIES = 3
 MOCK_PROVISION_DELAY_SECONDS = 4
 EKS_SUPPORTED_CLUSTER_VERSIONS = {"1.29", "1.30", "1.31"}
 DEFAULT_EKS_CLUSTER_VERSION = "1.31"
+MIN_PUBLIC_ACCESS_PREFIXLEN = 16
 
 
 class TerraformWorker:
@@ -223,7 +225,7 @@ terraform {{
 }}
 
 provider "aws" {{
-  region = "{vars.get('aws_region', 'us-west-2')}"
+  region = {json.dumps(str(vars.get('aws_region', 'us-west-2')))}
   
   default_tags {{
     tags = {{
@@ -292,10 +294,20 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 f"allowed: {sorted(EKS_SUPPORTED_CLUSTER_VERSIONS)}"
             )
         public_access_cidrs = list(settings.EKS_PUBLIC_ACCESS_CIDRS)
-        if not public_access_cidrs or "0.0.0.0/0" in public_access_cidrs:
-            raise ValueError(
-                "EKS_PUBLIC_ACCESS_CIDRS must be a non-empty list that does not contain 0.0.0.0/0"
-            )
+        if not public_access_cidrs:
+            raise ValueError("EKS_PUBLIC_ACCESS_CIDRS must be a non-empty list")
+        for cidr in public_access_cidrs:
+            # A literal "0.0.0.0/0" check is not enough: ["0.0.0.0/1", "128.0.0.0/1"]
+            # covers the whole internet, as does IPv6 ::/0. Refuse on prefix width.
+            try:
+                network = ipaddress.ip_network(str(cidr), strict=True)
+            except ValueError as exc:
+                raise ValueError(f"EKS_PUBLIC_ACCESS_CIDRS contains an invalid CIDR: {cidr}") from exc
+            if network.prefixlen < MIN_PUBLIC_ACCESS_PREFIXLEN:
+                raise ValueError(
+                    f"EKS_PUBLIC_ACCESS_CIDRS entry {cidr} is too broad "
+                    f"(prefix must be /{MIN_PUBLIC_ACCESS_PREFIXLEN} or narrower)"
+                )
         provisioner_role_arn = f"arn:aws:iam::{account_id}:role/LaunchpadDeploymentRole"
 
         return f"""
@@ -316,7 +328,7 @@ terraform {{
 }}
 
 provider "aws" {{
-  region = "{vars.get('aws_region', 'us-west-2')}"
+  region = {json.dumps(str(vars.get('aws_region', 'us-west-2')))}
 
   default_tags {{
     tags = {{
@@ -331,7 +343,7 @@ provider "aws" {{
 module "vpc" {{
   source                 = "./modules/vpc"
   environment            = "{env_name}"
-  vpc_cidr               = "{vars.get('vpc_cidr', '10.0.0.0/16')}"
+  vpc_cidr               = {json.dumps(str(vars.get('vpc_cidr', '10.0.0.0/16')))}
   enable_elb_subnet_tags = true
 }}
 
