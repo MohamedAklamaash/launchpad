@@ -15,11 +15,11 @@ from shared.mode import is_dev_mode
 from api.common.envs.application import app_config
 from api.models.environment import Environment
 from api.services.infra_queue import InfraQueue
-from api.services.terraform_worker import EKS_SUPPORTED_CLUSTER_VERSIONS
 
 logger = logging.getLogger(__name__)
 
 _AWS_ACCOUNT_ID = re.compile(r"[0-9]{12}")
+_AWS_REGION = re.compile(r"[a-z]{2}-(gov-)?[a-z]+-\d")
 
 
 def normalize_account_id(code) -> str:
@@ -30,35 +30,46 @@ def normalize_account_id(code) -> str:
         raise ValueError("AWS Account ID must be exactly 12 digits.")
     return account_id
 
-_AWS_REGION = re.compile(r"[a-z]{2}-[a-z]+-\d")
-_ALLOWED_METADATA_KEYS = {"aws_region", "vpc_cidr", "cluster_version"}
+def validate_vpc_cidr(value) -> None:
+    """Reject anything that isn't a strict CIDR literal."""
+    try:
+        ipaddress.ip_network(str(value), strict=True)
+    except ValueError:
+        raise ValueError("Invalid vpc_cidr")
+
+
+def validate_aws_region(value) -> None:
+    """Reject anything not shaped like an AWS region name."""
+    if not isinstance(value, str) or not _AWS_REGION.fullmatch(value):
+        raise ValueError("Invalid aws_region")
 
 
 def validate_infra_metadata(metadata: dict) -> dict:
-    """Allow-list and validate caller-supplied metadata.
+    """Strip credential keys and shape-validate the fields that reach generated HCL.
 
-    These values are interpolated into generated Terraform HCL that the provisioning
-    worker then executes, so an unvalidated value is remote code execution on the
-    worker — not merely a bad plan. Anything not on the allow-list is dropped, which
-    also keeps credential keys out.
+    metadata is otherwise free-form. vpc_cidr, aws_region and cluster_version are
+    interpolated into Terraform that the provisioning worker executes, so an
+    unvalidated value there is code execution on the worker, not merely a bad plan.
     """
-    cleaned = {k: v for k, v in metadata.items() if k in _ALLOWED_METADATA_KEYS}
+    cleaned = {
+        k: v for k, v in metadata.items()
+        if k not in {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
+    }
 
-    region = cleaned.get("aws_region")
-    if region is not None and not _AWS_REGION.fullmatch(str(region)):
-        raise ValueError("Invalid aws_region.")
-
-    cidr = cleaned.get("vpc_cidr")
-    if cidr is not None:
-        try:
-            ipaddress.ip_network(str(cidr), strict=True)
-        except ValueError as exc:
-            raise ValueError("Invalid vpc_cidr.") from exc
-        cleaned["vpc_cidr"] = str(cidr)
+    if cleaned.get("aws_region") is not None:
+        validate_aws_region(cleaned["aws_region"])
+    if cleaned.get("vpc_cidr") is not None:
+        validate_vpc_cidr(cleaned["vpc_cidr"])
 
     version = cleaned.get("cluster_version")
-    if version is not None and str(version) not in EKS_SUPPORTED_CLUSTER_VERSIONS:
-        raise ValueError(f"Invalid cluster_version. Must be one of: {', '.join(sorted(EKS_SUPPORTED_CLUSTER_VERSIONS))}.")
+    if version is not None:
+        # Local import: terraform_worker imports the validators above, so a module-level
+        # import here would close the cycle.
+        from api.services.terraform_worker import EKS_SUPPORTED_CLUSTER_VERSIONS
+        if str(version) not in EKS_SUPPORTED_CLUSTER_VERSIONS:
+            raise ValueError(
+                f"Invalid cluster_version. Must be one of: {', '.join(sorted(EKS_SUPPORTED_CLUSTER_VERSIONS))}."
+            )
 
     return cleaned
 
@@ -172,6 +183,21 @@ class InfrastructureService:
         serialized_infra["onboarding_token"] = onboarding_token
         return serialized_infra
 
+    def _enqueue_env_destroy(self, env, infra_id):
+        env.status = 'DESTROYING'
+        env.save(update_fields=['status'])
+        # A stale per-infra lock (crashed worker) would make enqueue_destroy a silent
+        # no-op, leaving the env DESTROYING with no job. A destroy intent must win over a
+        # dead provision lock, so force it and re-enqueue. In the rare window where a
+        # provision just acquired the lock but hasn't written status=PROVISIONING yet
+        # (env still reads ACTIVE), this force can drop that live provision's dedup key;
+        # the destroy then loses acquire_db_lock to the heartbeated provision and the
+        # env ends ACTIVE — honest state, and a re-delete succeeds.
+        if not InfraQueue.enqueue_destroy(str(infra_id)):
+            InfraQueue.release_lock(str(infra_id))
+            InfraQueue.enqueue_destroy(str(infra_id))
+        logger.info(f"Infrastructure {infra_id} destroy enqueued")
+
     def delete_infrastructure(self, user_id, infra_id):
         """Delete infrastructure — enqueues async destroy for ACTIVE infra, immediate delete otherwise."""
         infra = self.repo.get_by_id(user_id, infra_id)
@@ -190,50 +216,31 @@ class InfrastructureService:
             try:
                 env = Environment.objects.get(infrastructure_id=infra_id)
 
-                # PROVISIONING/DESTROYING have a Terraform run in flight — deleting now
-                # would orphan or race live AWS resources, so block.
-                if env.status == 'PROVISIONING':
-                    raise ValueError(f"Cannot delete while status is {env.status}. Wait for provisioning to complete.")
+                # PROVISIONING/UPDATING/DESTROYING have a Terraform run in flight —
+                # deleting now would orphan or race live AWS resources, so block.
+                if env.status in ('PROVISIONING', 'UPDATING'):
+                    raise ValueError(f"Cannot delete while status is {env.status}. Wait for the operation to complete.")
 
                 if env.status == 'DESTROYING':
                     raise ValueError("Infrastructure is already being destroyed.")
 
-                if env.status == 'ACTIVE':
-                    env.status = 'DESTROYING'
-                    env.save(update_fields=['status'])
-                    # A stale per-infra lock (crashed worker) would make enqueue_destroy a silent
-                    # no-op, leaving the env DESTROYING with no job. A destroy intent must win over a
-                    # dead provision lock, so force it and re-enqueue. In the rare window where a
-                    # provision just acquired the lock but hasn't written status=PROVISIONING yet
-                    # (env still reads ACTIVE), this force can drop that live provision's dedup key;
-                    # the destroy then loses acquire_db_lock to the heartbeated provision and the
-                    # env ends ACTIVE — honest state, and a re-delete succeeds.
-                    if not InfraQueue.enqueue_destroy(str(infra_id)):
-                        InfraQueue.release_lock(str(infra_id))
-                        InfraQueue.enqueue_destroy(str(infra_id))
-                    logger.info(f"Infrastructure {infra_id} destroy enqueued")
+                # ERROR only means "no live resources" when it was reached before any
+                # AssumeRole/apply ever happened (e.g. a never-onboarded PENDING infra
+                # re-enqueued by startup recovery). Once onboarded or ever activated, a
+                # real apply may have partially run — including a failed rollback-destroy
+                # — so treat it like ACTIVE: async destroy is a safe no-op on empty state.
+                never_provisioned = (
+                    env.status == 'ERROR'
+                    and not infra.is_cloud_authenticated
+                    and env.first_activated_at is None
+                )
+                if env.status == 'ACTIVE' or (env.status == 'ERROR' and not never_provisioned):
+                    self._enqueue_env_destroy(env, infra_id)
                     return True  # Don't delete DB records yet — worker handles that
 
-                # PENDING (created, onboarding not finished — no AssumeRole, no Terraform),
-                # ERROR, or DESTROYED: no live AWS resources, delete immediately. Without
-                # this a customer who created an infra but never ran the bootstrap script
-                # would be stuck with an undeletable PENDING record.
-                #
-                # ERROR is the exception under EKS: a half-applied cluster leaves a billed,
-                # internet-reachable control plane holding a cluster-admin access entry, and
-                # only terraform destroy removes it — reaping the controller-created ALBs is
-                # not enough. Route to the real destroy so the record survives in DESTROYING
-                # until teardown succeeds, instead of being dropped with nothing left to
-                # find the cluster by.
-                if env.status == 'ERROR' and infra.compute_type == ComputeType.EKS and not infra.is_mock:
-                    env.status = 'DESTROYING'
-                    env.save(update_fields=['status'])
-                    if not InfraQueue.enqueue_destroy(str(infra_id)):
-                        InfraQueue.release_lock(str(infra_id))
-                        InfraQueue.enqueue_destroy(str(infra_id))
-                    logger.info(f"EKS infrastructure {infra_id} in ERROR: destroy enqueued instead of record delete")
-                    return True
-
+                # PENDING, DESTROYED, or never-provisioned ERROR: no live AWS resources,
+                # delete immediately. Without this a customer who created an infra but
+                # never ran the bootstrap script would be stuck with an undeletable record.
                 logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records")
                 env.delete()
 

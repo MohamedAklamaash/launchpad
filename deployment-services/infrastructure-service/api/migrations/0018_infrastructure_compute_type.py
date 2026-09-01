@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api', '0016_alter_policyrefreshevent_script'),
+        ('api', '0017_environment_first_activated_at_and_more'),
     ]
 
     operations = [

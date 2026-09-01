@@ -9,9 +9,11 @@ import json
 from pathlib import Path
 from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 from api.models.infrastructure import Infrastructure
 from api.models.environment import Environment
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
+from api.services.infrastructure import validate_vpc_cidr, validate_aws_region
 from api.common.envs.application import app_config
 from api.common import naming
 from api.mock.aws_fixtures import resolve_region, synthesize_environment_outputs
@@ -33,6 +35,7 @@ MOCK_PROVISION_DELAY_SECONDS = 4
 EKS_SUPPORTED_CLUSTER_VERSIONS = {"1.29", "1.30", "1.31"}
 DEFAULT_EKS_CLUSTER_VERSION = "1.31"
 MIN_PUBLIC_ACCESS_PREFIXLEN = 16
+MAX_LOG_CHARS = 256_000
 
 
 class TerraformWorker:
@@ -117,8 +120,14 @@ class TerraformWorker:
     
     @staticmethod
     def _exec_tf(cmd: list, env_vars: dict, credentials: dict, infra_id: str, region: str, account_id: str,
-                 compute_type: str, ensure_backend: bool = True) -> dict:
+                 compute_type: str = ComputeType.ECS_FARGATE, ensure_backend: bool = True) -> dict:
         """Execute terraform with proper logging and cleanup"""
+        # A missing credential must never silently fall back to the AWS SDK's ambient
+        # chain (IMDS, ~/.aws/credentials) — that chain can resolve to the platform's
+        # own AWS identity, which can AssumeRole into every onboarded customer account.
+        if not all(credentials.get(k) for k in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")):
+            return {"success": False, "error": "Missing AWS credentials for terraform execution", "logs": ""}
+
         bucket = f"launchpad-tf-state-{account_id}-{region}"
         table = f"launchpad-tf-locks-{account_id}-{region}"
         if ensure_backend:
@@ -146,15 +155,21 @@ class TerraformWorker:
                 if module.is_dir():
                     shutil.copytree(module, work_dir / "modules" / module.name, dirs_exist_ok=True)
 
+            # Never pass the worker's own environment through: injected HCL can run a
+            # local-exec provisioner, and **os.environ would hand it every platform
+            # secret (JWT_SECRET, DB passwords, the platform's own AWS keys).
             env = {
-                key: value for key, value in os.environ.items()
-                if key in ("PATH", "HOME") or key.startswith("TF_")
+                "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                "HOME": os.environ.get("HOME", "/tmp"),
             }
             env.update({
                 "AWS_ACCESS_KEY_ID": credentials.get("aws_access_key_id", ""),
                 "AWS_SECRET_ACCESS_KEY": credentials.get("aws_secret_access_key", ""),
                 "AWS_SESSION_TOKEN": credentials.get("aws_session_token", ""),
                 "AWS_DEFAULT_REGION": region,
+                "AWS_EC2_METADATA_DISABLED": "true",
+                "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+                "AWS_CONFIG_FILE": "/dev/null",
                 "TF_IN_AUTOMATION": "1",
                 "TF_INPUT": "0",
                 "TF_PLUGIN_CACHE_DIR": str(plugin_cache_dir),
@@ -450,6 +465,12 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             infra.refresh_from_db()
 
             metadata = infra.metadata or {}
+            # Re-validate at the interpolation sink, not just the create-time boundary —
+            # a row written before this check existed must not still reach _generate_config.
+            if metadata.get("aws_region") is not None:
+                validate_aws_region(metadata["aws_region"])
+            if metadata.get("vpc_cidr") is not None:
+                validate_vpc_cidr(metadata["vpc_cidr"])
             region = metadata.get("aws_region", "us-west-2")
             account_id = infra.code or "default"
             compute_type = infra.compute_type
@@ -493,22 +514,34 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 )
                 return
             logger.info(f"Infrastructure {infra_id} provisioned successfully")
-        
+
         except Exception as e:
             logger.error(f"Provisioning failed for {infra_id}: {str(e)}", exc_info=True)
+            # An environment that has ever activated must not be reported dead over an
+            # error that happened before any destructive step ran (e.g. AssumeRole
+            # failing on a reprovision) — restore it instead of flipping to ERROR.
+            env = Environment.objects.filter(infrastructure_id=infra_id).first()
             with transaction.atomic():
-                Environment.objects.filter(infrastructure_id=infra_id).update(
-                    status="ERROR", error_message=str(e)
-                )
+                if env is not None and env.first_activated_at is not None:
+                    Environment.objects.filter(infrastructure_id=infra_id).update(
+                        status="ACTIVE", error_message=f"Update failed: {e!s}"
+                    )
+                else:
+                    Environment.objects.filter(infrastructure_id=infra_id).update(
+                        status="ERROR", error_message=str(e)
+                    )
     
     @staticmethod
-    def _handle_provision_failure(infra_id, result, tf_vars, credentials, region, account_id, retry_count, compute_type):
+    def _handle_provision_failure(infra_id, result, tf_vars, credentials, region, account_id, retry_count,
+                                  compute_type=ComputeType.ECS_FARGATE):
         """Handle provision failure with retry or rollback"""
         error = result.get("error", "Unknown error")
         logs = result.get("logs", "")
         
         logger.error(f"Terraform apply failed for {infra_id}: {error}")
-        
+
+        # Transient errors get their normal retry regardless of activation state — the
+        # retry path never destroys anything, so there is nothing to gate here.
         if TerraformWorker._is_transient_error(error) and retry_count < MAX_RETRIES:
             logger.warning(f"Transient error, will retry (attempt {retry_count + 1}/{MAX_RETRIES})")
             with transaction.atomic():
@@ -519,7 +552,21 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             InfraQueue.release_lock(str(infra_id))
             InfraQueue.enqueue_provision(str(infra_id))
             return
-        
+
+        # Permanent failure from here: an environment that has ever gone ACTIVE has live
+        # resources serving traffic — the rollback-destroy below would tear them down.
+        # Return it to last-known-good instead.
+        env = Environment.objects.get(infrastructure_id=infra_id)
+        if env.first_activated_at is not None:
+            logger.error(f"Provision failed for previously-activated {infra_id}; keeping ACTIVE, skipping destroy")
+            with transaction.atomic():
+                Environment.objects.filter(infrastructure_id=infra_id).update(
+                    status="ACTIVE",
+                    logs=((env.logs or "") + "\n[FAILED UPDATE]\n" + logs)[-MAX_LOG_CHARS:],
+                    error_message=f"Update failed; environment restored to ACTIVE: {error}",
+                )
+            return
+
         logger.error(f"Permanent failure, triggering destroy for {infra_id}")
         if compute_type == ComputeType.EKS:
             try:
@@ -547,7 +594,8 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             )
     
     @staticmethod
-    def _save_outputs(infra_id, apply_result, tf_vars, credentials, region, account_id, compute_type, mock_outputs=None):
+    def _save_outputs(infra_id, apply_result, tf_vars, credentials, region, account_id,
+                      compute_type=ComputeType.ECS_FARGATE, mock_outputs=None):
         """Get terraform outputs and save to database"""
         if mock_outputs is not None:
             output_result = {
@@ -563,7 +611,10 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
 
         if output_result["success"]:
             outputs = json.loads(output_result["output"])
-            combined_logs = apply_result.get("logs", "") + "\n[OUTPUT]\n" + output_result.get("logs", "")
+            # `terraform output -json` prints sensitive-marked values in cleartext (the
+            # human-readable apply output masks them) — persist only the key names.
+            combined_logs = (apply_result.get("logs", "") + "\n[OUTPUT] parsed keys: "
+                              + ", ".join(sorted(outputs.keys())))[-MAX_LOG_CHARS:]
 
             alb_dns = outputs.get("alb_dns", {}).get("value")
             if compute_type == ComputeType.EKS and mock_outputs is None:
@@ -574,7 +625,7 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                     cluster_name=outputs.get("cluster_name", {}).get("value"),
                 )
                 alb_dns = bootstrap.alb_dns
-                combined_logs += "\n[BOOTSTRAP]\n" + bootstrap.logs
+                combined_logs = (combined_logs + "\n[BOOTSTRAP]\n" + bootstrap.logs)[-MAX_LOG_CHARS:]
 
             with transaction.atomic():
                 env = Environment.objects.get(infrastructure_id=infra_id)
@@ -597,9 +648,12 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                     env.ecr_repository_url = outputs.get("ecr_repository_url", {}).get("value")
                     env.ecs_task_execution_role_arn = outputs.get("ecs_task_execution_role_arn", {}).get("value")
                 env.status = "ACTIVE"
+                env.error_message = None
+                if env.first_activated_at is None:
+                    env.first_activated_at = timezone.now()
                 env.logs = combined_logs
                 env.save()
-                
+
                 infra = Infrastructure.objects.get(id=infra_id)
                 
                 from api.messaging.producer.producer import infra_producer
@@ -644,7 +698,26 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 transaction.on_commit(lambda: threading.Thread(
                     target=_publish_env_delayed, kwargs=_env_kwargs, daemon=True
                 ).start())
-    
+        else:
+            logger.error(f"Failed to fetch terraform outputs for {infra_id}: {output_result.get('error')}")
+            combined_logs = (apply_result.get("logs", "") + "\n[OUTPUT FETCH FAILED]\n"
+                              + output_result.get("error", ""))[-MAX_LOG_CHARS:]
+            env = Environment.objects.get(infrastructure_id=infra_id)
+            if env.first_activated_at is not None:
+                # Env was live before this run — a failure to read outputs back must
+                # never regress it to ERROR; restore it, don't leave it PROVISIONING.
+                with transaction.atomic():
+                    Environment.objects.filter(infrastructure_id=infra_id).update(
+                        status="ACTIVE", logs=combined_logs,
+                        error_message=f"Apply succeeded but reading outputs failed: {output_result.get('error', 'Unknown error')}",
+                    )
+            else:
+                # First-time provision: apply succeeded but we couldn't confirm it, so
+                # first_activated_at stays unstamped. Leave status as PROVISIONING —
+                # the reaper re-drives it and a retried apply is a safe no-op.
+                with transaction.atomic():
+                    Environment.objects.filter(infrastructure_id=infra_id).update(logs=combined_logs)
+
     @staticmethod
     def _pre_destroy_cleanup(credentials: dict, region: str, infra) -> str:
         """Pre-clean resources that block Terraform destroy."""

@@ -26,15 +26,14 @@ def _get_redis():
     return _redis_client
 
 
-def _get_super_admin_email() -> tuple[str, str, str] | None:
-    """Return (user_id, email, user_name) of the first SUPER_ADMIN user."""
+def _resolve_recipient(user_id: str) -> tuple[str, str] | None:
+    """Return (email, user_name) of the infra owner."""
     try:
         from api.models.user import User
-        admin = User.objects.filter(role="super_admin").first()
-        if admin:
-            return str(admin.id), admin.email, admin.user_name
+        user = User.objects.get(id=user_id)
+        return user.email, user.user_name
     except Exception as e:
-        logger.warning(f"Could not fetch super admin: {e}")
+        logger.warning(f"Could not resolve user {user_id}: {e}")
     return None
 
 
@@ -78,41 +77,31 @@ def _enqueue(user_id: str, email: str, user_name: str, infra_id: str, infra_name
         logger.error(f"Failed to enqueue notification for event={event}: {e}")
 
 
+def _notify(event: str, user_id: str, infra_id: str, infra_name: str, error: str | None = None):
+    """Resolve the owner and enqueue one event, or skip."""
+    recipient = _resolve_recipient(user_id)
+    if not recipient:
+        logger.warning("No recipient found, skipping notification")
+        return
+    email, user_name = recipient
+    _enqueue(user_id, email, user_name, infra_id, infra_name, event, error)
+
+
 class NotificationService:
     """Send infra event notifications via the notification service queue."""
 
     @staticmethod
     def send_provision_success(user_id: str, infra_id: str, infra_name: str):
-        admin = _get_super_admin_email()
-        if not admin:
-            logger.warning("No super admin found, skipping notification")
-            return
-        _, email, user_name = admin
-        _enqueue(user_id, email, user_name, infra_id, infra_name, "provision_success")
+        _notify("provision_success", user_id, infra_id, infra_name)
 
     @staticmethod
     def send_provision_failure(user_id: str, infra_id: str, infra_name: str, error: str):
-        admin = _get_super_admin_email()
-        if not admin:
-            logger.warning("No super admin found, skipping notification")
-            return
-        _, email, user_name = admin
-        _enqueue(user_id, email, user_name, infra_id, infra_name, "provision_failure", error)
+        _notify("provision_failure", user_id, infra_id, infra_name, error)
 
     @staticmethod
     def send_destroy_success(user_id: str, infra_id: str, infra_name: str):
-        admin = _get_super_admin_email()
-        if not admin:
-            logger.warning("No super admin found, skipping notification")
-            return
-        _, email, user_name = admin
-        _enqueue(user_id, email, user_name, infra_id, infra_name, "destroy_success")
+        _notify("destroy_success", user_id, infra_id, infra_name)
 
     @staticmethod
     def send_destroy_failure(user_id: str, infra_id: str, infra_name: str, error: str):
-        admin = _get_super_admin_email()
-        if not admin:
-            logger.warning("No super admin found, skipping notification")
-            return
-        _, email, user_name = admin
-        _enqueue(user_id, email, user_name, infra_id, infra_name, "destroy_failure", error)
+        _notify("destroy_failure", user_id, infra_id, infra_name, error)

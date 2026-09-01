@@ -178,7 +178,8 @@ def test_exec_tf_env_allowlist(monkeypatch):
     assert "JWT_SECRET" not in captured
     assert "INTERNAL_API_TOKEN" not in captured
     assert captured["AWS_ACCESS_KEY_ID"] == "AKIATEST"
-    assert captured["TF_LOG"] == "TRACE"
+    # TF_* is deliberately not passed through: TF_CLI_ARGS would inject terraform args.
+    assert "TF_LOG" not in captured
     assert "PATH" in captured
     for key in captured:
         assert key in ("PATH", "HOME") or key.startswith(("TF_", "AWS_")), key

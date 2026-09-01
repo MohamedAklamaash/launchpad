@@ -28,9 +28,11 @@ def make_infra(db):
 def make_env(make_infra):
     from api.models.environment import Environment
 
-    def _make(*, status, locked_at="unset", is_cloud_authenticated=False):
+    def _make(*, status, locked_at="unset", is_cloud_authenticated=False, first_activated_at=None):
         infra = make_infra(is_cloud_authenticated=is_cloud_authenticated)
-        env = Environment.objects.create(infrastructure=infra, status=status)
+        env = Environment.objects.create(
+            infrastructure=infra, status=status, first_activated_at=first_activated_at
+        )
         if locked_at != "unset":
             env.locked_at = locked_at
             env.locked_by = "old-worker"
@@ -115,6 +117,85 @@ def test_reaper_parks_poison_job_in_error_after_max_attempts(make_env):
     Q.enqueue_provision.assert_not_called()
     env.refresh_from_db()
     assert env.status == "ERROR"
+
+
+@pytest.mark.django_db
+def test_reaper_parks_previously_activated_env_back_in_active(make_env):
+    # A failed in-place update still has live resources serving traffic; parking it in
+    # ERROR would misreport a working environment as dead.
+    env = make_env(
+        status="UPDATING", locked_at=timezone.now() - timedelta(hours=2),
+        first_activated_at=timezone.now() - timedelta(days=7),
+    )
+    with patch("api.services.notification.NotificationService"):
+        count, Q = _reap(3600, reap_count=99)
+    assert count == 0
+    Q.enqueue_provision.assert_not_called()
+    env.refresh_from_db()
+    assert env.status == "ACTIVE"
+    assert "returned to ACTIVE" in env.error_message
+
+
+@pytest.mark.django_db
+def test_reaper_parks_stuck_destroy_in_error_not_active(make_env):
+    # A stuck DESTROYING run may have already torn down some resources — it must never
+    # be reported ACTIVE even though the environment was live before the destroy began.
+    env = make_env(
+        status="DESTROYING", locked_at=timezone.now() - timedelta(hours=2),
+        first_activated_at=timezone.now() - timedelta(days=7),
+    )
+    with patch("api.services.notification.NotificationService") as N:
+        count, _ = _reap(3600, reap_count=99)
+    assert count == 0
+    env.refresh_from_db()
+    assert env.status == "ERROR"
+    N.send_destroy_failure.assert_called_once()
+    N.send_provision_failure.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_reaper_reenqueues_stale_updating(make_env):
+    env = make_env(status="UPDATING", locked_at=timezone.now() - timedelta(hours=2))
+    count, Q = _reap(3600)
+    assert count == 1
+    Q.enqueue_provision.assert_called_once_with(str(env.infrastructure_id))
+    Q.enqueue_destroy.assert_not_called()
+
+
+# ---- startup recovery ----
+
+class _RecoveryDone(Exception):
+    """Raised from the recovery block's finally to stop handle() before its worker loop."""
+
+
+def _startup_recovery():
+    from api.management.commands.run_worker import Command
+
+    r = MagicMock()
+    r.set.return_value = True
+    r.lrange.return_value = []
+    r.get.side_effect = _RecoveryDone
+    with patch("api.services.infra_queue._redis", return_value=r), \
+            patch("api.services.infra_queue.InfraQueue") as Q, \
+            patch("api.management.commands.run_worker.signal.signal"), \
+            pytest.raises(_RecoveryDone):
+        Command().handle()
+    return Q
+
+
+@pytest.mark.django_db
+def test_startup_recovery_reenqueues_updating(make_env):
+    env = make_env(status="UPDATING")
+    Q = _startup_recovery()
+    Q.enqueue_provision.assert_called_once_with(str(env.infrastructure_id))
+
+
+@pytest.mark.django_db
+def test_startup_recovery_ignores_active(make_env):
+    make_env(status="ACTIVE")
+    Q = _startup_recovery()
+    Q.enqueue_provision.assert_not_called()
+    Q.enqueue_destroy.assert_not_called()
 
 
 # ---- DB lock ownership (heartbeat + release) ----
