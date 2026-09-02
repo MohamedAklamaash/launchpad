@@ -49,7 +49,9 @@ Intended outcome: a user picks "Kubernetes" in the create-infrastructure wizard,
 
 **D. K8s resource handles in `Application.runtime_refs` (JSONField).** `{"runtime": "eks", "namespace", "deployment", "service", "ingress", "configmap"}`. Cleanup jobs gain a `runtime` key; absent key ⇒ legacy ECS ARN shape, so in-flight jobs stay valid across deploy. One additive nullable column beats four new k8s-named columns.
 
-**E. Immutable per-deploy image tags.** Deployer computes `image_tag = f"{slug}-{commit_hash[:12]}"` (or `{slug}-{uuid4().hex[:12]}` for manual deploys), passed via `environmentVariablesOverride`; the buildspec pushes `$ECR_URL:$IMAGE_TAG` **and** the existing `$APP_NAME-latest`. ECS keeps consuming `-latest` (zero behavior change); EKS references the unique tag, so an `image:` update always rolls pods and old tags are natural rollback points. ECR repo gets `imageTagMutability = IMMUTABLE`.
+**E. Immutable per-deploy image tags.** Deployer computes `image_tag = f"{slug}-{commit_hash[:12]}"` (or `{slug}-{uuid4().hex[:12]}` for manual deploys), passed via `environmentVariablesOverride`; the buildspec pushes `$ECR_URL:$IMAGE_TAG` **and** the existing `$APP_NAME-latest`. ECS keeps consuming `-latest` (zero behavior change); EKS references the unique tag, so an `image:` update always rolls pods and old tags are natural rollback points. The ECR repo stays `MUTABLE`: the buildspec re-pushes `$APP_NAME-latest` on every
+build for ECS, and an immutable repo rejects that. Immutability comes from the per-deploy
+tag never being reused, not from the repository setting.
 
 ### Non-obvious mechanics — get these right
 
@@ -65,7 +67,7 @@ Intended outcome: a user picks "Kubernetes" in the create-infrastructure wizard,
 
 **`_generate_config` is the repo's top trust boundary.** It interpolates `vars.get(...)` straight into HCL and `_exec_tf` runs terraform with the worker's full environ (`JWT_SECRET`, `INTERNAL_API_TOKEN`, platform AWS keys); `metadata` is caller-settable at create. The EKS builder must select on the **`compute_type` column only**, never `vars.get('compute_type')`, or `metadata` becomes a channel that bypasses `EKS_ENABLED`. `cluster_version` is exact-match allowlisted (`{"1.29","1.30","1.31"}`). Add the containing control while here: a subprocess `env=` allowlist (PATH/HOME/TF_*/customer creds only).
 
-**Destroy ordering is first-class, and there are three entry points.** EKS branch of `_pre_destroy_cleanup`: fresh creds → k8s client → delete Ingresses and LoadBalancer-type Services **in Launchpad-created namespaces only** (never `kube-system`) → poll ELBv2 until reaped (~8 min timeout) → boto3 fallback → existing ENI/lock cleanup → `terraform destroy`. The fallback must be fail-*safe*: trigger only on a **positive** signal (`eks:DescribeCluster` → `ResourceNotFoundException`, or status `DELETED`/`FAILED`) — never on a k8s API timeout — and match on **both** the `elbv2.k8s.aws/cluster` tag (forgeable: cluster names derive from the infra id, and any principal in the account can set that tag via `alb.ingress.kubernetes.io/tags`) **and** `VpcId == ` the infra's terraform-output VPC id (not forgeable, terraform-owned per infra). For SGs additionally require zero remaining ENI attachments. Refuse the batch if more than N match; log the full match set before deleting.
+**Destroy ordering is first-class, and there are three entry points.** EKS branch of `_pre_destroy_cleanup`: fresh creds → k8s client → delete Ingresses and LoadBalancer-type Services **in Launchpad-created namespaces only** (never `kube-system`) → poll ELBv2 until reaped (~8 min timeout) → boto3 fallback → existing ENI/lock cleanup → `terraform destroy`. The fallback must be fail-*safe*: trigger only on a **positive** signal (`eks:DescribeCluster` → `ResourceNotFoundException`, or status `DELETED`/`FAILED`) — never on a k8s API timeout — and match on **both** the `elbv2.k8s.aws/cluster` tag (forgeable: cluster names derive from the infra id, and any principal in the account can set that tag via `alb.ingress.kubernetes.io/tags`) **and** `VpcId` equal to the infra's terraform-output VPC id (not forgeable, terraform-owned per infra). For SGs additionally require zero remaining ENI attachments. Refuse the batch if more than N match; log the full match set before deleting.
 
 The three entry points that must all run this: (1) the destroy dispatch, (2) the **inline rollback-destroy** on permanent provision error in `terraform_worker.py`, and (3) `InfrastructureService.delete_infrastructure`, which today deletes the env + row with **no terraform run** when status is `ERROR`/`DESTROYED`/`PENDING`. Under ECS a failed apply left little behind; under EKS it leaves a billed, internet-reachable control plane with a cluster-admin access entry for a role Launchpad has just forgotten about.
 
@@ -157,7 +159,7 @@ Each ships alone with ECS green and the flag off until Phase 5.
 
 | Finding | Resolution in this plan |
 |---|---|
-| **C1** `eks:*` on `*` grants cluster-admin on the customer's *pre-existing* clusters | Split + resource-scoped to `cluster/infra-*`, explicit `Deny` on access-entry APIs elsewhere, heredoc gated on `compute_type` so ECS-only customers are not widened |
+| **C1** `eks:*` on `*` grants cluster-admin on the customer's *pre-existing* clusters | Split + resource-scoped to `cluster/infra-*`, explicit `Deny` on the access-entry APIs and `eks:DescribeCluster` elsewhere, heredoc gated on `compute_type` so ECS-only customers are not widened. Defense in depth, not containment: the same policy still grants `iam:*` on `*`, so the role could re-grant itself access — this removes the one-call path and makes anything wider an auditable IAM change. Narrowing `iam:*` is separate work. |
 | **C2** Default cluster endpoint is internet-open cluster-admin | `public_access_cidrs` from config with hard-refusal on empty/`0.0.0.0/0`; `enabled_cluster_log_types` on |
 | **C3** NetworkPolicy silently unenforced on Auto Mode | CNI ConfigMap + NodeClass `spec.networkPolicy` enabled in provisioning; default-deny per namespace; enforcement asserted by a *connection* test |
 | **C4** Namespace-per-infra + slug collision = silent cross-user takeover | Namespace-per-app; slug uniqueness scoped to `infrastructure`; one shared slug helper |
@@ -170,7 +172,7 @@ Each ships alone with ECS green and the flag off until Phase 5.
 | **M2** One identity holds cluster-admin for provision *and* deploy | Split access entries |
 | **M3** Missing pod-security posture | `automountServiceAccountToken: false`, ResourceQuota + LimitRange (a tenant can otherwise inflict financial DoS on the infra owner via Auto Mode node provisioning), PSA `baseline`, dropped capabilities |
 | **M4** New error strings vs. the sanitized-email invariant | Fallback-path test; no captured-group interpolation |
-| **LOW** ECR tag mutability | `imageTagMutability = IMMUTABLE` (nearly free given per-deploy tags) |
+| **LOW** ECR tag mutability | Not taken. Per-deploy tags are already write-once by construction, but the repo must stay `MUTABLE` because ECS re-pushes `$APP_NAME-latest` every build; `IMMUTABLE` would break ECS deploys. The original finding assumed unique tags *replaced* `-latest` rather than coexisting with it. |
 
 Noted as pre-existing and **not** fixed here: the GitHub token plaintext fallback in `codebuild.py:128`; plaintext app envs; infra notifications going to the globally-first `super_admin` rather than the infra owner (see open question 4).
 

@@ -108,7 +108,8 @@ test('a non-EKS cluster timeout does not get Kubernetes guidance', () => {
     // The ECS/RDS/DocDB paths also say "cluster". Before the EKS buckets required an
     // `eks` token, this matched the Kubernetes cluster-creation bucket and told the
     // customer to wait 20 minutes for a control plane they never asked for.
-    const raw = 'Error: creating RDS DocDB Cluster: operation timed out waiting for cluster creation';
+    const raw =
+        'Error: creating RDS DocDB Cluster: operation timed out waiting for cluster creation';
     const summary = summarizeInfraError(raw);
     assert.ok(summary, 'expected a summary');
     assert.ok(

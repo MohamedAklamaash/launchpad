@@ -103,8 +103,10 @@ What the script does:
 2. Attaches **`LaunchpadDeploymentPolicy`** (the permissions Launchpad needs — VPC,
    ECS, ECR, ELB, CloudWatch Logs, S3, DynamoDB, CodeBuild, IAM, KMS). With
    `LAUNCHPAD_COMPUTE_TYPE=eks` it also adds EKS statements scoped to the `infra-*`
-   clusters Launchpad creates — never your pre-existing clusters (see
-   [IAM_POLICIES.md](./IAM_POLICIES.md#eks-permissions-kubernetes-infrastructures)).
+   clusters Launchpad creates, plus an explicit `Deny` covering everything else. Note
+   the policy also grants `iam:*`, so this scoping is a strong default rather than a
+   hard boundary — see
+   [IAM_POLICIES.md](./IAM_POLICIES.md#eks-permissions-kubernetes-infrastructures).
 3. Calls back to Launchpad with your account ID and the onboarding token. Launchpad
    verifies the token and that the account matches, assumes the role to confirm access,
    then **automatically queues provisioning.**
@@ -169,7 +171,9 @@ See [DEPLOYMENT_EDGE_CASES.md](./DEPLOYMENT_EDGE_CASES.md) for port/health-check
    `CREATED → BUILDING → PUSHING_IMAGE → DEPLOYING → ACTIVE`:
    - **BUILDING** — CodeBuild builds your image (in your account).
    - **PUSHING_IMAGE** — image pushed to ECR.
-   - **DEPLOYING** — ECS service + ALB rule created.
+   - **DEPLOYING** — on ECS infrastructures, an ECS service and an ALB listener rule are
+     created; on Kubernetes infrastructures, a namespace, Deployment, Service and Ingress
+     are applied and Launchpad waits for the rollout to become available.
    - **ACTIVE** — reachable at `http://<alb-dns>/<app-name>`.
 
 ---
@@ -233,8 +237,9 @@ Applies to ECS Fargate infrastructures only:
 | 2          | 4 – 16      |
 | 4          | 8 – 30      |
 
-Kubernetes infrastructures take free-form CPU/memory values (0.25–16 vCPU,
-0.5–64 GB) instead of the fixed ladder.
+Kubernetes infrastructures take free-form CPU/memory values instead of the fixed ladder,
+within the same per-app ceiling the API enforces for every compute type: 0.25–4 vCPU and
+0.5–30 GB. Your infrastructure's `max_cpu`/`max_memory` quota still applies on top.
 
 ### Infrastructure quota
 
@@ -277,7 +282,11 @@ totalling ≤ 4 vCPU. Raise the limits in infrastructure settings, or delete unu
   as sensitive while onboarding.
 - **Single-use onboarding token**, hashed at rest, 24-hour TTL.
 - **Per-app webhook secrets** with HMAC verification and delivery de-duplication.
-- **Network isolation** — apps run in private subnets; only the ALB is public.
+- **Network isolation** — apps run in private subnets. On ECS infrastructures the ALB is
+  the only public endpoint. On Kubernetes infrastructures the cluster's own API endpoint is
+  also reachable from the internet, but only from the CIDR ranges Launchpad is configured
+  with (`EKS_PUBLIC_ACCESS_CIDRS`); provisioning refuses to start if that list is empty or
+  contains `0.0.0.0/0`.
 
 ---
 

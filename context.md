@@ -303,12 +303,18 @@ When a user deploys an application:
 3. Deployment job is added to Redis queue
 4. Deployment worker processes the job
 
-**Deployment Pipeline (11 steps)**:
+**Deployment Pipeline** — steps 1-4 are shared; the deploy step branches on the
+infrastructure's `compute_type`.
+
+Shared:
 
 1. **Validate Infrastructure**: Check status is ACTIVE and cloud authenticated
 2. **Create AWS Session**: Assume role with credential refresh logic
 3. **Trigger CodeBuild**: Start build job in user's AWS account
 4. **Wait for Build**: Poll until build completes (status: BUILDING)
+
+Then, on `ecs_fargate` infrastructures:
+
 5. **Create Task Definition**: Define ECS task with container config (status: DEPLOYING)
 6. **Create Target Group**: Create ALB target group for the application
 7. **Configure ALB Routing**: Create listener rule for path-based routing
@@ -316,6 +322,22 @@ When a user deploys an application:
 9. **Add Security Group Rule**: Allow traffic from ALB to container port
 10. **Create ECS Service**: Launch containers with load balancer integration
 11. **Wait for Stability**: Poll until service is running (status: ACTIVE)
+
+Or, on `eks` infrastructures (via the Kubernetes API, `api/k8s/deployer.py`):
+
+5. **Ensure Namespace**: `app-{slug}` with PodSecurity labels, ResourceQuota, LimitRange
+   and a default-deny NetworkPolicy (status: DEPLOYING)
+6. **Apply ConfigMap**: nginx sidecar config that strips the `/{slug}` path prefix
+7. **Apply Deployment**: app container + nginx sidecar, referencing the immutable
+   per-deploy image tag
+8. **Apply Service**: ClusterIP fronting the sidecar
+9. **Apply Ingress**: joins the infrastructure's shared ALB ingress group, routing
+   `/{slug}` and `/{slug}/*`
+10. **Wait for Rollout**: poll until the Deployment is available, harvesting pod events
+    into `error_message` on failure (status: ACTIVE)
+
+Kubernetes resource handles are recorded in `Application.runtime_refs`; ECS deployments
+keep using the ARN columns.
 
 **Error Handling**:
 - Any failure updates status to FAILED
@@ -409,10 +431,15 @@ Isolation occurs at multiple levels.
 Each Infrastructure has its own VPC.
 
 **Application isolation**:
-Each application runs as an independent ECS service.
+On ECS, each application runs as an independent ECS service. On EKS, each application
+gets its own `app-{slug}` namespace with a ResourceQuota and LimitRange, so one tenant
+cannot exhaust the cluster on another's behalf.
 
 **Network isolation**:
-Security groups control traffic between ALB and containers.
+On ECS, security groups control traffic between ALB and containers. On EKS, each
+namespace carries a default-deny NetworkPolicy that admits only the ingress controller
+on the serving port (network-policy enforcement is switched on in the VPC CNI at
+provision time — Auto Mode accepts policies but does not enforce them by default).
 
 **Build isolation**:
 Application builds run in AWS CodeBuild within the user's account.

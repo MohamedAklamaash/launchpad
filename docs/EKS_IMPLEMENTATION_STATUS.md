@@ -14,7 +14,7 @@ Working handoff for `feat/eks-deployment-target`. Delete before merge.
 
 | Phase | Content | State |
 |---|---|---|
-| 1 Plumbing | `ComputeType` enum, `Infrastructure.compute_type` both services (immutable, `EKS_ENABLED`-gated at create **and** at provision dispatch), producer/consumer payloads, gateway body, migrations 0017/0023 | committed `dd7d7cd` |
+| 1 Plumbing | `ComputeType` enum, `Infrastructure.compute_type` both services (immutable, `EKS_ENABLED`-gated at create **and** at provision dispatch), producer/consumer payloads, gateway body, migrations infrastructure `0019`/`0020` and application `0024`–`0028` (renumbered behind #63 — see the re-merge note below) | committed `dd7d7cd` |
 | 2 Onboarding + STS | scoped+gated EKS IAM in `create_aws_role.sh`, `DurationSeconds=7200` w/ 3600 fallback, **credential persistence removed at both writers**, purge migrations 0018/0024 | committed `dd7d7cd` |
 | 3 Provision/destroy | `shared/k8s/{token,client}.py`, `modules/eks` (Auto Mode), vpc `enable_elb_subnet_tags`, per-orchestrator config builders, `eks_bootstrap.py`, `eks_teardown.py`, `kubernetes==31.0.0` | committed `dd7d7cd` |
 | 5 Surface | frontend compute selector + EKS CPU/memory, notification buckets, `check-terraform` CI job, docs incl. stale-`infra/aws/` fix | committed `dd7d7cd` |

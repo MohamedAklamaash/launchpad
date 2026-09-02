@@ -57,10 +57,22 @@ script (run with `LAUNCHPAD_COMPUTE_TYPE=eks`) adds EKS statements to
 - An explicit `Deny` on `eks:*AccessEntry*` and `eks:*AccessPolicy*` for clusters not
   named `infra-*`.
 
+Also an explicit `Deny` on `eks:DescribeCluster` for clusters not named `infra-*`
+(it is resource-scoped despite matching the `Describe*` wildcard above, and returns a
+cluster's API endpoint, CA certificate and OIDC issuer).
+
 Why the scoping matters: `eks:CreateAccessEntry` on an unscoped resource would let the
 role grant itself cluster-admin on **any pre-existing EKS cluster in your account**. The
-resource scoping plus the explicit Deny confines Launchpad to the clusters it provisions;
-clusters you already run stay untouchable even if the Allow list widens later.
+resource scoping plus the explicit Deny confines Launchpad's *EKS* API surface to the
+clusters it provisions.
+
+This is defense in depth, not a containment boundary. `LaunchpadDeploymentPolicy` also
+grants `iam:*` on `*`, so the role can modify its own permissions and could reach a
+pre-existing cluster that way. The EKS scoping removes the one-API-call path to
+cluster-admin and makes any wider access require a deliberate, auditable IAM change —
+it does not make your existing clusters unreachable. Narrowing `iam:*` is tracked
+separately; if that matters to you, edit `launchpad-policy.json` before running the
+script.
 
 For EKS infrastructures the script also sets the role's `MaxSessionDuration` to 7200
 seconds — cluster provisioning can exceed the 1-hour default session.

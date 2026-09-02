@@ -513,7 +513,7 @@ export default function InfrastructureDetailPage() {
             <DialogTitle className="text-base font-display font-semibold">Delete Infrastructure</DialogTitle>
           </DialogHeader>
           <p className="text-xs text-muted-foreground">
-            Delete <span className="text-foreground font-mono">{infra.name}</span>? This will trigger Terraform destroy and remove all AWS resources (VPC, ECS, ALB, ECR). This cannot be undone.
+            Delete <span className="text-foreground font-mono">{infra.name}</span>? This will trigger Terraform destroy and remove all AWS resources it provisioned in your account. This cannot be undone.
           </p>
           <div className="flex gap-2 justify-end mt-2">
             <Button variant="outline" onClick={() => setDeleteOpen(false)}>
