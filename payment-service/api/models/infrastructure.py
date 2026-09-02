@@ -1,5 +1,6 @@
 from django.db import models
 
+
 class Infrastructure(models.Model):
     id = models.UUIDField(primary_key=True, editable=False)
     user_id = models.UUIDField(null=True, blank=True) # Changed to UUIDField with null=True for resilience

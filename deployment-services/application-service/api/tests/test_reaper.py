@@ -1,7 +1,7 @@
 import json
 
-from api.services import deployment_queue as dq
 from api.services import deployment_lock
+from api.services import deployment_queue as dq
 
 
 class _FakeRedis:

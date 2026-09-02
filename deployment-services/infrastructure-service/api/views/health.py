@@ -1,8 +1,8 @@
 from api.services.health_service import HealthService
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
 from django.http import HttpRequest
 from django.views.decorators.csrf import csrf_exempt
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 
 healthService = HealthService()
 

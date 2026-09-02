@@ -1,6 +1,8 @@
-import redis
 import logging
 import os
+
+import redis
+
 from api.services.deployment_queue import _pool
 
 logger = logging.getLogger(__name__)

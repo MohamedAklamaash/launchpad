@@ -1,8 +1,11 @@
 import secrets
-from shared.utils.uuid import uuid7_pk
-from django.db import models
+
 from django.conf import settings
+from django.db import models
+from shared.utils.uuid import uuid7_pk
+
 from api.models.infrastructure import Infrastructure
+
 
 class Application(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid7_pk, editable=False)

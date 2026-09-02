@@ -1,7 +1,8 @@
 from dataclasses import dataclass
-from typing import Optional, Any, Dict
-from uuid import UUID
 from datetime import datetime
+from typing import Any
+from uuid import UUID
+
 
 @dataclass
 class UserInfo:
@@ -12,4 +13,4 @@ class UserInfo:
     is_active: bool
     is_staff: bool
     created_at: datetime
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: dict[str, Any] | None = None

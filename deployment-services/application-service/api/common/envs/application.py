@@ -1,7 +1,7 @@
-from dataclasses import dataclass
-from dotenv import load_dotenv
 import os
+from dataclasses import dataclass
 
+from dotenv import load_dotenv
 from shared.mode import normalize_mode
 
 load_dotenv()

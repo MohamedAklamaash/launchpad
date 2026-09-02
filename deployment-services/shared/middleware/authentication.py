@@ -1,8 +1,10 @@
-from django.conf import settings
-from shared.utils.jwt import decode_jwt
-from shared.errors.exception import HttpError
 import logging
+
+from django.conf import settings
 from django.http import JsonResponse
+
+from shared.errors.exception import HttpError
+from shared.utils.jwt import decode_jwt
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ class JWTAuthMiddleware:
                 status=e.status_code
             )
         except Exception as e:
-            logger.exception(f"Unexpected error in JWTAuthMiddleware: {e}")
+            logger.exception("Unexpected error in JWTAuthMiddleware")
             return JsonResponse(
                 {"message": "Internal Server Error", "details": str(e)},
                 status=500

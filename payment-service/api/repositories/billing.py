@@ -1,5 +1,6 @@
 from api.models.billing import Billing
 
+
 class BillingRepository:
     def get_billing(self, billing_id):
         try:

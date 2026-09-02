@@ -8,11 +8,11 @@ are real Exception subclasses.
 import re
 
 import pytest
-
-from api.mock.mock_session import MockSession
 from aws.alb import ALBClient
 from aws.codebuild import CodeBuildClient
 from aws.ecs import ECSClient
+
+from api.mock.mock_session import MockSession
 
 SG_RE = re.compile(r"^sg-[0-9a-f]{8,17}$")
 VPC_RE = re.compile(r"^vpc-[0-9a-f]{8,17}$")
@@ -157,6 +157,7 @@ def test_mock_vpc_id_matches_infra_service_scheme(monkeypatch):
     # environment.vpc_id the provisioner (infrastructure-service _hex_id) recorded, else every
     # redeploy sees a VPC mismatch and needlessly deletes + recreates the target group.
     import hashlib
+
     from api.mock.mock_session import MockSession
 
     infra_id = "019f2c2b-9b19-71a9-8f3e-cd81d13effb9"

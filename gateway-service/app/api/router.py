@@ -1,5 +1,13 @@
 from fastapi import APIRouter
-from app.api.endpoints import auth, user, notification, infrastructure, payment, application
+
+from app.api.endpoints import (
+    application,
+    auth,
+    infrastructure,
+    notification,
+    payment,
+    user,
+)
 
 api_router = APIRouter()
 

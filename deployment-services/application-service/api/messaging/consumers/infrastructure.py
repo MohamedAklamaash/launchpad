@@ -1,11 +1,12 @@
 import json
+import logging
 import time
 import uuid
-import logging
-from django.db import transaction, connection, OperationalError
-from django.core.exceptions import ObjectDoesNotExist
-from api.repositories.infrastructure import InfrastructureRepository
+
 from api.common.envs.application import app_config
+from api.repositories.infrastructure import InfrastructureRepository
+from django.core.exceptions import ObjectDoesNotExist
+from django.db import OperationalError, connection, transaction
 from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
@@ -52,10 +53,9 @@ class InfraEventConsumer:
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
-            log.error(
+            log.exception(
                 "JSON decode failed — discarding unparseable message",
                 extra={"correlation_id": correlation_id, "error": str(exc)},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
@@ -132,10 +132,9 @@ class InfraEventConsumer:
                     time.sleep(delay)
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             else:
-                log.error(
+                log.exception(
                     "Error persisting infrastructure event — NACKing without requeue (permanent)",
                     extra={"correlation_id": correlation_id, "infra_id": infra_id, "error": str(exc)},
-                    exc_info=True,
                 )
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
@@ -252,10 +251,9 @@ class InfraUpdatedEventConsumer:
 
         except Exception as exc:
             transient = self._is_transient(exc)
-            log.error(
+            log.exception(
                 "Error processing infrastructure.updated event",
                 extra={"correlation_id": correlation_id, "infra_id": infra_id},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
 
@@ -325,10 +323,9 @@ class InfraDeletedEventConsumer:
 
         except Exception as exc:
             transient = self._is_transient(exc)
-            log.error(
+            log.exception(
                 "Error processing infrastructure.deleted event",
                 extra={"correlation_id": correlation_id, "infra_id": infra_id},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
 
@@ -407,10 +404,9 @@ class InfraUserRemovedEventConsumer:
 
         except Exception as exc:
             transient = self._is_transient(exc)
-            log.error(
+            log.exception(
                 "Error processing infrastructure.user_removed event",
                 extra={"correlation_id": correlation_id, "infra_id": infra_id, "user_id": user_id},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
 

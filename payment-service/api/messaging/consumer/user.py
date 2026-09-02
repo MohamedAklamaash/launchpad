@@ -1,10 +1,12 @@
 import json
-import uuid
 import logging
-from django.db import transaction, connection, ProgrammingError, OperationalError
-from api.repositories.user import UserRepository
-from api.common.env.application import app_config
+import uuid
+
+from django.db import OperationalError, ProgrammingError, connection, transaction
 from shared.resilience import ResilientPikaConsumer
+
+from api.common.env.application import app_config
+from api.repositories.user import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +42,9 @@ class AuthEventConsumer:
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
-            log.error(
+            log.exception(
                 "JSON decode failed — discarding",
                 extra={"correlation_id": correlation_id, "error": str(exc)},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
@@ -78,7 +79,7 @@ class AuthEventConsumer:
         try:
             connection.close()
             with transaction.atomic():
-                user, created = self.user_repo.upsert_user(
+                _user, created = self.user_repo.upsert_user(
                     {
                         "id": user_id,
                         "email": email,
@@ -92,13 +93,13 @@ class AuthEventConsumer:
                 )
             log.info(
                 "user upserted successfully — ACKing",
-                extra={"correlation_id": correlation_id, "user_id": user_id, "created": created},
+                extra={"correlation_id": correlation_id, "user_id": user_id, "was_created": created},
             )
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
         except Exception as exc:
             transient = self._is_transient(exc)
-            log.error(
+            log.exception(
                 "Error processing auth event — %s",
                 "NACKing with requeue (transient)" if transient else "NACKing without requeue (permanent)",
                 extra={
@@ -107,7 +108,6 @@ class AuthEventConsumer:
                     "error": str(exc),
                     "exc_type": type(exc).__name__,
                 },
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
 

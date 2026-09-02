@@ -1,7 +1,9 @@
-import socket
-import redis
 import json
 import logging
+import socket
+
+import redis
+
 from api.common.envs.application import app_config
 
 logger = logging.getLogger(__name__)
@@ -57,7 +59,7 @@ class DeploymentQueue:
         return redis.Redis(connection_pool=_pool)
 
     @staticmethod
-    def enqueue_deployment(app_id: str, infrastructure_id: str = None):
+    def enqueue_deployment(app_id: str, infrastructure_id: str | None = None):
         try:
             job = {"app_id": str(app_id), "action": "deploy", "retry_count": 0}
             if infrastructure_id:
@@ -69,9 +71,9 @@ class DeploymentQueue:
             raise
 
     @staticmethod
-    def enqueue_cleanup(app_id: str, infrastructure_id: str, service_arn: str = None,
-                        listener_rule_arn: str = None, target_group_arn: str = None,
-                        task_definition_arn: str = None):
+    def enqueue_cleanup(app_id: str, infrastructure_id: str, service_arn: str | None = None,
+                        listener_rule_arn: str | None = None, target_group_arn: str | None = None,
+                        task_definition_arn: str | None = None):
         try:
             job = {
                 "app_id": str(app_id),

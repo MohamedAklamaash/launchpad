@@ -10,11 +10,13 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
-from pathlib import Path
-from api.common.envs.database import DatabaseConfig
-from api.common.envs.application import app_config
-from core.allowed_hosts_config import get_allowed_hosts
 import os
+from pathlib import Path
+
+from api.common.envs.application import app_config
+from api.common.envs.database import DatabaseConfig
+from core.allowed_hosts_config import get_allowed_hosts
+
 
 # Validate critical configuration on startup
 def validate_config():

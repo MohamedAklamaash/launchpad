@@ -8,8 +8,8 @@ from django.utils import timezone
 
 @pytest.fixture
 def make_infra(db):
-    from api.models.user import User
     from api.models.infrastructure import Infrastructure
+    from api.models.user import User
 
     def _make(*, is_cloud_authenticated=False):
         user = User.objects.create(
@@ -95,7 +95,7 @@ def test_reaper_leaves_freshly_locked_provisioning_alone(make_env):
 @pytest.mark.django_db
 def test_reaper_never_touches_pending(make_env):
     make_env(status="PENDING", locked_at=None)
-    count, Q = _reap(3600)
+    count, _Q = _reap(3600)
     assert count == 0
 
 
@@ -306,8 +306,8 @@ def test_reissue_token_denied_for_non_owner(make_infra):
 # ---- #2 reissue endpoint (HTTP layer) ----
 
 def _reissue(infra, user):
-    from rest_framework.test import APIRequestFactory, force_authenticate
     from api.views.infrastructure import infrastructure_reissue_token
+    from rest_framework.test import APIRequestFactory, force_authenticate
 
     request = APIRequestFactory().post(f"/api/v1/infrastructures/{infra.id}/reissue-token/")
     force_authenticate(request, user=user)

@@ -1,7 +1,9 @@
-import requests
 import logging
 import time
-from typing import Any, Optional, Dict
+from typing import Any
+
+import requests
+
 from .circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger("resilience")
@@ -10,9 +12,9 @@ class ResilientHttpClient:
     def __init__(
         self,
         name: str,
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
         timeout: float = 5.0,
-        circuit_breaker_options: Optional[Dict[str, Any]] = None
+        circuit_breaker_options: dict[str, Any] | None = None
     ):
         self.name = name
         self.base_url = base_url

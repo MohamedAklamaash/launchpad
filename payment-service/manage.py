@@ -2,7 +2,9 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+
 from api.common.env.application import app_config
+
 
 def main():
     """Run administrative tasks."""

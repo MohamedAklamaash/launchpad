@@ -1,8 +1,19 @@
-from django.urls import path
-from api.views.infrastructure import infrastructure_list_create, infrastructure_detail, infrastructure_update, infrastructure_remove_user, infrastructure_reprovision, infrastructure_onboarding_callback, infrastructure_reissue_token
-from api.views.script_api_key import script_api_key_issue, infrastructure_policy_refresh_callback
-from api.views.health import health, liveness, readiness
 from api.views.aws import list_aws_regions
+from api.views.health import health, liveness, readiness
+from api.views.infrastructure import (
+    infrastructure_detail,
+    infrastructure_list_create,
+    infrastructure_onboarding_callback,
+    infrastructure_reissue_token,
+    infrastructure_remove_user,
+    infrastructure_reprovision,
+    infrastructure_update,
+)
+from api.views.script_api_key import (
+    infrastructure_policy_refresh_callback,
+    script_api_key_issue,
+)
+from django.urls import path
 
 urlpatterns = [
     path('infrastructures/', infrastructure_list_create, name='infrastructure-list-create'),

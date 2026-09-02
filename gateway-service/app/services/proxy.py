@@ -1,6 +1,12 @@
+import logging
+
 import httpx
 from fastapi import Request, Response
+
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
 
 async def proxy_request(url: str, request: Request) -> Response:
     async with httpx.AsyncClient() as client:
@@ -51,13 +57,12 @@ async def proxy_request(url: str, request: Request) -> Response:
             )
         except httpx.TimeoutException:
             return Response(content="Gateway Timeout", status_code=504)
-        except Exception as exc:
+        except Exception:
             # No raise_for_status() above, so httpx.HTTPStatusError can't reach here.
             # Keep the upstream URL / transport error in logs only — leaking str(exc)
             # to the client exposes internal hostnames and TCP error detail.
-            import logging
             import json
-            logging.error(f"Error forwarding request to {url}: {exc}", exc_info=True)
+            logger.exception(f"Error forwarding request to {url}")
             return Response(
                 content=json.dumps({"message": "Error forwarding request"}),
                 status_code=502,

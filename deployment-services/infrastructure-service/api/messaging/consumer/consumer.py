@@ -1,11 +1,12 @@
-import logging
 import json
-from django.db import transaction, connection
+import logging
+
+from api.common.envs.application import app_config
 from api.models.infrastructure import Infrastructure
 from api.repositories.user import UserRepository
-from api.common.envs.application import app_config
-from shared.resilience import ResilientPikaConsumer
+from django.db import connection, transaction
 from django.db.utils import OperationalError
+from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +40,9 @@ class AuthEventConsumer:
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
-            logger.error(
+            logger.exception(
                 "AuthEventConsumer: JSON decode failed — discarding message",
                 extra={"error": str(exc)},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
@@ -106,11 +106,10 @@ class AuthEventConsumer:
             # ProgrammingError (schema/SQL mismatch) is permanent — requeueing it against a
             # DLX-less, prefetch=1 queue is a sleepless redelivery loop that never drains.
             requeue = isinstance(exc, OperationalError)
-            logger.error(
+            logger.exception(
                 "AuthEventConsumer: error processing auth event — NACKing %s",
                 "with requeue (transient)" if requeue else "without requeue (permanent)",
                 extra={"user_id": user_id, "email": email, "error": str(exc)},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=requeue)
 

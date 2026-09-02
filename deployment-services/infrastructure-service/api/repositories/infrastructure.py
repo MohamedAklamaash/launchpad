@@ -1,11 +1,10 @@
 from api.models.infrastructure import Infrastructure
 from api.models.user import User
-from django.db.models import QuerySet, Q
-from typing import Optional
-
 from django.db import IntegrityError
-from shared.errors.exception import HttpError
+from django.db.models import Q, QuerySet
 from shared.enums.user_role import UserRole
+from shared.errors.exception import HttpError
+
 
 class InfrastructureRepository:
     def get_all_for_user(self, user_id) -> QuerySet:
@@ -13,7 +12,7 @@ class InfrastructureRepository:
             Q(user_id=user_id) | Q(invited_users__id=user_id)
         ).distinct()
 
-    def get_by_id(self, user_id, infra_id) -> Optional[Infrastructure]:
+    def get_by_id(self, user_id, infra_id) -> Infrastructure | None:
         return Infrastructure.objects.filter(
             Q(user_id=user_id) | Q(invited_users__id=user_id),
             id=infra_id
@@ -44,7 +43,7 @@ class InfrastructureRepository:
                 f"You already have an infrastructure named '{infra_data.get('name')}'. Choose a different name."
             )
 
-    def update(self, user_id, infra_id, update_data) -> Optional[Infrastructure]:
+    def update(self, user_id, infra_id, update_data) -> Infrastructure | None:
         infra_qs = Infrastructure.objects.filter(user_id=user_id, id=infra_id)
         if infra_qs.exists():
             infra_qs.update(**update_data)
