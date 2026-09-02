@@ -60,3 +60,19 @@ REDIS_PASSWORD = ""
 REDIS_DB = 0
 
 LOGGING_CONFIG = None
+
+DATABASE_ENGINE_VERSIONS = {
+    "postgres": {"15.10", "16.6", "17.2"},
+    "mysql": {"8.0.39"},
+    "redis": {"7.1"},
+    "docdb": {"5.0.0"},
+}
+DATABASE_INSTANCE_CLASSES = {
+    "postgres": {"db.t3.micro", "db.t3.small", "db.t3.medium", "db.r6g.large"},
+    "mysql": {"db.t3.micro", "db.t3.small", "db.t3.medium", "db.r6g.large"},
+    "redis": {"cache.t3.micro", "cache.t3.small", "cache.t3.medium", "cache.r6g.large"},
+    "docdb": {"db.t3.medium", "db.r6g.large"},
+}
+DATABASE_MIN_STORAGE_GB = 20
+DATABASE_MAX_STORAGE_GB = 1000
+MAX_DATABASES_PER_INFRA = 10

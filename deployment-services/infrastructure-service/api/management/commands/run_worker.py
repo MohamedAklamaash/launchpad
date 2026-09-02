@@ -238,20 +238,52 @@ class Command(BaseCommand):
         else:
             logger.info(f"Worker {worker_id} skipping recovery — another worker is handling it")
 
+        def _notify_database_outcomes(infra, pending_dbs):
+            """pending_dbs: {database_id (str): prior_status} snapshotted before this
+            provision run. Fires one create/delete success/failure email per row that
+            reached a terminal state — a single apply can resolve several at once."""
+            if not pending_dbs:
+                return
+            from api.models.database import Database
+            for db in Database.objects.filter(id__in=pending_dbs.keys()):
+                was_delete = pending_dbs[str(db.id)] == 'DELETING'
+                if db.status == 'DELETED':
+                    NotificationService.send_database_delete_success(str(infra.user_id), str(infra.id), infra.name, db.name)
+                elif db.status == 'ACTIVE':
+                    NotificationService.send_database_create_success(str(infra.user_id), str(infra.id), infra.name, db.name)
+                elif db.status == 'ERROR':
+                    notify = NotificationService.send_database_delete_failure if was_delete \
+                        else NotificationService.send_database_create_failure
+                    notify(str(infra.user_id), str(infra.id), infra.name, db.error_message or 'Unknown error', db.name)
+
         def run_provision(infra_id, lock_token):
             infra = None
             try:
                 infra = Infrastructure.objects.get(id=infra_id)
                 ensure_infra_created_published(infra)
+
+                from api.models.database import Database
+                pending_dbs = {
+                    str(db_id): db_status for db_id, db_status in Database.objects.filter(
+                        environment__infrastructure_id=infra_id,
+                        status__in=['PENDING', 'PROVISIONING', 'DELETING'],
+                    ).values_list('id', 'status')
+                }
+
                 TerraformWorker.provision(infra_id)
                 env = Environment.objects.get(infrastructure_id=infra_id)
+                _notify_database_outcomes(infra, pending_dbs)
+                # A run whose only purpose was reconciling database rows already gets its
+                # own database_* email above — the generic "infrastructure ready" email
+                # would be redundant noise on an environment that was already ACTIVE.
                 if env.status == 'ACTIVE':
                     InfraQueue.clear_reap_count(infra_id)
-                    if env.error_message:
-                        NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message)
-                    else:
-                        NotificationService.send_provision_success(str(infra.user_id), infra_id, infra.name)
-                elif env.status == 'ERROR':
+                    if not pending_dbs:
+                        if env.error_message:
+                            NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message)
+                        else:
+                            NotificationService.send_provision_success(str(infra.user_id), infra_id, infra.name)
+                elif env.status == 'ERROR' and not pending_dbs:
                     NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
             except Exception as e:
                 logger.exception(f"Provision failed for {infra_id}")

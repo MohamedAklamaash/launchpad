@@ -28,6 +28,7 @@ class AppDetailResponse(BaseModel):
     id: str
     name: str
     description: str | None = None
+    infrastructure_id: str
     status: str = Field(description="CREATED | BUILDING | DEPLOYING | ACTIVE | SLEEPING | FAILED")
     is_sleeping: bool
     cpu: float
@@ -38,6 +39,7 @@ class AppDetailResponse(BaseModel):
     branch: str
     dockerfile_path: str
     envs: dict[str, str] = {}
+    attached_database_ids: list[str] = []
     deployment_url: str | None = None
     build_id: str | None = None
     error_message: str | None = None
@@ -59,6 +61,11 @@ class AppUpdateBody(BaseModel):
     port: int | None = None
     project_branch: str | None = None
     dockerfile_path: str | None = None
+    attached_database_ids: list[str] | None = Field(
+        default=None,
+        description="Full replacement list of managed database ids to inject into this app. "
+        "Does not trigger a redeploy — redeploy to apply.",
+    )
 
 class AppUpdateResponse(BaseModel):
     id: str
@@ -68,6 +75,7 @@ class AppUpdateResponse(BaseModel):
     alloted_cpu: float
     alloted_memory: float
     port: int
+    attached_database_ids: list[str] = []
     updated_at: str
 
 class QueuedResponse(BaseModel):

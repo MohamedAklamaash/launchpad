@@ -193,9 +193,11 @@ class InfraEventProducer:
         target_group_arn=None,
         ecr_repository_url=None,
         ecs_task_execution_role_arn=None,
+        databases=None,
         correlation_id=None,
     ):
-        """Publish environment.updated event."""
+        """Publish environment.updated event. `databases` carries secret ARN pointers
+        only — never a credential value — see Database.serializer conventions."""
         cid = correlation_id or str(uuid.uuid4())
         event = {
             "type": self.ROUTING_KEY_ENV_UPDATED,
@@ -212,9 +214,10 @@ class InfraEventProducer:
                 "target_group_arn": target_group_arn,
                 "ecr_repository_url": ecr_repository_url,
                 "ecs_task_execution_role_arn": ecs_task_execution_role_arn,
+                "databases": databases if databases is not None else [],
             },
             "occurred_at": datetime.now(timezone.utc).isoformat(),
-            "metadata": {"version": 2, "correlation_id": cid},
+            "metadata": {"version": 3, "correlation_id": cid},
         }
 
         logger.info(

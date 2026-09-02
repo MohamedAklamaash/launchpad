@@ -4,6 +4,7 @@ import {
     getInfraEmailTemplate,
     getInfraEmailSubject,
     summarizeInfraError,
+    ALL_INFRA_EVENTS,
 } from './infra-email.template';
 import { getAuthEmailTemplate } from './auth-email.template';
 import { getForgotPasswordTemplate } from './forgot-password.template';
@@ -109,6 +110,61 @@ test('clean subjects read naturally', () => {
     assert.equal(
         getInfraEmailSubject('provision_success', undefined),
         'Your environment "your environment" is live',
+    );
+});
+
+// InfraEvent's Record<InfraEvent, ...> declarations (EVENT_LABELS, CLEAN_SUBJECTS) enforce
+// exhaustiveness at compile time — this locks in that ALL_INFRA_EVENTS itself stays in sync,
+// and that every event renders without throwing.
+test('every InfraEvent renders a template and a subject without throwing', () => {
+    assert.equal(ALL_INFRA_EVENTS.length, 8);
+    for (const event of ALL_INFRA_EVENTS) {
+        const html = getInfraEmailTemplate(event, 'infra-x', 'Mohamed', 'boom', undefined, 'db-x');
+        assert.ok(html.length > 0, `expected non-empty html for ${event}`);
+        const subject = getInfraEmailSubject(event, 'infra-x', 'db-x');
+        assert.ok(subject.length > 0, `expected non-empty subject for ${event}`);
+    }
+});
+
+test('database events show the database name and engine-specific guidance', () => {
+    const html = getInfraEmailTemplate(
+        'database_create_failure',
+        'prod-infra',
+        'Mohamed',
+        'DBInstanceAlreadyExists: db already exists',
+        'https://app.example.com/dashboard',
+        'primary-db',
+    );
+    assert.match(html, /primary-db/);
+    assert.match(html, /prod-infra/);
+    assert.match(html, /already exists/i);
+});
+
+test('a crafted infra/database/user name is HTML-escaped, not injected', () => {
+    const evilName = '<img src=x onerror=alert(1)>';
+    const html = getInfraEmailTemplate(
+        'database_create_success',
+        evilName,
+        evilName,
+        undefined,
+        undefined,
+        evilName,
+    );
+    assert.ok(
+        !html.includes('<img src=x onerror=alert(1)>'),
+        'raw markup must not appear unescaped',
+    );
+    assert.ok(html.includes('&lt;img'), 'expected the escaped form to be present');
+});
+
+test('database subject line references the database, not the infra', () => {
+    assert.equal(
+        getInfraEmailSubject('database_create_success', 'prod-infra', 'primary-db'),
+        'Your database "primary-db" is live',
+    );
+    assert.equal(
+        getInfraEmailSubject('database_delete_failure', 'prod-infra', 'primary-db'),
+        'Action needed: database "primary-db" couldn\'t be deleted',
     );
 });
 

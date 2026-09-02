@@ -1,13 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Hash, FileText, GitBranch, Cpu, HardDrive } from 'lucide-react';
+import { Hash, FileText, GitBranch, Cpu, HardDrive, Database as DatabaseIcon } from 'lucide-react';
 import { Application, ApplicationUpdate } from '@/types/application';
+import { ManagedDatabase } from '@/types/database';
 import { applicationApi } from '@/lib/api/applications';
+import { databaseApi } from '@/lib/api/databases';
 import { toast } from 'sonner';
 import { EnvEditor } from '@/components/env-editor';
 
@@ -39,6 +41,22 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
   });
   const [envs, setEnvs] = useState<[string, string][]>(Object.entries(app.envs ?? {}));
   const [saving, setSaving] = useState(false);
+  const [databases, setDatabases] = useState<ManagedDatabase[]>([]);
+  const [attachedIds, setAttachedIds] = useState<string[]>(app.attached_database_ids ?? []);
+
+  useEffect(() => {
+    databaseApi.list(app.infrastructure_id)
+      .then((dbs) => {
+        setDatabases(dbs.filter((d) => d.status === 'ACTIVE'));
+        const liveIds = new Set(dbs.map((d) => d.id));
+        setAttachedIds((prev) => prev.filter((id) => liveIds.has(id)));
+      })
+      .catch(() => setDatabases([]));
+  }, [app.infrastructure_id]);
+
+  const toggleDatabase = (id: string) => {
+    setAttachedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  };
 
   const set = (k: string, v: string | number) => setForm((p) => ({ ...p, [k]: v }));
   const [minMem, maxMem] = MEM_RANGES[form.alloted_cpu] ?? [0.5, 2];
@@ -55,6 +73,7 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
         alloted_cpu: form.alloted_cpu,
         alloted_memory: form.alloted_memory,
         envs: Object.fromEntries(envs.filter(([k]) => k.trim())),
+        attached_database_ids: attachedIds,
       };
       const updated = await applicationApi.update(app.id, payload);
       toast.success('Application updated');
@@ -123,6 +142,33 @@ export function EditAppSheet({ app, open, onClose, onSaved }: Props) {
                 min={minMem} max={maxMem} step={0.5}
                 className={monoInputCls} />
             </Field>
+          </Section>
+
+          <Section label="Databases">
+            {databases.length === 0 ? (
+              <p className="text-xs text-muted-foreground px-1">
+                No active managed databases in this infrastructure yet.
+              </p>
+            ) : (
+              <div className="rounded-xl panel-inset divide-y divide-hairline">
+                {databases.map((db) => (
+                  <label key={db.id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={attachedIds.includes(db.id)}
+                      onChange={() => toggleDatabase(db.id)}
+                      className="h-3.5 w-3.5 accent-brand"
+                    />
+                    <DatabaseIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+                    <span className="text-xs text-foreground/80 flex-1 truncate">{db.name}</span>
+                    <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60 font-mono">{db.engine}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground px-1 mt-1.5">
+              Attaching does not redeploy — redeploy the app to inject the new credentials.
+            </p>
           </Section>
 
           <EnvEditor envs={envs} onChange={setEnvs} />

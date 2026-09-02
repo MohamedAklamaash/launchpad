@@ -247,7 +247,33 @@ class ApplicationService:
         if 'envs' in update_data:
             app.envs = update_data['envs']
             update_fields.append('envs')
-        
+
+        if 'attached_database_ids' in update_data:
+            if not InfrastructurePermissions.can_attach_database(infra, user_id):
+                raise PermissionError(
+                    "You don't have permission to attach databases. Required role: SUPER_ADMIN or ADMIN"
+                )
+            ids = update_data['attached_database_ids']
+            if not isinstance(ids, list):
+                raise ValueError("attached_database_ids must be a list")
+            from api.models.database import Database
+            # Same infra, and not already torn down — attaching a database from
+            # another tenant's infra or one mid/post-delete must fail loudly here,
+            # not surface as a broken deploy later.
+            valid_ids = set(
+                Database.objects.filter(
+                    environment__infrastructure_id=app.infrastructure_id, id__in=ids,
+                ).exclude(status__in=['DELETING', 'DELETED']).values_list('id', flat=True)
+            )
+            requested_ids = {str(i) for i in ids}
+            found_ids = {str(i) for i in valid_ids}
+            if requested_ids - found_ids:
+                raise ValueError(
+                    f"Unknown or unavailable database id(s): {sorted(requested_ids - found_ids)}"
+                )
+            app.attached_database_ids = list(requested_ids)
+            update_fields.append('attached_database_ids')
+
         if 'port' in update_data:
             port = int(update_data['port'])
             if not (1024 <= port <= 65535):

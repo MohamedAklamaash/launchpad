@@ -43,6 +43,9 @@ class Application(models.Model):
 
     envs = models.JSONField(default=dict, null=True, blank=True)
     metadata = models.JSONField(default=dict, null=True, blank=True)
+    # Explicit opt-in list of Database (read-model) ids this app injects credentials
+    # for. Attach does not auto-redeploy — the next deploy picks up the new set.
+    attached_database_ids = models.JSONField(default=list, blank=True)
     
     status = models.CharField(
         max_length=50,
