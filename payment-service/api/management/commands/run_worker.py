@@ -1,6 +1,7 @@
-import time
 import logging
 import threading
+import time
+
 from django.core.management.base import BaseCommand
 from django.db import connection
 
@@ -27,8 +28,8 @@ class Command(BaseCommand):
     help = 'Run payment service RabbitMQ consumers'
 
     def handle(self, *args, **options):
-        from api.messaging.consumer.user import AuthEventConsumer
         from api.messaging.consumer.infrastructure import InfraEventConsumer
+        from api.messaging.consumer.user import AuthEventConsumer
 
         if not _wait_for_db():
             self.stderr.write('DB not ready, aborting')
@@ -38,8 +39,8 @@ class Command(BaseCommand):
             try:
                 logger.info(f"Starting {name}...")
                 consumer_cls().start()
-            except Exception as e:
-                logger.error(f"{name} crashed: {e}", exc_info=True)
+            except Exception:
+                logger.exception(f"{name} crashed")
 
         threads = [
             threading.Thread(target=_start, args=(AuthEventConsumer, 'AuthEventConsumer'), daemon=True),

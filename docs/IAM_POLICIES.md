@@ -129,7 +129,10 @@ Attach this policy to the role:
         "logs:*",
         "s3:*",
         "dynamodb:*",
-        "codebuild:*"
+        "codebuild:*",
+        "rds:*",
+        "elasticache:*",
+        "secretsmanager:*"
       ],
       "Resource": "*"
     },
@@ -211,7 +214,10 @@ cat > deployment-policy.json <<EOF
         "logs:*",
         "s3:*",
         "dynamodb:*",
-        "codebuild:*"
+        "codebuild:*",
+        "rds:*",
+        "elasticache:*",
+        "secretsmanager:*"
       ],
       "Resource": "*"
     },
@@ -328,6 +334,12 @@ can't reach Launchpad, the IAM update still succeeds.
 - Debug issues
 - Monitor application health
 
+**RDS / ElastiCache / Secrets Manager**:
+- Create and manage managed PostgreSQL, MySQL, Redis, and DocumentDB instances you
+  provision from the dashboard, all inside your existing private subnets
+- Store and retrieve the connection credentials Launchpad injects into your app
+  containers — the plaintext credential never transits Launchpad's own systems
+
 **S3**:
 - Store Terraform state
 - Version control infrastructure changes
@@ -438,5 +450,5 @@ WARNING: This will prevent Launchpad from managing your infrastructure. Clean up
 This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
-**Version**: 2.0.0  
-**Last Updated**: 2026-06-14
+**Version**: 2.1.0  
+**Last Updated**: 2026-08-30

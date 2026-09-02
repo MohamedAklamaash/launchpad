@@ -1,5 +1,5 @@
-import logging
 import base64
+import logging
 import os
 
 from aws.container_config import generate_nginx_config, inject_routing_envs
@@ -14,7 +14,7 @@ class ECSClient:
         self.service_stable_poll_interval = int(os.environ.get('ECS_SERVICE_STABLE_POLL_INTERVAL', '10'))
         self.failed_tasks_threshold = int(os.environ.get('ECS_FAILED_TASKS_THRESHOLD', '3'))
     
-    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None):
+    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None, secrets=None):
         env_vars = [{'name': k, 'value': str(v)} for k, v in (envs or {}).items()]
         logger.info(f"Creating task definition with {len(env_vars)} environment variables: {list(envs.keys()) if envs else []}")
         
@@ -53,6 +53,7 @@ class ECSClient:
             'image': image,
             'essential': True,
             'environment': env_vars,
+            **({'secrets': secrets} if secrets else {}),
             'portMappings': [{
                 'containerPort': container_port,
                 'protocol': 'tcp'
@@ -93,6 +94,7 @@ class ECSClient:
                 ],
                 'command': [
                     '/bin/sh', '-c',
+                    (
                     'echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/nginx.conf && '
                     'nginx -t && nginx -g "daemon off;" & '
                     'NGINX_PID=$! && '
@@ -121,6 +123,7 @@ class ECSClient:
                     '  fi; '
                     '  sleep 15; '
                     'done'
+                    )
                 ],
                 'logConfiguration': {
                     'logDriver': 'awslogs',

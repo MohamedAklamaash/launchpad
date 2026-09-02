@@ -2,9 +2,10 @@
 import re
 from types import SimpleNamespace
 
+from aws.codebuild import CodeBuildClient
+
 from api.common.naming import app_slug, image_tag
 from api.mock.mock_session import MockSession
-from aws.codebuild import CodeBuildClient
 
 
 def _application(commit_hash):

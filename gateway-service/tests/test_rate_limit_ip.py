@@ -1,7 +1,6 @@
-from starlette.requests import Request
-
 from app.core import rate_limiter
 from app.core.config import settings
+from starlette.requests import Request
 
 
 def _request(peer, xff=None):

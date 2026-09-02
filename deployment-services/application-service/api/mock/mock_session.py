@@ -48,7 +48,7 @@ class _MockPaginator:
 
 class MockClient:
     def __init__(self, service: str, region: str, account_id: str, deleted_services: set,
-                 listener_rules: dict, infra_id: str = None):
+                 listener_rules: dict, infra_id: str | None = None):
         self._service = service
         self._region = region
         self._account_id = account_id
@@ -264,7 +264,7 @@ class MockClient:
 
 
 class MockSession:
-    def __init__(self, region: str, account_id: str, infra_id: str = None):
+    def __init__(self, region: str, account_id: str, infra_id: str | None = None):
         self.region_name = region
         self._account_id = account_id
         self._infra_id = infra_id

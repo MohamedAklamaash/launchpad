@@ -128,3 +128,38 @@ the deploy-time slug is derived from name, so two users on a shared infra could
 otherwise collide on k8s object names and silently overwrite each other. Migration
 0026 scans for duplicates and fails loudly rather than crashing on the constraint.
 ```
+
+## Re-merge with main after #63 (managed databases) landed
+
+`#63` merged first, so this branch was re-merged against it. Resolution notes:
+
+- **Migrations renumbered.** Both branches forked the chain at the same number
+  (infrastructure-service `0018`, application-service `0023`). The EKS migrations were
+  renumbered to follow #63's — infra `0019`/`0020`, app `0024`–`0027` — with dependencies
+  and `test_slug_uniqueness_migration.py`'s import updated. Git shows no conflict for this;
+  Django refuses to run it.
+- **`_generate_config_ecs` now carries #63's database module blocks.** Verified
+  byte-identical to main's `_generate_config` by importing main's module and comparing
+  output; `GOLDEN_ECS` in `test_terraform_config_generation.py` is now generated from
+  main's own function rather than hand-written, so it pins upstream behaviour.
+- **Dropped main's `credentials = {...metadata.get(...)}` reassignment** in
+  `provision_infrastructure`. This branch stopped persisting STS credentials to
+  `Infrastructure.metadata` (H2) and purges them by migration, so re-reading them there
+  would have overwritten the live credentials from `authenticate_infrastructure()` with
+  empty strings. The fresh credentials are used instead.
+
+### Databases are gated to ECS — product decision, needs confirming
+
+`database_service.create_database` now rejects `compute_type != ecs_fargate` with a 400.
+The merge, not either branch alone, created this gap:
+
+- `_generate_config_eks` emits no database module, so an EKS infra's database row would
+  never provision and would land in ERROR on the next apply.
+- Credential injection is ECS-only (`secrets`/`valueFrom` on the task definition). The EKS
+  deployer has no Kubernetes Secret path at all.
+
+Wiring databases for EKS needs both: a database module in the EKS builder (whose security
+group ingress must come from somewhere other than the Fargate app SG, since EKS has no app
+SG) and a Secrets Manager → k8s Secret path in `k8s/deployer.py`. Until then the gate keeps
+customers out of a state that cannot resolve. Covered by
+`test_database_api.py::test_create_rejects_eks_infrastructure`.

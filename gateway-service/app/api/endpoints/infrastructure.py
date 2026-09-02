@@ -1,8 +1,10 @@
+from typing import Any
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
-from app.services.proxy import proxy_request
+
 from app.core.config import settings
+from app.services.proxy import proxy_request
 
 router = APIRouter(prefix="/infrastructures", tags=["Infrastructures"])
 
@@ -10,7 +12,7 @@ router = APIRouter(prefix="/infrastructures", tags=["Infrastructures"])
 class InfraCreateBody(BaseModel):
     name: str = Field(example="prod-infra")
     cloud_provider: str = Field(example="AWS", description="Only AWS is supported")
-    compute_type: Optional[str] = Field(
+    compute_type: str | None = Field(
         default=None,
         example="ecs_fargate",
         description="Compute target: ecs_fargate (default) or eks. Immutable after creation.",
@@ -18,16 +20,16 @@ class InfraCreateBody(BaseModel):
     max_cpu: float = Field(example=4096, description="Total CPU units ceiling across all apps (1024 = 1 vCPU)")
     max_memory: float = Field(example=8192, description="Total memory ceiling in MB across all apps")
     code: str = Field(example="123456789012", description="AWS Account ID where infrastructure will be provisioned")
-    metadata: Optional[Dict[str, str]] = Field(
+    metadata: dict[str, str] | None = Field(
         default=None,
         example={"aws_region": "us-east-1", "vpc_cidr": "10.0.0.0/16"},
         description="Optional AWS-specific config"
     )
 
 class InfraUpdateBody(BaseModel):
-    name: Optional[str] = Field(default=None, example="prod-infra-v2")
-    max_cpu: Optional[float] = Field(default=None, example=8192, description="New CPU units ceiling")
-    max_memory: Optional[float] = Field(default=None, example=16384, description="New memory ceiling in MB")
+    name: str | None = Field(default=None, example="prod-infra-v2")
+    max_cpu: float | None = Field(default=None, example=8192, description="New CPU units ceiling")
+    max_memory: float | None = Field(default=None, example=16384, description="New memory ceiling in MB")
 
 class InfraResponse(BaseModel):
     id: str
@@ -37,7 +39,7 @@ class InfraResponse(BaseModel):
     max_memory: float
     is_cloud_authenticated: bool = Field(description="Whether Launchpad successfully assumed the IAM role")
     code: str = Field(description="AWS Account ID")
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
     created_at: str
     updated_at: str
 
@@ -45,7 +47,7 @@ class InfraResponse(BaseModel):
 class InfraCreateResponse(InfraResponse):
     # Plaintext single-use nonce returned only on the create endpoint. Declared here so FastAPI's
     # response_model filter does not strip it before the dashboard sees it.
-    onboarding_token: Optional[str] = Field(
+    onboarding_token: str | None = Field(
         default=None,
         description="Single-use onboarding token; injected into the AWS bootstrap script. Shown only once.",
     )
@@ -131,11 +133,11 @@ async def script_api_key_issue(request: Request):
 
 class PolicyRefreshCallbackBody(BaseModel):
     account_id: str = Field(description="AWS Account ID the script ran against")
-    infra_id: Optional[str] = Field(default=None, description="Optional infra UUID to link")
-    caller_arn: Optional[str] = Field(default=None, description="sts get-caller-identity ARN of whoever ran the script")
-    script: Optional[str] = Field(default=None, example="create_aws_role.sh")
-    role_name: Optional[str] = Field(default=None)
-    policy_arn: Optional[str] = Field(default=None)
+    infra_id: str | None = Field(default=None, description="Optional infra UUID to link")
+    caller_arn: str | None = Field(default=None, description="sts get-caller-identity ARN of whoever ran the script")
+    script: str | None = Field(default=None, example="create_aws_role.sh")
+    role_name: str | None = Field(default=None)
+    policy_arn: str | None = Field(default=None)
 
 
 @router.post("/policy-refresh/callback", summary="Policy-refresh callback from customer's AWS account",

@@ -1,10 +1,12 @@
-from typing import List, Dict, Any
+from typing import Any
+
 from api.models.infrastructure import Infrastructure
 from api.types.infrastructure import InfrastructureResponse
 
+
 class InfrastructureSerializer:
     @staticmethod
-    def serialize_instance(instance: Infrastructure) -> Dict[str, Any]:
+    def serialize_instance(instance: Infrastructure) -> dict[str, Any]:
         invited_users_details = [
             {
                 'id': str(u.id),
@@ -40,5 +42,5 @@ class InfrastructureSerializer:
         return response.to_dict()
 
     @staticmethod
-    def serialize_list(instances: List[Infrastructure]) -> List[Dict[str, Any]]:
+    def serialize_list(instances: list[Infrastructure]) -> list[dict[str, Any]]:
         return [InfrastructureSerializer.serialize_instance(inst) for inst in instances]

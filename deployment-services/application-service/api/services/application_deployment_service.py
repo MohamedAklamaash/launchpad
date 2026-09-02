@@ -1,19 +1,27 @@
-import logging
 import json
+import logging
 import re
-import hashlib
-from api.common.naming import app_slug as _slug, image_tag as _image_tag
+import time
+
+from aws.alb import ALBClient
+from aws.codebuild import CodeBuildClient
+from aws.ecr import ECRClient
+from aws.ecs import ECSClient
+from aws.session import create_boto3_session
+from botocore.exceptions import ClientError
+from shared.aws.app_security_group import (
+    app_security_group_name,
+)
+from shared.aws.app_security_group import (
+    get_or_create_app_security_group as _shared_get_or_create_app_sg,
+)
+from shared.enums.orchestrator import ComputeType
+
+from api.common.naming import app_slug as _slug
+from api.common.naming import image_tag as _image_tag
 from api.k8s.deployer import EKSDeployer
 from api.models import Application, Environment
 from api.repositories.infrastructure import InfrastructureRepository
-from aws.session import create_boto3_session
-from aws.codebuild import CodeBuildClient
-from aws.ecs import ECSClient
-from aws.alb import ALBClient
-from aws.ecr import ECRClient
-from botocore.exceptions import ClientError
-from shared.enums.orchestrator import ComputeType
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +115,7 @@ class ApplicationDeploymentService:
             return deployment_url
             
         except Exception as e:
-            logger.error(f"Deployment failed for application {application.name}: {str(e)}", exc_info=True)
+            logger.exception(f"Deployment failed for application {application.name}")
             
             if session and created_resources:
                 logger.info(f"Cleaning up {len(created_resources)} resources")
@@ -280,23 +288,61 @@ class ApplicationDeploymentService:
         codebuild.wait_for_build(build_id)
         logger.info(f"Build {build_id} completed successfully")
     
+    def _database_env_prefix(self, db_name: str) -> str:
+        return re.sub(r'[^A-Z0-9]', '_', db_name.upper())
+
+    def _build_database_injections(self, application: Application) -> tuple[dict, list]:
+        """Build the plain-env and ECS `secrets` entries for every attached database.
+        Injected names always win over `application.envs` on collision — the caller
+        strips them from `envs` before merging."""
+        from api.models.database import Database
+
+        attached_ids = application.attached_database_ids or []
+        if not attached_ids:
+            return {}, []
+
+        plain_env = {}
+        secrets = []
+        for db in Database.objects.filter(id__in=attached_ids, status='ACTIVE'):
+            prefix = self._database_env_prefix(db.name)
+            plain_env[f"{prefix}_HOST"] = db.host or ""
+            plain_env[f"{prefix}_PORT"] = str(db.port or "")
+
+            if not db.secret_arn:
+                continue
+
+            if db.engine == "redis":
+                plain_env[f"{prefix}_TLS"] = "true"
+                secrets.append({"name": f"{prefix}_AUTH_TOKEN", "valueFrom": f"{db.secret_arn}:auth_token::"})
+            else:
+                plain_env[f"{prefix}_DB"] = db.name
+                secrets.append({"name": f"{prefix}_USERNAME", "valueFrom": f"{db.secret_arn}:username::"})
+                secrets.append({"name": f"{prefix}_PASSWORD", "valueFrom": f"{db.secret_arn}:password::"})
+
+        return plain_env, secrets
+
     def _create_task_definition(self, session, application: Application, environment: Environment):
         ecs = ECSClient(session)
         ecr = ECRClient(session)
         logs = session.client('logs')
-        
+
         log_group_name = f"/ecs/{_slug(application.name)}-task"
         try:
             logs.create_log_group(logGroupName=log_group_name)
             logger.info(f"Created log group {log_group_name}")
         except logs.exceptions.ResourceAlreadyExistsException:
             logger.info(f"Log group {log_group_name} already exists")
-        
+
         image_tag = f"{_slug(application.name)}-latest"
         image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
-        
-        envs = {**(application.envs or {}), 'PORT': str(application.port)}
-        
+
+        db_env, db_secrets = self._build_database_injections(application)
+        # Injected names win: strip any application.envs key a database injection
+        # would otherwise collide with, so the connection info a customer sees is
+        # never silently shadowed by their own env var of the same name.
+        base_envs = {k: v for k, v in (application.envs or {}).items() if k not in db_env}
+        envs = {**base_envs, **db_env, 'PORT': str(application.port)}
+
         task_def_arn = ecs.create_task_definition(
             family=f"{_slug(application.name)}-task",
             image=image_uri,
@@ -305,7 +351,8 @@ class ApplicationDeploymentService:
             envs=envs,
             execution_role_arn=environment.ecs_task_execution_role_arn,
             container_port=application.port,
-            app_name=_slug(application.name)
+            app_name=_slug(application.name),
+            secrets=db_secrets,
         )
         
         logger.info(f"Created task definition {task_def_arn}")
@@ -340,29 +387,10 @@ class ApplicationDeploymentService:
         return target_group_arn
     
     def _get_app_sg_name(self, application: Application) -> str:
-        suffix = hashlib.md5(str(application.infrastructure_id).encode()).hexdigest()[:8]
-        return f"infra-{str(application.infrastructure_id)[:8]}-{suffix}-fargate-sg"
+        return app_security_group_name(application.infrastructure_id)
 
     def _get_or_create_app_security_group(self, ec2, application: Application, environment: Environment, alb_sg_id: str) -> str:
-        sg_name = self._get_app_sg_name(application)
-
-        existing = ec2.describe_security_groups(
-            Filters=[
-                {'Name': 'vpc-id', 'Values': [environment.vpc_id]},
-                {'Name': 'group-name', 'Values': [sg_name]}
-            ]
-        )['SecurityGroups']
-
-        if existing:
-            sg_id = existing[0]['GroupId']
-            logger.info(f"Reusing existing app security group {sg_name} ({sg_id})")
-        else:
-            sg_id = ec2.create_security_group(
-                GroupName=sg_name,
-                Description=f"Security group for app {application.name} in infra {application.infrastructure_id}",
-                VpcId=environment.vpc_id
-            )['GroupId']
-            logger.info(f"Created app security group {sg_name} ({sg_id})")
+        sg_id = _shared_get_or_create_app_sg(ec2, application.infrastructure_id, environment.vpc_id)
 
         for port in {80, application.port}:
             try:

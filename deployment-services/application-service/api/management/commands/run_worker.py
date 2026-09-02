@@ -1,10 +1,11 @@
+import logging
 import os
+import queue
+import threading
 import time
 import uuid
-import logging
-import threading
-import queue
 from concurrent.futures import ThreadPoolExecutor
+
 from django.core.management.base import BaseCommand
 from django.db import connections
 
@@ -24,11 +25,13 @@ class Command(BaseCommand):
     help = 'Run the deployment worker'
 
     def handle(self, *args, **options):
-        from api.services.deployment_queue import DeploymentQueue
-        from api.services.application_deployment_service import ApplicationDeploymentService
-        from api.services.application_cleanup_service import ApplicationCleanupService
-        from api.services.deployment_lock import DeploymentLock
         from api.repositories.application import ApplicationRepository
+        from api.services.application_cleanup_service import ApplicationCleanupService
+        from api.services.application_deployment_service import (
+            ApplicationDeploymentService,
+        )
+        from api.services.deployment_lock import DeploymentLock
+        from api.services.deployment_queue import DeploymentQueue
 
         worker_id = str(uuid.uuid4())[:8]
         logger.info(f"Starting deployment worker {worker_id} (max {MAX_INFRA_WORKERS} parallel infrastructures)")
@@ -82,8 +85,8 @@ class Command(BaseCommand):
                 url = ApplicationDeploymentService().deploy_application(app)
                 logger.info(f"Deployed {app_id} at {url}")
                 DeploymentQueue.ack_job(job)
-            except Exception as e:
-                logger.error(f"Deployment failed for {app_id}: {e}", exc_info=True)
+            except Exception:
+                logger.exception(f"Deployment failed for {app_id}")
                 DeploymentQueue.nack_job(job)
             finally:
                 lock.release(app_id, worker_id)
@@ -91,8 +94,9 @@ class Command(BaseCommand):
                 _close_db()
 
         def run_cleanup(job):
-            from api.models.infrastructure import Infrastructure
             from aws.session import create_boto3_session
+
+            from api.models.infrastructure import Infrastructure
             app_id = job.get('app_id')
             # Tear down AWS resources under the same lock the deploy uses, so a redeploy racing
             # a delete can't have its half-created service/target-group ripped out mid-flight.
@@ -126,8 +130,8 @@ class Command(BaseCommand):
                     cleanup._deregister_task_definition(session, job['task_definition_arn'])
                 logger.info(f"Cleaned up AWS resources for deleted app {app_id}")
                 DeploymentQueue.ack_job(job)
-            except Exception as e:
-                logger.error(f"AWS cleanup failed for app {app_id}: {e}", exc_info=True)
+            except Exception:
+                logger.exception(f"AWS cleanup failed for app {app_id}")
                 DeploymentQueue.nack_job(job)
             finally:
                 lock.release(app_id, cleanup_owner)
@@ -152,8 +156,8 @@ class Command(BaseCommand):
                 try:
                     if job.get('action') == 'deploy':
                         run_deploy(job['app_id'], job)
-                except Exception as e:
-                    logger.error(f"Unhandled error in drain loop for {infra_id}: {e}", exc_info=True)
+                except Exception:
+                    logger.exception(f"Unhandled error in drain loop for {infra_id}")
                     DeploymentQueue.nack_job(job)
                 finally:
                     q.task_done()
@@ -198,8 +202,8 @@ class Command(BaseCommand):
                 time.sleep(reap_interval)
                 try:
                     DeploymentQueue.reap_orphaned_processing_jobs(is_claimed=_is_claimed)
-                except Exception as e:
-                    logger.error(f"Reaper error: {e}", exc_info=True)
+                except Exception:
+                    logger.exception("Reaper error")
 
         threading.Thread(target=_reaper_loop, daemon=True, name="deploy-reaper").start()
 
@@ -218,7 +222,7 @@ class Command(BaseCommand):
                 logger.info("Worker shutting down")
                 executor.shutdown(wait=True)
                 break
-            except Exception as e:
-                logger.error(f"Worker error: {e}", exc_info=True)
+            except Exception:
+                logger.exception("Worker error")
                 _close_db()
                 time.sleep(5)

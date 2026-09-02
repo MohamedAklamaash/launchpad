@@ -1,5 +1,6 @@
-from shared.enums.user_role import UserRole
 import logging
+
+from shared.enums.user_role import UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,10 @@ class InfrastructurePermissions:
 
     @staticmethod
     def can_update_application(infrastructure, user_id):
+        return InfrastructurePermissions.get_user_role(infrastructure, user_id) in [UserRole.SUPER_ADMIN, UserRole.ADMIN]
+
+    @staticmethod
+    def can_attach_database(infrastructure, user_id):
         return InfrastructurePermissions.get_user_role(infrastructure, user_id) in [UserRole.SUPER_ADMIN, UserRole.ADMIN]
 
     @staticmethod

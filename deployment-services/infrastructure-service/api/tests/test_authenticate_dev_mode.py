@@ -8,7 +8,6 @@ import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from api.cloud_providers.aws import authenticate as auth_mod
 
 
@@ -109,15 +108,15 @@ def test_prod_mode_calls_real_sts_assume_role(make_infra):
 
 def test_real_seam_refuses_mock_infra_in_prod(make_infra):
     infra = make_infra(is_mock=True, metadata={})
-    with _force_mode(False), patch.object(auth_mod, "boto3") as boto3_mock:
-        with pytest.raises(ValueError, match="mock infrastructure"):
-            auth_mod.authenticate_infrastructure(infra)
+    with _force_mode(False), patch.object(auth_mod, "boto3") as boto3_mock, \
+            pytest.raises(ValueError, match="mock infrastructure"):
+        auth_mod.authenticate_infrastructure(infra)
     boto3_mock.client.assert_not_called()
 
 
 def test_mock_seam_refuses_real_infra_in_dev(make_infra):
     infra = make_infra(is_mock=False, metadata={})
-    with _force_mode(True), patch.object(auth_mod, "boto3") as boto3_mock:
-        with pytest.raises(ValueError, match="real infrastructure"):
-            auth_mod.authenticate_infrastructure(infra)
+    with _force_mode(True), patch.object(auth_mod, "boto3") as boto3_mock, \
+            pytest.raises(ValueError, match="real infrastructure"):
+        auth_mod.authenticate_infrastructure(infra)
     boto3_mock.client.assert_not_called()

@@ -6,14 +6,13 @@ import uuid
 from unittest.mock import patch
 
 import pytest
-from django.test import override_settings
-from rest_framework.test import APIRequestFactory
-
 from api.cloud_providers.aws import authenticate as auth_mod
 from api.services import terraform_worker as tw_mod
 from api.services.infrastructure import InfrastructureService
 from api.services.terraform_worker import TerraformWorker
 from api.views.infrastructure import infrastructure_onboarding_callback
+from django.test import override_settings
+from rest_framework.test import APIRequestFactory
 from shared.enums.orchestrator import ComputeType
 
 

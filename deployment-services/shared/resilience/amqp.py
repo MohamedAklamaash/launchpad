@@ -1,8 +1,10 @@
-import pika
-import time
-import logging
 import json
-from typing import Callable, Any, Optional
+import logging
+import time
+from collections.abc import Callable
+from typing import Any
+
+import pika
 
 logger = logging.getLogger("resilience")
 
@@ -14,8 +16,8 @@ class ResilientPikaProducer:
         self.exchange = exchange
         self.exchange_type = exchange_type
         self.name = name
-        self.connection: Optional[pika.BlockingConnection] = None
-        self.channel: Optional[pika.adapters.blocking_connection.BlockingChannel] = None
+        self.connection: pika.BlockingConnection | None = None
+        self.channel: pika.adapters.blocking_connection.BlockingChannel | None = None
         self._buffer = []
         self._max_buffer_size = 100
 
@@ -49,7 +51,7 @@ class ResilientPikaProducer:
             and self.channel.is_open
         )
 
-    def publish(self, routing_key: str, body: Any, properties: Optional[pika.BasicProperties] = None):
+    def publish(self, routing_key: str, body: Any, properties: pika.BasicProperties | None = None):
         if not properties:
             properties = pika.BasicProperties(
                 delivery_mode=2,            # persistent — survives broker restart
@@ -72,10 +74,9 @@ class ResilientPikaProducer:
             try:
                 self.connect()
             except Exception as e:
-                logger.error(
+                logger.exception(
                     f"AMQP Producer [{self.name}] reconnect failed — message buffered",
                     extra={"error": str(e)},
-                    exc_info=True,
                 )
                 return
 
@@ -87,15 +88,14 @@ class ResilientPikaProducer:
                 properties=properties,
             )
         except Exception as e:
-            logger.error(
+            logger.exception(
                 f"AMQP Producer [{self.name}] publish failed — buffering for retry",
                 extra={"routing_key": routing_key, "error": str(e)},
-                exc_info=True,
             )
             self._buffer.append((routing_key, serialized, properties))
             try:
                 self.close()
-            except Exception:
+            except Exception:  # noqa: S110 - best-effort teardown, the connection is being discarded either way
                 pass
 
     def _flush_buffer(self):
@@ -111,7 +111,7 @@ class ResilientPikaProducer:
         if self.connection and not self.connection.is_closed:
             try:
                 self.connection.close()
-            except Exception:
+            except Exception:  # noqa: S110 - best-effort teardown, the connection is being discarded either way
                 pass
         self.connection = None
         self.channel = None
@@ -133,7 +133,7 @@ class ResilientPikaConsumer:
         self.routing_key = routing_key
         self.name = name
         self.prefetch_count = prefetch_count
-        self.connection: Optional[pika.BlockingConnection] = None
+        self.connection: pika.BlockingConnection | None = None
         self.channel = None
         self._should_stop = False
 
@@ -147,12 +147,11 @@ class ResilientPikaConsumer:
             try:
                 self._connect_and_consume(callback)
                 backoff = 5  # reset after clean reconnect
-            except Exception as e:
+            except Exception:
                 if self._should_stop:
                     break
-                logger.error(
-                    f"AMQP Consumer [{self.name}] error: {e}. Reconnecting in {backoff}s...",
-                    exc_info=True,
+                logger.exception(
+                    f"AMQP Consumer [{self.name}] error, reconnecting in {backoff}s...",
                 )
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60)  # exponential back-off, cap at 60s
@@ -202,10 +201,10 @@ class ResilientPikaConsumer:
         if self.channel:
             try:
                 self.channel.stop_consuming()
-            except Exception:
+            except Exception:  # noqa: S110 - best-effort teardown, the connection is being discarded either way
                 pass
         if self.connection and not self.connection.is_closed:
             try:
                 self.connection.close()
-            except Exception:
+            except Exception:  # noqa: S110 - best-effort teardown, the connection is being discarded either way
                 pass

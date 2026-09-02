@@ -1,7 +1,8 @@
-from rest_framework import serializers
-from django.core.validators import URLValidator, RegexValidator
-from shared.enums.orchestrator import ComputeType
 import re
+
+from django.core.validators import RegexValidator, URLValidator
+from rest_framework import serializers
+from shared.enums.orchestrator import ComputeType
 
 FARGATE_CPU_MEMORY = {
     0.25: (0.5, 2.0),

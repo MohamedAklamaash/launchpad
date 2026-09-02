@@ -1,11 +1,11 @@
 import logging
-from django.db import transaction, IntegrityError
+
+from django.db import IntegrityError, transaction
 from django.db.models import Q
+from shared.enums.orchestrator import ComputeType
 
 from api.models.infrastructure import Infrastructure
 from api.models.user import User
-from shared.enums.orchestrator import ComputeType
-
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +105,8 @@ class InfrastructureRepository:
             )
             return infra, created
         except IntegrityError as exc:
-            logger.error(
+            logger.exception(
                 "IntegrityError during infrastructure upsert",
                 extra={"infra_id": str(infra_id), "user_id": str(user_id), "error": str(exc)},
-                exc_info=True,
             )
             raise

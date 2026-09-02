@@ -1,9 +1,10 @@
 import json
 import logging
+import os
 import time
 import uuid
+
 import redis
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,9 @@ def _get_redis():
     if _redis_client is None:
         _redis_client = redis.Redis(
             host=os.environ.get("REDIS_HOST", "localhost"),
-            port=int(os.environ.get("REDIS_PORT", 6379)),
+            port=int(os.environ.get("REDIS_PORT", "6379")),
             password=os.environ.get("REDIS_PASSWORD", ""),
-            db=int(os.environ.get("NOTIFICATION_REDIS_DB", 1)),
+            db=int(os.environ.get("NOTIFICATION_REDIS_DB", "1")),
             decode_responses=True,
         )
     return _redis_client
@@ -38,7 +39,7 @@ def _resolve_recipient(user_id: str) -> tuple[str, str] | None:
 
 
 def _enqueue(user_id: str, email: str, user_name: str, infra_id: str, infra_name: str,
-             event: str, error: str | None = None):
+             event: str, error: str | None = None, database_name: str | None = None):
     """Push a BullMQ-compatible job onto the notification-event queue."""
     try:
         r = _get_redis()
@@ -55,6 +56,7 @@ def _enqueue(user_id: str, email: str, user_name: str, infra_id: str, infra_name
                 "infra_name": infra_name,
                 "event": event,
                 "error": error,
+                "database_name": database_name,
             }),
             "opts": json.dumps({"attempts": 3, "backoff": {"type": "exponential", "delay": 1000}}),
             "timestamp": timestamp,
@@ -77,14 +79,15 @@ def _enqueue(user_id: str, email: str, user_name: str, infra_id: str, infra_name
         logger.error(f"Failed to enqueue notification for event={event}: {e}")
 
 
-def _notify(event: str, user_id: str, infra_id: str, infra_name: str, error: str | None = None):
+def _notify(event: str, user_id: str, infra_id: str, infra_name: str, error: str | None = None,
+            database_name: str | None = None):
     """Resolve the owner and enqueue one event, or skip."""
     recipient = _resolve_recipient(user_id)
     if not recipient:
         logger.warning("No recipient found, skipping notification")
         return
     email, user_name = recipient
-    _enqueue(user_id, email, user_name, infra_id, infra_name, event, error)
+    _enqueue(user_id, email, user_name, infra_id, infra_name, event, error, database_name)
 
 
 class NotificationService:
@@ -105,3 +108,19 @@ class NotificationService:
     @staticmethod
     def send_destroy_failure(user_id: str, infra_id: str, infra_name: str, error: str):
         _notify("destroy_failure", user_id, infra_id, infra_name, error)
+
+    @staticmethod
+    def send_database_create_success(user_id: str, infra_id: str, infra_name: str, database_name: str):
+        _notify("database_create_success", user_id, infra_id, infra_name, database_name=database_name)
+
+    @staticmethod
+    def send_database_create_failure(user_id: str, infra_id: str, infra_name: str, error: str, database_name: str):
+        _notify("database_create_failure", user_id, infra_id, infra_name, error, database_name=database_name)
+
+    @staticmethod
+    def send_database_delete_success(user_id: str, infra_id: str, infra_name: str, database_name: str):
+        _notify("database_delete_success", user_id, infra_id, infra_name, database_name=database_name)
+
+    @staticmethod
+    def send_database_delete_failure(user_id: str, infra_id: str, infra_name: str, error: str, database_name: str):
+        _notify("database_delete_failure", user_id, infra_id, infra_name, error, database_name=database_name)

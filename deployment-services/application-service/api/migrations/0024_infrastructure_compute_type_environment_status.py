@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api', '0022_infrastructure_user_role_v2'),
+        ('api', '0023_add_database_readmodel_and_attach'),
     ]
 
     operations = [

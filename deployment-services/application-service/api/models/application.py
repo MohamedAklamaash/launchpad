@@ -1,8 +1,11 @@
 import secrets
-from shared.utils.uuid import uuid7_pk
-from django.db import models
+
 from django.conf import settings
+from django.db import models
+from shared.utils.uuid import uuid7_pk
+
 from api.models.infrastructure import Infrastructure
+
 
 class Application(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid7_pk, editable=False)
@@ -40,6 +43,9 @@ class Application(models.Model):
 
     envs = models.JSONField(default=dict, null=True, blank=True)
     metadata = models.JSONField(default=dict, null=True, blank=True)
+    # Explicit opt-in list of Database (read-model) ids this app injects credentials
+    # for. Attach does not auto-redeploy — the next deploy picks up the new set.
+    attached_database_ids = models.JSONField(default=list, blank=True)
     
     status = models.CharField(
         max_length=50,

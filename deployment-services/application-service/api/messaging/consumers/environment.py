@@ -1,11 +1,12 @@
 import json
+import logging
 import time
 import uuid
-import logging
-from django.db import transaction, connection, OperationalError
-from django.core.exceptions import ObjectDoesNotExist
-from api.models import Environment, Infrastructure
+
 from api.common.envs.application import app_config
+from api.models import Database, Environment, Infrastructure
+from django.core.exceptions import ObjectDoesNotExist
+from django.db import OperationalError, connection, transaction
 from shared.enums.orchestrator import ComputeType
 from shared.resilience import ResilientPikaConsumer
 
@@ -44,10 +45,9 @@ class EnvironmentEventConsumer:
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
-            log.error(
+            log.exception(
                 "JSON decode failed — discarding unparseable message",
                 extra={"correlation_id": correlation_id, "error": str(exc)},
-                exc_info=True,
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
@@ -124,6 +124,12 @@ class EnvironmentEventConsumer:
                         compute_type=compute_type
                     ).update(compute_type=compute_type)
 
+                # v2 payloads simply have no "databases" key — omitting it here (rather
+                # than defaulting to []) leaves the existing read-model rows untouched,
+                # so a v2 producer can never wipe out v3 database state.
+                if "databases" in payload:
+                    self._reconcile_databases(env, payload["databases"])
+
             log.info(
                 f"Environment {'created' if created else 'updated'} successfully — ACKing",
                 extra={"correlation_id": correlation_id, "environment_id": env_id},
@@ -137,35 +143,54 @@ class EnvironmentEventConsumer:
             # whole queue under prefetch_count=1.
             transient = isinstance(exc, (ObjectDoesNotExist, OperationalError))
             if not transient:
-                log.error(
+                log.exception(
                     "Error persisting environment event — NACKing without requeue (permanent)",
                     extra={"correlation_id": correlation_id, "environment_id": env_id,
                            "infrastructure_id": infra_id, "error": str(exc)},
-                    exc_info=True,
                 )
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
             retry_count = self._retry_counts.get(env_id, 0)
             if retry_count >= self.MAX_RETRIES:
-                log.error(
+                log.exception(
                     "Error persisting environment event — max retries exceeded, discarding",
                     extra={"correlation_id": correlation_id, "environment_id": env_id, "error": str(exc)},
-                    exc_info=True,
                 )
                 self._retry_counts.pop(env_id, None)
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             else:
                 self._retry_counts[env_id] = retry_count + 1
                 delay = min(2 ** retry_count, 30)
-                log.error(
+                log.exception(
                     "Error persisting environment event — NACKing with requeue (attempt %d/%d, delay %ds)",
                     retry_count + 1, self.MAX_RETRIES, delay,
                     extra={"correlation_id": correlation_id, "environment_id": env_id, "error": str(exc)},
-                    exc_info=True,
                 )
                 time.sleep(delay)
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+
+    def _reconcile_databases(self, env, databases: list):
+        """Full-replace sync: infrastructure-service publishes the complete live list
+        every apply, so anything in the read-model but absent from this payload has
+        been deleted there — drop it here too rather than tracking deletes separately."""
+        incoming_ids = {str(d["id"]) for d in databases if d.get("id")}
+        Database.objects.filter(environment=env).exclude(id__in=incoming_ids).delete()
+        for d in databases:
+            if not d.get("id"):
+                continue
+            Database.objects.update_or_create(
+                id=d["id"],
+                defaults={
+                    "environment": env,
+                    "name": d.get("name", ""),
+                    "engine": d.get("engine", ""),
+                    "host": d.get("host"),
+                    "port": d.get("port"),
+                    "secret_arn": d.get("secret_arn"),
+                    "status": d.get("status", "PENDING"),
+                },
+            )
 
     def start(self):
         """Start consuming messages."""

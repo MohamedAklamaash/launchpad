@@ -10,11 +10,13 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
-from pathlib import Path
-from api.common.envs.database import DatabaseConfig
-from api.common.envs.application import app_config
-from core.allowed_hosts_config import get_allowed_hosts
 import os
+from pathlib import Path
+
+from api.common.envs.application import app_config
+from api.common.envs.database import DatabaseConfig
+from core.allowed_hosts_config import get_allowed_hosts
+
 
 # Validate critical configuration on startup
 def validate_config():
@@ -42,6 +44,25 @@ JWT_SECRET = app_config.jwt_secret
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
 ALLOWED_HOSTS = get_allowed_hosts()
+
+
+# Managed database allowlists — exact-match membership, never regex-shaped, since these
+# values are interpolated into generated Terraform HCL and secret/snapshot identifiers.
+DATABASE_ENGINE_VERSIONS = {
+    "postgres": {"15.10", "16.6", "17.2"},
+    "mysql": {"8.0.39"},
+    "redis": {"7.1"},
+    "docdb": {"5.0.0"},
+}
+DATABASE_INSTANCE_CLASSES = {
+    "postgres": {"db.t3.micro", "db.t3.small", "db.t3.medium", "db.r6g.large"},
+    "mysql": {"db.t3.micro", "db.t3.small", "db.t3.medium", "db.r6g.large"},
+    "redis": {"cache.t3.micro", "cache.t3.small", "cache.t3.medium", "cache.r6g.large"},
+    "docdb": {"db.t3.medium", "db.r6g.large"},
+}
+DATABASE_MIN_STORAGE_GB = 20
+DATABASE_MAX_STORAGE_GB = 1000
+MAX_DATABASES_PER_INFRA = int(os.environ.get('MAX_DATABASES_PER_INFRA', '10'))
 
 
 # Application definition

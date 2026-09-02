@@ -4,7 +4,7 @@ import importlib
 
 import pytest
 
-migration = importlib.import_module("api.migrations.0026_app_name_unique_per_infra")
+migration = importlib.import_module("api.migrations.0027_app_name_unique_per_infra")
 
 
 def test_distinct_slugs_are_not_flagged():

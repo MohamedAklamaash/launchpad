@@ -10,7 +10,6 @@ import uuid
 from unittest.mock import patch
 
 import pytest
-
 from api.cloud_providers.aws import authenticate as auth_mod
 from api.services import terraform_worker as tw_mod
 from api.services.terraform_worker import TerraformWorker
@@ -124,7 +123,7 @@ def test_dev_provision_drives_status_and_writes_all_outputs(make_infra_env):
 
 
 def test_dev_provision_never_calls_exec_tf(make_infra_env):
-    infra, env = make_infra_env(is_mock=True)
+    infra, _env = make_infra_env(is_mock=True)
     with _force_mode(True), \
             patch.object(TerraformWorker, "_exec_tf") as exec_tf, \
             patch("api.messaging.producer.producer.infra_producer"):

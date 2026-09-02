@@ -3,17 +3,17 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+from aws.container_config import generate_nginx_config, inject_routing_envs
+from aws.eks import EKSClient, assume_deploy_role, cluster_name_from_arn
 from kubernetes import client as k8s
 from kubernetes.client.rest import ApiException
+from shared.k8s.client import k8s_api_client
+from shared.k8s.token import mint_eks_token
+from shared.mode import is_dev_mode
 
 from api.common.envs.application import app_config
 from api.common.naming import require_k8s_safe_slug
 from api.mock import mock_k8s
-from aws.container_config import generate_nginx_config, inject_routing_envs
-from aws.eks import EKSClient, assume_deploy_role, cluster_name_from_arn
-from shared.k8s.client import k8s_api_client
-from shared.k8s.token import mint_eks_token
-from shared.mode import is_dev_mode
 
 logger = logging.getLogger(__name__)
 

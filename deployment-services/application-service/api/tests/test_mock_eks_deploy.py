@@ -199,6 +199,8 @@ def test_mock_k8s_refuses_a_real_infrastructure(application):
     from api.k8s.deployer import k8s_apis
 
     application.infrastructure.is_mock = False
-    with pytest.raises(ValueError, match="Refusing mock Kubernetes access"):
-        with k8s_apis(MockSession(region="us-west-2", account_id=ACCOUNT_ID), application.infrastructure, "c"):
-            pass
+    with (
+        pytest.raises(ValueError, match="Refusing mock Kubernetes access"),
+        k8s_apis(MockSession(region="us-west-2", account_id=ACCOUNT_ID), application.infrastructure, "c"),
+    ):
+        pass

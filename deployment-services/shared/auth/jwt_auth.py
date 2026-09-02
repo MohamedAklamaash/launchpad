@@ -1,5 +1,6 @@
-from rest_framework import authentication
 import logging
+
+from rest_framework import authentication
 
 logger = logging.getLogger(__name__)
 

@@ -33,7 +33,7 @@ def refuse_duplicate_slugs(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api', '0025_application_runtime_refs'),
+        ('api', '0026_application_runtime_refs'),
     ]
 
     operations = [

@@ -1,5 +1,6 @@
 from django.db import models
 
+
 class CloudProvider(models.TextChoices):
     AWS = "aws"
     AZURE = "azure"

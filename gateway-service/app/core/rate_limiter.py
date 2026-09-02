@@ -1,8 +1,10 @@
-import redis.asyncio as redis
-from fastapi import Request, HTTPException
-from app.core.config import settings
 import logging
-from constants import EXEMPT_PATHS
+
+import redis.asyncio as redis
+from constants import is_rate_limit_exempt
+from fastapi import HTTPException, Request
+
+from app.core.config import settings
 
 logger = logging.getLogger("api.rate_limiter")
 
@@ -30,7 +32,7 @@ class RateLimiter:
         self.redis = redis.Redis(connection_pool=_pool)
 
     async def check_rate_limit(self, request: Request):
-        if request.url.path in EXEMPT_PATHS:
+        if is_rate_limit_exempt(request.method, request.url.path):
             return
 
         key = f"rate_limit:{_client_ip(request)}"
@@ -48,7 +50,7 @@ class RateLimiter:
 
         except HTTPException:
             raise
-        except Exception as e:
+        except Exception as e:  # fail-open: a rate-limiter bug must never break the gateway
             logger.error(f"Rate limiting error: {e}")
 
     async def close(self):

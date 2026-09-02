@@ -1,12 +1,13 @@
-import os
-import socket
-import redis
 import json
 import logging
-from django.conf import settings
-from django.utils import timezone
-from django.db import models
+import os
+import socket
 from datetime import timedelta
+
+import redis
+from django.conf import settings
+from django.db import models
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ class InfraQueue:
         return bool(updated)
 
     @staticmethod
-    def release_db_lock(infra_id: str, worker_id: str = None):
+    def release_db_lock(infra_id: str, worker_id: str | None = None):
         """Release the DB lock. With worker_id, release only if this worker still holds it, so a
         job that overran the staleness window and was handed off can't wipe the new owner's lock.
         Without worker_id (startup/reaper cleanup of a known-dead worker), release unconditionally."""

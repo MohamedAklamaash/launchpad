@@ -1,20 +1,21 @@
+import ipaddress
+import logging
 import os
 import re
-import ipaddress
 import uuid
-import logging
-from django.conf import settings
-from django.db import transaction
+
+from api.common.envs.application import app_config
+from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from api.serializers.infrastructure import InfrastructureSerializer
+from api.services.infra_queue import InfraQueue
 from api.services.infrastructure_permissions import InfrastructurePermissions
-from shared.resilience.circuit_breaker import CircuitBreaker
+from django.conf import settings
+from django.db import transaction
 from shared.enums.cloud_provider import CloudProvider
 from shared.enums.orchestrator import ComputeType
 from shared.mode import is_dev_mode
-from api.common.envs.application import app_config
-from api.models.environment import Environment
-from api.services.infra_queue import InfraQueue
+from shared.resilience.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +77,9 @@ def validate_infra_metadata(metadata: dict) -> dict:
 
 cloud_cb = CircuitBreaker(
     name="CloudProviderAPI",
-    failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", 5)),
-    timeout=float(os.environ.get("CB_TIMEOUT_MS", 30000)) / 1000.0,
-    success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", 2))
+    failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", "5")),
+    timeout=float(os.environ.get("CB_TIMEOUT_MS", "30000")) / 1000.0,
+    success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", "2"))
 )
 
 
@@ -235,6 +236,13 @@ class InfrastructureService:
                     and env.first_activated_at is None
                 )
                 if env.status == 'ACTIVE' or (env.status == 'ERROR' and not never_provisioned):
+                    from api.models.database import Database
+                    live_dbs = Database.objects.filter(environment=env).exclude(status='DELETED')
+                    if live_dbs.exists():
+                        raise ValueError(
+                            f"Cannot delete infrastructure. {live_dbs.count()} database(s) still "
+                            "exist. Delete all databases first."
+                        )
                     self._enqueue_env_destroy(env, infra_id)
                     return True  # Don't delete DB records yet — worker handles that
 
@@ -255,8 +263,8 @@ class InfrastructureService:
                 from api.messaging.producer.producer import infra_producer
                 infra_producer.publish_infrastructure_deleted(user_id=user_id, infra_id=infra_id)
             except Exception:
-                logger.error(
-                    f"Failed to publish infrastructure.deleted for {infra_id}", exc_info=True
+                logger.exception(
+                    f"Failed to publish infrastructure.deleted for {infra_id}"
                 )
         return deleted
 
@@ -282,9 +290,8 @@ class InfrastructureService:
                 infra_id=infra_id, removed_user_id=target_user_id
             )
         except Exception:
-            logger.error(
+            logger.exception(
                 f"Failed to publish infrastructure.user_removed for {infra_id}/{target_user_id}",
-                exc_info=True,
             )
         return True
     

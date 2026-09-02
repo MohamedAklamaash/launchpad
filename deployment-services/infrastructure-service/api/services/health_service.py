@@ -1,8 +1,9 @@
-from django.http import JsonResponse
+import logging
+
+from api.messaging.producer.producer import infra_producer
 from django.db import connection as db_connection
 from django.db.utils import OperationalError
-from api.messaging.producer.producer import infra_producer
-import logging
+from django.http import JsonResponse
 
 logger = logging.getLogger(__name__)
 

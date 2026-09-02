@@ -2,9 +2,9 @@ import logging
 import os
 from urllib.parse import urlparse
 
+from dotenv import load_dotenv
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
-from dotenv import load_dotenv
 
 load_dotenv()
 

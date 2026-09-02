@@ -3,17 +3,17 @@ import secrets
 import time
 import uuid
 
+from api.services.infrastructure import InfrastructureService
+from django.http import HttpRequest
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
-from rest_framework import status, serializers
-from drf_spectacular.utils import extend_schema, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
-from api.services.infrastructure import InfrastructureService
+from drf_spectacular.utils import OpenApiParameter, extend_schema
+from rest_framework import serializers, status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
 from shared.errors.exception import HttpError
-from django.http import HttpRequest
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def infrastructure_list_create(request: HttpRequest):
         # Bare Exception was masking DB/RabbitMQ/programming errors as AWS auth failures, sending ops on
         # ghost IAM hunts and hiding the incident from 5xx alerts. Surface real failure as a 500 with the
         # stack trace going to logs (not the response).
-        logger.error(f"create_infrastructure failed for user {request.user.id}", exc_info=True)
+        logger.exception(f"create_infrastructure failed for user {request.user.id}")
         return Response({'error': 'Internal error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -158,7 +158,7 @@ def infrastructure_update(request: HttpRequest, infra_id):
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception:
-        logger.error(f"update_infrastructure failed for infra {infra_id}", exc_info=True)
+        logger.exception(f"update_infrastructure failed for infra {infra_id}")
         return Response({'error': 'Internal error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -263,8 +263,8 @@ def infrastructure_reissue_token(request: HttpRequest, infra_id):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def infrastructure_onboarding_callback(request: HttpRequest):
-    from api.models.infrastructure import Infrastructure as InfraModel
     from api.cloud_providers.aws.authenticate import authenticate_infrastructure
+    from api.models.infrastructure import Infrastructure as InfraModel
     from api.services.infra_queue import InfraQueue
     from shared.enums.cloud_provider import CloudProvider
 
@@ -373,7 +373,7 @@ def infrastructure_onboarding_callback(request: HttpRequest):
             metadata=infra.metadata or {},
         )
     except Exception:
-        logger.error(f"Onboarding callback failed to publish infra.created for {infra_id}", exc_info=True)
+        logger.exception(f"Onboarding callback failed to publish infra.created for {infra_id}")
         # Don't fail the callback — provisioning can still proceed; ops will need to backfill the read-model.
 
     try:
@@ -389,7 +389,7 @@ def infrastructure_onboarding_callback(request: HttpRequest):
             status=status.HTTP_202_ACCEPTED,
         )
     except Exception:
-        logger.error(f"Onboarding callback enqueue failed for infra {infra_id}", exc_info=True)
+        logger.exception(f"Onboarding callback enqueue failed for infra {infra_id}")
         # Provisioning never got queued — release the claim so the customer can simply
         # re-run the script. The infra.created event may be re-published on that retry;
         # consumers are idempotent on infra_id.

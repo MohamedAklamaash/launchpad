@@ -15,6 +15,7 @@ export interface Application {
   id: string;
   name: string;
   description: string | null;
+  infrastructure_id: string;
   status: ApplicationStatus;
   is_sleeping: boolean;
   cpu: number;
@@ -26,6 +27,7 @@ export interface Application {
   dockerfile_path: string;
   build_context: string | null;
   envs: Record<string, string>;
+  attached_database_ids: string[];
   deployment_url: string | null;
   build_id: string | null;
   error_message: string | null;
@@ -56,4 +58,6 @@ export interface ApplicationUpdate {
   alloted_cpu?: number;
   alloted_memory?: number;
   envs?: Record<string, string>;
+  /** Full replacement list. Does not trigger a redeploy — redeploy to apply. */
+  attached_database_ids?: string[];
 }

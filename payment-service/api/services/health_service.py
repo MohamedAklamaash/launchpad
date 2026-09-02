@@ -1,9 +1,10 @@
-from django.http import JsonResponse
+import logging
+
+import pika
+from api.common.env.application import app_config
 from django.db import connection as db_connection
 from django.db.utils import OperationalError
-from api.common.env.application import app_config
-import pika
-import logging
+from django.http import JsonResponse
 
 logger = logging.getLogger(__name__)
 

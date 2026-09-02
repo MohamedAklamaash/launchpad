@@ -4,10 +4,10 @@ from app_slug(), so 'MyApp' and 'myapp' collapse onto one namespace."""
 import uuid
 
 import pytest
+from shared.enums.orchestrator import ComputeType
 
 from api.common.naming import app_slug
 from api.services.application_service import ApplicationService
-from shared.enums.orchestrator import ComputeType
 
 
 @pytest.fixture

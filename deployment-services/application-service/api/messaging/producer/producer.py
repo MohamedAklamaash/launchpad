@@ -1,7 +1,9 @@
 import json
 import logging
-from api.common.envs.application import app_config
+
 from shared.resilience import ResilientPikaProducer
+
+from api.common.envs.application import app_config
 
 logger = logging.getLogger(__name__)
 

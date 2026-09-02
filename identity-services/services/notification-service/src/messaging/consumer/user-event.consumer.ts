@@ -66,7 +66,16 @@ export const userEventsWorker = new Worker(
             }
 
             case INFRA_NOTIFICATION_EVENT: {
-                const { user_id, user_name, email, infra_id, infra_name, event, error } = job.data;
+                const {
+                    user_id,
+                    user_name,
+                    email,
+                    infra_id,
+                    infra_name,
+                    event,
+                    error,
+                    database_name,
+                } = job.data;
 
                 if (!email || !event) {
                     throw new UnrecoverableError(
@@ -80,8 +89,9 @@ export const userEventsWorker = new Worker(
                     user_name,
                     error,
                     env.DASHBOARD_URL,
+                    database_name,
                 );
-                const subject = getInfraEmailSubject(event, infra_name);
+                const subject = getInfraEmailSubject(event, infra_name, database_name);
 
                 logger.info({ job_id: job.id, email, event }, 'Sending infra notification email');
                 await sendMail(email, subject, html);

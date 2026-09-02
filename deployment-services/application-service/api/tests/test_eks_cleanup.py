@@ -68,8 +68,9 @@ def infrastructure(schema_db):
 
 @pytest.fixture
 def dev_mode(monkeypatch):
-    from api.k8s import deployer as deployer_mod
     from aws import session as session_mod
+
+    from api.k8s import deployer as deployer_mod
 
     monkeypatch.setattr(deployer_mod, "app_config", SimpleNamespace(mode="dev"))
     monkeypatch.setattr(session_mod, "app_config", SimpleNamespace(mode="dev"))

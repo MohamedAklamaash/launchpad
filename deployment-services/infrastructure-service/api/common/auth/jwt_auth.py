@@ -1,6 +1,7 @@
-from rest_framework import authentication
 import logging
+
 from django.conf import settings
+from rest_framework import authentication
 
 logger = logging.getLogger(__name__)
 exempt_paths = getattr(settings, "INTERNAL_AUTH_EXEMPT_PATHS", [])

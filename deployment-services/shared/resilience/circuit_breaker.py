@@ -1,7 +1,8 @@
-import time
 import enum
 import logging
-from typing import Callable, Any, Optional
+import time
+from collections.abc import Callable
+from typing import Any
 
 logger = logging.getLogger("resilience")
 
@@ -23,7 +24,7 @@ class CircuitBreaker:
         success_threshold: int = 2,
         timeout: float = 30.0,
         half_open_max_calls: int = 3,
-        fallback: Optional[Callable[[], Any]] = None
+        fallback: Callable[[], Any] | None = None
     ):
         self.name = name
         self.failure_threshold = failure_threshold

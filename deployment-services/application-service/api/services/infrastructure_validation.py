@@ -1,5 +1,6 @@
-from api.models.application import Application
 import logging
+
+from api.models.application import Application
 
 logger = logging.getLogger(__name__)
 

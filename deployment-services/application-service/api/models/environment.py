@@ -1,6 +1,7 @@
 from django.db import models
 from shared.utils.uuid import uuid7_pk
 
+
 class Environment(models.Model):
     id = models.UUIDField(
         primary_key=True,

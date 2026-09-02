@@ -159,6 +159,8 @@ fi
 # - ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure
 # - s3: terraform state bucket + application asset storage
 # - dynamodb: terraform state lock table
+# - rds/elasticache/secretsmanager: create and manage managed databases you provision
+#   and the credentials Launchpad injects into your containers
 # - iam:*: create execution roles for ECS tasks (scoped to launchpad-* roles in code)
 # - kms:*: encrypt state bucket and secrets
 # - eks (EKS infras only): cluster management scoped to Launchpad's infra-* clusters
@@ -220,7 +222,10 @@ cat > "$WORK_DIR/launchpad-policy.json" <<EOF
         "logs:*",
         "s3:*",
         "dynamodb:*",
-        "codebuild:*"
+        "codebuild:*",
+        "rds:*",
+        "elasticache:*",
+        "secretsmanager:*"
       ],
       "Resource": "*"
     },

@@ -1,13 +1,13 @@
 import logging
 
 import boto3
-from botocore.config import Config
-from botocore.exceptions import ClientError
-from api.models.infrastructure import Infrastructure
-from shared.enums.cloud_provider import CloudProvider
-from shared.mode import is_dev_mode
 from api.common.envs.application import app_config
 from api.mock.aws_fixtures import synthesize_assumed_role_metadata
+from api.models.infrastructure import Infrastructure
+from botocore.config import Config
+from botocore.exceptions import ClientError
+from shared.enums.cloud_provider import CloudProvider
+from shared.mode import is_dev_mode
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +93,11 @@ def authenticate_infrastructure(infrastructure: Infrastructure) -> dict:
             "aws_session_token": creds["SessionToken"],
         }
 
-    except Exception as e:
-        logger.error(
-            "AssumeRole failed for infra %s", infrastructure.id, exc_info=True
+    except Exception:
+        logger.exception(
+            "AssumeRole failed for infra %s", infrastructure.id
         )
         infrastructure.is_cloud_authenticated = False
         infrastructure.metadata = {**metadata, "error": "AssumeRole failed"}
         infrastructure.save(update_fields=["metadata", "is_cloud_authenticated", "updated_at"])
-        raise e
+        raise
