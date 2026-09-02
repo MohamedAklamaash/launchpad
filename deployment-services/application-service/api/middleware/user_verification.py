@@ -1,6 +1,7 @@
-from django.http import JsonResponse
-from api.models.user import User
 import logging
+
+from api.models.user import User
+from django.http import JsonResponse
 
 logger = logging.getLogger(__name__)
 

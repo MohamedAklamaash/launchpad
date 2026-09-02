@@ -1,10 +1,11 @@
 import json
-import time
 import logging
 import threading
+import time
+
 import pika
-from django.db import connection
 from api.models import Application
+from django.db import connection
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,8 @@ class ApplicationEventConsumer:
         except KeyError as e:
             logger.error(f"Malformed application event ({routing_key}) — discarding: {e}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-        except Exception as e:
-            logger.error(f"Error processing application event ({routing_key}) — requeueing: {e}", exc_info=True)
+        except Exception:
+            logger.exception(f"Error processing application event ({routing_key}) — requeueing")
             time.sleep(1)
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     

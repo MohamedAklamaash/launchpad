@@ -1,9 +1,10 @@
 import json
 import logging
+import os
 import time
 import uuid
+
 import redis
-import os
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,9 @@ def _get_redis():
     if _redis_client is None:
         _redis_client = redis.Redis(
             host=os.environ.get("REDIS_HOST", "localhost"),
-            port=int(os.environ.get("REDIS_PORT", 6379)),
+            port=int(os.environ.get("REDIS_PORT", "6379")),
             password=os.environ.get("REDIS_PASSWORD", ""),
-            db=int(os.environ.get("NOTIFICATION_REDIS_DB", 1)),
+            db=int(os.environ.get("NOTIFICATION_REDIS_DB", "1")),
             decode_responses=True,
         )
     return _redis_client

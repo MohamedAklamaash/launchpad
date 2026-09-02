@@ -2,14 +2,15 @@ import uuid
 
 import pytest
 from shared.enums.user_role import UserRole
+
 from api.services.infrastructure_permissions import InfrastructurePermissions
 
 
 @pytest.fixture
 def make(schema_db):
-    from api.models.user import User
     from api.models.infrastructure import Infrastructure
     from api.models.infrastructure_user_role import InfrastructureUserRole
+    from api.models.user import User
 
     def _make(member_role=None, as_invited=False):
         owner = User.objects.create(id=uuid.uuid4(), email=f"o-{uuid.uuid4()}@e.io", user_name="o")
@@ -69,9 +70,9 @@ def test_non_member_gets_no_role(make):
 
 @pytest.mark.django_db
 def test_role_on_one_infra_grants_nothing_on_another_infra_of_same_owner(schema_db):
-    from api.models.user import User
     from api.models.infrastructure import Infrastructure
     from api.models.infrastructure_user_role import InfrastructureUserRole
+    from api.models.user import User
 
     owner = User.objects.create(id=uuid.uuid4(), email=f"o-{uuid.uuid4()}@e.io", user_name="o")
     infra_a = Infrastructure.objects.create(

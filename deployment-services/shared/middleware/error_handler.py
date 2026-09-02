@@ -1,5 +1,7 @@
 import logging
+
 from django.http import JsonResponse
+
 from shared.errors.exception import HttpError
 
 logger = logging.getLogger(__name__)

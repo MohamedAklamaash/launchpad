@@ -7,8 +7,8 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 @pytest.fixture
 def seed(schema_db):
-    from api.models.user import User
     from api.models.infrastructure import Infrastructure
+    from api.models.user import User
 
     owner = User.objects.create(id=uuid.uuid4(), email=f"o-{uuid.uuid4()}@e.io", user_name="owner")
     infra = Infrastructure.objects.create(

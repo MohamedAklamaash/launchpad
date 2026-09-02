@@ -177,7 +177,8 @@ class TerraformWorker:
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
-                env=env
+                env=env,
+                check=False
             )
             logs.append(f"[INIT]\n{init_result.stdout}\n{init_result.stderr}")
             
@@ -189,7 +190,8 @@ class TerraformWorker:
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
-                env=env
+                env=env,
+                check=False
             )
             logs.append(f"[COMMAND]\n{result.stdout}\n{result.stderr}")
             
@@ -538,7 +540,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             logger.info(f"Infrastructure {infra_id} provisioned successfully")
 
         except Exception as e:
-            logger.error(f"Provisioning failed for {infra_id}: {e!s}", exc_info=True)
+            logger.exception(f"Provisioning failed for {infra_id}")
             # An environment that has ever activated must not be reported dead over an
             # error that happened before any destructive step ran (e.g. AssumeRole
             # failing on a reprovision) — restore it instead of flipping to ERROR.
@@ -727,20 +729,20 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 if _sg_id and not _re.match(r'^sg-[0-9a-f]{8,17}$', _sg_id):
                     logger.error(f"Invalid ALB SG ID format '{_sg_id}' for infra {infra_id} — skipping publish")
                     _sg_id = None
-                _env_kwargs = dict(
-                    infra_id=infra_id,
-                    environment_id=_env_id,
-                    status="ACTIVE",
-                    vpc_id=env.vpc_id,
-                    cluster_arn=env.cluster_arn,
-                    alb_arn=env.alb_arn,
-                    alb_dns=env.alb_dns,
-                    alb_security_group_id=_sg_id,
-                    target_group_arn=env.target_group_arn,
-                    ecr_repository_url=env.ecr_repository_url,
-                    ecs_task_execution_role_arn=env.ecs_task_execution_role_arn,
-                    databases=databases_payload,
-                )
+                _env_kwargs = {
+                    "infra_id": infra_id,
+                    "environment_id": _env_id,
+                    "status": "ACTIVE",
+                    "vpc_id": env.vpc_id,
+                    "cluster_arn": env.cluster_arn,
+                    "alb_arn": env.alb_arn,
+                    "alb_dns": env.alb_dns,
+                    "alb_security_group_id": _sg_id,
+                    "target_group_arn": env.target_group_arn,
+                    "ecr_repository_url": env.ecr_repository_url,
+                    "ecs_task_execution_role_arn": env.ecs_task_execution_role_arn,
+                    "databases": databases_payload,
+                }
                 def _publish_env_delayed(**kwargs):
                     time.sleep(3)
                     infra_producer.publish_environment_updated(**kwargs)
@@ -817,7 +819,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     try:
                         ec2.detach_network_interface(AttachmentId=attachment["AttachmentId"], Force=True)
                         time.sleep(2)
-                    except Exception:
+                    except Exception:  # noqa: S110 - best-effort detach, the delete below is the real signal
                         pass
                 try:
                     ec2.delete_network_interface(NetworkInterfaceId=eni_id)
@@ -953,5 +955,5 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                     )
                     logger.error(f"Destroy failed for {infra_id}: {result.get('error')}")
         
-        except Exception as e:
-            logger.error(f"Destroy failed for {infra_id}: {e!s}", exc_info=True)
+        except Exception:
+            logger.exception(f"Destroy failed for {infra_id}")

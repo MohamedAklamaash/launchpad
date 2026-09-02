@@ -1,6 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone
+
 from api.common.envs.application import app_config
 from shared.resilience import ResilientPikaProducer
 
@@ -26,8 +27,8 @@ class InfraEventProducer:
         try:
             self.producer.connect()
             logger.info("InfraEventProducer connected to RabbitMQ")
-        except Exception as e:
-            logger.error(f"Failed to connect InfraEventProducer: {e}", exc_info=True)
+        except Exception:
+            logger.exception("Failed to connect InfraEventProducer")
             raise
 
     def publish_infra_created(

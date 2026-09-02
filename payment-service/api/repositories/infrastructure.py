@@ -1,5 +1,6 @@
 from api.models.infrastructure import Infrastructure
 
+
 class InfrastructureRepository:
     def get_infrastructure(self, infra_id):
         try:

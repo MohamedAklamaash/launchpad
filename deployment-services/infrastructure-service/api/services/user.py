@@ -1,5 +1,6 @@
 from api.repositories.user import UserRepository
 
+
 class UserService:
     def __init__(self):
         self.repository = UserRepository()

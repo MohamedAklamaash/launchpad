@@ -1,5 +1,6 @@
 import jwt
 
+
 class JWTUser:
     def __init__(self, **payload):
         self.__dict__.update(payload)

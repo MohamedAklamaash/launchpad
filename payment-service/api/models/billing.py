@@ -1,8 +1,9 @@
 from django.db import models
-from api.common.enums.billing_status import BillingStatus
 from django.utils import timezone
+
+from api.common.enums.billing_status import BillingPaymentMethod, BillingStatus
 from api.common.utils.uuid import uuid7_pk
-from api.common.enums.billing_status import BillingPaymentMethod
+
 
 def thirty_days_hence():
     return timezone.now() + timezone.timedelta(days=30)

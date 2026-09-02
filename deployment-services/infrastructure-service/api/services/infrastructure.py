@@ -1,18 +1,19 @@
+import ipaddress
+import logging
 import os
 import re
 import uuid
-import logging
-import ipaddress
-from django.db import transaction
-from api.repositories.infrastructure import InfrastructureRepository
-from api.serializers.infrastructure import InfrastructureSerializer
-from api.services.infrastructure_permissions import InfrastructurePermissions
-from shared.resilience.circuit_breaker import CircuitBreaker
-from shared.enums.cloud_provider import CloudProvider
-from shared.mode import is_dev_mode
+
 from api.common.envs.application import app_config
 from api.models.environment import Environment
+from api.repositories.infrastructure import InfrastructureRepository
+from api.serializers.infrastructure import InfrastructureSerializer
 from api.services.infra_queue import InfraQueue
+from api.services.infrastructure_permissions import InfrastructurePermissions
+from django.db import transaction
+from shared.enums.cloud_provider import CloudProvider
+from shared.mode import is_dev_mode
+from shared.resilience.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,9 @@ def validate_aws_region(value) -> None:
 
 cloud_cb = CircuitBreaker(
     name="CloudProviderAPI",
-    failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", 5)),
-    timeout=float(os.environ.get("CB_TIMEOUT_MS", 30000)) / 1000.0,
-    success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", 2))
+    failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", "5")),
+    timeout=float(os.environ.get("CB_TIMEOUT_MS", "30000")) / 1000.0,
+    success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", "2"))
 )
 
 
@@ -234,8 +235,8 @@ class InfrastructureService:
                 from api.messaging.producer.producer import infra_producer
                 infra_producer.publish_infrastructure_deleted(user_id=user_id, infra_id=infra_id)
             except Exception:
-                logger.error(
-                    f"Failed to publish infrastructure.deleted for {infra_id}", exc_info=True
+                logger.exception(
+                    f"Failed to publish infrastructure.deleted for {infra_id}"
                 )
         return deleted
 
@@ -261,9 +262,8 @@ class InfrastructureService:
                 infra_id=infra_id, removed_user_id=target_user_id
             )
         except Exception:
-            logger.error(
+            logger.exception(
                 f"Failed to publish infrastructure.user_removed for {infra_id}/{target_user_id}",
-                exc_info=True,
             )
         return True
     

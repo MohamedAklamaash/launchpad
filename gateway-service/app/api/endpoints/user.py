@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
-from typing import Optional, List
-from app.services.proxy import proxy_request
+
 from app.core.config import settings
+from app.services.proxy import proxy_request
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -12,15 +12,15 @@ class UserResponse(BaseModel):
     user_name: str
     email: str
     role: str
-    profile_url: Optional[str] = None
-    infra_id: List[str] = []
-    invited_by: Optional[str] = None
+    profile_url: str | None = None
+    infra_id: list[str] = []
+    invited_by: str | None = None
     created_at: str
     updated_at: str
 
 
 @router.get("/", summary="Search users by username or email",
-            response_model=List[UserResponse])
+            response_model=list[UserResponse])
 async def user_search(q: str, request: Request):
     """
     Query param `q` (required) — matched against `user_name` and `email`.

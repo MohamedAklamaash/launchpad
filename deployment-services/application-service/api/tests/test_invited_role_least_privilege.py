@@ -6,9 +6,9 @@ from shared.enums.user_role import UserRole
 
 @pytest.mark.django_db
 def test_missing_per_infra_role_defaults_to_user_not_global_role(schema_db):
-    from api.models.user import User
     from api.models.infrastructure import Infrastructure
     from api.models.infrastructure_user_role import InfrastructureUserRole
+    from api.models.user import User
     from api.repositories.user import UserRepository
 
     owner = User.objects.create(id=uuid.uuid4(), email=f"o-{uuid.uuid4()}@e.io", user_name="o")
@@ -28,9 +28,9 @@ def test_missing_per_infra_role_defaults_to_user_not_global_role(schema_db):
 
 @pytest.mark.django_db
 def test_replayed_event_with_sparse_roles_does_not_downgrade_existing_admin(schema_db):
-    from api.models.user import User
     from api.models.infrastructure import Infrastructure
     from api.models.infrastructure_user_role import InfrastructureUserRole
+    from api.models.user import User
     from api.repositories.user import UserRepository
 
     owner = User.objects.create(id=uuid.uuid4(), email=f"o-{uuid.uuid4()}@e.io", user_name="o")

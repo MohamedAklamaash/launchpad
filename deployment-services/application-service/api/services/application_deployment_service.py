@@ -1,19 +1,23 @@
-import logging
 import json
+import logging
 import re
-from api.models import Application, Environment
-from api.repositories.infrastructure import InfrastructureRepository
-from aws.session import create_boto3_session
-from aws.codebuild import CodeBuildClient
-from aws.ecs import ECSClient
+import time
+
 from aws.alb import ALBClient
+from aws.codebuild import CodeBuildClient
 from aws.ecr import ECRClient
+from aws.ecs import ECSClient
+from aws.session import create_boto3_session
 from botocore.exceptions import ClientError
 from shared.aws.app_security_group import (
     app_security_group_name,
+)
+from shared.aws.app_security_group import (
     get_or_create_app_security_group as _shared_get_or_create_app_sg,
 )
-import time
+
+from api.models import Application, Environment
+from api.repositories.infrastructure import InfrastructureRepository
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +100,7 @@ class ApplicationDeploymentService:
             return deployment_url
             
         except Exception as e:
-            logger.error(f"Deployment failed for application {application.name}: {str(e)}", exc_info=True)
+            logger.exception(f"Deployment failed for application {application.name}")
             
             if session and created_resources:
                 logger.info(f"Cleaning up {len(created_resources)} resources")

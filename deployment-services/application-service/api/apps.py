@@ -1,8 +1,9 @@
+import logging
 import os
 import sys
-import time
 import threading
-import logging
+import time
+
 from django.apps import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -52,18 +53,21 @@ class ApiConfig(AppConfig):
     def ready(self):
         """Start RabbitMQ consumers when the server starts."""
         from shared.mode import enforce_dev_mode_safety
+
         from api.common.envs.application import app_config
         enforce_dev_mode_safety(app_config.mode, "application-service", logger)
 
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 
+        from api.messaging.consumers.environment import EnvironmentEventConsumer
         from api.messaging.consumers.infrastructure import (
-            InfraEventConsumer, InfraUpdatedEventConsumer, InfraDeletedEventConsumer,
+            InfraDeletedEventConsumer,
+            InfraEventConsumer,
+            InfraUpdatedEventConsumer,
             InfraUserRemovedEventConsumer,
         )
         from api.messaging.consumers.user import AuthEventConsumer
-        from api.messaging.consumers.environment import EnvironmentEventConsumer
 
         def start_infra_consumer():
             try:
@@ -71,8 +75,8 @@ class ApiConfig(AppConfig):
                     return
                 logger.info("Initializing Application Service InfraEventConsumer…")
                 InfraEventConsumer().start()
-            except Exception as exc:
-                logger.error(f"InfraEventConsumer crashed: {exc}", exc_info=True)
+            except Exception:
+                logger.exception("InfraEventConsumer crashed")
         
         def start_infra_updated_consumer():
             try:
@@ -80,8 +84,8 @@ class ApiConfig(AppConfig):
                     return
                 logger.info("Initializing Application Service InfraUpdatedEventConsumer…")
                 InfraUpdatedEventConsumer().start()
-            except Exception as exc:
-                logger.error(f"InfraUpdatedEventConsumer crashed: {exc}", exc_info=True)
+            except Exception:
+                logger.exception("InfraUpdatedEventConsumer crashed")
 
         def start_infra_deleted_consumer():
             try:
@@ -89,8 +93,8 @@ class ApiConfig(AppConfig):
                     return
                 logger.info("Initializing Application Service InfraDeletedEventConsumer…")
                 InfraDeletedEventConsumer().start()
-            except Exception as exc:
-                logger.error(f"InfraDeletedEventConsumer crashed: {exc}", exc_info=True)
+            except Exception:
+                logger.exception("InfraDeletedEventConsumer crashed")
 
         def start_infra_user_removed_consumer():
             try:
@@ -98,8 +102,8 @@ class ApiConfig(AppConfig):
                     return
                 logger.info("Initializing Application Service InfraUserRemovedEventConsumer…")
                 InfraUserRemovedEventConsumer().start()
-            except Exception as exc:
-                logger.error(f"InfraUserRemovedEventConsumer crashed: {exc}", exc_info=True)
+            except Exception:
+                logger.exception("InfraUserRemovedEventConsumer crashed")
 
         def start_auth_consumer():
             try:
@@ -107,8 +111,8 @@ class ApiConfig(AppConfig):
                     return
                 logger.info("Initializing Application Service AuthEventConsumer…")
                 AuthEventConsumer().start()
-            except Exception as exc:
-                logger.error(f"AuthEventConsumer crashed: {exc}", exc_info=True)
+            except Exception:
+                logger.exception("AuthEventConsumer crashed")
         
         def start_environment_consumer():
             try:
@@ -116,8 +120,8 @@ class ApiConfig(AppConfig):
                     return
                 logger.info("Initializing Application Service EnvironmentEventConsumer…")
                 EnvironmentEventConsumer().start()
-            except Exception as exc:
-                logger.error(f"EnvironmentEventConsumer crashed: {exc}", exc_info=True)
+            except Exception:
+                logger.exception("EnvironmentEventConsumer crashed")
 
         threading.Thread(target=start_infra_consumer, name="AppInfraConsumer", daemon=True).start()
         threading.Thread(target=start_infra_updated_consumer, name="AppInfraUpdatedConsumer", daemon=True).start()

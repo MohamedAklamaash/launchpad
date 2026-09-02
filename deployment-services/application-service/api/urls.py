@@ -1,17 +1,18 @@
 from django.urls import path
+
 from api.views.application import (
-    ApplicationListCreateView,
-    ApplicationDetailDeleteView,
-    ApplicationUpdateView,
     ApplicationDeployView,
+    ApplicationDetailDeleteView,
+    ApplicationListCreateView,
     ApplicationRetryDeployView,
     ApplicationSleepView,
+    ApplicationUpdateView,
     ApplicationWakeView,
     application_github_webhook,
     application_rotate_webhook_secret,
 )
-from api.views.infrastructure_validation import infrastructure_validation
 from api.views.health import health_check, liveness_check, readiness_check
+from api.views.infrastructure_validation import infrastructure_validation
 from api.views.metrics import metrics_view
 
 urlpatterns = [

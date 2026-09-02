@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
-from typing import Optional
-from app.services.proxy import proxy_request
+
 from app.core.config import settings
+from app.services.proxy import proxy_request
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 user_router = APIRouter(prefix="/user", tags=["GitHub OAuth"])
@@ -54,7 +54,7 @@ class GitHubUser(BaseModel):
     id: str
     email: str
     user_name: str
-    profile_url: Optional[str] = None
+    profile_url: str | None = None
     accessToken: str
     refreshToken: str
 

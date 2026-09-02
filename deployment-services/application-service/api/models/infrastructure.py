@@ -1,7 +1,8 @@
-from django.db import models
 from django.conf import settings
+from django.db import models
 from shared.enums.cloud_provider import CloudProvider
 from shared.utils.uuid import uuid7_pk
+
 
 class Infrastructure(models.Model):
     id = models.UUIDField(

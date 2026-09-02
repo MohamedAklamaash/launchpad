@@ -1,19 +1,20 @@
-from api.repositories.application import ApplicationRepository
-from api.repositories.infrastructure import InfrastructureRepository
-from api.repositories.user import UserRepository
-from api.services.application_deployment_service import ApplicationDeploymentService
-from api.services.application_cleanup_service import ApplicationCleanupService
-from api.services.infrastructure_permissions import InfrastructurePermissions
-from shared.resilience.http_client import ResilientHttpClient
-from django.db import transaction
-from api.services.deployment_queue import DeploymentQueue
-from api.messaging.producer.producer import ApplicationEventProducer
-from api.services.deployment_lock import DeploymentLock
-
+import logging
 import os
 import uuid
 
-import logging
+from django.db import transaction
+from shared.resilience.http_client import ResilientHttpClient
+
+from api.messaging.producer.producer import ApplicationEventProducer
+from api.repositories.application import ApplicationRepository
+from api.repositories.infrastructure import InfrastructureRepository
+from api.repositories.user import UserRepository
+from api.services.application_cleanup_service import ApplicationCleanupService
+from api.services.application_deployment_service import ApplicationDeploymentService
+from api.services.deployment_lock import DeploymentLock
+from api.services.deployment_queue import DeploymentQueue
+from api.services.infrastructure_permissions import InfrastructurePermissions
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +51,7 @@ class ApplicationService:
         """
         # Normalise once up front — strip trailing slash and .git suffix
         url = project_remote_url.lower().rstrip("/")
-        normalized_url = url[:-4] if url.endswith(".git") else url
+        normalized_url = url.removesuffix(".git")
         # Also build the .git variant for comparison
         normalized_url_git = normalized_url + ".git"
 
@@ -67,7 +68,7 @@ class ApplicationService:
             for r in repos:
                 for raw in (r.get("html_url", ""), r.get("clone_url", "")):
                     candidate = raw.lower().rstrip("/")
-                    candidate_base = candidate[:-4] if candidate.endswith(".git") else candidate
+                    candidate_base = candidate.removesuffix(".git")
                     if normalized_url == candidate_base or normalized_url_git == candidate_base + ".git":
                         return  # found — short-circuit immediately
 

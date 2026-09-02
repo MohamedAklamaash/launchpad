@@ -1,10 +1,13 @@
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+import logging
+
 from app.api.router import api_router
 from app.core.config import settings
-from fastapi.responses import JSONResponse
-import logging
 from constants import is_rate_limit_exempt
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Gateway Service",
@@ -69,7 +72,7 @@ async def global_exception_handler(request: Request, exc: Exception):
             status_code=exc.status_code,
             content={"message": exc.detail},
         )
-    logging.error(f"Global exception caught: {exc}", exc_info=True)
+    logger.error(f"Global exception caught: {exc}", exc_info=exc)
     return JSONResponse(
         status_code=500,
         content={"message": "Internal Server Error", "details": str(exc)},

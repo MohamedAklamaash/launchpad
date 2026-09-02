@@ -1,16 +1,16 @@
 import asyncio
+from typing import ClassVar
 from unittest.mock import patch
 
-from starlette.requests import Request
-
-from app.services import proxy
 from app.core.config import settings
+from app.services import proxy
+from starlette.requests import Request
 
 
 class _FakeResponse:
     status_code = 200
     content = b"ok"
-    headers = {}
+    headers: ClassVar[dict] = {}
 
 
 def _make_request(headers):

@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
-from app.services.proxy import proxy_request
+
 from app.core.config import settings
+from app.services.proxy import proxy_request
 
 router = APIRouter(prefix="/applications", tags=["Applications"])
 
@@ -10,15 +10,15 @@ class AppCreateBody(BaseModel):
     name: str = Field(example="my-app")
     infrastructure_id: str = Field(example="018e1234-abcd-7000-8000-000000000001")
     project_remote_url: str = Field(example="https://github.com/user/repo")
-    project_branch: Optional[str] = Field(default="main", example="main")
-    description: Optional[str] = None
-    project_commit_hash: Optional[str] = Field(default=None, example="abc1234")
-    dockerfile_path: Optional[str] = Field(default="Dockerfile", example="Dockerfile")
-    port: Optional[int] = Field(default=8080, example=8080)
-    alloted_cpu: Optional[float] = Field(default=256, example=256,
+    project_branch: str | None = Field(default="main", example="main")
+    description: str | None = None
+    project_commit_hash: str | None = Field(default=None, example="abc1234")
+    dockerfile_path: str | None = Field(default="Dockerfile", example="Dockerfile")
+    port: int | None = Field(default=8080, example=8080)
+    alloted_cpu: float | None = Field(default=256, example=256,
                                           description="CPU units: 256=0.25vCPU, 512=0.5vCPU, 1024=1vCPU")
-    alloted_memory: Optional[float] = Field(default=512, example=512, description="Memory in MB")
-    envs: Optional[Dict[str, str]] = Field(default=None, example={"NODE_ENV": "production"})
+    alloted_memory: float | None = Field(default=512, example=512, description="Memory in MB")
+    envs: dict[str, str] | None = Field(default=None, example={"NODE_ENV": "production"})
 
 class AppCreateResponse(BaseModel):
     id: str
@@ -27,7 +27,7 @@ class AppCreateResponse(BaseModel):
 class AppDetailResponse(BaseModel):
     id: str
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     infrastructure_id: str
     status: str = Field(description="CREATED | BUILDING | DEPLOYING | ACTIVE | SLEEPING | FAILED")
     is_sleeping: bool
@@ -38,11 +38,11 @@ class AppDetailResponse(BaseModel):
     url: str
     branch: str
     dockerfile_path: str
-    envs: Dict[str, str] = {}
-    attached_database_ids: List[str] = []
-    deployment_url: Optional[str] = None
-    build_id: Optional[str] = None
-    error_message: Optional[str] = None
+    envs: dict[str, str] = {}
+    attached_database_ids: list[str] = []
+    deployment_url: str | None = None
+    build_id: str | None = None
+    error_message: str | None = None
     created_at: str
     updated_at: str
 
@@ -54,28 +54,28 @@ class AppListItem(BaseModel):
     port: int
 
 class AppUpdateBody(BaseModel):
-    description: Optional[str] = None
-    envs: Optional[Dict[str, str]] = Field(default=None, example={"NODE_ENV": "production"})
-    alloted_cpu: Optional[float] = Field(default=None, description="CPU units: 256=0.25vCPU, 512=0.5vCPU, 1024=1vCPU")
-    alloted_memory: Optional[float] = Field(default=None, description="Memory in MB")
-    port: Optional[int] = None
-    project_branch: Optional[str] = None
-    dockerfile_path: Optional[str] = None
-    attached_database_ids: Optional[List[str]] = Field(
+    description: str | None = None
+    envs: dict[str, str] | None = Field(default=None, example={"NODE_ENV": "production"})
+    alloted_cpu: float | None = Field(default=None, description="CPU units: 256=0.25vCPU, 512=0.5vCPU, 1024=1vCPU")
+    alloted_memory: float | None = Field(default=None, description="Memory in MB")
+    port: int | None = None
+    project_branch: str | None = None
+    dockerfile_path: str | None = None
+    attached_database_ids: list[str] | None = Field(
         default=None,
         description="Full replacement list of managed database ids to inject into this app. "
-                     "Does not trigger a redeploy — redeploy to apply.",
+        "Does not trigger a redeploy — redeploy to apply.",
     )
 
 class AppUpdateResponse(BaseModel):
     id: str
     name: str
-    description: Optional[str] = None
-    envs: Dict[str, str] = {}
+    description: str | None = None
+    envs: dict[str, str] = {}
     alloted_cpu: float
     alloted_memory: float
     port: int
-    attached_database_ids: List[str] = []
+    attached_database_ids: list[str] = []
     updated_at: str
 
 class QueuedResponse(BaseModel):
@@ -96,7 +96,7 @@ class WakeResponse(BaseModel):
 
 
 @router.get("/", summary="List applications for an infrastructure",
-            response_model=List[AppListItem])
+            response_model=list[AppListItem])
 async def application_list(infrastructure_id: str, request: Request):
     """
     Query param `infrastructure_id` (UUID, required).

@@ -11,9 +11,9 @@ from rest_framework.test import APIRequestFactory
 
 @pytest.fixture
 def app_row(schema_db):
-    from api.models.user import User
-    from api.models.infrastructure import Infrastructure
     from api.models.application import Application
+    from api.models.infrastructure import Infrastructure
+    from api.models.user import User
 
     u = User.objects.create(id=uuid.uuid4(), email=f"u-{uuid.uuid4()}@e.io", user_name="u")
     infra = Infrastructure.objects.create(

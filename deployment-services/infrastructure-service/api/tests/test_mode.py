@@ -6,7 +6,6 @@ and 2 (enforce_dev_mode_safety: dev always mocks; real creds are ignored, not fa
 import logging
 
 import pytest
-
 from shared import mode as mode_module
 from shared.mode import (
     REAL_AWS_CREDENTIAL_ENV_VARS,
@@ -14,7 +13,6 @@ from shared.mode import (
     is_dev_mode,
     normalize_mode,
 )
-
 
 # --- Requirement 1: normalize_mode / is_dev_mode ---------------------------
 

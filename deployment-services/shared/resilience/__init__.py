@@ -1,14 +1,14 @@
+from .amqp import ResilientPikaConsumer, ResilientPikaProducer
 from .circuit_breaker import CircuitBreaker, CircuitBreakerOpenError, CircuitState
-from .http_client import ResilientHttpClient
-from .amqp import ResilientPikaProducer, ResilientPikaConsumer
 from .db_pool import get_db_pool_config
+from .http_client import ResilientHttpClient
 
 __all__ = [
     "CircuitBreaker",
     "CircuitBreakerOpenError",
     "CircuitState",
     "ResilientHttpClient",
-    "ResilientPikaProducer",
     "ResilientPikaConsumer",
+    "ResilientPikaProducer",
     "get_db_pool_config",
 ]

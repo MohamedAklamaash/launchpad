@@ -2,8 +2,8 @@ import hashlib
 import secrets
 from datetime import timedelta
 
-from django.db import models
 from django.conf import settings
+from django.db import models
 from django.utils import timezone
 from shared.enums.cloud_provider import CloudProvider
 from shared.utils.uuid import uuid7_pk

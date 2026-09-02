@@ -1,8 +1,9 @@
+import logging
 import os
 import sys
-import time
 import threading
-import logging
+import time
+
 # import getpass
 # from crontab import CronTab
 from django.apps import AppConfig
@@ -68,16 +69,18 @@ class ApiConfig(AppConfig):
 
     def ready(self):
         """Start RabbitMQ consumers when the server starts."""
-        from shared.mode import enforce_dev_mode_safety
         from api.common.envs.application import app_config
+        from shared.mode import enforce_dev_mode_safety
         enforce_dev_mode_safety(app_config.mode, "infrastructure-service", logger)
 
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 
-        from api.messaging.consumer.consumer import AuthEventConsumer
-        from api.messaging.consumer.application_consumer import start_application_event_consumer
         from api.common.envs.application import app_config
+        from api.messaging.consumer.application_consumer import (
+            start_application_event_consumer,
+        )
+        from api.messaging.consumer.consumer import AuthEventConsumer
 
         def start_auth_consumer():
             # Small delay to ensure the main thread has completed app initialization,
@@ -87,8 +90,8 @@ class ApiConfig(AppConfig):
                     return
                 logger.info("Initializing Infrastructure Service AuthEventConsumer…")
                 AuthEventConsumer().start()
-            except Exception as exc:
-                logger.error(f"Infrastructure Service AuthEventConsumer crashed: {exc}", exc_info=True)
+            except Exception:
+                logger.exception("Infrastructure Service AuthEventConsumer crashed")
 
         def start_app_consumer():
             time.sleep(2)
@@ -97,8 +100,8 @@ class ApiConfig(AppConfig):
                     return
                 logger.info("Initializing Infrastructure Service ApplicationEventConsumer…")
                 start_application_event_consumer(app_config.rabbitmq_url)
-            except Exception as exc:
-                logger.error(f"Infrastructure Service ApplicationEventConsumer crashed: {exc}", exc_info=True)
+            except Exception:
+                logger.exception("Infrastructure Service ApplicationEventConsumer crashed")
 
         threading.Thread(target=start_auth_consumer, name="InfraAuthConsumer", daemon=True).start()
         threading.Thread(target=start_app_consumer, name="InfraAppConsumer", daemon=True).start()

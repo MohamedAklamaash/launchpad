@@ -12,8 +12,9 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 
-from api.common.env.database import db_config
 from api.common.env.application import app_config
+from api.common.env.database import db_config
+
 from core.allowed_hosts_config import get_allowed_hosts
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
