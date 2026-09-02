@@ -20,8 +20,11 @@ FALLBACK_SESSION_DURATION_SECONDS = 3600
 def _authenticate_mock_infrastructure(infrastructure: Infrastructure) -> dict:
     synthesized = synthesize_assumed_role_metadata(infrastructure)
     metadata = infrastructure.metadata or {}
+    # Strip credential keys from the *existing* metadata too, not just the synthesized
+    # values — a row onboarded before credentials stopped being persisted still carries
+    # them, and spreading `metadata` unchanged would keep re-saving them.
     infrastructure.metadata = {
-        **metadata,
+        **{k: v for k, v in metadata.items() if k not in CREDENTIAL_KEYS},
         **{k: v for k, v in synthesized.items() if k not in CREDENTIAL_KEYS},
     }
     infrastructure.is_cloud_authenticated = True

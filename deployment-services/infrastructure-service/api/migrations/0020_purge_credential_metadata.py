@@ -7,6 +7,11 @@ def purge_credential_metadata(apps, schema_editor):
     Infrastructure = apps.get_model("api", "Infrastructure")
     for infra in Infrastructure.objects.exclude(metadata__isnull=True).iterator():
         metadata = infra.metadata or {}
+        # metadata is a JSONField, so a row can legitimately hold a list or a string.
+        # `key in metadata` succeeds on a list, and the pop below would then raise
+        # TypeError and abort the whole purge, leaving credentials in every later row.
+        if not isinstance(metadata, dict):
+            continue
         if not any(key in metadata for key in CREDENTIAL_KEYS):
             continue
         for key in CREDENTIAL_KEYS:

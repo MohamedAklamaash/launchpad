@@ -2,6 +2,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -147,9 +148,8 @@ class TerraformWorker:
         if ensure_backend:
             bucket, table = TerraformWorker._ensure_backend(credentials, region, account_id)
 
-        unique_suffix = TerraformWorker._generate_unique_suffix(infra_id)
         tf_config = TerraformWorker._generate_config(
-            env_vars, infra_id, bucket, table, region, unique_suffix, compute_type, account_id
+            env_vars, infra_id, bucket, table, region, compute_type, account_id
         )
 
         work_dir = Path(f"/dev/shm/tf-{infra_id}")
@@ -338,16 +338,16 @@ output "{mod}_secret_arn" {{ value = module.{mod}.secret_arn }}
         return "[" + ", ".join(refs) + "]"
 
     @staticmethod
-    def _generate_config(vars: dict, infra_id: str, bucket: str, table: str, region: str, suffix: str,
+    def _generate_config(vars: dict, infra_id: str, bucket: str, table: str, region: str,
                          compute_type: str, account_id: str) -> str:
         if compute_type == ComputeType.EKS:
-            return TerraformWorker._generate_config_eks(vars, infra_id, bucket, table, region, suffix, account_id)
-        return TerraformWorker._generate_config_ecs(vars, infra_id, bucket, table, region, suffix)
+            return TerraformWorker._generate_config_eks(vars, infra_id, bucket, table, region, account_id)
+        return TerraformWorker._generate_config_ecs(vars, infra_id, bucket, table, region)
 
     @staticmethod
-    def _generate_config_ecs(vars: dict, infra_id: str, bucket: str, table: str, region: str, suffix: str) -> str:
+    def _generate_config_ecs(vars: dict, infra_id: str, bucket: str, table: str, region: str) -> str:
         """Generate Terraform config with unique resource names"""
-        env_name = f"infra-{infra_id[:8]}-{suffix}"
+        env_name = naming.environment_name(infra_id)
         db_blocks = TerraformWorker._db_module_blocks(infra_id, env_name, vars.get("db_app_sg_id", ""))
         db_secret_arns = TerraformWorker._db_secret_arn_refs(infra_id)
 
@@ -432,9 +432,15 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
 {db_blocks}"""
 
     @staticmethod
-    def _generate_config_eks(vars: dict, infra_id: str, bucket: str, table: str, region: str, suffix: str,
+    def _generate_config_eks(vars: dict, infra_id: str, bucket: str, table: str, region: str,
                              account_id: str) -> str:
-        env_name = f"infra-{infra_id[:8]}-{suffix}"
+        # Must stay identical to what eks_teardown resolves the cluster by; a divergent
+        # copy here makes the orphan reap take its "cluster absent" branch against a
+        # cluster that is still live.
+        env_name = naming.environment_name(infra_id)
+
+        if not re.fullmatch(r"\d{12}", str(account_id)):
+            raise ValueError(f"account_id must be a 12-digit AWS account id, got {account_id!r}")
 
         cluster_version = str(vars.get("cluster_version", DEFAULT_EKS_CLUSTER_VERSION))
         if cluster_version not in EKS_SUPPORTED_CLUSTER_VERSIONS:
@@ -877,6 +883,7 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                     infra_id=infra_id,
                     name=infra.name,
                     cloud_provider=infra.cloud_provider,
+                    compute_type=infra.compute_type,
                     max_cpu=infra.max_cpu,
                     max_memory=infra.max_memory,
                     code=infra.code,

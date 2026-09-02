@@ -52,7 +52,7 @@ def test_generate_config_includes_one_module_block_per_live_engine(make_infra_en
 
     config = TerraformWorker._generate_config(
         {"aws_region": "us-east-1", "vpc_cidr": "10.0.0.0/16", "db_app_sg_id": "sg-app123"},
-        str(infra.id), "bucket", "table", "us-east-1", "abcd1234",
+        str(infra.id), "bucket", "table", "us-east-1",
         ComputeType.ECS_FARGATE, "123456789012",
     )
     assert 'source                    = "./modules/rds"' in config
@@ -69,7 +69,7 @@ def test_generate_config_excludes_deleting_and_deleted_rows(make_infra_env, make
 
     config = TerraformWorker._generate_config(
         {"aws_region": "us-east-1", "vpc_cidr": "10.0.0.0/16"},
-        str(infra.id), "bucket", "table", "us-east-1", "abcd1234",
+        str(infra.id), "bucket", "table", "us-east-1",
         ComputeType.ECS_FARGATE, "123456789012",
     )
     assert f'module "{live.module_name()}"' in config
@@ -87,7 +87,7 @@ def test_generate_config_rejects_invalid_database_name(make_infra_env, make_db_r
     with pytest.raises(ValueError):
         TerraformWorker._generate_config(
             {"aws_region": "us-east-1", "vpc_cidr": "10.0.0.0/16"},
-            str(infra.id), "bucket", "table", "us-east-1", "abcd1234",
+            str(infra.id), "bucket", "table", "us-east-1",
         ComputeType.ECS_FARGATE, "123456789012",
         )
 
@@ -96,7 +96,7 @@ def test_generate_config_with_no_databases_omits_db_secret_arns(make_infra_env):
     infra, _env = make_infra_env()
     config = TerraformWorker._generate_config(
         {"aws_region": "us-east-1", "vpc_cidr": "10.0.0.0/16"},
-        str(infra.id), "bucket", "table", "us-east-1", "abcd1234",
+        str(infra.id), "bucket", "table", "us-east-1",
         ComputeType.ECS_FARGATE, "123456789012",
     )
     assert "db_secret_arns  = []" in config

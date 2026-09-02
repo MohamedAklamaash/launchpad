@@ -1,3 +1,10 @@
+"""Rightsizing must only ever talk to AWS with credentials minted by AssumeRole.
+
+STS credentials are no longer persisted to Infrastructure.metadata, so the credentials
+come from authenticate_infrastructure()'s return value. Passing empty/missing creds to
+boto3 makes it fall back to the default chain (env vars / IMDS) and operate on the
+LAUNCHPAD platform account instead of the customer's — so the guard must skip instead.
+"""
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -5,30 +12,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def _infra(*, metadata, cloud_provider="aws", id_="11111111-1111-1111-1111-111111111111"):
+def _infra(*, metadata=None, cloud_provider="aws", id_="11111111-1111-1111-1111-111111111111"):
     # cloud_provider is stored lowercase (CloudProvider.AWS == "aws"); enforce_rightsizing
-    # now compares against the enum, so the guard only proceeds for "aws".
-    return SimpleNamespace(id=id_, cloud_provider=cloud_provider, metadata=metadata)
+    # compares against the enum, so the guard only proceeds for "aws".
+    return SimpleNamespace(id=id_, cloud_provider=cloud_provider, metadata=metadata or {})
 
 
-def test_skips_non_aws_infra(patches):
-    from api.common.utils.enforce_rightsizing import enforce_rightsizing
-
-    patches.repo.get_all.return_value = [
-        _infra(cloud_provider="azure", metadata={
-            "aws_access_key_id": "AKIA_TEST",
-            "aws_secret_access_key": "SECRET_TEST",
-        })
-    ]
-
-    enforce_rightsizing()
-
-    assert not patches.boto3.client.called
+def _creds(access="AKIA_TEST", secret="SECRET_TEST", token="TOKEN_TEST"):
+    return {
+        "aws_access_key_id": access,
+        "aws_secret_access_key": secret,
+        "aws_session_token": token,
+    }
 
 
 @pytest.fixture
 def patches():
-    # The credential-gating tests below exercise the production path, so force non-dev mode;
+    # The credential-gating tests exercise the production path, so force non-dev mode;
     # the dev-mode short-circuit is covered separately by test_skips_in_dev_mode.
     with patch(
         "api.common.utils.enforce_rightsizing.boto3"
@@ -42,12 +42,22 @@ def patches():
         mock_boto3.client.return_value = MagicMock(
             get_ec2_instance_recommendations=MagicMock(return_value={"instanceRecommendations": []})
         )
-        mock_auth.return_value = None
+        mock_auth.return_value = _creds()
         repo_instance = MagicMock()
         mock_repo_cls.return_value = repo_instance
         yield SimpleNamespace(
             boto3=mock_boto3, auth=mock_auth, repo=repo_instance, repo_cls=mock_repo_cls, dev=mock_dev
         )
+
+
+def test_skips_non_aws_infra(patches):
+    from api.common.utils.enforce_rightsizing import enforce_rightsizing
+
+    patches.repo.get_all.return_value = [_infra(cloud_provider="azure")]
+
+    enforce_rightsizing()
+
+    assert not patches.boto3.client.called
 
 
 def test_skips_in_dev_mode():
@@ -64,16 +74,10 @@ def test_skips_in_dev_mode():
     assert not mock_repo_cls.return_value.get_all.called
 
 
-def test_proceeds_to_boto3_when_both_credentials_are_present(patches):
+def test_proceeds_to_boto3_when_assume_role_returns_credentials(patches):
     from api.common.utils.enforce_rightsizing import enforce_rightsizing
 
-    patches.repo.get_all.return_value = [
-        _infra(metadata={
-            "aws_access_key_id": "AKIA_TEST",
-            "aws_secret_access_key": "SECRET_TEST",
-            "aws_region": "us-east-1",
-        })
-    ]
+    patches.repo.get_all.return_value = [_infra(metadata={"aws_region": "us-east-1"})]
 
     enforce_rightsizing()
 
@@ -83,23 +87,37 @@ def test_proceeds_to_boto3_when_both_credentials_are_present(patches):
     assert "ec2" in services
 
 
-def test_skips_when_both_credentials_are_empty_strings(patches, caplog):
+def test_credentials_come_from_assume_role_not_metadata(patches):
+    """The regression guard: metadata carries decoy credentials that must never be used."""
     from api.common.utils.enforce_rightsizing import enforce_rightsizing
 
+    patches.auth.return_value = _creds(access="AKIA_FROM_STS", secret="SECRET_FROM_STS")
     patches.repo.get_all.return_value = [
-        _infra(metadata={"aws_access_key_id": "", "aws_secret_access_key": ""})
+        _infra(metadata={
+            "aws_region": "us-east-1",
+            "aws_access_key_id": "AKIA_STALE_FROM_METADATA",
+            "aws_secret_access_key": "SECRET_STALE_FROM_METADATA",
+        })
     ]
 
-    with caplog.at_level(logging.WARNING):
-        enforce_rightsizing()
+    enforce_rightsizing()
 
-    assert not patches.boto3.client.called
-    assert any("Skipping rightsizing" in r.message for r in caplog.records)
+    assert patches.boto3.client.called
+    for call in patches.boto3.client.call_args_list:
+        assert call.kwargs["aws_access_key_id"] == "AKIA_FROM_STS"
+        assert call.kwargs["aws_secret_access_key"] == "SECRET_FROM_STS"
 
 
-def test_skips_when_metadata_is_missing_credential_keys_entirely(patches, caplog):
+@pytest.mark.parametrize("creds", [
+    _creds(access="", secret=""),
+    _creds(access="AKIA_TEST", secret=""),
+    _creds(access="", secret="SECRET_TEST"),
+    {},
+])
+def test_skips_when_assume_role_returns_unusable_credentials(patches, caplog, creds):
     from api.common.utils.enforce_rightsizing import enforce_rightsizing
 
+    patches.auth.return_value = creds
     patches.repo.get_all.return_value = [_infra(metadata={"aws_region": "us-east-1"})]
 
     with caplog.at_level(logging.WARNING):
@@ -107,43 +125,3 @@ def test_skips_when_metadata_is_missing_credential_keys_entirely(patches, caplog
 
     assert not patches.boto3.client.called
     assert any("Skipping rightsizing" in r.message for r in caplog.records)
-
-
-def test_skips_when_only_access_key_present_and_secret_empty(patches):
-    from api.common.utils.enforce_rightsizing import enforce_rightsizing
-
-    patches.repo.get_all.return_value = [
-        _infra(metadata={
-            "aws_access_key_id": "AKIA_TEST",
-            "aws_secret_access_key": "",
-        })
-    ]
-
-    enforce_rightsizing()
-
-    assert not patches.boto3.client.called
-
-
-def test_skips_when_only_secret_present_and_access_key_empty(patches):
-    from api.common.utils.enforce_rightsizing import enforce_rightsizing
-
-    patches.repo.get_all.return_value = [
-        _infra(metadata={
-            "aws_access_key_id": "",
-            "aws_secret_access_key": "SECRET_TEST",
-        })
-    ]
-
-    enforce_rightsizing()
-
-    assert not patches.boto3.client.called
-
-
-def test_skips_when_metadata_is_none(patches):
-    from api.common.utils.enforce_rightsizing import enforce_rightsizing
-
-    patches.repo.get_all.return_value = [_infra(metadata=None)]
-
-    enforce_rightsizing()
-
-    assert not patches.boto3.client.called

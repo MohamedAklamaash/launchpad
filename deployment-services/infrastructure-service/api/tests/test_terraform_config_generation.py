@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from api.common import naming
 from api.services import terraform_worker as tw_mod
 from api.services.terraform_worker import TerraformWorker
 from shared.enums.orchestrator import ComputeType
@@ -21,7 +22,7 @@ from shared.enums.orchestrator import ComputeType
 INFRA_ID = "11111111-2222-3333-4444-555555555555"
 ACCOUNT_ID = "123456789012"
 VARS = {"aws_region": "us-east-1", "owner": "user-1", "vpc_cidr": "10.0.0.0/16"}
-ARGS = (INFRA_ID, "bucket-x", "table-x", "us-east-1", "abcd1234")
+ARGS = (INFRA_ID, "bucket-x", "table-x", "us-east-1")
 
 GOLDEN_ECS = '''
 terraform {
@@ -49,7 +50,7 @@ provider "aws" {
   
   default_tags {
     tags = {
-      Environment   = "infra-11111111-abcd1234"
+      Environment   = "infra-11111111-c6426b96"
       InfraID       = "11111111-2222-3333-4444-555555555555"
       ManagedBy     = "launchpad"
       Owner         = "user-1"
@@ -59,19 +60,19 @@ provider "aws" {
 
 module "vpc" {
   source      = "./modules/vpc"
-  environment = "infra-11111111-abcd1234"
+  environment = "infra-11111111-c6426b96"
   vpc_cidr    = "10.0.0.0/16"
 }
 
 module "iam" {
   source          = "./modules/iam"
-  environment     = "infra-11111111-abcd1234"
+  environment     = "infra-11111111-c6426b96"
   db_secret_arns  = []
 }
 
 module "ecs" {
   source             = "./modules/ecs"
-  environment        = "infra-11111111-abcd1234"
+  environment        = "infra-11111111-c6426b96"
   vpc_id             = module.vpc.vpc_id
   private_subnet_ids = module.vpc.private_subnet_ids
   
@@ -80,7 +81,7 @@ module "ecs" {
 
 module "alb" {
   source                 = "./modules/alb"
-  environment            = "infra-11111111-abcd1234"
+  environment            = "infra-11111111-c6426b96"
   vpc_id                 = module.vpc.vpc_id
   public_subnet_ids      = module.vpc.public_subnet_ids
   alb_security_group_id  = module.vpc.alb_security_group_id
@@ -90,7 +91,7 @@ module "alb" {
 
 module "ecr" {
   source      = "./modules/ecr"
-  environment = "infra-11111111-abcd1234"
+  environment = "infra-11111111-c6426b96"
 }
 
 output "vpc_id" { value = module.vpc.vpc_id }
@@ -138,7 +139,10 @@ def test_eks_config_shape(eks_cidrs):
     assert 'module "ecs"' not in config
     assert 'enable_elb_subnet_tags = true' in config
     assert '">= 5.79"' in config
-    assert 'cluster_name         = "infra-11111111-abcd1234"' in config
+    # The cluster name must be exactly what eks_teardown resolves the cluster by;
+    # if these drift the orphan reap deletes load balancers for a live cluster.
+    assert f'cluster_name         = "{naming.environment_name(INFRA_ID)}"' in config
+    assert f'environment          = "{naming.environment_name(INFRA_ID)}"' in config
     assert 'cluster_version      = "1.31"' in config
     assert 'public_access_cidrs  = ["203.0.113.0/24", "198.51.100.7/32"]' in config
     assert f'arn:aws:iam::{ACCOUNT_ID}:role/LaunchpadDeploymentRole' in config
@@ -156,6 +160,15 @@ def test_eks_config_allowlists_cluster_version(eks_cidrs):
             TerraformWorker._generate_config(
                 {**VARS, "cluster_version": bad}, *ARGS, ComputeType.EKS, ACCOUNT_ID
             )
+
+
+def test_eks_config_validates_account_id(eks_cidrs):
+    """account_id is interpolated into a quoted HCL argument. It is validated on the API
+    create/update paths, but the worker reads it straight off the persisted row — so it is
+    re-checked here, at the interpolation sink, like cluster_version and the CIDR list."""
+    for bad in ('12345678901"', 'evil"\n  provisioner "local-exec" {}', "12345678901", "", "abcdefghijkl"):
+        with pytest.raises(ValueError, match="account_id"):
+            TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, bad)
 
 
 def test_eks_config_refuses_empty_or_open_cidrs(settings):
