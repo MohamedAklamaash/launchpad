@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from shared.enums.orchestrator import ComputeType
 
 REFS = {
     "runtime": "eks", "namespace": "app-myapp", "configmap": "myapp-nginx",
@@ -86,6 +87,10 @@ def test_ecs_application_still_enqueues_the_legacy_shape(application, enqueued, 
     application.runtime_refs = None
     application.target_group_arn = "arn:aws:elasticloadbalancing:::targetgroup/t/1"
     application.save()
+    # The shared fixture builds an EKS infrastructure. Clearing runtime_refs alone would
+    # leave compute_type as "eks", so an ECS-path regression could pass unnoticed here.
+    application.infrastructure.compute_type = ComputeType.ECS_FARGATE
+    application.infrastructure.save(update_fields=["compute_type"])
     monkeypatch.setattr(
         "api.services.infrastructure_permissions.InfrastructurePermissions.can_delete_application",
         staticmethod(lambda *_a: True),

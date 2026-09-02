@@ -75,7 +75,10 @@ http {{
 
 
 def inject_routing_envs(env_vars, app_name):
-    env_vars = [e for e in env_vars if e['name'] not in ('ROOT_PATH', 'UVICORN_ROOT_PATH', 'FORWARDED_ALLOW_IPS', 'HOSTNAME', 'HOST')]
+    # Strip only the routing keys we own. HOSTNAME/HOST are deliberately left in place:
+    # removing them here would make the "has the app already set them?" check below always
+    # true, so a user-configured HOST would be silently replaced by 0.0.0.0.
+    env_vars = [e for e in env_vars if e['name'] not in ('ROOT_PATH', 'UVICORN_ROOT_PATH', 'FORWARDED_ALLOW_IPS')]
     env_vars += [
         {'name': 'ROOT_PATH', 'value': f'/{app_name}'},
         {'name': 'UVICORN_ROOT_PATH', 'value': f'/{app_name}'},

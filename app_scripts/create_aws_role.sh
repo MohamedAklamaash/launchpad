@@ -167,9 +167,12 @@ fi
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
 
 if [ "$COMPUTE_TYPE" = "eks" ]; then
-  # Create/List/Describe don't accept resource-level scoping; every mutating action is
-  # scoped to infra-* clusters. The Deny exists because an unscoped eks:CreateAccessEntry
-  # is one API call to cluster-admin on pre-existing clusters in this account.
+  # eks:CreateCluster and the List/catalog calls (eks:DescribeAddonVersions) genuinely
+  # cannot be resource-scoped, so they sit on "*". Every mutating action is scoped to
+  # infra-* clusters. Two Denies backstop that: eks:CreateAccessEntry is one API call to
+  # cluster-admin on a pre-existing cluster, and eks:DescribeCluster — which IS
+  # resource-scoped, despite sitting in the Describe* wildcard above — returns the API
+  # endpoint, CA and OIDC issuer for any cluster in the account.
   EKS_STATEMENTS=$(cat <<EOF
 ,
     {
@@ -195,7 +198,8 @@ if [ "$COMPUTE_TYPE" = "eks" ]; then
       "Effect": "Deny",
       "Action": [
         "eks:*AccessEntr*",
-        "eks:*AccessPolic*"
+        "eks:*AccessPolic*",
+        "eks:DescribeCluster"
       ],
       "NotResource": [
         "arn:aws:eks:*:${ACCOUNT_ID}:cluster/infra-*",

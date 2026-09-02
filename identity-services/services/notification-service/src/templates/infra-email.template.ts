@@ -141,7 +141,7 @@ const ERROR_SUMMARIES: { test: RegExp; message: string }[] = [
             "Launchpad could not reach your Kubernetes cluster's API. This is usually temporary — retry from the dashboard.",
     },
     {
-        test: /\beks\b[\s\S]*cluster[\s\S]*(timed?\s?out|timeout|did\s?not\s?become)|cluster\s?creat(e|ion)?[\s\S]*(timed?\s?out|timeout)/i,
+        test: /\beks\b[\s\S]*cluster[\s\S]*(timed?\s?out|timeout|did\s?not\s?become)|\beks\b[\s\S]*cluster\s?creat(e|ion)?[\s\S]*(timed?\s?out|timeout)/i,
         message:
             'The Kubernetes cluster did not finish creating in time. Cluster creation can take up to 20 minutes — retry from the dashboard.',
     },

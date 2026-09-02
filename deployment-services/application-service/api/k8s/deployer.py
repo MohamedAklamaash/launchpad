@@ -18,7 +18,14 @@ from api.mock import mock_k8s
 logger = logging.getLogger(__name__)
 
 INGRESS_CLASS_NAME = "launchpad-alb"
-NGINX_IMAGE = "public.ecr.aws/nginx/nginx:alpine"
+# Pinned by digest, not tag: a mutable tag means a later rollout can run changed upstream
+# content into every customer's cluster with no change in this repository. This is the
+# 1.27-alpine manifest list (linux/amd64 + linux/arm64 — EKS Auto Mode provisions both).
+# Bump deliberately: re-resolve the tag's digest and update this line in its own commit.
+NGINX_IMAGE = (
+    "public.ecr.aws/nginx/nginx@sha256:"
+    "8f755514b13901f9dc92627c363552ecfedc2e7e13fa36471e5bf0d4188cf21c"
+)
 # NET_BIND_SERVICE is dropped along with every other capability, so the sidecar
 # cannot bind port 80.
 NGINX_PORT = 18080

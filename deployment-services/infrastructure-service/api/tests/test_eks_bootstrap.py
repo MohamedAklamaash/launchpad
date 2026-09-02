@@ -111,3 +111,14 @@ def test_bootstrap_refuses_dev_or_mock(monkeypatch):
             SimpleNamespace(id="x", is_mock=False),
             credentials={}, region="us-east-1", cluster_name="infra-x",
         )
+
+
+def test_bootstrap_refuses_a_mock_infra_outside_dev_mode(monkeypatch):
+    """The dev-mode case above short-circuits before is_mock is ever read, so it cannot
+    catch a regression that lets a mock infrastructure bootstrap against real AWS."""
+    monkeypatch.setattr(eb, "is_dev_mode", lambda mode: False)
+    with pytest.raises(eb.EksBootstrapError, match="dev/mock"):
+        eb.bootstrap_eks_environment(
+            SimpleNamespace(id="x", is_mock=True),
+            credentials={}, region="us-east-1", cluster_name="infra-x",
+        )

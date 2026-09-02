@@ -276,8 +276,14 @@ class ApplicationService:
         
         return self.deployment_service.deploy_application(app)
     
+    @transaction.atomic
     def update_application(self, user_id: str, app_id: str, update_data: dict):
-        """Update application configuration."""
+        """Update application configuration.
+
+        Transactional so `_reserve_slug`'s row lock is still held when the new name is
+        saved; otherwise two concurrent renames can each pass the collision scan and then
+        save names that collapse to the same slug — and so the same Kubernetes resources.
+        """
         app = self.app_repo.get_by_id(app_id)
         if not app:
             raise PermissionError("Application not found")
@@ -344,18 +350,11 @@ class ApplicationService:
             new_cpu = float(update_data.get('alloted_cpu', app.alloted_cpu))
             new_mem = float(update_data.get('alloted_memory', app.alloted_memory))
             
-            valid_combinations = {
-                0.25: (0.5, 2.0), 0.5: (1.0, 4.0), 1.0: (2.0, 8.0),
-                2.0: (4.0, 16.0), 4.0: (8.0, 30.0)
-            }
-            if new_cpu not in valid_combinations:
-                raise ValueError(f"Invalid CPU. Must be one of: {list(valid_combinations.keys())}")
-            min_mem, max_mem = valid_combinations[new_cpu]
-            if not (min_mem <= new_mem <= max_mem):
-                raise ValueError(f"For {new_cpu} vCPU, memory must be {min_mem}-{max_mem}GB")
-            
+            # Same rule as the create path: the Fargate matrix applies to ECS only,
+            # Kubernetes accepts any positive request.
+            self._validate_compute_shape(infra, new_cpu, new_mem)
+
             # Check infrastructure quota
-            infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
             totals = self.app_repo.get_total_resources_for_infra(app.infrastructure_id)
             current_cpu = (totals.get("total_cpu") or 0) - app.alloted_cpu
             current_mem = (totals.get("total_memory") or 0) - app.alloted_memory
@@ -379,6 +378,6 @@ class ApplicationService:
 
         if update_fields:
             app.save(update_fields=update_fields)
-            ApplicationEventProducer.publish_application_updated(app)
+            transaction.on_commit(lambda: ApplicationEventProducer.publish_application_updated(app))
 
         return app
