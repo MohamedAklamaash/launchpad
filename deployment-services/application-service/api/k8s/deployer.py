@@ -141,8 +141,29 @@ class EKSDeployer:
         self.slug = require_k8s_safe_slug(application.name)
         self.namespace = namespace_for(self.slug)
         self.cluster_name = cluster_name_from_arn(environment.cluster_arn)
-        # Matches the default the terraform vpc module is given for this infrastructure.
-        self.vpc_cidr = (self.infrastructure.metadata or {}).get("vpc_cidr", "10.0.0.0/16")
+
+    def _alb_subnet_cidrs(self) -> list:
+        """CIDRs of the subnets the ALB has ENIs in, read from EC2 rather than derived from
+        vpc_cidr — the public/private split is a terraform detail and recomputing it here
+        would be a second copy free to drift.
+
+        Fails closed: if the subnets cannot be resolved, the ALB peer is simply omitted.
+        That breaks external ingress for this app loudly instead of quietly widening the
+        policy to every pod in the cluster.
+        """
+        try:
+            ec2 = self.session.client("ec2")
+            response = ec2.describe_subnets(Filters=[
+                {"Name": "vpc-id", "Values": [self.environment.vpc_id]},
+                {"Name": "tag:Type", "Values": ["public"]},
+            ])
+        except Exception:
+            logger.exception(
+                "Could not resolve public subnets for vpc %s; the ingress policy for %s will "
+                "not admit the load balancer", self.environment.vpc_id, self.slug,
+            )
+            return []
+        return [s["CidrBlock"] for s in response.get("Subnets", []) if s.get("CidrBlock")]
 
     def deploy(self, image_uri: str, created_resources: list) -> dict:
         # Persist the handles before creating anything: a worker that dies mid-deploy must
@@ -249,9 +270,11 @@ class EKSDeployer:
                     policy_types=["Ingress"],
                     ingress=[
                         # The ALB targets pod IPs from outside the cluster, so it cannot be
-                        # expressed as a peer. Restrict the reachable surface to this
-                        # namespace plus that external path rather than leaving `from`
-                        # empty, which would match every source on the cluster.
+                        # expressed as a namespace/pod peer. It has to come in as an ipBlock,
+                        # but that block must be the ALB's own public subnets and NOT the whole
+                        # VPC CIDR: the VPC CNI hands pods addresses out of the private subnets
+                        # of that same VPC, so a vpc-wide block silently readmits every other
+                        # tenant's pods on this port and undoes the default-deny above.
                         k8s.V1NetworkPolicyIngressRule(
                             _from=[
                                 k8s.V1NetworkPolicyPeer(
@@ -259,8 +282,9 @@ class EKSDeployer:
                                         match_labels={"kubernetes.io/metadata.name": self.namespace}
                                     )
                                 ),
-                                k8s.V1NetworkPolicyPeer(
-                                    ip_block=k8s.V1IPBlock(cidr=self.vpc_cidr)
+                                *(
+                                    k8s.V1NetworkPolicyPeer(ip_block=k8s.V1IPBlock(cidr=cidr))
+                                    for cidr in self._alb_subnet_cidrs()
                                 ),
                             ],
                             ports=[k8s.V1NetworkPolicyPort(port=NGINX_PORT, protocol="TCP")],

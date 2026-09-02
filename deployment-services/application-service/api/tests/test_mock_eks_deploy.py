@@ -78,6 +78,14 @@ def _objects(application):
     return mock_k8s.get_mock_apis(str(application.infrastructure_id)).state.objects
 
 
+def _object_body(application, kind, name):
+    objects = mock_k8s.get_mock_apis(str(application.infrastructure_id)).state.objects
+    for (obj_kind, _ns, obj_name), body in objects.items():
+        if obj_kind == kind and obj_name == name:
+            return body
+    raise AssertionError(f"{kind}/{name} was never applied")
+
+
 @pytest.mark.django_db
 def test_full_eks_deploy_reaches_active(application, deploy):
     url = deploy(application)
@@ -98,6 +106,20 @@ def test_full_eks_deploy_reaches_active(application, deploy):
     assert ("networkpolicy", "default-deny-ingress") in kinds
     assert ("networkpolicy", "allow-serving-port") in kinds
     assert ("networkpolicy", "allow-egress") in kinds
+
+    # Cross-tenant isolation: the serving-port policy must admit the ALB's own public
+    # subnets and nothing wider. The VPC CNI gives pods addresses inside the VPC CIDR, so
+    # an ipBlock of the whole VPC would readmit every other tenant's pods on this port and
+    # quietly undo default-deny-ingress.
+    policy = _object_body(application, "networkpolicy", "allow-serving-port")
+    blocks = [
+        peer.ip_block.cidr
+        for rule in policy.spec.ingress
+        for peer in rule._from
+        if peer.ip_block is not None
+    ]
+    assert blocks == ["10.0.0.0/24", "10.0.1.0/24"], blocks
+    assert "10.0.0.0/16" not in blocks
     assert ("configmap", "myapp-nginx") in kinds
     assert ("deployment", "myapp") in kinds
     assert ("service", "myapp") in kinds

@@ -208,12 +208,28 @@ class MockClient:
         return {}
 
     def describe_subnets(self, **kwargs):
-        return {
-            "Subnets": [
-                {"SubnetId": _hex_resource_id("subnet", f"{self._account_id}-a")},
-                {"SubnetId": _hex_resource_id("subnet", f"{self._account_id}-b")},
-            ]
-        }
+        # Mirrors the terraform vpc module: two public subnets at cidrsubnet(vpc_cidr, 8, 0..1)
+        # and two private at +2..3, tagged Type=public/private. CidrBlock is included because
+        # the EKS ingress NetworkPolicy resolves the ALB's subnets through this call — a stub
+        # without it would let the mock path silently skip that peer.
+        subnets = [
+            {"SubnetId": _hex_resource_id("subnet", f"{self._account_id}-pub-a"),
+             "CidrBlock": "10.0.0.0/24", "Tags": [{"Key": "Type", "Value": "public"}]},
+            {"SubnetId": _hex_resource_id("subnet", f"{self._account_id}-pub-b"),
+             "CidrBlock": "10.0.1.0/24", "Tags": [{"Key": "Type", "Value": "public"}]},
+            {"SubnetId": _hex_resource_id("subnet", f"{self._account_id}-priv-a"),
+             "CidrBlock": "10.0.2.0/24", "Tags": [{"Key": "Type", "Value": "private"}]},
+            {"SubnetId": _hex_resource_id("subnet", f"{self._account_id}-priv-b"),
+             "CidrBlock": "10.0.3.0/24", "Tags": [{"Key": "Type", "Value": "private"}]},
+        ]
+        for f in kwargs.get("Filters", []):
+            if f.get("Name") == "tag:Type":
+                wanted = set(f.get("Values", []))
+                subnets = [
+                    s for s in subnets
+                    if any(t["Key"] == "Type" and t["Value"] in wanted for t in s["Tags"])
+                ]
+        return {"Subnets": subnets}
 
     def describe_security_groups(self, **kwargs):
         return {"SecurityGroups": []}
