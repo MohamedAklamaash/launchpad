@@ -23,7 +23,7 @@ Intended outcome: a user picks "Kubernetes" in the create-infrastructure wizard,
 - `compute_type` typed end-to-end: model → serializer → gateway body → frontend, immutable after create, gated by an `EKS_ENABLED` server-side flag.
 - EKS infra provisions cluster + VPC + ECR + IAM into the customer account via the existing terraform worker, reaching `ACTIVE` with a populated `alb_dns`, exactly like ECS.
 - App deploy on EKS reuses the CodeBuild pipeline unchanged and produces the same `deployment_url` scheme, status lifecycle, and failure-unwind semantics.
-- Destroy works: controller-created ALBs/ENIs (which live outside Terraform state) are reaped **before** `terraform destroy`, on all three teardown entry points.
+- Destroy works: controller-created ALBs/ENIs (which live outside Terraform state) are reaped **before** `terraform destroy`, on both teardown paths that can reach a live cluster (destroy dispatch and inline rollback-destroy). `delete_infrastructure`'s immediate-delete path is gated so it is unreachable while a cluster can exist.
 - Full mock/dev parity: `LAUNCHPAD_MOCK=1` onboarding, `_mock_provision`, MockSession-style deploy tests, paired mock/real hard-gate assertions preserved at every seam.
 - Zero new binaries in any Docker image — pure-Python cluster access (no `kubectl`, no `helm`, no `aws` CLI).
 - Every migration additive; existing ECS rows default to `ecs_fargate`.
@@ -87,7 +87,7 @@ Each ships alone with ECS green and the flag off until Phase 5.
 
 1. **Plumbing** — enum, `Infrastructure.compute_type` + mirror column + migrations, serializers/types, gateway body, producer payloads + consumer, `EKS_ENABLED` rejection at create *and* dispatch.
 2. **Onboarding + STS** — scoped EKS policy statements (compute_type-gated), max-session-duration on both script branches, `DurationSeconds`, fresh-creds-per-dispatch, **drop both credential writers + purge migration**, dedup TTL bump.
-3. **Provision/destroy** — `modules/eks`, vpc tag variable, config builders, `_save_outputs` map, `shared/k8s/*`, `eks_bootstrap.py`, CNI network-policy enablement, pre-destroy k8s cleanup across all three teardown paths, mock fixtures branch, transient-error patterns.
+3. **Provision/destroy** — `modules/eks`, vpc tag variable, config builders, `_save_outputs` map, `shared/k8s/*`, `eks_bootstrap.py`, CNI network-policy enablement, pre-destroy k8s cleanup on both teardown paths that can reach a live cluster, mock fixtures branch, transient-error patterns.
 4. **Deploy** — `IMAGE_TAG` buildspec, `EKSDeployer` + `aws/eks.py`, per-app namespace with quota/PSA/NetworkPolicy, `runtime_refs` + migration, slug-uniqueness migration, cleanup/queue/worker runtime branch, retry/delete snapshot fix, serializer gating, `mock_k8s.py`.
 5. **Surface** — frontend selector + conditional CPU/memory UI, notification buckets, docs, CI terraform job, flip `EKS_ENABLED` default.
 
@@ -166,7 +166,7 @@ Each ships alone with ECS green and the flag off until Phase 5.
 | **H1** Fail-dangerous ALB deletion fallback on a forgeable tag | Positive-signal trigger only; `VpcId` as a second non-forgeable predicate; batch bound + full match-set logging |
 | **H2** Doubling cred lifetime while creds sit in Postgres plaintext | Both writers dropped; stored creds purged by migration; max-session-duration gated like C1; fallback logs no exception text |
 | **H3** New builder inside the top RCE sink | Select on the model column only; `cluster_version` allowlist; subprocess `env=` allowlist |
-| **H4** Orphaned clusters on the no-terraform teardown path | All three teardown entry points run the EKS pre-destroy reap |
+| **H4** Orphaned clusters on the no-terraform teardown path | Two entry points run the reap (destroy dispatch and the inline rollback-destroy). The third — `delete_infrastructure`'s immediate-delete path — does **not**, and does not need to: the `never_provisioned` gate routes every state that could have live resources (ACTIVE, and any ERROR that was ever onboarded or activated) to async destroy, so the immediate path is reachable only for PENDING, DESTROYED, or an ERROR that never authenticated and never activated — none of which can have a cluster. The gate is the control; verify it, not the caller count. |
 | **H5** 15-min presigned bearer token | `expires_in=60`; `x-k8s-aws-id` asserted in `X-Amz-SignedHeaders`; token/Configuration leak paths closed |
 | **M1** `EKS_ENABLED` not a kill switch | Checked at provision dispatch, not only at create; immutability locked by test |
 | **M2** One identity holds cluster-admin for provision *and* deploy | Split access entries |
@@ -207,7 +207,7 @@ Noted as pre-existing and **not** fixed here: the GitHub token plaintext fallbac
 
 ## Risks
 
-- **Destroy wedges on VPC teardown** (controller ALB/ENIs outside TF state) — high likelihood if unmitigated. Mitigated by the reap + guarded fallback across all three teardown paths.
+- **Destroy wedges on VPC teardown** (controller ALB/ENIs outside TF state) — high likelihood if unmitigated. Mitigated by the reap + guarded fallback on both teardown paths that can reach a live cluster.
 - **ALB never materializes at bootstrap** (controller lag, subnet tag mistakes, ELB quota) — infra ERRORs with a healthy cluster. Generous timeout, distinct error string → notification bucket, rollback cleans up.
 - **`environment.updated` cross-service drift** — the widest blast radius. Additive-only payload, consumer deployed first, both-shapes test.
 - **Cross-namespace Ingress groups**: the AWS LBC lets any namespace join a named group. All namespaces here are Launchpad-created, so this is contained — but it becomes a real issue the moment a customer gets namespace-create rights on these clusters. Document the assumption.

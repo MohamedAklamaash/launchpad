@@ -32,8 +32,12 @@ C4 namespace-per-app + slug uniqueness scoped to infrastructure → `deployer.py
 H1 fail-safe ALB reap (positive signal only + VpcId predicate + batch bound) → `eks_teardown.py`.
 H2 both credential writers dropped + purge migrations → `authenticate.py`, `aws/session.py`.
 H3 select on model column only, `cluster_version` allowlist, subprocess `env=` allowlist → `terraform_worker.py`.
-H4 all three teardown entry points → `terraform_worker.py` (dispatch + inline rollback) and
-`infrastructure.py::delete_infrastructure` (wired by hand, refuses delete if reap fails).
+H4 the two teardown paths that can reach a live cluster → `terraform_worker.py` (dispatch +
+inline rollback). `infrastructure.py::delete_infrastructure` does not reap and does not need to:
+its `never_provisioned` gate routes ACTIVE, and any ERROR that was ever onboarded or activated,
+to async destroy — so the immediate-delete path is reachable only for PENDING, DESTROYED, or an
+ERROR that never authenticated and never activated. That gate is the control; a future change
+there is what would reopen H4, not the caller count.
 H5 `expires_in=60` + signed `x-k8s-aws-id` → `shared/k8s/token.py`, asserted in `test_k8s_token.py`.
 M1 `EKS_ENABLED` at dispatch → `run_worker.py`. M2 split access entries → `modules/eks`.
 M3 pod security → `deployer.py`. M4 no captured-group interpolation → `infra-email.template.ts`.
