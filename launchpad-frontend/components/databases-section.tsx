@@ -77,8 +77,13 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
     }
   };
 
+  // Assigned in an effect, not during render: React treats a ref write during render as a
+  // bug (the component can miss the update), and newer eslint-plugin-react-hooks errors on
+  // it. The poll below only reads .current every 5s, so updating it after paint is fine.
   const hasInFlight = useRef(false);
-  hasInFlight.current = databases.some((d) => IN_FLIGHT.includes(d.status));
+  useEffect(() => {
+    hasInFlight.current = databases.some((d) => IN_FLIGHT.includes(d.status));
+  }, [databases]);
 
   useEffect(() => {
     load();
