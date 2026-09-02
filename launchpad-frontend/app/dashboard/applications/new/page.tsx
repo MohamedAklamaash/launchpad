@@ -22,6 +22,11 @@ const CPU_MEMORY_MAP: Record<number, number[]> = {
   4: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
 };
 
+const EKS_CPU_MIN = 0.25;
+const EKS_CPU_MAX = 16;
+const EKS_MEMORY_MIN = 0.5;
+const EKS_MEMORY_MAX = 64;
+
 const STEPS = [
   { title: 'General', sub: 'Identity', blurb: 'Name your app and pick where it runs.', icon: Box },
   { title: 'Repository', sub: 'Source', blurb: 'Point us at your GitHub source and how to build it.', icon: GitBranch },
@@ -60,18 +65,28 @@ function NewApplicationPageInner() {
 
   const set = (k: string, v: string | number) => setForm((p) => ({ ...p, [k]: v }));
 
+  const selectedInfra = infrastructures.find((i) => i.id === form.infrastructure_id);
+  const isEks = selectedInfra?.compute_type === 'eks';
+
   const checks = {
     infra: form.infrastructure_id.trim().length > 0,
     name: /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(form.name),
     url: /^https?:\/\/.+/.test(form.project_remote_url.trim()),
     port: form.port >= 1024 && form.port <= 65535,
+    cpu: isEks
+      ? form.alloted_cpu >= EKS_CPU_MIN && form.alloted_cpu <= EKS_CPU_MAX
+      : form.alloted_cpu in CPU_MEMORY_MAP,
+    memory: isEks
+      ? form.alloted_memory >= EKS_MEMORY_MIN && form.alloted_memory <= EKS_MEMORY_MAX
+      : (CPU_MEMORY_MAP[form.alloted_cpu] ?? []).includes(form.alloted_memory),
   };
-  const stepValid = [checks.infra && checks.name, checks.url, checks.port, true];
+  const stepValid = [checks.infra && checks.name, checks.url, checks.port && checks.cpu && checks.memory, true];
   const firstInvalid = stepValid.findIndex((v) => !v);
   const gate = firstInvalid === -1 ? STEPS.length - 1 : firstInvalid;
   const readyCount = Object.values(checks).filter(Boolean).length;
+  const totalChecks = Object.keys(checks).length;
 
-  const infraName = infrastructures.find((i) => i.id === form.infrastructure_id)?.name;
+  const infraName = selectedInfra?.name;
   const isLast = step === STEPS.length - 1;
 
   useEffect(() => {
@@ -83,6 +98,19 @@ function NewApplicationPageInner() {
       .then((data) => setInfrastructures(data.filter((i) => i.status === 'ACTIVE')))
       .catch(() => toast.error('Failed to load infrastructures', { id: 'app-new-infra-load' }));
   }, []);
+
+  const selectInfra = (id: string) => {
+    set('infrastructure_id', id);
+    const infra = infrastructures.find((i) => i.id === id);
+    if (infra?.compute_type === 'eks') return;
+    const ladder = CPU_MEMORY_MAP[form.alloted_cpu];
+    if (!ladder) {
+      set('alloted_cpu', 0.25);
+      set('alloted_memory', 0.5);
+    } else if (!ladder.includes(form.alloted_memory)) {
+      set('alloted_memory', ladder[0]);
+    }
+  };
 
   const go = (i: number) => { setDir(i > step ? 1 : -1); setStep(i); };
   const next = () => { if (!isLast && stepValid[step]) go(step + 1); };
@@ -145,7 +173,7 @@ function NewApplicationPageInner() {
               {step === 0 && (
                 <div>
                   <Field icon={<Box className="w-3.5 h-3.5" />} label="Infrastructure">
-                    <Select value={form.infrastructure_id} onValueChange={(v) => v && set('infrastructure_id', v)} required>
+                    <Select value={form.infrastructure_id} onValueChange={(v) => v && selectInfra(v)} required>
                       <SelectTrigger className={triggerCls}><SelectValue placeholder="Select infrastructure">{infraName}</SelectValue></SelectTrigger>
                       <SelectContent className="bg-popover border-hairline">
                         {infrastructures.map((i) => (
@@ -192,31 +220,50 @@ function NewApplicationPageInner() {
                       onChange={(e) => set('port', e.target.value === '' ? NaN : parseInt(e.target.value, 10))}
                       min={1024} max={65535} className={monoInputCls} />
                   </Field>
-                  <Field icon={<Cpu className="w-3.5 h-3.5" />} label="CPU">
-                    <Select value={String(form.alloted_cpu)} onValueChange={(v) => {
-                      if (!v) return;
-                      const cpu = parseFloat(v);
-                      set('alloted_cpu', cpu);
-                      set('alloted_memory', CPU_MEMORY_MAP[cpu][0]);
-                    }}>
-                      <SelectTrigger className={triggerCls + ' font-mono'}><SelectValue /></SelectTrigger>
-                      <SelectContent className="bg-popover border-hairline">
-                        {Object.keys(CPU_MEMORY_MAP).map((c) => (
-                          <SelectItem key={c} value={c} className="text-sm font-mono">{c} vCPU</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field icon={<HardDrive className="w-3.5 h-3.5" />} label="Memory">
-                    <Select value={String(form.alloted_memory)} onValueChange={(v) => v && set('alloted_memory', parseFloat(v))}>
-                      <SelectTrigger className={triggerCls + ' font-mono'}><SelectValue /></SelectTrigger>
-                      <SelectContent className="bg-popover border-hairline">
-                        {CPU_MEMORY_MAP[form.alloted_cpu].map((m) => (
-                          <SelectItem key={m} value={String(m)} className="text-sm font-mono">{m} GB</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
+                  {isEks ? (
+                    <>
+                      <Field icon={<Cpu className="w-3.5 h-3.5" />} label="CPU" hint={`${EKS_CPU_MIN} - ${EKS_CPU_MAX} vCPU`}>
+                        <Input type="number" step="0.25" min={EKS_CPU_MIN} max={EKS_CPU_MAX}
+                          value={Number.isNaN(form.alloted_cpu) ? '' : form.alloted_cpu}
+                          onChange={(e) => set('alloted_cpu', e.target.value === '' ? NaN : parseFloat(e.target.value))}
+                          className={monoInputCls} />
+                      </Field>
+                      <Field icon={<HardDrive className="w-3.5 h-3.5" />} label="Memory" hint={`${EKS_MEMORY_MIN} - ${EKS_MEMORY_MAX} GB`}>
+                        <Input type="number" step="0.5" min={EKS_MEMORY_MIN} max={EKS_MEMORY_MAX}
+                          value={Number.isNaN(form.alloted_memory) ? '' : form.alloted_memory}
+                          onChange={(e) => set('alloted_memory', e.target.value === '' ? NaN : parseFloat(e.target.value))}
+                          className={monoInputCls} />
+                      </Field>
+                    </>
+                  ) : (
+                    <>
+                      <Field icon={<Cpu className="w-3.5 h-3.5" />} label="CPU">
+                        <Select value={String(form.alloted_cpu)} onValueChange={(v) => {
+                          if (!v) return;
+                          const cpu = parseFloat(v);
+                          set('alloted_cpu', cpu);
+                          set('alloted_memory', CPU_MEMORY_MAP[cpu][0]);
+                        }}>
+                          <SelectTrigger className={triggerCls + ' font-mono'}><SelectValue /></SelectTrigger>
+                          <SelectContent className="bg-popover border-hairline">
+                            {Object.keys(CPU_MEMORY_MAP).map((c) => (
+                              <SelectItem key={c} value={c} className="text-sm font-mono">{c} vCPU</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                      <Field icon={<HardDrive className="w-3.5 h-3.5" />} label="Memory">
+                        <Select value={String(form.alloted_memory)} onValueChange={(v) => v && set('alloted_memory', parseFloat(v))}>
+                          <SelectTrigger className={triggerCls + ' font-mono'}><SelectValue /></SelectTrigger>
+                          <SelectContent className="bg-popover border-hairline">
+                            {(CPU_MEMORY_MAP[form.alloted_cpu] ?? []).map((m) => (
+                              <SelectItem key={m} value={String(m)} className="text-sm font-mono">{m} GB</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -248,7 +295,7 @@ function NewApplicationPageInner() {
             </Button>
             <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
               Stage {String(step + 1).padStart(2, '0')} / {String(STEPS.length).padStart(2, '0')}
-              <span className="ml-2 text-muted-foreground/50">{readyCount}/4 ready</span>
+              <span className="ml-2 text-muted-foreground/50">{readyCount}/{totalChecks} ready</span>
             </span>
             <div className="ml-auto">
               {isLast ? (

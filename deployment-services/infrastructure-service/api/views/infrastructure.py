@@ -364,6 +364,7 @@ def infrastructure_onboarding_callback(request: HttpRequest):
             infra_id=infra.id,
             name=infra.name,
             cloud_provider=infra.cloud_provider,
+            compute_type=infra.compute_type,
             max_cpu=infra.max_cpu,
             max_memory=infra.max_memory,
             code=infra.code,

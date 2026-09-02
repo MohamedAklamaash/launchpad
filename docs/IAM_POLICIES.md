@@ -21,8 +21,14 @@ export LAUNCHPAD_INFRA_ID=<your-infra-uuid>
 export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
 export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/onboarding/callback
 export LAUNCHPAD_ONBOARDING_TOKEN=<one-time-token>
+export LAUNCHPAD_COMPUTE_TYPE=<ecs_fargate|eks>
 curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
 ```
+
+`LAUNCHPAD_COMPUTE_TYPE` matches the compute target you chose for the infrastructure
+(`ecs_fargate` is the default). `eks` adds the scoped EKS statements described in
+[EKS permissions](#eks-permissions-kubernetes-infrastructures); ECS-only accounts never
+receive them.
 
 The script creates:
 - IAM role: `LaunchpadDeploymentRole`
@@ -37,11 +43,55 @@ widen — see [Keeping the policy current](#keeping-the-policy-current).
 
 ---
 
+## EKS permissions (Kubernetes infrastructures)
+
+When an infrastructure is created with the **Kubernetes** compute target, the onboarding
+script (run with `LAUNCHPAD_COMPUTE_TYPE=eks`) adds EKS statements to
+`LaunchpadDeploymentPolicy`. They are deliberately **not** `eks:*` on `*`:
+
+- `eks:CreateCluster`, `eks:List*`, and `eks:Describe*` on `*` (create and read-only
+  actions cannot be resource-scoped before the cluster exists).
+- All mutating EKS actions scoped to `arn:aws:eks:*:<your-account-id>:cluster/infra-*`
+  and its `access-entry/*`, `addon/*`, and `nodegroup/*` children — Launchpad names every
+  cluster it creates `infra-<id>`, so the role can only mutate clusters Launchpad owns.
+- An explicit `Deny` on `eks:*AccessEntry*` and `eks:*AccessPolicy*` for clusters not
+  named `infra-*`.
+
+Also an explicit `Deny` on `eks:DescribeCluster` for clusters not named `infra-*`
+(it is resource-scoped despite matching the `Describe*` wildcard above, and returns a
+cluster's API endpoint, CA certificate and OIDC issuer).
+
+Why the scoping matters: `eks:CreateAccessEntry` on an unscoped resource would let the
+role grant itself cluster-admin on **any pre-existing EKS cluster in your account**. The
+resource scoping plus the explicit Deny confines Launchpad's *EKS* API surface to the
+clusters it provisions.
+
+This is defense in depth, not a containment boundary. `LaunchpadDeploymentPolicy` also
+grants `iam:*` on `*`, so the role can modify its own permissions and could reach a
+pre-existing cluster that way. The EKS scoping removes the one-API-call path to
+cluster-admin and makes any wider access require a deliberate, auditable IAM change —
+it does not make your existing clusters unreachable. Narrowing `iam:*` is tracked
+separately; if that matters to you, edit `launchpad-policy.json` before running the
+script.
+
+For EKS infrastructures the script also sets the role's `MaxSessionDuration` to 7200
+seconds — cluster provisioning can exceed the 1-hour default session.
+
+The generated script is the authoritative statement list
+([`app_scripts/create_aws_role.sh`](https://github.com/MohamedAklamaash/launchpad/blob/main/app_scripts/create_aws_role.sh));
+if this section and the script ever disagree, the script wins.
+
+---
+
 ## Manual Setup
 
 If you prefer to configure the role by hand instead of running the script, follow these
 instructions. **You must include the `ExternalId` condition** — the backend always
 presents it on AssumeRole, so a trust policy without it will fail with `AccessDenied`.
+
+Manual setup covers **ECS Fargate infrastructures only** — the policy below has no EKS
+statements. Kubernetes infrastructures require the script (with
+`LAUNCHPAD_COMPUTE_TYPE=eks`), which owns the scoped EKS statement list.
 
 ### Trust Policy for Cross-Account Role
 
@@ -230,6 +280,11 @@ deployments start failing with `AccessDenied`, re-run `create_aws_role.sh` — s
 the dashboard as the *Refresh policy script*. The same idempotent script re-applies the
 latest policy **and** trust policy in place; you don't recreate the role.
 
+**On a Kubernetes infrastructure, always export `LAUNCHPAD_COMPUTE_TYPE=eks` when
+re-running the script.** The EKS statements are added only when that variable is set;
+a refresh without it re-applies the ECS-only policy and silently drops the EKS
+permissions.
+
 Because one script owns the action list, the bootstrap and refresh paths can never drift
 apart, so a refresh never narrows your permissions by accident.
 
@@ -273,6 +328,13 @@ can't reach Launchpad, the IAM update still succeeds.
 - Create service roles for CodeBuild
 - PassRole to allow services to assume roles
 - Manage permissions for created resources
+
+**EKS (Kubernetes infrastructures only)**:
+- Create and manage the `infra-*` EKS Auto Mode cluster
+- Access entries for the provisioning and deploy identities
+- Cluster add-ons (VPC CNI network policy enforcement)
+- Scoped so pre-existing clusters in your account are untouchable (see
+  [EKS permissions](#eks-permissions-kubernetes-infrastructures))
 
 **CodeBuild Management**:
 - Build Docker images from your code

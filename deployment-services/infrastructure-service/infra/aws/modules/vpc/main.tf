@@ -29,11 +29,14 @@ resource "aws_subnet" "public" {
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
 
-  tags = {
-    Name        = "${var.environment}-public-${count.index + 1}"
-    Environment = var.environment
-    Type        = "public"
-  }
+  tags = merge(
+    {
+      Name        = "${var.environment}-public-${count.index + 1}"
+      Environment = var.environment
+      Type        = "public"
+    },
+    var.enable_elb_subnet_tags ? { "kubernetes.io/role/elb" = "1" } : {}
+  )
 }
 
 resource "aws_subnet" "private" {
@@ -42,11 +45,14 @@ resource "aws_subnet" "private" {
   cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 2)
   availability_zone = data.aws_availability_zones.available.names[count.index]
 
-  tags = {
-    Name        = "${var.environment}-private-${count.index + 1}"
-    Environment = var.environment
-    Type        = "private"
-  }
+  tags = merge(
+    {
+      Name        = "${var.environment}-private-${count.index + 1}"
+      Environment = var.environment
+      Type        = "private"
+    },
+    var.enable_elb_subnet_tags ? { "kubernetes.io/role/internal-elb" = "1" } : {}
+  )
 }
 
 resource "aws_eip" "nat" {

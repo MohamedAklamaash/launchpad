@@ -54,8 +54,7 @@ def create_boto3_session(infrastructure):
     if _is_mock_infrastructure(infrastructure):
         return _build_mock_session(infrastructure)
 
-    metadata = infrastructure.metadata or {}
-    if not metadata.get('aws_access_key_id') and not infrastructure.code:
+    if not infrastructure.code:
         raise ValueError("Infrastructure not authenticated with AWS")
 
     # Refreshable credentials: every client built from this session transparently re-assumes
@@ -95,9 +94,10 @@ def _refresh_credentials(infrastructure):
 
 
 def _assume_role_raw(infrastructure) -> dict:
-    """Assume LaunchpadDeploymentRole, persist creds to metadata, and return a botocore
-    refresh dict (access_key/secret_key/token/expiry_time). No rate-limiting — callers that
-    need it wrap this; RefreshableCredentials calls it only when a token nears expiry."""
+    """Assume LaunchpadDeploymentRole and return a botocore refresh dict
+    (access_key/secret_key/token/expiry_time); credentials are never persisted.
+    No rate-limiting — callers that need it wrap this; RefreshableCredentials
+    calls it only when a token nears expiry."""
     target_account_id = infrastructure.code
     sts_client = boto3.client(
         "sts",
@@ -113,14 +113,6 @@ def _assume_role_raw(infrastructure) -> dict:
     creds = response["Credentials"]
     expiry = creds["Expiration"]
     expiry_iso = expiry.isoformat() if hasattr(expiry, "isoformat") else str(expiry)
-    infrastructure.metadata = {
-        **(infrastructure.metadata or {}),
-        "aws_access_key_id": creds["AccessKeyId"],
-        "aws_secret_access_key": creds["SecretAccessKey"],
-        "aws_session_token": creds["SessionToken"],
-        "expiration": expiry_iso,
-    }
-    infrastructure.save()
     return {
         "access_key": creds["AccessKeyId"],
         "secret_key": creds["SecretAccessKey"],
@@ -137,18 +129,8 @@ def _build_real_session(infrastructure):
     def _refresh():
         return _assume_role_raw(infrastructure)
 
-    if metadata.get("aws_access_key_id") and metadata.get("expiration"):
-        seed = {
-            "access_key": metadata["aws_access_key_id"],
-            "secret_key": metadata["aws_secret_access_key"],
-            "token": metadata.get("aws_session_token"),
-            "expiry_time": metadata["expiration"],
-        }
-    else:
-        seed = _refresh()
-
     creds = RefreshableCredentials.create_from_metadata(
-        metadata=seed, refresh_using=_refresh, method="sts-assume-role",
+        metadata=_refresh(), refresh_using=_refresh, method="sts-assume-role",
     )
     botocore_session = _get_botocore_session()
     botocore_session._credentials = creds

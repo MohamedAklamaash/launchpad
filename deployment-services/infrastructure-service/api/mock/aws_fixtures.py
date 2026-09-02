@@ -1,13 +1,16 @@
 import hashlib
 from datetime import datetime, timedelta, timezone
 
+from api.common import naming
+from shared.enums.orchestrator import ComputeType
+
 DEFAULT_REGION = "us-west-2"
 MOCK_ACCOUNT_ID = "000000000000"
 MOCK_CREDENTIAL_TTL = timedelta(hours=12)
 
 
 def _suffix(infra_id) -> str:
-    return hashlib.md5(str(infra_id).encode()).hexdigest()[:8]
+    return naming.unique_suffix(infra_id)
 
 
 def _hex_id(prefix: str, infra_id, salt: str = "") -> str:
@@ -55,10 +58,21 @@ def synthesize_database_outputs(db, region: str = DEFAULT_REGION, account_id: st
     }
 
 
-def synthesize_environment_outputs(infra, region: str) -> dict:
+def synthesize_environment_outputs(infra, region: str, compute_type) -> dict:
     suffix = _suffix(infra.id)
     account_id = infra.code or MOCK_ACCOUNT_ID
-    env_name = f"infra-{str(infra.id)[:8]}-{suffix}"
+    env_name = naming.environment_name(infra.id)
+    if compute_type == ComputeType.EKS:
+        return {
+            "vpc_id": _hex_id("vpc", infra.id, "vpc"),
+            "cluster_arn": f"arn:aws:eks:{region}:{account_id}:cluster/{env_name}",
+            "alb_dns": f"dev-mock-{suffix}.{region}.elb.amazonaws.com",
+            "ecr_repository_url": f"{account_id}.dkr.ecr.{region}.amazonaws.com/{env_name}",
+            "alb_arn": None,
+            "alb_security_group_id": None,
+            "target_group_arn": None,
+            "ecs_task_execution_role_arn": None,
+        }
     return {
         "vpc_id": _hex_id("vpc", infra.id, "vpc"),
         "cluster_arn": f"arn:aws:ecs:{region}:{account_id}:cluster/{env_name}-cluster",

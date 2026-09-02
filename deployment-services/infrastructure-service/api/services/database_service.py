@@ -11,6 +11,7 @@ from api.services.infra_queue import InfraQueue
 from api.validators import validate_database_name
 from django.conf import settings
 from django.db import transaction
+from shared.enums.orchestrator import ComputeType
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,17 @@ class DatabaseService:
 
         if env.status != 'ACTIVE':
             raise ValueError(f"Environment must be ACTIVE to create a database (currently {env.status})")
+
+        # Managed databases are ECS-only for now. The EKS config builder emits no database
+        # module, and credential injection is ECS `secrets`/`valueFrom` — an EKS app has no
+        # path to the secret. Refuse up front rather than leaving a row that can never
+        # reconcile (and, once the EKS builder grows a database module, a billed instance
+        # nothing can reach).
+        if infra.compute_type != ComputeType.ECS_FARGATE:
+            raise ValueError(
+                "Managed databases are only available on ecs_fargate infrastructures. "
+                f"This infrastructure uses {infra.compute_type}."
+            )
 
         name = str(data.get('name', '')).strip()
         validate_database_name(name)

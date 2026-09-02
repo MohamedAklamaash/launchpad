@@ -7,6 +7,7 @@ from api.common.envs.application import app_config
 from api.models import Database, Environment, Infrastructure
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import OperationalError, connection, transaction
+from shared.enums.orchestrator import ComputeType
 from shared.resilience import ResilientPikaConsumer
 
 logger = logging.getLogger(__name__)
@@ -114,6 +115,15 @@ class EnvironmentEventConsumer:
                         "ecs_task_execution_role_arn": payload.get("ecs_task_execution_role_arn"),
                     }
                 )
+                # environment.updated also carries the infra's compute_type (absent/null from
+                # pre-EKS producers) — sync the mirror column so a missed infrastructure.created
+                # doesn't leave it stale.
+                compute_type = payload.get("compute_type")
+                if compute_type in ComputeType.values:
+                    Infrastructure.objects.filter(id=infra_id).exclude(
+                        compute_type=compute_type
+                    ).update(compute_type=compute_type)
+
                 # v2 payloads simply have no "databases" key — omitting it here (rather
                 # than defaulting to []) leaves the existing read-model rows untouched,
                 # so a v2 producer can never wipe out v3 database state.

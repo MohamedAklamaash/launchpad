@@ -324,3 +324,18 @@ def test_destroy_infra_refused_with_live_database(factory, make_infra_env, djang
 
     with pytest.raises(ValueError, match="database"):
         InfrastructureService().delete_infrastructure(user_id=owner.id, infra_id=infra.id)
+
+
+def test_create_rejects_eks_infrastructure(factory, make_infra_env):
+    """Managed databases are ECS-only: the EKS config builder emits no database module
+    and EKS apps have no path to a Secrets Manager credential, so a database row on an
+    EKS infra could never reconcile. Refuse at create rather than stranding the row."""
+    from api.views.database import database_list_create
+
+    owner, infra, _env = make_infra_env()
+    infra.compute_type = "eks"
+    infra.save(update_fields=["compute_type"])
+
+    resp = _create(factory, database_list_create, owner, str(infra.id), **VALID_CREATE)
+    assert resp.status_code == 400
+    assert "ecs_fargate" in resp.data["error"]

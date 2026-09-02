@@ -1,9 +1,10 @@
 import logging
-import re
 
 from aws.alb import ALBClient
 from aws.session import create_boto3_session
 
+from api.common.naming import app_slug
+from api.k8s.deployer import delete_runtime_resources
 from api.models import Application, Environment
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,14 @@ class ApplicationCleanupService:
                 return
             
             session = create_boto3_session(application.infrastructure)
-            
+
+            if application.runtime_refs:
+                delete_runtime_resources(
+                    session, application.infrastructure, environment, application.runtime_refs
+                )
+                logger.info(f"Successfully cleaned up Kubernetes resources for {application.name}")
+                return
+
             # Step 1: Delete ECS Service
             if application.service_arn:
                 self._delete_ecs_service(session, environment.cluster_arn, application.service_arn)
@@ -107,5 +115,4 @@ class ApplicationCleanupService:
     
     def _delete_log_group(self, session, app_name):
         """Keep log groups for debugging — just log and skip."""
-        slug = re.sub(r'[^a-z0-9._-]', '-', app_name.lower()).strip('-')
-        logger.info(f"Keeping log group /ecs/{slug}-task for debugging")
+        logger.info(f"Keeping log group /ecs/{app_slug(app_name)}-task for debugging")
