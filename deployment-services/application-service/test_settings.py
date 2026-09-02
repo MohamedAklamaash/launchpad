@@ -61,3 +61,10 @@ REDIS_PASSWORD = ""
 REDIS_DB = 0
 
 LOGGING_CONFIG = None
+
+# Per-app ceiling for Kubernetes applications. Fargate has a fixed CPU/memory ladder
+# topping out at 4 vCPU / 30 GB; Kubernetes has no such ladder, so it gets its own
+# ceiling rather than silently inheriting Fargate's. The infrastructure's
+# max_cpu/max_memory quota still applies on top of this.
+EKS_MAX_APP_CPU = float(os.environ.get('EKS_MAX_APP_CPU', '64'))
+EKS_MAX_APP_MEMORY = float(os.environ.get('EKS_MAX_APP_MEMORY', '256'))

@@ -36,7 +36,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install ruff
-        run: pip install ruff
+        # Pinned: an unpinned install means a new ruff release can turn CI red on a
+        # commit that changed nothing. Bump deliberately.
+        run: pip install ruff==0.16.5
 
       - name: Syntax check
         run: python -m compileall ${{ matrix.service }} -q

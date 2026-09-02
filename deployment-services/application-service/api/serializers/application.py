@@ -1,5 +1,6 @@
 import re
 
+from django.conf import settings
 from django.core.validators import RegexValidator, URLValidator
 from rest_framework import serializers
 from shared.enums.orchestrator import ComputeType
@@ -11,6 +12,12 @@ FARGATE_CPU_MEMORY = {
     2.0: (4.0, 16.0),
     4.0: (8.0, 30.0),
 }
+
+FARGATE_MAX_CPU = max(FARGATE_CPU_MEMORY)
+FARGATE_MAX_MEMORY = max(hi for _lo, hi in FARGATE_CPU_MEMORY.values())
+
+EKS_MAX_APP_CPU = settings.EKS_MAX_APP_CPU
+EKS_MAX_APP_MEMORY = settings.EKS_MAX_APP_MEMORY
 
 # DNS label validator (for application names)
 dns_label_validator = RegexValidator(
@@ -44,8 +51,11 @@ class ApplicationCreateSerializer(serializers.Serializer):
         help_text='Build context path relative to repo root. Defaults to Dockerfile directory. Use for monorepos.')
     port = serializers.IntegerField(min_value=1024, max_value=65535, default=8080)
     
-    alloted_cpu = serializers.FloatField(min_value=0.25, max_value=4.0, default=0.25)
-    alloted_memory = serializers.FloatField(min_value=0.5, max_value=30.0, default=0.5)
+    # Bounds here admit the widest compute type. The Fargate ladder (ECS) and the EKS
+    # ceiling are applied in validate(), which knows the infrastructure's compute_type —
+    # a 4.0/30.0 field bound would reject a legal Kubernetes request before it ran.
+    alloted_cpu = serializers.FloatField(min_value=0.25, max_value=EKS_MAX_APP_CPU, default=0.25)
+    alloted_memory = serializers.FloatField(min_value=0.5, max_value=EKS_MAX_APP_MEMORY, default=0.5)
     alloted_storage = serializers.FloatField(min_value=0.0, max_value=200.0, default=0.0)
     
     envs = serializers.JSONField(required=False, default=dict)
@@ -91,11 +101,18 @@ class ApplicationCreateSerializer(serializers.Serializer):
         cpu = data.get('alloted_cpu', 0.25)
         memory = data.get('alloted_memory', 0.5)
 
-        # Kubernetes accepts any positive request; only Fargate has a fixed CPU/memory matrix.
+        # Kubernetes accepts any positive request up to the platform's per-app ceiling;
+        # only Fargate has a fixed CPU/memory matrix.
         if self.context.get('compute_type') == ComputeType.EKS:
             if cpu <= 0 or memory <= 0:
                 raise serializers.ValidationError("CPU and memory must be greater than zero")
             return data
+
+        if cpu > FARGATE_MAX_CPU or memory > FARGATE_MAX_MEMORY:
+            raise serializers.ValidationError(
+                f"ECS Fargate applications are limited to {FARGATE_MAX_CPU} vCPU and "
+                f"{FARGATE_MAX_MEMORY}GB. Use a Kubernetes infrastructure for larger apps."
+            )
 
         if cpu not in FARGATE_CPU_MEMORY:
             raise serializers.ValidationError(

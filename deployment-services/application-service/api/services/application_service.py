@@ -2,6 +2,7 @@ import logging
 import os
 import uuid
 
+from django.conf import settings
 from django.db import transaction
 from shared.enums.orchestrator import ComputeType
 from shared.resilience.http_client import ResilientHttpClient
@@ -135,6 +136,11 @@ class ApplicationService:
         if cpu <= 0 or memory <= 0:
             raise ValueError("CPU and memory must be greater than zero")
         if getattr(infra, "compute_type", ComputeType.ECS_FARGATE) == ComputeType.EKS:
+            if cpu > settings.EKS_MAX_APP_CPU or memory > settings.EKS_MAX_APP_MEMORY:
+                raise ValueError(
+                    f"Kubernetes applications are limited to {settings.EKS_MAX_APP_CPU} vCPU "
+                    f"and {settings.EKS_MAX_APP_MEMORY}GB per application"
+                )
             return
         if cpu not in FARGATE_CPU_MEMORY:
             raise ValueError(f"Invalid CPU value. Must be one of: {list(FARGATE_CPU_MEMORY.keys())}")

@@ -3,7 +3,7 @@
 **Status:** Planning complete. Security review returned **BLOCK** — do not begin Phase 1
 implementation until the "Must fix before Phase 0" items below are resolved.
 
-Repo root: `/home/aklamaash/Desktop/launchpad`. Path prefixes:
+Path prefixes (relative to the repository root):
 **IS** = `deployment-services/infrastructure-service`, **AS** = `deployment-services/application-service`,
 **SH** = `deployment-services/shared`, **GW** = `gateway-service`, **FE** = `launchpad-frontend`,
 **NS** = `identity-services/services/notification-service`.
@@ -147,7 +147,9 @@ exhaustion during UPDATING parks the *rows*, returns env to ACTIVE.
 
 **Delete flow:** `DELETE /databases/<id>` (typed-name confirm enforced client-side, `confirm_name`
 server-side) → row DELETING → enqueue provision job → config regenerated without that module,
-final snapshot id recorded on the row → apply → row DELETED (soft, kept for audit). Delete must
+apply → row DELETED (soft, kept for audit). The snapshot *identifier* is assigned at create
+time from the Database row UUID and never recomputed; what the delete flow records is the
+resulting snapshot's AWS id once the apply reports it. Delete must
 work from ERROR. **Env/infra destroy is refused while any Database row is not DELETED** — the API
 returns the list of live DBs.
 
@@ -386,13 +388,20 @@ principal that can AssumeRole into *every* onboarded customer account. Injected 
 `terraform_data` + `local-exec` provisioner (builtin, no provider download) executing with that
 environment. One authenticated tenant → forge JWTs, bypass `X-INTERNAL-TOKEN`, assume into every
 customer AWS account.
-*Fix, Phase 0:* (1) `_exec_tf` passes an explicit env allowlist, never `**os.environ`. (2) Validate
-`metadata.vpc_cidr` (anchored CIDR regex) and `metadata.aws_region` (region allowlist) at the API
-boundary in `infrastructure.py`. (3) New DB fields: exact-match membership against settings
+*Inherited — already landed with the EKS deployment target, no work owed here:*
+(1) `_exec_tf` passes an explicit env allowlist, never `**os.environ`. (2) `metadata.vpc_cidr`
+and `metadata.aws_region` are validated at the API boundary in `infrastructure.py` *and*
+re-validated at the interpolation sink in `terraform_worker.py`; `account_id` and
+`cluster_version` are validated at the sink too, and the EKS builder emits its variable
+literals through `json.dumps`.
+
+*Still owed by this plan, Phase 0:* (3) New DB fields: exact-match membership against settings
 allowlists (not regex-shaped), `allocated_storage` as `int` with bounds, `name` matching
 `^[a-z][a-z0-9-]{2,30}$`. (4) `name` reaches three sinks (HCL block, secret name, snapshot id) —
-validate once at the boundary, never re-derive. (5) Longer-term: generate HCL via
-`terraform.tfvars.json`/`json.dumps` instead of f-string interpolation.
+validate once at the boundary, never re-derive. (5) Longer-term: generate the whole root
+config via `terraform.tfvars.json` instead of f-string interpolation — the EKS work took the
+narrower `json.dumps`-per-literal step, which covers the values it emits but not the
+database module blocks this plan adds.
 
 **[CRITICAL] `delete_infrastructure`'s ERROR/PENDING fast path bypasses the destroy guard entirely.**
 Boundary crossed: control-plane state → live customer AWS resources.

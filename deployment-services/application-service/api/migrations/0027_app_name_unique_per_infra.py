@@ -1,6 +1,17 @@
+import re
+
 from django.db import migrations
 
-from api.common.naming import app_slug
+
+def _slug_at_0027(name: str) -> str:
+    """Frozen copy of api.common.naming.app_slug as of this migration.
+
+    Deliberately not imported: RunPython takes Application from the historical `apps`
+    registry, so the transformation must be pinned the same way. A later change to
+    app_slug must not silently change which collisions a fresh `migrate` detects here,
+    and the helper moving or being renamed must not break this migration.
+    """
+    return re.sub(r'[^a-z0-9._-]', '-', name.lower()).strip('-')
 
 
 def find_duplicate_slugs(rows):
@@ -8,7 +19,7 @@ def find_duplicate_slugs(rows):
     Returns {(infrastructure_id, slug): [(app_id, name), ...]} for slugs claimed more than once."""
     by_slug = {}
     for app_id, infrastructure_id, name in rows:
-        by_slug.setdefault((str(infrastructure_id), app_slug(name)), []).append((str(app_id), name))
+        by_slug.setdefault((str(infrastructure_id), _slug_at_0027(name)), []).append((str(app_id), name))
     return {key: apps for key, apps in by_slug.items() if len(apps) > 1}
 
 

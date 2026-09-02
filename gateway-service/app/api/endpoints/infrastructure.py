@@ -66,6 +66,13 @@ async def infrastructure_create(body: InfraCreateBody, request: Request):
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/", request)
 
 
+# Must precede the /{infra_id} routes: FastAPI matches in registration order, so the
+# path parameter would otherwise capture "capabilities" as an infrastructure id.
+@router.get("/capabilities", summary="Compute targets this deployment will accept")
+async def list_capabilities(request: Request):
+    return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/capabilities/", request)
+
+
 @router.get("/{infra_id}", summary="Get infrastructure details", response_model=InfraResponse)
 async def infrastructure_get(infra_id: str, request: Request):
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/", request)

@@ -32,6 +32,9 @@ export default function NewInfrastructurePage() {
   const [loading, setLoading] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [regions, setRegions] = useState<AwsRegion[]>([]);
+  // Fails closed: EKS stays unavailable until the server says it is enabled, so a failed
+  // capabilities call can never surface a target that create would reject with a 400.
+  const [enabledComputeTypes, setEnabledComputeTypes] = useState<ComputeType[]>(['ecs_fargate']);
   const [regionSearch, setRegionSearch] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -51,6 +54,12 @@ export default function NewInfrastructurePage() {
 
   useEffect(() => {
     infrastructureApi.listRegions().then(setRegions).catch(() => { });
+    infrastructureApi
+      .listCapabilities()
+      .then((caps) =>
+        setEnabledComputeTypes(caps.compute_types.filter((c) => c.enabled).map((c) => c.value)),
+      )
+      .catch(() => { });
   }, []);
 
   useEffect(() => {
@@ -68,7 +77,7 @@ export default function NewInfrastructurePage() {
   const checks = {
     name: formData.name.trim().length > 0,
     code: formData.code.trim().length === 12,
-    compute: COMPUTE_OPTIONS.some((o) => o.value === formData.compute_type),
+    compute: enabledComputeTypes.includes(formData.compute_type),
     cpu: formData.max_cpu > 0,
     memory: formData.max_memory > 0,
   };
@@ -359,17 +368,25 @@ export default function NewInfrastructurePage() {
                 <div>
                   <Field icon={<Layers className="w-3.5 h-3.5" />} label="Compute Target" hint="immutable after create">
                     <div className="flex gap-2 py-1 pl-6">
-                      {COMPUTE_OPTIONS.map((o) => (
-                        <button
-                          key={o.value}
-                          type="button"
-                          onClick={() => set('compute_type', o.value)}
-                          className={`flex-1 rounded-lg border px-3 py-2 text-left transition-colors ${formData.compute_type === o.value ? 'border-brand/60 bg-brand-soft' : 'border-hairline bg-surface-1 hover:bg-surface-2'}`}
-                        >
-                          <p className={`text-xs font-medium ${formData.compute_type === o.value ? 'text-brand' : 'text-foreground'}`}>{o.label}</p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">{o.blurb}</p>
-                        </button>
-                      ))}
+                      {COMPUTE_OPTIONS.map((o) => {
+                        const available = enabledComputeTypes.includes(o.value);
+                        const selected = formData.compute_type === o.value;
+                        return (
+                          <button
+                            key={o.value}
+                            type="button"
+                            disabled={!available}
+                            title={available ? undefined : `${o.label} is not enabled on this deployment`}
+                            onClick={() => set('compute_type', o.value)}
+                            className={`flex-1 rounded-lg border px-3 py-2 text-left transition-colors ${selected ? 'border-brand/60 bg-brand-soft' : 'border-hairline bg-surface-1'} ${available ? 'hover:bg-surface-2' : 'opacity-50 cursor-not-allowed'}`}
+                          >
+                            <p className={`text-xs font-medium ${selected ? 'text-brand' : 'text-foreground'}`}>{o.label}</p>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">
+                              {available ? o.blurb : 'Not enabled on this deployment'}
+                            </p>
+                          </button>
+                        );
+                      })}
                     </div>
                   </Field>
                   <Field icon={<Cpu className="w-3.5 h-3.5" />} label="Max CPU" hint="vCPU">

@@ -48,3 +48,15 @@ def test_the_migration_is_a_noop_when_slugs_are_unique():
     apps = type("Apps", (), {"get_model": staticmethod(lambda *_a: FakeApplication)})()
 
     assert migration.refuse_duplicate_slugs(apps, None) is None
+
+
+def test_the_slug_transformation_is_frozen_in_the_migration():
+    """The migration must reproduce the collision set as of when it was written, so it
+    carries its own copy rather than importing the live helper. This asserts the copy is
+    real (not a re-export) and still agrees with today's helper — if app_slug ever changes
+    deliberately, this test is the reminder that the frozen copy stays as it is."""
+    from api.common import naming
+
+    assert migration._slug_at_0027 is not naming.app_slug
+    for name in ("My App", "api", "web-2", "Trailing-", "UPPER.case_x"):
+        assert migration._slug_at_0027(name) == naming.app_slug(name)

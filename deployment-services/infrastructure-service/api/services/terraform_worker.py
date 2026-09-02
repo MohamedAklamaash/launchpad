@@ -634,7 +634,11 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             live_db_count = Database.objects.filter(
                 environment_id=env.id, status__in=_LIVE_DB_STATUSES_FOR_CONFIG
             ).count()
-            if live_db_count and env.vpc_id:
+            # Also gated on compute_type: managed databases are ECS-only, and the app SG
+            # is the Fargate task security group. A database row written against an EKS
+            # infrastructure before that gate existed would otherwise have us create a
+            # Fargate SG in a cluster VPC that nothing will ever attach it to.
+            if live_db_count and env.vpc_id and compute_type == ComputeType.ECS_FARGATE:
                 db_app_sg_id = TerraformWorker._ensure_app_security_group(
                     credentials, region, env.vpc_id, str(infra_id)
                 )

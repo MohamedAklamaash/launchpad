@@ -1,30 +1,26 @@
 # EKS deployment target — implementation status
 
-Working handoff for `feat/eks-deployment-target`. Delete before merge.
+Implementation notes for the EKS compute target: where each security control landed,
+which decisions were taken deliberately, and what is knowingly still open. Kept after
+merge as the record behind `docs/EKS_DEPLOYMENT_TARGET_PLAN.md`.
 
 - **Plan**: `docs/EKS_DEPLOYMENT_TARGET_PLAN.md` (authoritative; includes the security
   review that returned BLOCK and the finding-by-finding resolution table)
-- **Draft PR**: https://github.com/MohamedAklamaash/launchpad/pull/65
-- **Branch**: `feat/eks-deployment-target`, based on `acc04df`
-- **Last verified**: application-service **76 passed**, infrastructure-service **141 passed**,
-  `compileall` clean over `deployment-services` + `gateway-service`.
-  Test runner is `deployment-services/venv/bin/python -m pytest` (no `pytest` on PATH).
+- **Tests**: `deployment-services/venv/bin/python -m pytest`, run from each service
+  directory (there is no `pytest` on PATH).
 
 ## Done — all 5 phases implemented
 
-| Phase | Content | State |
+All five phases are implemented and merged into the branch; the State column records
+which commit introduced each.
+
+| Phase | Content | Landed in |
 |---|---|---|
 | 1 Plumbing | `ComputeType` enum, `Infrastructure.compute_type` both services (immutable, `EKS_ENABLED`-gated at create **and** at provision dispatch), producer/consumer payloads, gateway body, migrations infrastructure `0019`/`0020` and application `0024`–`0028` (renumbered behind #63 — see the re-merge note below) | committed `dd7d7cd` |
-| 2 Onboarding + STS | scoped+gated EKS IAM in `create_aws_role.sh`, `DurationSeconds=7200` w/ 3600 fallback, **credential persistence removed at both writers**, purge migrations 0018/0024 | committed `dd7d7cd` |
+| 2 Onboarding + STS | scoped+gated EKS IAM in `create_aws_role.sh`, `DurationSeconds=7200` w/ 3600 fallback, **credential persistence removed at both writers**, purge migrations infrastructure `0020` and application `0025` | committed `dd7d7cd` |
 | 3 Provision/destroy | `shared/k8s/{token,client}.py`, `modules/eks` (Auto Mode), vpc `enable_elb_subnet_tags`, per-orchestrator config builders, `eks_bootstrap.py`, `eks_teardown.py`, `kubernetes==31.0.0` | committed `dd7d7cd` |
 | 5 Surface | frontend compute selector + EKS CPU/memory, notification buckets, `check-terraform` CI job, docs incl. stale-`infra/aws/` fix | committed `dd7d7cd` |
-| 4 Deploy | `EKSDeployer`, `aws/eks.py`, `aws/container_config.py`, `api/common/naming.py`, `mock_k8s.py`, migrations 0025/0026, 6 new test files | **UNCOMMITTED in working tree** |
-
-### Commit Phase 4 first thing
-```
-git add -A && git commit   # see suggested message at the bottom
-git push
-```
+| 4 Deploy | `EKSDeployer`, `aws/eks.py`, `aws/container_config.py`, `api/common/naming.py`, `mock_k8s.py`, migrations application `0026`/`0027`, 6 new test files | committed `e07aaed` |
 
 ## Security must-fixes — where each landed
 
@@ -32,7 +28,7 @@ C1 scoped EKS IAM + Deny on access-entry APIs for non-`infra-*` → `app_scripts
 (verified: renders correctly, ECS document byte-identical to HEAD).
 C2 restricted `public_access_cidrs` + audit logs → `modules/eks`, hard-refusal in Python.
 C3 CNI network-policy controller + NodeClass → `eks_bootstrap.py`; per-namespace policies in `deployer.py`.
-C4 namespace-per-app + slug uniqueness scoped to infrastructure → `deployer.py`, migration 0026.
+C4 namespace-per-app + slug uniqueness scoped to infrastructure → `deployer.py`, application migration `0027`.
 H1 fail-safe ALB reap (positive signal only + VpcId predicate + batch bound) → `eks_teardown.py`.
 H2 both credential writers dropped + purge migrations → `authenticate.py`, `aws/session.py`.
 H3 select on model column only, `cluster_version` allowlist, subprocess `env=` allowlist → `terraform_worker.py`.

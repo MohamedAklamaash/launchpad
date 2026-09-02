@@ -46,3 +46,20 @@ def test_missing_context_defaults_to_the_fargate_matrix():
     serializer = ApplicationCreateSerializer(data={**BASE, "alloted_cpu": 0.25, "alloted_memory": 4.0})
 
     assert not serializer.is_valid()
+
+
+def test_eks_accepts_allocations_above_the_fargate_ladder():
+    """The Fargate ceiling is 4 vCPU / 30GB. A Kubernetes app must be able to exceed it,
+    which the old field-level max_value silently prevented before validate() ever ran."""
+    serializer = _serializer("eks", alloted_cpu=8.0, alloted_memory=48.0)
+    assert serializer.is_valid(), serializer.errors
+
+
+def test_ecs_rejects_allocations_above_the_fargate_ladder():
+    serializer = _serializer("ecs_fargate", alloted_cpu=8.0, alloted_memory=48.0)
+    assert not serializer.is_valid()
+
+
+def test_eks_rejects_allocations_above_the_kubernetes_ceiling():
+    serializer = _serializer("eks", alloted_cpu=999.0, alloted_memory=999.0)
+    assert not serializer.is_valid()
