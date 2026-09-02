@@ -10,8 +10,8 @@ from api.repositories.infrastructure import InfrastructureRepository
 from api.services.infra_queue import InfraQueue
 from api.validators import validate_database_name
 from django.conf import settings
-from shared.enums.orchestrator import ComputeType
 from django.db import transaction
+from shared.enums.orchestrator import ComputeType
 
 logger = logging.getLogger(__name__)
 

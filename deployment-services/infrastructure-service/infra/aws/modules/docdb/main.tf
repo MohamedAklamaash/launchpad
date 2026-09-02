@@ -38,11 +38,11 @@ resource "aws_security_group_rule" "egress_all" {
 
 resource "aws_docdb_cluster" "this" {
   cluster_identifier = "${var.environment}-${var.db_name}"
-  engine              = "docdb"
-  engine_version       = var.engine_version
+  engine             = "docdb"
+  engine_version     = var.engine_version
 
-  master_username              = "lp_admin"
-  manage_master_user_password  = true
+  master_username             = "lp_admin"
+  manage_master_user_password = true
 
   db_subnet_group_name   = aws_docdb_subnet_group.this.name
   vpc_security_group_ids = [aws_security_group.this.id]
