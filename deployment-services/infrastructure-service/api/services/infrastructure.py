@@ -129,6 +129,7 @@ class InfrastructureService:
 
             # Plaintext is returned to the dashboard exactly once; only the hash is persisted.
             onboarding_token = infra.issue_onboarding_token()
+            infra.mint_dns_label()
 
             serialized_infra = InfrastructureSerializer.serialize_instance(infra)
             infra_id = serialized_infra["id"]
