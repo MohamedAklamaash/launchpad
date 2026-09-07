@@ -34,6 +34,7 @@ import { authApi } from '@/lib/api/auth';
 import { useAuthStore } from '@/lib/store/auth';
 import { toast } from 'sonner';
 import { DatabasesSection } from '@/components/databases-section';
+import { ProvisioningLogsPanel } from '@/components/provisioning-logs-panel';
 import { PolicyRefreshDialog } from '@/components/policy-refresh-dialog';
 
 const ROLE_COLORS: Record<string, string> = {
@@ -78,6 +79,7 @@ export default function InfrastructureDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [reprovisioning, setReprovisioning] = useState(false);
   const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
+  const [provisioningError, setProvisioningError] = useState<string | null>(null);
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -105,6 +107,15 @@ export default function InfrastructureDetailPage() {
   }, [id]);
 
   const isOwner = isSuperAdmin && infra?.user_id === user?.id;
+
+  useEffect(() => {
+    if (!isOwner || infra?.status !== 'ERROR') return;
+    let cancelled = false;
+    infrastructureApi.getLogs(id)
+      .then((logs) => { if (!cancelled) setProvisioningError(logs.error_message); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [id, isOwner, infra?.status]);
 
   // Three distinct states, and they must not be collapsed. "Never recorded" is not the
   // same as "behind": accounts onboarded before policy versioning report no version, and
@@ -323,8 +334,11 @@ export default function InfrastructureDetailPage() {
         </div>
       )}
       {infra.status === 'ERROR' && (
-        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 flex items-center justify-between">
+        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 space-y-2">
           <p className="text-xs text-destructive">Provisioning failed. Click <span className="font-medium">Reprovision</span> to retry.</p>
+          {provisioningError && (
+            <pre className="text-[11px] font-mono text-destructive/80 whitespace-pre-wrap break-words max-h-40 overflow-auto">{provisioningError}</pre>
+          )}
         </div>
       )}
       {infra.status === 'DESTROYING' && (
@@ -412,6 +426,8 @@ export default function InfrastructureDetailPage() {
       </div>
 
       <DatabasesSection infraId={id} environmentActive={infra.status === 'ACTIVE'} canManage={isOwner} />
+
+      {isOwner && <ProvisioningLogsPanel infraId={id} status={infra.status} />}
 
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
         <SheetContent className="w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto resize-x">
