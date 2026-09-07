@@ -62,6 +62,9 @@ class CodeBuildClient:
     
     def _get_buildspec(self):
         return '''version: 0.2
+env:
+  exported-variables:
+    - RESOLVED_SHA
 phases:
   pre_build:
     commands:
@@ -80,6 +83,11 @@ phases:
         else
           git checkout "$BRANCH" || { echo "ERROR: Branch '$BRANCH' not found in repository"; exit 1; }
         fi
+      # Resolve what actually got checked out rather than trusting $COMMIT_HASH: on a manual
+      # deploy it is empty and the branch HEAD is what builds. This is the tag the image is
+      # pinned to, so it has to describe the real content.
+      - export RESOLVED_SHA=$(git rev-parse HEAD)
+      - echo "Building commit $RESOLVED_SHA"
   build:
     commands:
       - |
@@ -96,11 +104,17 @@ phases:
         fi
         echo "Building with Dockerfile=$FULL_DOCKERFILE context=$CTX"
         docker build -f "$FULL_DOCKERFILE" -t "$APP_NAME:latest" "$CTX"
+      # Two tags for one image. `-latest` is what ECS has always deployed and keeps being
+      # pushed so nothing regresses; `-$RESOLVED_SHA` is the immutable one a rollback can
+      # pin to. Without the second tag every rebuild overwrites the only tag that exists,
+      # which is why rolling back to a previous image is impossible today.
       - docker tag "$APP_NAME:latest" "$ECR_URL:$APP_NAME-latest"
+      - docker tag "$APP_NAME:latest" "$ECR_URL:$APP_NAME-$RESOLVED_SHA"
   post_build:
     commands:
       - docker push "$ECR_URL:$APP_NAME-latest"
-      - echo "Image pushed successfully"
+      - docker push "$ECR_URL:$APP_NAME-$RESOLVED_SHA"
+      - echo "Image pushed successfully as $APP_NAME-$RESOLVED_SHA"
 '''
     
     def start_build(self, project_name, repo_url, branch, commit_hash, ecr_url, app_name, dockerfile_path="Dockerfile", build_context="", github_token=None):
@@ -150,10 +164,16 @@ phases:
         if not response['builds']:
             return None
         build = response['builds'][0]
+        exported = {
+            var['name']: var['value']
+            for var in build.get('exportedEnvironmentVariables', [])
+            if 'name' in var
+        }
         return {
             'status': build['buildStatus'],
             'phase': build.get('currentPhase', ''),
             'logs': build.get('logs', {}),
+            'resolved_sha': exported.get('RESOLVED_SHA'),
         }
 
     def _get_build_error(self, logs_info):
@@ -184,6 +204,8 @@ phases:
             return None
     
     def wait_for_build(self, build_id, timeout=1800):
+        """Block until the build finishes. Returns the commit SHA the build actually
+        resolved and tagged the image with, or None if the build did not export one."""
         start_time = time.time()
         while time.time() - start_time < timeout:
             status = self.get_build_status(build_id)
@@ -193,7 +215,18 @@ phases:
             logger.info(f"Build {build_id} status: {status['status']}, phase: {status['phase']}")
             
             if status['status'] == 'SUCCEEDED':
-                return True
+                resolved_sha = status.get('resolved_sha')
+                if not resolved_sha:
+                    # A build started by a CodeBuild project created before the buildspec
+                    # exported RESOLVED_SHA. The image is still pushed as `-latest`, so the
+                    # deploy works — it just cannot be rolled back to. Never fail here: an
+                    # older project would break every deploy on that infrastructure.
+                    logger.warning(
+                        f"Build {build_id} exported no RESOLVED_SHA; the deploy will pin to "
+                        "-latest and this image will not be rollback-addressable. The "
+                        "CodeBuild project predates the immutable-tag buildspec."
+                    )
+                return resolved_sha
             elif status['status'] in ['FAILED', 'FAULT', 'TIMED_OUT', 'STOPPED']:
                 log_tail = self._get_build_error(status['logs'])
                 error_msg = f"Build failed with status: {status['status']}"
