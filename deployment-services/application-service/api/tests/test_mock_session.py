@@ -50,7 +50,9 @@ def test_codebuild_wait_for_build_succeeds(session):
     assert build_id
     status = cb.get_build_status(build_id)
     assert status["status"] == "SUCCEEDED"
-    assert cb.wait_for_build(build_id, timeout=5) is True
+    # Returns the commit SHA the build resolved, not a bare True — that value is what
+    # the task definition pins its image tag to.
+    assert cb.wait_for_build(build_id, timeout=5) == "0" * 39 + "1"
 
 
 # --- service-stable wait (ECS) ---------------------------------------------

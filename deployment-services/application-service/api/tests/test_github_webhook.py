@@ -99,3 +99,71 @@ def test_empty_tracked_branch_ignores_instead_of_deploying_every_branch(mock_enq
     assert resp.status_code == 200
     assert "no tracked branch" in resp.data["reason"]
     mock_enqueue.assert_not_called()
+
+
+# ── commit SHA tracking ───────────────────────────────────────────────────────
+#
+# project_commit_hash used to be written once at app creation and never advanced, so every
+# webhook rebuild checked out the same commit and produced an identical image tag. Rollback
+# had nothing to distinguish one deploy from another.
+
+@pytest.mark.django_db
+@patch("api.views.application.DeploymentQueue.enqueue_deployment")
+def test_push_advances_the_tracked_commit(mock_enqueue, app_row):
+    app, secret = app_row
+    sha = "b" * 40
+    resp = _post(
+        app.id, json.dumps({"ref": "refs/heads/main", "after": sha}),
+        "application/json", secret,
+    )
+    assert resp.status_code == 202
+    app.refresh_from_db()
+    assert app.project_commit_hash == sha
+
+
+@pytest.mark.django_db
+@patch("api.views.application.DeploymentQueue.enqueue_deployment")
+def test_push_to_another_branch_does_not_advance_the_commit(mock_enqueue, app_row):
+    """The branch gate runs first; a push to an untracked branch must not move the pointer
+    for the branch this app actually deploys."""
+    app, secret = app_row
+    resp = _post(
+        app.id, json.dumps({"ref": "refs/heads/feature", "after": "c" * 40}),
+        "application/json", secret,
+    )
+    assert resp.status_code == 200
+    app.refresh_from_db()
+    assert app.project_commit_hash == "c"
+
+
+@pytest.mark.django_db
+@patch("api.views.application.DeploymentQueue.enqueue_deployment")
+@pytest.mark.parametrize("after", [None, "", "not-a-sha", "b" * 39, 12345])
+def test_unusable_after_field_still_deploys(mock_enqueue, app_row, after):
+    """A malformed SHA must not break the deploy — the build falls back to the branch."""
+    app, secret = app_row
+    payload = {"ref": "refs/heads/main"}
+    if after is not None:
+        payload["after"] = after
+    resp = _post(app.id, json.dumps(payload), "application/json", secret)
+    assert resp.status_code == 202
+    mock_enqueue.assert_called_once()
+    app.refresh_from_db()
+    assert app.project_commit_hash == "c"
+
+
+@pytest.mark.django_db
+@patch("api.views.application.DeploymentQueue.enqueue_deployment")
+def test_advancing_the_commit_touches_no_other_field(mock_enqueue, app_row):
+    """The view reads `app` before the dedup check, so a save() would write back a stale
+    copy of every other column."""
+    app, secret = app_row
+    app.status = "ACTIVE"
+    app.save(update_fields=["status"])
+
+    _post(app.id, json.dumps({"ref": "refs/heads/main", "after": "d" * 40}),
+          "application/json", secret)
+
+    app.refresh_from_db()
+    assert app.project_commit_hash == "d" * 40
+    assert app.status == "ACTIVE"
