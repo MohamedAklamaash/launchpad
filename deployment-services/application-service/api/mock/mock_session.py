@@ -21,6 +21,9 @@ def _hex_infra_id(prefix: str, infra_id: str, salt: str = "") -> str:
     return f"{prefix}-{hashlib.md5(f'{infra_id}:{salt}'.encode()).hexdigest()[:17]}"
 
 
+_MOCK_RESOLVED_SHA = "0" * 39 + "1"
+
+
 class _MockClientExceptions:
     def __init__(self, service: str):
         self._service = service
@@ -189,6 +192,12 @@ class MockClient:
                     "buildStatus": "SUCCEEDED",
                     "currentPhase": "COMPLETED",
                     "logs": {},
+                    # Real CodeBuild exports this from the buildspec. Modelled so mock
+                    # deploys exercise the immutable-tag path instead of silently taking
+                    # the -latest fallback meant for pre-existing projects.
+                    "exportedEnvironmentVariables": [
+                        {"name": "RESOLVED_SHA", "value": _MOCK_RESOLVED_SHA},
+                    ],
                 }
             )
         return {"builds": builds}
@@ -203,6 +212,12 @@ class MockClient:
 
     def attach_role_policy(self, **kwargs):
         return {}
+
+    def put_lifecycle_policy(self, **kwargs):
+        return {
+            "repositoryName": kwargs.get("repositoryName", "repo"),
+            "lifecyclePolicyText": kwargs.get("lifecyclePolicyText", ""),
+        }
 
     def create_log_group(self, **kwargs):
         return {}
