@@ -87,5 +87,3 @@ Run the matching commands locally before pushing; prettier failures are the most
 - RabbitMQ events: producers/consumers under each service's `messaging/`; DLQ tooling in `inspect_dlq.py`.
 - Auth-exempt endpoints (webhooks, onboarding callback) must be listed in BOTH the JWT middleware exemptions and `INTERNAL_AUTH_EXEMPT_*` settings.
 - Never use a truncated UUIDv7 (or any UUIDv7 prefix) as a namespace/uniqueness key. Its leading 48 bits are a Unix-millisecond timestamp, so a short prefix only advances every ~65 seconds platform-wide and is forceable from any timestamp the row exposes (`created_at`, etc). This applies to DNS labels, cert SANs, resource-name prefixes, cluster names, and cache keys — see `Infrastructure.dns_label` (independent random token) and `Database.module_name()` (full-UUID hash, never a slice) for the two correct patterns.
-
-@.claude/CLAUDE.md
