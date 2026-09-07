@@ -201,6 +201,44 @@ def test_happy_path_returns_202_burns_token_and_enqueues_provision(
     assert infra.onboarding_token_used_at is not None
 
 
+def test_happy_path_records_the_policy_version_the_script_applied(
+    factory, view, make_infra
+):
+    from api.cloud_providers.aws import iam_policy
+
+    infra = make_infra(code="123456789012")
+    token = infra.issue_onboarding_token()
+    with patch(
+        "api.cloud_providers.aws.authenticate.authenticate_infrastructure"
+    ) as mock_auth, patch("api.services.infra_queue.InfraQueue"):
+        mock_auth.return_value = None
+        response = _post_callback(
+            factory, view, infra, token, policy_version=iam_policy.version()
+        )
+    assert response.status_code == 202
+    infra.refresh_from_db()
+    assert infra.policy_version == iam_policy.version()
+    assert infra.policy_refresh_required() is False
+
+
+def test_happy_path_still_onboards_when_the_script_reports_no_policy_version(
+    factory, view, make_infra
+):
+    """A script copy pinned before versioning omits the field; onboarding must not break,
+    and the infra is left flagged as needing a refresh."""
+    infra = make_infra(code="123456789012")
+    token = infra.issue_onboarding_token()
+    with patch(
+        "api.cloud_providers.aws.authenticate.authenticate_infrastructure"
+    ) as mock_auth, patch("api.services.infra_queue.InfraQueue"):
+        mock_auth.return_value = None
+        response = _post_callback(factory, view, infra, token)
+    assert response.status_code == 202
+    infra.refresh_from_db()
+    assert infra.policy_version is None
+    assert infra.policy_refresh_required() is True
+
+
 def test_returns_403_and_releases_token_when_authenticate_raises_generic_exception(
     factory, view, make_infra
 ):

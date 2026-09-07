@@ -432,14 +432,18 @@ export default function InfrastructureDetailPage() {
             {isOwner && infra.is_cloud_authenticated && (
               <div className="space-y-2">
                 <p className="eyebrow px-1">AWS Permissions</p>
-                <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
+                <div className={`rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3 ${infra.policy_refresh_required ? 'ring-1 ring-warning/40' : ''}`}>
                   <div>
-                    <p className="text-xs font-medium text-foreground">Refresh IAM Policy</p>
+                    <p className="text-xs font-medium text-foreground">
+                      {infra.policy_refresh_required ? 'IAM policy out of date' : 'Refresh IAM Policy'}
+                    </p>
                     <p className="text-[11px] text-muted-foreground mt-0.5">
-                      Re-apply the latest deployment policy if actions start failing with AccessDenied.
+                      {infra.policy_refresh_required
+                        ? `Your account has policy ${infra.policy_version ?? 'an unrecorded version'}; Launchpad now requires v${infra.current_policy_version}. Re-run the script before your next deploy.`
+                        : `Policy v${infra.policy_version} is current. Re-apply it if actions start failing with AccessDenied.`}
                     </p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
+                  <Button variant={infra.policy_refresh_required ? 'default' : 'outline'} size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
                     <ShieldCheck className="w-3.5 h-3.5" /> Refresh
                   </Button>
                 </div>

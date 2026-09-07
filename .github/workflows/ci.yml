@@ -13,6 +13,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check-iam-policy:
+    name: IAM policy drift gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # The customer-facing policy exists in three places: the heredoc in
+      # create_aws_role.sh and both JSON blocks in docs/IAM_POLICIES.md. All three are
+      # rendered from policy.json — a hand-edit to any of them fails here. Stdlib only,
+      # so no install step and no Django settings.
+      - name: Policy source-of-truth check
+        run: >-
+          python deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/generate.py
+          --check
+
   check-python:
     name: Lint & Syntax (python services)
     runs-on: ubuntu-latest

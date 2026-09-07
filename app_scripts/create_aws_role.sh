@@ -148,16 +148,23 @@ else
   exit 1
 fi
 
+# Everything between the markers below is generated — edit the source file, then run
+#   python deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/generate.py --write
+# A hand-edit here fails CI, because a policy that disagrees with the one documented to
+# the customer's security reviewer is worse than either copy alone.
+# BEGIN GENERATED: deployment policy — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json
 # Permissions granted to Launchpad in YOUR account:
 # - ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure
 # - s3: terraform state bucket + application asset storage
 # - dynamodb: terraform state lock table
 # - rds/elasticache/secretsmanager: create and manage managed databases you provision
 #   and the credentials Launchpad injects into your containers
-# - iam:*: create execution roles for ECS tasks (scoped to launchpad-* roles in code)
+# - iam:*: create execution roles for ECS tasks. This grant is account-wide — the
+#   launchpad-* role naming is a convention, not an enforced boundary
 # - kms:*: encrypt state bucket and secrets
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-cat > "$WORK_DIR/launchpad-policy.json" <<EOF
+POLICY_VERSION=1
+cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -191,6 +198,7 @@ cat > "$WORK_DIR/launchpad-policy.json" <<EOF
   ]
 }
 EOF
+# END GENERATED
 
 ########################################
 # APPLY IAM (idempotent; skipped in mock mode)
@@ -300,7 +308,7 @@ if [ -n "${LAUNCHPAD_ONBOARDING_TOKEN:-}" ]; then
     --connect-timeout 5 --max-time 30 \
     -X POST "${LAUNCHPAD_CALLBACK_URL}" \
     -H 'Content-Type: application/json' \
-    -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"onboarding_token\":\"${LAUNCHPAD_ONBOARDING_TOKEN}\"}" \
+    -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"onboarding_token\":\"${LAUNCHPAD_ONBOARDING_TOKEN}\",\"policy_version\":${POLICY_VERSION}}" \
     || echo "000")
 
   echo "Callback HTTP status: ${CALLBACK_HTTP_CODE}"
@@ -328,7 +336,7 @@ elif [ -n "${LAUNCHPAD_API_KEY:-}" ]; then
        -X POST "$LAUNCHPAD_CALLBACK_URL" \
        -H "Content-Type: application/json" \
        -H "X-API-Key: ${LAUNCHPAD_API_KEY}" \
-       -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"caller_arn\":\"${CALLER_ARN}\",\"script\":\"create_aws_role.sh\",\"role_name\":\"${ROLE_NAME}\",\"policy_arn\":\"${POLICY_ARN}\"}"; then
+       -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"caller_arn\":\"${CALLER_ARN}\",\"script\":\"create_aws_role.sh\",\"role_name\":\"${ROLE_NAME}\",\"policy_arn\":\"${POLICY_ARN}\",\"policy_version\":${POLICY_VERSION}}"; then
     echo ""
     echo "Refresh recorded with Launchpad."
   else

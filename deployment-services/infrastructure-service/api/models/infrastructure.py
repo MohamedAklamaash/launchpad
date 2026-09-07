@@ -45,6 +45,12 @@ class Infrastructure(models.Model):
     onboarding_token_hash = models.CharField(max_length=128, null=True, blank=True, db_index=True)
     onboarding_token_used_at = models.DateTimeField(null=True, blank=True)
     onboarding_token_expires_at = models.DateTimeField(null=True, blank=True)
+    # Version of LaunchpadDeploymentPolicy the customer last applied, reported by
+    # create_aws_role.sh on both the onboarding and policy-refresh callbacks. NULL means
+    # onboarded before versioning existed — indistinguishable from stale, so treated as
+    # stale. Source of truth for the version itself is
+    # api/cloud_providers/aws/iam_policy/policy.json.
+    policy_version = models.IntegerField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -58,6 +64,33 @@ class Infrastructure(models.Model):
     @staticmethod
     def hash_token(plaintext: str) -> str:
         return hashlib.sha256(plaintext.encode()).hexdigest()
+
+    @staticmethod
+    def parse_reported_policy_version(raw) -> int | None:
+        """Coerce the POLICY_VERSION create_aws_role.sh reports on its callbacks.
+
+        Returns None for anything unusable so a malformed value is dropped rather than
+        failing an otherwise-valid onboarding — the version is advisory metadata, not an
+        auth gate. Clamped to the version Launchpad has actually published: a caller
+        claiming a future version would otherwise mark itself current and skip the
+        refresh prompt it needs.
+        """
+        from api.cloud_providers.aws import iam_policy
+
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return None
+        if value < 1:
+            return None
+        return min(value, iam_policy.version())
+
+    def policy_refresh_required(self) -> bool:
+        from api.cloud_providers.aws import iam_policy
+
+        # NULL means onboarded before versioning existed, which is indistinguishable
+        # from stale — treat it as stale so those customers get prompted.
+        return self.policy_version is None or self.policy_version < iam_policy.version()
 
     def issue_onboarding_token(self) -> str:
         # Returns the plaintext exactly once; only the hash is persisted so a DB read cannot replay it.
