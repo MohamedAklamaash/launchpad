@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { Infrastructure, InfrastructureCreate, InfrastructureCreateResponse } from '@/types/infrastructure';
+import { Infrastructure, InfrastructureCreate, InfrastructureCreateResponse, ProvisioningLogs } from '@/types/infrastructure';
 
 export interface AwsRegion {
   value: string;
@@ -37,6 +37,11 @@ export const infrastructureApi = {
 
   reprovision: async (id: string): Promise<void> => {
     await apiClient.post(`/api/infrastructures/${id}/reprovision/`);
+  },
+
+  getLogs: async (id: string): Promise<ProvisioningLogs> => {
+    const { data } = await apiClient.get(`/api/infrastructures/${id}/logs`);
+    return data;
   },
 
   validate: async (id: string): Promise<{ can_delete: boolean; app_count: number }> => {

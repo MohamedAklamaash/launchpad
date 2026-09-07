@@ -1,4 +1,4 @@
-export type InfrastructureStatus = 'PENDING' | 'PROVISIONING' | 'ACTIVE' | 'ERROR' | 'DESTROYING' | 'DESTROYED';
+export type InfrastructureStatus = 'PENDING' | 'PROVISIONING' | 'ACTIVE' | 'UPDATING' | 'ERROR' | 'DESTROYING' | 'DESTROYED';
 
 export interface InvitedUserSummary {
   id: string;
@@ -60,4 +60,14 @@ export interface InfrastructureCreate {
 // Returned only by POST /api/infrastructures/. The plaintext nonce is shown once and never re-served.
 export interface InfrastructureCreateResponse extends Infrastructure {
   onboarding_token: string;
+}
+
+// Owner-only. Served by GET /api/infrastructures/{id}/logs; invited users get 403.
+export interface ProvisioningLogs {
+  status: InfrastructureStatus;
+  error_message: string | null;
+  logs: string;
+  withheld_lines: number;
+  truncated: boolean;
+  updated_at: string;
 }
