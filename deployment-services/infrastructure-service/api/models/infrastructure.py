@@ -135,6 +135,11 @@ class Infrastructure(models.Model):
                     self.dns_label = candidate
                     self.save(update_fields=["dns_label"])
             except IntegrityError:
+                # transaction.atomic rolled the DB back, but the attribute assignment above
+                # is plain Python and survives it. Clearing it keeps the in-memory row
+                # consistent with what is actually persisted, so a caller that catches the
+                # exhaustion below can't later save() a label this row never reserved.
+                self.dns_label = None
                 continue
             return candidate
 
