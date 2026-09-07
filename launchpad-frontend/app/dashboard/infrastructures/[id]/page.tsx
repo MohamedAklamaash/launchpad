@@ -106,6 +106,42 @@ export default function InfrastructureDetailPage() {
 
   const isOwner = isSuperAdmin && infra?.user_id === user?.id;
 
+  // Three distinct states, and they must not be collapsed. "Never recorded" is not the
+  // same as "behind": accounts onboarded before policy versioning report no version, and
+  // showing them an out-of-date warning would be a false alarm on a policy they already
+  // hold. `undefined` (rather than null) means the backend predates this field, so fall
+  // back to the passive copy instead of rendering "Policy vundefined".
+  const policyState = ((): { kind: 'unknown' | 'unrecorded' | 'stale' | 'current'; title: string; detail: string } => {
+    const applied = infra?.policy_version;
+    const current = infra?.current_policy_version;
+    if (applied === undefined || current === undefined || current === null) {
+      return {
+        kind: 'unknown',
+        title: 'Refresh IAM Policy',
+        detail: 'Re-apply the latest deployment policy if actions start failing with AccessDenied.',
+      };
+    }
+    if (applied === null) {
+      return {
+        kind: 'unrecorded',
+        title: 'Refresh IAM Policy',
+        detail: `Launchpad hasn't recorded which policy version this account holds. Run the refresh once to record it (current: v${current}).`,
+      };
+    }
+    if (applied < current) {
+      return {
+        kind: 'stale',
+        title: 'IAM policy out of date',
+        detail: `Your account has policy v${applied}; Launchpad now requires v${current}. Re-run the script before your next deploy.`,
+      };
+    }
+    return {
+      kind: 'current',
+      title: 'Refresh IAM Policy',
+      detail: `Policy v${applied} is current. Re-apply it if actions start failing with AccessDenied.`,
+    };
+  })();
+
   useEffect(() => {
     loadData();
     const interval = setInterval(() => {
@@ -432,18 +468,12 @@ export default function InfrastructureDetailPage() {
             {isOwner && infra.is_cloud_authenticated && (
               <div className="space-y-2">
                 <p className="eyebrow px-1">AWS Permissions</p>
-                <div className={`rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3 ${infra.policy_refresh_required ? 'ring-1 ring-warning/40' : ''}`}>
+                <div className={`rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3 ${policyState.kind === 'stale' ? 'ring-1 ring-warning/40' : ''}`}>
                   <div>
-                    <p className="text-xs font-medium text-foreground">
-                      {infra.policy_refresh_required ? 'IAM policy out of date' : 'Refresh IAM Policy'}
-                    </p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">
-                      {infra.policy_refresh_required
-                        ? `Your account has policy ${infra.policy_version ?? 'an unrecorded version'}; Launchpad now requires v${infra.current_policy_version}. Re-run the script before your next deploy.`
-                        : `Policy v${infra.policy_version} is current. Re-apply it if actions start failing with AccessDenied.`}
-                    </p>
+                    <p className="text-xs font-medium text-foreground">{policyState.title}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{policyState.detail}</p>
                   </div>
-                  <Button variant={infra.policy_refresh_required ? 'default' : 'outline'} size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
+                  <Button variant={policyState.kind === 'stale' ? 'default' : 'outline'} size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
                     <ShieldCheck className="w-3.5 h-3.5" /> Refresh
                   </Button>
                 </div>

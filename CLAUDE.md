@@ -46,6 +46,11 @@ one. The script reports that version on both callbacks; it lands on
 version is behind so customers re-run the *Refresh policy* snippet before a deploy hits
 `AccessDenied`.
 
+**Bumping the policy version requires bumping `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF` in the
+same release.** The frontend pins `create_aws_role.sh` to a commit SHA; until that ref
+moves, the refresh snippet fetches the old script, reinstalls the old policy, and reports
+the old version — so the stale flag never clears and the customer never gets the grants.
+
 ## Onboarding flow
 
 1. Dashboard `POST /api/infrastructures/` → gateway → infrastructure-service creates infra + PENDING environment, mints onboarding token (returned once).
