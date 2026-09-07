@@ -106,10 +106,22 @@ class ALBClient:
                 time.sleep(delay)
         raise Exception(f"Target group {target_group_arn} not attached to listener after {max_retries} attempts")
     
-    def get_listener_arn(self, alb_arn):
+    def get_listener_arn(self, alb_arn, port=80):
+        """ARN of the listener on `port`, or None.
+
+        Selects by port rather than taking describe_listeners()[0]: the response order is
+        not guaranteed, so the moment an ALB carries a second listener the old code could
+        silently return the wrong one and every per-app path rule would be attached to it.
+        Terraform creates the :80 listener, which is why that is the default.
+
+        Deliberately returns None instead of falling back to the first listener — a
+        fallback is exactly the behaviour that made this wrong, and a caller asking for a
+        port that does not exist needs to hear so.
+        """
         response = self.client.describe_listeners(LoadBalancerArn=alb_arn)
-        if response['Listeners']:
-            return response['Listeners'][0]['ListenerArn']
+        for listener in response.get('Listeners', []):
+            if listener.get('Port') == port:
+                return listener['ListenerArn']
         return None
     
     def get_next_priority(self, listener_arn):

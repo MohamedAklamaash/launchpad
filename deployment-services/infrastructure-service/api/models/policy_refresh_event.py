@@ -26,6 +26,9 @@ class PolicyRefreshEvent(models.Model):
     script = models.CharField(max_length=64, default="create_aws_role.sh")
     role_name = models.CharField(max_length=128, blank=True, default="")
     policy_arn = models.TextField(blank=True, default="")
+    # Policy version the script applied. NULL when an older pinned copy of the script ran
+    # and reported nothing — the audit trail records what was claimed, not what we assume.
+    policy_version = models.IntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
