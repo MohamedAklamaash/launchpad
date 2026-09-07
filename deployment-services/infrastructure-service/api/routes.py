@@ -10,6 +10,7 @@ from api.views.infrastructure import (
     infrastructure_reprovision,
     infrastructure_update,
 )
+from api.views.provisioning_logs import provisioning_logs
 from api.views.script_api_key import (
     infrastructure_policy_refresh_callback,
     script_api_key_issue,
@@ -28,6 +29,7 @@ urlpatterns = [
     path('infrastructures/<str:infra_id>/update/', infrastructure_update, name='infrastructure-update'),
     path('infrastructures/<str:infra_id>/reprovision/', infrastructure_reprovision, name='infrastructure-reprovision'),
     path('infrastructures/<str:infra_id>/reissue-token/', infrastructure_reissue_token, name='infrastructure-reissue-token'),
+    path('infrastructures/<str:infra_id>/logs/', provisioning_logs, name='provisioning-logs'),
     path('infrastructures/onboarding/callback/', infrastructure_onboarding_callback, name='infrastructure-onboarding-callback'),
     path('infrastructures/<str:infra_id>/users/<str:user_id>/', infrastructure_remove_user, name='infrastructure-remove-user'),
     path('healthz/', health, name='health'),
