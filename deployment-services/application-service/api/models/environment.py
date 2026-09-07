@@ -27,12 +27,14 @@ class Environment(models.Model):
     status = models.CharField(
         max_length=50,
         choices=[
+            ('PENDING', 'Pending'),
             ('PROVISIONING', 'Provisioning'),
-            ('READY', 'Ready'),
-            ('FAILED', 'Failed'),
+            ('ACTIVE', 'Active'),
+            ('ERROR', 'Error'),
             ('DESTROYING', 'Destroying'),
+            ('DESTROYED', 'Destroyed'),
         ],
-        default='PROVISIONING'
+        default='PENDING'
     )
     
     created_at = models.DateTimeField(auto_now_add=True)

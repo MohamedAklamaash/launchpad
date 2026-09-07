@@ -97,15 +97,18 @@ phases:
         echo "Building with Dockerfile=$FULL_DOCKERFILE context=$CTX"
         docker build -f "$FULL_DOCKERFILE" -t "$APP_NAME:latest" "$CTX"
       - docker tag "$APP_NAME:latest" "$ECR_URL:$APP_NAME-latest"
+      - docker tag "$APP_NAME:latest" "$ECR_URL:$IMAGE_TAG"
   post_build:
     commands:
       - docker push "$ECR_URL:$APP_NAME-latest"
+      - docker push "$ECR_URL:$IMAGE_TAG"
       - echo "Image pushed successfully"
 '''
     
-    def start_build(self, project_name, repo_url, branch, commit_hash, ecr_url, app_name, dockerfile_path="Dockerfile", build_context="", github_token=None):
+    def start_build(self, project_name, repo_url, branch, commit_hash, ecr_url, app_name, dockerfile_path="Dockerfile", build_context="", github_token=None, image_tag=None):
         # Sanitize app_name for use as a Docker image tag: lowercase, replace non-[a-z0-9._-] with '-'
         safe_app_name = re.sub(r'[^a-z0-9._-]', '-', app_name.lower()).strip('-')
+        image_tag = image_tag or f"{safe_app_name}-latest"
         max_retries = 3
         retry_delay = 5
         
@@ -117,6 +120,7 @@ phases:
             {'name': 'APP_NAME', 'value': safe_app_name, 'type': 'PLAINTEXT'},
             {'name': 'DOCKERFILE_PATH', 'value': dockerfile_path, 'type': 'PLAINTEXT'},
             {'name': 'BUILD_CONTEXT', 'value': build_context or '', 'type': 'PLAINTEXT'},
+            {'name': 'IMAGE_TAG', 'value': image_tag, 'type': 'PLAINTEXT'},
         ]
         
         # Add GitHub token (for private repos) — use SECRETS_MANAGER if an ARN is provided,

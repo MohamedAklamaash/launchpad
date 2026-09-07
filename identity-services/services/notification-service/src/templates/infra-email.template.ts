@@ -131,6 +131,31 @@ export const getInfraEmailSubject = (
 // safe, actionable summary and NEVER echo the original. The full log stays behind the dashboard.
 const ERROR_SUMMARIES: { test: RegExp; message: string }[] = [
     {
+        test: /access\s?entr(y|ies)|\beks\b[\s\S]*(access\s?denied|not\s?authorized|unauthorized|forbidden)|(access\s?denied|not\s?authorized|unauthorized|forbidden)[\s\S]*\beks\b/i,
+        message:
+            'Launchpad could not access the Kubernetes cluster in your AWS account. Re-run the onboarding script to refresh the deployment role, then retry.',
+    },
+    {
+        test: /kubernetes\s?api|k8s\s?api|unable\s?to\s?connect\s?to\s?the\s?server|\.eks\.amazonaws\.com|api\s?server[\s\S]*(unreachable|refused|timed?\s?out)/i,
+        message:
+            "Launchpad could not reach your Kubernetes cluster's API. This is usually temporary — retry from the dashboard.",
+    },
+    {
+        test: /\beks\b[\s\S]*cluster[\s\S]*(timed?\s?out|timeout|did\s?not\s?become)|\beks\b[\s\S]*cluster\s?creat(e|ion)?[\s\S]*(timed?\s?out|timeout)/i,
+        message:
+            'The Kubernetes cluster did not finish creating in time. Cluster creation can take up to 20 minutes — retry from the dashboard.',
+    },
+    {
+        test: /\baddons?\b|add-on|vpc-cni|aws-node|coredns|kube-proxy/i,
+        message:
+            'A Kubernetes cluster component failed to install. Retry from the dashboard and Launchpad will reconcile the cluster add-ons.',
+    },
+    {
+        test: /nodepool|node\s?pool|nodeclass|karpenter|failedscheduling|unschedulable|\bnodes?\b[\s\S]*(capacity|insufficient)|insufficient[\s\S]*\bnodes?\b/i,
+        message:
+            'AWS could not provide compute capacity for the cluster nodes. Retry, optionally in a different region.',
+    },
+    {
         test: /dbinstancealreadyexists|dbclusteralreadyexistsfault|replicationgroupalreadyexists/i,
         message:
             'A database with this name already exists in your account from a previous run. Delete it manually in AWS, or retry with a different name.',

@@ -1,4 +1,5 @@
 from api.views.aws import list_aws_regions
+from api.views.capabilities import list_capabilities
 from api.views.database import database_detail, database_list_create
 from api.views.health import health, liveness, readiness
 from api.views.infrastructure import (
@@ -34,4 +35,5 @@ urlpatterns = [
     path('liveness/', liveness, name='liveness'),
     path('readiness/', readiness, name='readiness'),
     path('aws/regions/', list_aws_regions, name='aws-regions'),
+    path('capabilities/', list_capabilities, name='capabilities'),
 ]

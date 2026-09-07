@@ -59,6 +59,11 @@ REDIS_PORT = 6379
 REDIS_PASSWORD = ""
 REDIS_DB = 0
 
+EKS_ENABLED = os.environ.get("EKS_ENABLED", "False").lower() == "true"
+EKS_PUBLIC_ACCESS_CIDRS = [
+    c.strip() for c in os.environ.get("EKS_PUBLIC_ACCESS_CIDRS", "").split(",") if c.strip()
+]
+
 LOGGING_CONFIG = None
 
 DATABASE_ENGINE_VERSIONS = {

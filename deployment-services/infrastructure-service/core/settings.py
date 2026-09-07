@@ -162,6 +162,15 @@ REDIS_PORT = app_config.redis_port
 REDIS_PASSWORD = app_config.redis_password
 REDIS_DB = app_config.redis_db
 
+# EKS deployment target. EKS_ENABLED gates compute_type=eks at create AND at provision
+# dispatch (the reaper/startup recovery re-enqueue independently of the create-time check).
+EKS_ENABLED = os.environ.get('EKS_ENABLED', 'False').lower() == 'true'
+# Comma-separated CIDRs allowed to reach an EKS cluster's public API endpoint.
+# Provisioning hard-refuses an empty list or 0.0.0.0/0 (consumed in Phase 3).
+EKS_PUBLIC_ACCESS_CIDRS = [
+    c.strip() for c in os.environ.get('EKS_PUBLIC_ACCESS_CIDRS', '').split(',') if c.strip()
+]
+
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 

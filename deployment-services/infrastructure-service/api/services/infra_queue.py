@@ -63,7 +63,12 @@ def _redis():
 PROVISION_QUEUE = "infra:provision"
 DESTROY_QUEUE = "infra:destroy"
 LOCK_PREFIX = "lock:infra:"
-LOCK_TTL = 3600  # 1 hour
+LOCK_TTL = int(os.environ.get("INFRA_DEDUP_LOCK_TTL", "7200"))
+# Both enqueue paths rpush() before setex(). A non-positive TTL makes Redis reject SETEX,
+# so the job would already be on the queue with no dedup lock behind it — fail at import
+# instead, where it is a startup error rather than a duplicated terraform apply.
+if LOCK_TTL <= 0:
+    raise ValueError(f"INFRA_DEDUP_LOCK_TTL must be a positive number of seconds, got {LOCK_TTL}")
 
 
 class InfraQueue:

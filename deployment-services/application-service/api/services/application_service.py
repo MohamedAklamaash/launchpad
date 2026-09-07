@@ -2,13 +2,19 @@ import logging
 import os
 import uuid
 
+from django.conf import settings
 from django.db import transaction
+from shared.enums.orchestrator import ComputeType
 from shared.resilience.http_client import ResilientHttpClient
 
+from api.common.naming import app_slug, require_k8s_safe_slug
 from api.messaging.producer.producer import ApplicationEventProducer
+from api.models.application import Application
+from api.models.infrastructure import Infrastructure
 from api.repositories.application import ApplicationRepository
 from api.repositories.infrastructure import InfrastructureRepository
 from api.repositories.user import UserRepository
+from api.serializers.application import FARGATE_CPU_MEMORY
 from api.services.application_cleanup_service import ApplicationCleanupService
 from api.services.application_deployment_service import ApplicationDeploymentService
 from api.services.deployment_lock import DeploymentLock
@@ -88,8 +94,59 @@ class ApplicationService:
         "id", "user", "status", "version", "github_webhook_secret",
         "task_definition_arn", "service_arn", "target_group_arn", "listener_rule_arn",
         "deployment_url", "build_id", "error_message", "is_sleeping", "desired_count",
+        "runtime_refs",
         "created_at", "updated_at",
     })
+
+    @staticmethod
+    def _reserve_slug(infra, name, exclude_application_id=None):
+        """Every Kubernetes object name derives from app_slug(name), which lowercases and
+        rewrites punctuation. The DB constraint is on `name`, so "MyApp" and "myapp" are
+        two rows that collapse onto one namespace and silently overwrite each other's
+        workload — across users, since an ADMIN may deploy onto someone else's infra.
+        Reject the collision here, under a row lock so two concurrent creates cannot race."""
+        if not name:
+            raise ValueError("Application name is required")
+
+        infra_compute = getattr(infra, "compute_type", ComputeType.ECS_FARGATE)
+        if infra_compute == ComputeType.EKS:
+            # Fail before CodeBuild rather than inside the deployer, which runs after the
+            # customer has already paid for an image that could never be deployed.
+            slug = require_k8s_safe_slug(name)
+        else:
+            slug = app_slug(name)
+
+        with transaction.atomic():
+            Infrastructure.objects.select_for_update().filter(id=infra.id).first()
+            clashes = Application.objects.filter(infrastructure_id=infra.id)
+            if exclude_application_id:
+                clashes = clashes.exclude(id=exclude_application_id)
+            for existing in clashes.only("id", "name"):
+                if app_slug(existing.name) == slug:
+                    raise ValueError(
+                        f"An application named '{existing.name}' already exists on this "
+                        f"infrastructure and resolves to the same identifier '{slug}'."
+                    )
+        return slug
+
+    @staticmethod
+    def _validate_compute_shape(infra, cpu, memory):
+        """The create path builds the model directly, so serializer validation never runs.
+        Kubernetes accepts any positive request; only Fargate has a fixed CPU/memory matrix."""
+        if cpu <= 0 or memory <= 0:
+            raise ValueError("CPU and memory must be greater than zero")
+        if getattr(infra, "compute_type", ComputeType.ECS_FARGATE) == ComputeType.EKS:
+            if cpu > settings.EKS_MAX_APP_CPU or memory > settings.EKS_MAX_APP_MEMORY:
+                raise ValueError(
+                    f"Kubernetes applications are limited to {settings.EKS_MAX_APP_CPU} vCPU "
+                    f"and {settings.EKS_MAX_APP_MEMORY}GB per application"
+                )
+            return
+        if cpu not in FARGATE_CPU_MEMORY:
+            raise ValueError(f"Invalid CPU value. Must be one of: {list(FARGATE_CPU_MEMORY.keys())}")
+        min_mem, max_mem = FARGATE_CPU_MEMORY[cpu]
+        if not (min_mem <= memory <= max_mem):
+            raise ValueError(f"For {cpu} vCPU, memory must be between {min_mem} and {max_mem} GB")
 
     @transaction.atomic
     def create_application(self, user, data: dict):
@@ -125,6 +182,10 @@ class ApplicationService:
         project_remote_url = data.get("project_remote_url", "")
         if not project_remote_url:
             raise ValueError("Project remote url is required")
+
+        self._reserve_slug(infra, data.get("name"))
+        self._validate_compute_shape(infra, requested_cpu, requested_mem)
+
         data["user"] = user
         app = self.app_repo.create(data)
         
@@ -188,10 +249,11 @@ class ApplicationService:
             listener_rule_arn = app.listener_rule_arn
             target_group_arn = app.target_group_arn
             task_definition_arn = app.task_definition_arn
+            runtime_refs = app.runtime_refs
 
             result = self.app_repo.delete(app_id)
 
-            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn]):
+            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn, runtime_refs]):
                 try:
                     DeploymentQueue.enqueue_cleanup(
                         app_id=app_id,
@@ -200,6 +262,8 @@ class ApplicationService:
                         listener_rule_arn=listener_rule_arn,
                         target_group_arn=target_group_arn,
                         task_definition_arn=task_definition_arn,
+                        runtime=(runtime_refs or {}).get('runtime'),
+                        refs=runtime_refs,
                     )
                 except Exception as e:
                     logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")
@@ -218,8 +282,14 @@ class ApplicationService:
         
         return self.deployment_service.deploy_application(app)
     
+    @transaction.atomic
     def update_application(self, user_id: str, app_id: str, update_data: dict):
-        """Update application configuration."""
+        """Update application configuration.
+
+        Transactional so `_reserve_slug`'s row lock is still held when the new name is
+        saved; otherwise two concurrent renames can each pass the collision scan and then
+        save names that collapse to the same slug — and so the same Kubernetes resources.
+        """
         app = self.app_repo.get_by_id(app_id)
         if not app:
             raise PermissionError("Application not found")
@@ -237,6 +307,7 @@ class ApplicationService:
             new_name = update_data['name'].strip()
             if not new_name:
                 raise ValueError("Name cannot be empty")
+            self._reserve_slug(infra, new_name, exclude_application_id=app.id)
             app.name = new_name
             update_fields.append('name')
 
@@ -285,18 +356,11 @@ class ApplicationService:
             new_cpu = float(update_data.get('alloted_cpu', app.alloted_cpu))
             new_mem = float(update_data.get('alloted_memory', app.alloted_memory))
             
-            valid_combinations = {
-                0.25: (0.5, 2.0), 0.5: (1.0, 4.0), 1.0: (2.0, 8.0),
-                2.0: (4.0, 16.0), 4.0: (8.0, 30.0)
-            }
-            if new_cpu not in valid_combinations:
-                raise ValueError(f"Invalid CPU. Must be one of: {list(valid_combinations.keys())}")
-            min_mem, max_mem = valid_combinations[new_cpu]
-            if not (min_mem <= new_mem <= max_mem):
-                raise ValueError(f"For {new_cpu} vCPU, memory must be {min_mem}-{max_mem}GB")
-            
+            # Same rule as the create path: the Fargate matrix applies to ECS only,
+            # Kubernetes accepts any positive request.
+            self._validate_compute_shape(infra, new_cpu, new_mem)
+
             # Check infrastructure quota
-            infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
             totals = self.app_repo.get_total_resources_for_infra(app.infrastructure_id)
             current_cpu = (totals.get("total_cpu") or 0) - app.alloted_cpu
             current_mem = (totals.get("total_memory") or 0) - app.alloted_memory
@@ -320,6 +384,6 @@ class ApplicationService:
 
         if update_fields:
             app.save(update_fields=update_fields)
-            ApplicationEventProducer.publish_application_updated(app)
+            transaction.on_commit(lambda: ApplicationEventProducer.publish_application_updated(app))
 
         return app

@@ -1,9 +1,19 @@
 import { apiClient } from './client';
-import { Infrastructure, InfrastructureCreate, InfrastructureCreateResponse } from '@/types/infrastructure';
+import { ComputeType, Infrastructure, InfrastructureCreate, InfrastructureCreateResponse } from '@/types/infrastructure';
 
 export interface AwsRegion {
   value: string;
   label: string;
+}
+
+export interface ComputeCapability {
+  value: ComputeType;
+  label: string;
+  enabled: boolean;
+}
+
+export interface PlatformCapabilities {
+  compute_types: ComputeCapability[];
 }
 
 export const infrastructureApi = {
@@ -46,6 +56,13 @@ export const infrastructureApi = {
 
   listRegions: async (): Promise<AwsRegion[]> => {
     const { data } = await apiClient.get('/api/aws/regions');
+    return data;
+  },
+
+  // Which compute targets this deployment will actually accept. EKS_ENABLED is a
+  // server-side flag, so the dashboard has to ask rather than assume.
+  listCapabilities: async (): Promise<PlatformCapabilities> => {
+    const { data } = await apiClient.get('/api/infrastructures/capabilities');
     return data;
   },
 

@@ -308,11 +308,12 @@ class ApplicationRetryDeployView(APIView):
             if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
-            # Snapshot ARNs before nulling them out
+            # Snapshot deployment handles before nulling them out
             service_arn = app.service_arn
             listener_rule_arn = app.listener_rule_arn
             target_group_arn = app.target_group_arn
             task_definition_arn = app.task_definition_arn
+            runtime_refs = app.runtime_refs
 
             # Reset DB state immediately
             app.status = 'CREATED'
@@ -321,11 +322,13 @@ class ApplicationRetryDeployView(APIView):
             app.task_definition_arn = None
             app.target_group_arn = None
             app.listener_rule_arn = None
+            app.runtime_refs = None
             app.save(update_fields=['status', 'error_message', 'service_arn',
-                                    'task_definition_arn', 'target_group_arn', 'listener_rule_arn'])
+                                    'task_definition_arn', 'target_group_arn', 'listener_rule_arn',
+                                    'runtime_refs'])
 
             # Enqueue cleanup first, then deployment — worker handles sequencing
-            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn]):
+            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn, runtime_refs]):
                 DeploymentQueue.enqueue_cleanup(
                     app_id=pk,
                     infrastructure_id=str(app.infrastructure_id),
@@ -333,6 +336,8 @@ class ApplicationRetryDeployView(APIView):
                     listener_rule_arn=listener_rule_arn,
                     target_group_arn=target_group_arn,
                     task_definition_arn=task_definition_arn,
+                    runtime=(runtime_refs or {}).get('runtime'),
+                    refs=runtime_refs,
                 )
             DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment retry queued successfully",

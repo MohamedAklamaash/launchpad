@@ -5,7 +5,8 @@
 Launchpad deploys your applications into **your own AWS account**. You keep full
 control and ownership of your infrastructure and data — Launchpad never holds
 long-lived credentials to your account; it assumes a role you create, scoped by a
-per-infrastructure secret, and the temporary session credentials expire after ~1 hour.
+per-infrastructure secret, and the temporary session credentials expire after at most
+2 hours. They are held only in worker memory, never stored.
 
 Onboarding is **mostly automated**: you create an infrastructure in the dashboard,
 copy the one-time setup command it generates, run it in a shell with AWS access to
@@ -42,9 +43,28 @@ An *infrastructure* is one AWS environment (one VPC/cluster/ALB) that your apps 
    - **AWS Account ID** — your 12-digit account number (e.g. `123456789012`). This is
      verified during onboarding: the setup script must run in *this* account.
    - **Region** — the AWS region to provision in.
+   - **Compute target** — **ECS Fargate** (default) or **Kubernetes**. This is fixed at
+     creation and cannot be changed later. Kubernetes provisions an EKS Auto Mode
+     cluster; see [Choosing a compute target](#choosing-a-compute-target) for the
+     trade-offs and cost.
    - **Max CPU / Max Memory** — the total vCPU/GB ceiling shared across all apps in this
      infrastructure (a guardrail so a runaway app can't exhaust the account).
 3. Click **Create**.
+
+### Choosing a compute target
+
+- **ECS Fargate** — serverless containers, no cluster to think about, lowest cost.
+  The right default for most applications.
+- **Kubernetes (EKS Auto Mode)** — a managed EKS cluster in your account; AWS manages
+  nodes, autoscaling, load balancing, and upgrades. Choose it if you want
+  Kubernetes-native primitives or already operate on EKS. Applications get the same
+  `http://<alb-dns>/<app-name>` URLs either way.
+
+**Cost disclosure for Kubernetes**: the EKS control plane bills roughly **$0.10/hour
+(~$72/month)** even when idle, and EKS Auto Mode adds a compute premium on top of the
+EC2 capacity it manages, which together cost more than the equivalent Fargate setup.
+All of it is billed to **your** AWS account. Provisioning is also slower (~15–20 minutes
+vs 5–10 for Fargate).
 
 The infrastructure is created in `PENDING` state and the dashboard shows a
 **one-time onboarding token** plus a generated setup command. Nothing has been
@@ -67,6 +87,7 @@ export LAUNCHPAD_INFRA_ID=<your-infra-uuid>
 export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
 export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/onboarding/callback
 export LAUNCHPAD_ONBOARDING_TOKEN=<one-time-token>
+export LAUNCHPAD_COMPUTE_TYPE=<ecs_fargate|eks>
 curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
 ```
 
@@ -80,7 +101,12 @@ What the script does:
    **only** when presenting your infrastructure's `ExternalId` (a confused-deputy
    guard — see [IAM_POLICIES.md](./IAM_POLICIES.md)).
 2. Attaches **`LaunchpadDeploymentPolicy`** (the permissions Launchpad needs — VPC,
-   ECS, ECR, ELB, CloudWatch Logs, S3, DynamoDB, CodeBuild, IAM, KMS).
+   ECS, ECR, ELB, CloudWatch Logs, S3, DynamoDB, CodeBuild, IAM, KMS). With
+   `LAUNCHPAD_COMPUTE_TYPE=eks` it also adds EKS statements scoped to the `infra-*`
+   clusters Launchpad creates, plus an explicit `Deny` covering everything else. Note
+   the policy also grants `iam:*`, so this scoping is a strong default rather than a
+   hard boundary — see
+   [IAM_POLICIES.md](./IAM_POLICIES.md#eks-permissions-kubernetes-infrastructures).
 3. Calls back to Launchpad with your account ID and the onboarding token. Launchpad
    verifies the token and that the account matches, assumes the role to confirm access,
    then **automatically queues provisioning.**
@@ -91,11 +117,17 @@ What the script does:
 
 ### What gets provisioned (in *your* account)
 
-VPC with public/private subnets · NAT Gateway · ECS (Fargate) cluster · Application
-Load Balancer · ECR repository · IAM service roles · S3 + DynamoDB for Terraform state.
+**ECS Fargate**: VPC with public/private subnets · NAT Gateway · ECS (Fargate) cluster ·
+Application Load Balancer · ECR repository · IAM service roles · S3 + DynamoDB for
+Terraform state.
 
-**Status** moves `PENDING → PROVISIONING → ACTIVE` (typically 5–10 minutes). If it ends
-in `ERROR`, the dashboard shows the reason; fix it and use **Reprovision**.
+**Kubernetes**: VPC with public/private subnets · NAT Gateway · EKS Auto Mode cluster ·
+Application Load Balancer (created by the AWS Load Balancer Controller) · ECR repository ·
+IAM service roles · S3 + DynamoDB for Terraform state.
+
+**Status** moves `PENDING → PROVISIONING → ACTIVE` (typically 5–10 minutes for Fargate,
+15–20 for Kubernetes). If it ends in `ERROR`, the dashboard shows the reason; fix it and
+use **Reprovision**.
 
 ---
 
@@ -131,14 +163,17 @@ See [DEPLOYMENT_EDGE_CASES.md](./DEPLOYMENT_EDGE_CASES.md) for port/health-check
    - **Name** — used in the app's URL path.
    - **Repository URL** and **Branch**.
    - **Dockerfile path** — default `Dockerfile`.
-   - **CPU / Memory** — must fit a valid Fargate combination (see Resource Limits) and
-     stay within the infrastructure's remaining quota.
+   - **CPU / Memory** — on Fargate infrastructures, must fit a valid Fargate
+     combination (see Resource Limits); on Kubernetes infrastructures, free-form within
+     bounds. Either way it must stay within the infrastructure's remaining quota.
    - **Environment variables** — your app's config.
 2. The first deployment starts automatically. Status moves
    `CREATED → BUILDING → PUSHING_IMAGE → DEPLOYING → ACTIVE`:
    - **BUILDING** — CodeBuild builds your image (in your account).
    - **PUSHING_IMAGE** — image pushed to ECR.
-   - **DEPLOYING** — ECS service + ALB rule created.
+   - **DEPLOYING** — on ECS infrastructures, an ECS service and an ALB listener rule are
+     created; on Kubernetes infrastructures, a namespace, Deployment, Service and Ingress
+     are applied and Launchpad waits for the rollout to become available.
    - **ACTIVE** — reachable at `http://<alb-dns>/<app-name>`.
 
 ---
@@ -173,6 +208,7 @@ export LAUNCHPAD_INFRA_ID=<your-infra-uuid>
 export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
 export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/policy-refresh/callback
 export LAUNCHPAD_API_KEY=<generated-key>
+export LAUNCHPAD_COMPUTE_TYPE=<ecs_fargate|eks>
 curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
 ```
 
@@ -181,11 +217,17 @@ is shown once and stored only as a hash; generating a new one revokes the previo
 The attribution callback is best-effort — if it can't reach Launchpad the IAM refresh
 still succeeded.
 
+**On a Kubernetes infrastructure, keep `LAUNCHPAD_COMPUTE_TYPE=eks` in the refresh run.**
+The EKS statements are applied only when that variable is set; refreshing without it
+re-applies the ECS-only policy and drops them.
+
 ---
 
 ## Resource Limits
 
 ### Fargate CPU/Memory combinations
+
+Applies to ECS Fargate infrastructures only:
 
 | CPU (vCPU) | Memory (GB) |
 |------------|-------------|
@@ -194,6 +236,10 @@ still succeeded.
 | 1          | 2 – 8       |
 | 2          | 4 – 16      |
 | 4          | 8 – 30      |
+
+Kubernetes infrastructures take free-form CPU/memory values instead of the fixed ladder,
+within the same per-app ceiling the API enforces for every compute type: 0.25–4 vCPU and
+0.5–30 GB. Your infrastructure's `max_cpu`/`max_memory` quota still applies on top.
 
 ### Infrastructure quota
 
@@ -229,14 +275,18 @@ totalling ≤ 4 vCPU. Raise the limits in infrastructure settings, or delete unu
 ## Security model (how your account stays yours)
 
 - **No long-lived keys.** Launchpad assumes `LaunchpadDeploymentRole` via STS; the
-  session credentials expire (~1h) and are refreshed as needed. They are never returned
-  through the API.
+  session credentials expire (at most 2h), live only in worker memory, and are minted
+  fresh for each operation. They are never stored or returned through the API.
 - **Confused-deputy protection.** The role's trust policy requires both Launchpad's
   platform principal *and* your infrastructure's `ExternalId`. Treat the setup command
   as sensitive while onboarding.
 - **Single-use onboarding token**, hashed at rest, 24-hour TTL.
 - **Per-app webhook secrets** with HMAC verification and delivery de-duplication.
-- **Network isolation** — apps run in private subnets; only the ALB is public.
+- **Network isolation** — apps run in private subnets. On ECS infrastructures the ALB is
+  the only public endpoint. On Kubernetes infrastructures the cluster's own API endpoint is
+  also reachable from the internet, but only from the CIDR ranges Launchpad is configured
+  with (`EKS_PUBLIC_ACCESS_CIDRS`); provisioning refuses to start if that list is empty or
+  contains `0.0.0.0/0`.
 
 ---
 
@@ -265,8 +315,8 @@ totalling ≤ 4 vCPU. Raise the limits in infrastructure settings, or delete unu
 ## FAQ
 
 **Do you store my AWS credentials?** No long-lived keys. We use temporary STS session
-credentials from AssumeRole (≈1-hour lifetime, auto-refreshed) and never return them via
-the API.
+credentials from AssumeRole (at most 2-hour lifetime, minted fresh per operation, never
+stored) and never return them via the API.
 
 **Why an ExternalId / onboarding token?** They prevent anyone else from binding *your*
 account to Launchpad and stop a confused-deputy attack on the assume-role.

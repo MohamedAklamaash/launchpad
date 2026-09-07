@@ -1,6 +1,7 @@
 import logging
 
 import boto3
+from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from api.common.envs.application import app_config
 from botocore.config import Config
 from shared.mode import is_dev_mode
@@ -35,14 +36,19 @@ def precheck_database_create(infra, engine: str) -> None:
         return
 
     actions = _CREATE_ACTIONS_BY_ENGINE[engine]
-    metadata = infra.metadata or {}
     account_id = infra.code
+
+    # Mint credentials via AssumeRole rather than reading infra.metadata: STS credentials
+    # are no longer persisted there, and passing None for all three makes boto3 fall back
+    # to the default chain — i.e. simulate the policy using the LAUNCHPAD platform's own
+    # credentials instead of the customer's role.
+    credentials = authenticate_infrastructure(infra)
 
     iam = boto3.client(
         "iam",
-        aws_access_key_id=metadata.get("aws_access_key_id"),
-        aws_secret_access_key=metadata.get("aws_secret_access_key"),
-        aws_session_token=metadata.get("aws_session_token"),
+        aws_access_key_id=credentials["aws_access_key_id"],
+        aws_secret_access_key=credentials["aws_secret_access_key"],
+        aws_session_token=credentials.get("aws_session_token"),
         config=Config(connect_timeout=5, read_timeout=8, retries={"max_attempts": 2}),
     )
 

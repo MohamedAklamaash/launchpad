@@ -51,7 +51,7 @@ resource "random_password" "auth_token" {
 
 resource "aws_elasticache_replication_group" "this" {
   replication_group_id = local.rg_id
-  description           = "Launchpad managed Redis for ${var.db_name}"
+  description          = "Launchpad managed Redis for ${var.db_name}"
 
   engine         = "redis"
   engine_version = var.engine_version
@@ -59,7 +59,7 @@ resource "aws_elasticache_replication_group" "this" {
 
   num_cache_clusters = 1
 
-  subnet_group_name = aws_elasticache_subnet_group.this.name
+  subnet_group_name  = aws_elasticache_subnet_group.this.name
   security_group_ids = [aws_security_group.this.id]
 
   transit_encryption_enabled = true

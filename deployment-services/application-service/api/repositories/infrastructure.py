@@ -2,6 +2,7 @@ import logging
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from shared.enums.orchestrator import ComputeType
 
 from api.models.infrastructure import Infrastructure
 from api.models.user import User
@@ -60,6 +61,8 @@ class InfrastructureRepository:
             "max_cpu": float(infra_data.get("max_cpu") or 0),
             "max_memory": float(infra_data.get("max_memory") or 0),
         }
+        if infra_data.get("compute_type") in ComputeType.values:
+            defaults["compute_type"] = infra_data["compute_type"]
         if "metadata" in infra_data:
             defaults["metadata"] = infra_data["metadata"]
         if "code" in infra_data:

@@ -166,7 +166,8 @@ def ensure_infra_created_published(infra):
         from api.messaging.producer.producer import infra_producer
         infra_producer.publish_infra_created(
             user_id=infra.user_id, infra_id=infra.id, name=infra.name,
-            cloud_provider=infra.cloud_provider, max_cpu=infra.max_cpu, max_memory=infra.max_memory,
+            cloud_provider=infra.cloud_provider, compute_type=infra.compute_type,
+            max_cpu=infra.max_cpu, max_memory=infra.max_memory,
             code=infra.code, is_cloud_authenticated=infra.is_cloud_authenticated, is_mock=infra.is_mock,
             metadata=infra.metadata or {},
         )
@@ -189,6 +190,8 @@ class Command(BaseCommand):
         from api.services.infra_queue import InfraQueue
         from api.services.notification import NotificationService
         from api.services.terraform_worker import TerraformWorker
+        from django.conf import settings
+        from shared.enums.orchestrator import ComputeType
 
         worker_id = str(uuid.uuid4())[:8]
         running = True
@@ -260,6 +263,20 @@ class Command(BaseCommand):
             infra = None
             try:
                 infra = Infrastructure.objects.get(id=infra_id)
+                # Dispatch-time kill switch: create-time gating alone isn't enough — the reaper
+                # and startup recovery re-enqueue independently, so an EKS infra created while
+                # the flag was on would keep re-provisioning after it's turned off. Parking in
+                # ERROR terminates both re-enqueue loops instead of silently spinning.
+                if infra.compute_type == ComputeType.EKS and not settings.EKS_ENABLED:
+                    error_message = "EKS provisioning is disabled (EKS_ENABLED=false)"
+                    logger.error(f"{error_message}; parking infra {infra_id} in ERROR")
+                    Environment.objects.filter(infrastructure_id=infra_id).update(
+                        status='ERROR', error_message=error_message,
+                    )
+                    InfraQueue.clear_reap_count(infra_id)
+                    NotificationService.send_provision_failure(
+                        str(infra.user_id), infra_id, infra.name, error_message)
+                    return
                 ensure_infra_created_published(infra)
 
                 from api.models.database import Database

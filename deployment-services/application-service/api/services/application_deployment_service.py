@@ -15,15 +15,24 @@ from shared.aws.app_security_group import (
 from shared.aws.app_security_group import (
     get_or_create_app_security_group as _shared_get_or_create_app_sg,
 )
+from shared.enums.orchestrator import ComputeType
 
+from api.common.naming import app_slug as _slug
+from api.common.naming import image_tag as _image_tag
+from api.k8s.deployer import EKSDeployer
 from api.models import Application, Environment
 from api.repositories.infrastructure import InfrastructureRepository
 
 logger = logging.getLogger(__name__)
 
-def _slug(name: str) -> str:
-    """Sanitize an app name for use in AWS resource names / Docker tags."""
-    return re.sub(r'[^a-z0-9._-]', '-', name.lower()).strip('-')
+ECS_REQUIRED_ENVIRONMENT_FIELDS = (
+    'vpc_id', 'cluster_arn', 'alb_arn', 'alb_dns', 'ecr_repository_url', 'ecs_task_execution_role_arn',
+)
+EKS_REQUIRED_ENVIRONMENT_FIELDS = ('vpc_id', 'cluster_arn', 'ecr_repository_url', 'alb_dns')
+
+
+def _is_eks(application: Application) -> bool:
+    return application.infrastructure.compute_type == ComputeType.EKS
 
 class ApplicationDeploymentService:
     def __init__(self):
@@ -41,14 +50,20 @@ class ApplicationDeploymentService:
             session = self._create_aws_session(application.infrastructure)
             
             # Step 3: Trigger Build
-            build_id = self._trigger_build(session, application, environment)
+            image_tag = _image_tag(application)
+            build_id = self._trigger_build(session, application, environment, image_tag)
             application.build_id = build_id
             application.status = 'BUILDING'
             application.save()
             
             # Step 4: Wait for Build Completion
             self._wait_for_build(session, build_id)
-            
+
+            if _is_eks(application):
+                return self._deploy_to_eks(
+                    session, application, environment, image_tag, created_resources
+                )
+
             # Step 5: Create ECS Task Definition
             task_def_arn = self._create_task_definition(session, application, environment)
             application.task_definition_arn = task_def_arn
@@ -106,7 +121,7 @@ class ApplicationDeploymentService:
                 logger.info(f"Cleaning up {len(created_resources)} resources")
                 for resource_type, resource_id in reversed(created_resources):
                     try:
-                        self._cleanup_resource(session, resource_type, resource_id, environment)
+                        self._cleanup_resource(session, resource_type, resource_id, application, environment)
                         logger.info(f"Cleaned up {resource_type}: {resource_id}")
                     except Exception as cleanup_error:
                         logger.error(f"Failed to cleanup {resource_type} {resource_id}: {cleanup_error}")
@@ -116,10 +131,12 @@ class ApplicationDeploymentService:
             application.save()
             raise
     
-    def _cleanup_resource(self, session, resource_type, resource_id, environment):
+    def _cleanup_resource(self, session, resource_type, resource_id, application, environment):
         """Cleanup AWS resources on deployment failure"""
         try:
-            if resource_type == 'ecs_service':
+            if resource_type == 'k8s_object':
+                EKSDeployer(session, application, environment).delete_object(resource_id)
+            elif resource_type == 'ecs_service':
                 ecs = ECSClient(session)
                 service_name = resource_id.split('/')[-1]
                 ecs.client.delete_service(
@@ -140,6 +157,25 @@ class ApplicationDeploymentService:
             if e.response['Error']['Code'] not in ['ResourceNotFoundException', 'TargetGroupNotFound']:
                 raise
     
+    def _deploy_to_eks(self, session, application: Application, environment: Environment,
+                       image_tag: str, created_resources: list):
+        ecr = ECRClient(session)
+        image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
+
+        application.status = 'DEPLOYING'
+        application.save()
+
+        EKSDeployer(session, application, environment).deploy(image_uri, created_resources)
+
+        deployment_url = self._generate_deployment_url(application, environment)
+        application.deployment_url = deployment_url
+        application.status = 'ACTIVE'
+        application.error_message = None
+        application.save()
+
+        logger.info(f"Application {application.name} deployed to EKS at {deployment_url}")
+        return deployment_url
+
     def _validate_infrastructure(self, application: Application):
         environment = Environment.objects.filter(
             infrastructure=application.infrastructure
@@ -151,16 +187,8 @@ class ApplicationDeploymentService:
         if environment.status != 'ACTIVE':
             raise ValueError(f"Infrastructure is not active. Current status: {environment.status}")
         
-        required_fields = {
-            'vpc_id': environment.vpc_id,
-            'cluster_arn': environment.cluster_arn,
-            'alb_arn': environment.alb_arn,
-            'alb_dns': environment.alb_dns,
-            'ecr_repository_url': environment.ecr_repository_url,
-            'ecs_task_execution_role_arn': environment.ecs_task_execution_role_arn
-        }
-        
-        missing_fields = [field for field, value in required_fields.items() if not value]
+        required = EKS_REQUIRED_ENVIRONMENT_FIELDS if _is_eks(application) else ECS_REQUIRED_ENVIRONMENT_FIELDS
+        missing_fields = [field for field in required if not getattr(environment, field)]
         if missing_fields:
             raise ValueError(f"Environment is missing required fields: {', '.join(missing_fields)}")
         
@@ -183,7 +211,7 @@ class ApplicationDeploymentService:
 
         return create_boto3_session(infrastructure)
     
-    def _trigger_build(self, session, application: Application, environment: Environment):
+    def _trigger_build(self, session, application: Application, environment: Environment, image_tag: str):
         codebuild = CodeBuildClient(session)
         iam = session.client('iam')
         
@@ -248,6 +276,7 @@ class ApplicationDeploymentService:
             dockerfile_path=dockerfile_path,
             build_context=build_context,
             github_token=github_token,
+            image_tag=image_tag,
         )
         
         logger.info(f"Started CodeBuild job {build_id} for application {application.name}")

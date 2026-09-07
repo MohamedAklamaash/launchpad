@@ -27,6 +27,9 @@ Environment variables (all optional unless noted):
   LAUNCHPAD_PLATFORM_USER          Launchpad platform IAM user (default: aklamaash-terraform)
   LAUNCHPAD_EXTERNAL_ID            Per-customer ExternalId binding the trust policy (defaults to LAUNCHPAD_INFRA_ID)
   LAUNCHPAD_REGION                 AWS region for deployment (default: us-east-1)
+  LAUNCHPAD_COMPUTE_TYPE           Infra compute target: "ecs_fargate" (default) or "eks".
+                                   "eks" adds EKS permissions scoped to Launchpad's own
+                                   infra-* clusters and raises the role session limit to 2h.
   LAUNCHPAD_INFRA_ID               Infra UUID; required for either callback
   LAUNCHPAD_CALLBACK_URL           Launchpad callback URL; required for either callback
   LAUNCHPAD_ONBOARDING_TOKEN       Single-use onboarding token (first-time bootstrap)
@@ -55,6 +58,9 @@ ASSUME_EXTERNAL_ID="${LAUNCHPAD_EXTERNAL_ID:-${LAUNCHPAD_INFRA_ID:-}}"
 
 MOCK_MODE="${LAUNCHPAD_MOCK:-0}"
 
+# Only the literal "eks" widens the policy; anything else gets the ECS-only document.
+COMPUTE_TYPE="${LAUNCHPAD_COMPUTE_TYPE:-ecs_fargate}"
+
 # Region must match where Launchpad provisions; customer's CLI default may differ.
 LAUNCHPAD_REGION="${LAUNCHPAD_REGION:-us-east-1}"
 export AWS_REGION="$LAUNCHPAD_REGION"
@@ -68,6 +74,7 @@ echo "Launchpad AWS Role Setup"
 echo "Region:           ${LAUNCHPAD_REGION}"
 echo "Platform account: ${TRUSTED_ACCOUNT_ID}"
 echo "Platform user:    ${PLATFORM_USER}"
+[ "$COMPUTE_TYPE" = "eks" ] && echo "Compute target:   EKS (adds scoped eks permissions + 2h role sessions)"
 [ "$MOCK_MODE" = "1" ] && echo "Mode:             MOCK (no AWS calls)"
 echo "=========================================="
 
@@ -156,7 +163,55 @@ fi
 #   and the credentials Launchpad injects into your containers
 # - iam:*: create execution roles for ECS tasks (scoped to launchpad-* roles in code)
 # - kms:*: encrypt state bucket and secrets
+# - eks (EKS infras only): cluster management scoped to Launchpad's infra-* clusters
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
+
+if [ "$COMPUTE_TYPE" = "eks" ]; then
+  # eks:CreateCluster and the List/catalog calls (eks:DescribeAddonVersions) genuinely
+  # cannot be resource-scoped, so they sit on "*". Every mutating action is scoped to
+  # infra-* clusters. Two Denies backstop that: eks:CreateAccessEntry is one API call to
+  # cluster-admin on a pre-existing cluster, and eks:DescribeCluster — which IS
+  # resource-scoped, despite sitting in the Describe* wildcard above — returns the API
+  # endpoint, CA and OIDC issuer for any cluster in the account.
+  EKS_STATEMENTS=$(cat <<EOF
+,
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:CreateCluster",
+        "eks:List*",
+        "eks:Describe*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "eks:*",
+      "Resource": [
+        "arn:aws:eks:*:${ACCOUNT_ID}:cluster/infra-*",
+        "arn:aws:eks:*:${ACCOUNT_ID}:access-entry/infra-*/*",
+        "arn:aws:eks:*:${ACCOUNT_ID}:addon/infra-*/*",
+        "arn:aws:eks:*:${ACCOUNT_ID}:nodegroup/infra-*/*"
+      ]
+    },
+    {
+      "Effect": "Deny",
+      "Action": [
+        "eks:*AccessEntr*",
+        "eks:*AccessPolic*",
+        "eks:DescribeCluster"
+      ],
+      "NotResource": [
+        "arn:aws:eks:*:${ACCOUNT_ID}:cluster/infra-*",
+        "arn:aws:eks:*:${ACCOUNT_ID}:access-entry/infra-*/*"
+      ]
+    }
+EOF
+)
+else
+  EKS_STATEMENTS=""
+fi
+
 cat > "$WORK_DIR/launchpad-policy.json" <<EOF
 {
   "Version": "2012-10-17",
@@ -187,7 +242,7 @@ cat > "$WORK_DIR/launchpad-policy.json" <<EOF
       "Effect": "Allow",
       "Action": "kms:*",
       "Resource": "*"
-    }
+    }${EKS_STATEMENTS}
   ]
 }
 EOF
@@ -208,11 +263,25 @@ else
     aws iam update-assume-role-policy \
       --role-name "${ROLE_NAME}" \
       --policy-document file://"$WORK_DIR/trust-policy.json"
+    if [ "$COMPUTE_TYPE" = "eks" ]; then
+      # EKS cluster applies can outlive a 1h STS session; ECS-only roles keep the default.
+      echo "Raising role max session duration to 2h (EKS)..."
+      aws iam update-role \
+        --role-name "${ROLE_NAME}" \
+        --max-session-duration 7200
+    fi
   else
     echo "Creating IAM role..."
-    aws iam create-role \
-      --role-name "${ROLE_NAME}" \
-      --assume-role-policy-document file://"$WORK_DIR/trust-policy.json"
+    if [ "$COMPUTE_TYPE" = "eks" ]; then
+      aws iam create-role \
+        --role-name "${ROLE_NAME}" \
+        --assume-role-policy-document file://"$WORK_DIR/trust-policy.json" \
+        --max-session-duration 7200
+    else
+      aws iam create-role \
+        --role-name "${ROLE_NAME}" \
+        --assume-role-policy-document file://"$WORK_DIR/trust-policy.json"
+    fi
   fi
 
   echo "Ensuring deployment policy (latest permissions)..."

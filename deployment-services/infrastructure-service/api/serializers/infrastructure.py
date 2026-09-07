@@ -27,6 +27,7 @@ class InfrastructureSerializer:
             name=instance.name,
             user_id=instance.user_id,
             cloud_provider=instance.cloud_provider,
+            compute_type=instance.compute_type,
             max_cpu=instance.max_cpu,
             max_memory=instance.max_memory,
             is_cloud_authenticated=instance.is_cloud_authenticated,

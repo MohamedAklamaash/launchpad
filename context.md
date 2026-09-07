@@ -71,7 +71,9 @@ Responsible for:
 - container registry
 - runtime compute
 
-Resources created inside the user's account:
+Resources created inside the user's account (per the infrastructure's `compute_type`):
+
+**ECS Fargate** (`compute_type = ecs_fargate`, the default):
 
 - VPC
 - Subnets (public + private)
@@ -84,6 +86,19 @@ Resources created inside the user's account:
 - ECS Tasks
 - Security Groups
 - IAM Roles
+
+**Kubernetes** (`compute_type = eks`):
+
+- VPC
+- Subnets (public + private)
+- NAT Gateway
+- Internet Gateway
+- EKS Auto Mode cluster
+- Application Load Balancer (created by the AWS Load Balancer Controller from a bootstrap Ingress)
+- ECR Repository
+- Per-application namespaces (Deployment + nginx sidecar, Service, Ingress, ConfigMap)
+- Security Groups
+- IAM Roles (cluster + node roles, split access entries)
 
 ---
 
@@ -105,9 +120,13 @@ Each user can create **Infrastructure** objects.
 
 Infrastructure represents a **dedicated AWS environment** owned by the user.
 
+The compute target is chosen at creation via `compute_type` — `ecs_fargate` (default)
+or `eks` — and is immutable afterwards. `eks` is gated by the server-side `EKS_ENABLED`
+flag. Both targets share the same status lifecycle, URL scheme, and failure semantics.
+
 Creating infrastructure provisions a full cloud environment.
 
-Terraform provisions:
+Terraform provisions (ECS Fargate):
 
 - VPC
 - Public and private subnets
@@ -120,6 +139,18 @@ Terraform provisions:
 - IAM roles (ECS task execution role)
 - Security groups (ALB security group)
 
+Terraform provisions (Kubernetes):
+
+- The same VPC/networking and ECR resources
+- EKS Auto Mode cluster (`infra-*` naming, API authentication mode, restricted public
+  access CIDRs, control-plane logging)
+- Cluster and node IAM roles, split access entries (cluster-admin for provisioning,
+  namespace-scoped for the deploy worker)
+
+The ALB for a Kubernetes infrastructure is not a Terraform output — it is created by the
+AWS Load Balancer Controller when a post-apply bootstrap step applies an IngressClass and
+placeholder Ingress, then polled for its DNS name and written to `Environment.alb_dns`.
+
 Infrastructure provisioning occurs inside the **user's AWS account**.
 
 The platform assumes a role in the user's account using:
@@ -131,8 +162,8 @@ sts:AssumeRole
 **IAM Setup**:
 - User creates `LaunchpadDeploymentRole` in their AWS account
 - Role trusts platform IAM user: `aklamaash-terraform` (account 221082203366)
-- Platform stores temporary credentials (1 hour TTL) in infrastructure metadata
-- Credentials auto-refresh on expiry
+- Temporary session credentials (up to 2 hours) are minted fresh per operation and held
+  only in worker memory — never persisted
 
 ---
 
@@ -272,12 +303,18 @@ When a user deploys an application:
 3. Deployment job is added to Redis queue
 4. Deployment worker processes the job
 
-**Deployment Pipeline (11 steps)**:
+**Deployment Pipeline** — steps 1-4 are shared; the deploy step branches on the
+infrastructure's `compute_type`.
+
+Shared:
 
 1. **Validate Infrastructure**: Check status is ACTIVE and cloud authenticated
 2. **Create AWS Session**: Assume role with credential refresh logic
 3. **Trigger CodeBuild**: Start build job in user's AWS account
 4. **Wait for Build**: Poll until build completes (status: BUILDING)
+
+Then, on `ecs_fargate` infrastructures:
+
 5. **Create Task Definition**: Define ECS task with container config (status: DEPLOYING)
 6. **Create Target Group**: Create ALB target group for the application
 7. **Configure ALB Routing**: Create listener rule for path-based routing
@@ -285,6 +322,22 @@ When a user deploys an application:
 9. **Add Security Group Rule**: Allow traffic from ALB to container port
 10. **Create ECS Service**: Launch containers with load balancer integration
 11. **Wait for Stability**: Poll until service is running (status: ACTIVE)
+
+Or, on `eks` infrastructures (via the Kubernetes API, `api/k8s/deployer.py`):
+
+5. **Ensure Namespace**: `app-{slug}` with PodSecurity labels, ResourceQuota, LimitRange
+   and a default-deny NetworkPolicy (status: DEPLOYING)
+6. **Apply ConfigMap**: nginx sidecar config that strips the `/{slug}` path prefix
+7. **Apply Deployment**: app container + nginx sidecar, referencing the immutable
+   per-deploy image tag
+8. **Apply Service**: ClusterIP fronting the sidecar
+9. **Apply Ingress**: joins the infrastructure's shared ALB ingress group, routing
+   `/{slug}` and `/{slug}/*`
+10. **Wait for Rollout**: poll until the Deployment is available, harvesting pod events
+    into `error_message` on failure (status: ACTIVE)
+
+Kubernetes resource handles are recorded in `Application.runtime_refs`; ECS deployments
+keep using the ARN columns.
 
 **Error Handling**:
 - Any failure updates status to FAILED
@@ -378,16 +431,21 @@ Isolation occurs at multiple levels.
 Each Infrastructure has its own VPC.
 
 **Application isolation**:
-Each application runs as an independent ECS service.
+On ECS, each application runs as an independent ECS service. On EKS, each application
+gets its own `app-{slug}` namespace with a ResourceQuota and LimitRange, so one tenant
+cannot exhaust the cluster on another's behalf.
 
 **Network isolation**:
-Security groups control traffic between ALB and containers.
+On ECS, security groups control traffic between ALB and containers. On EKS, each
+namespace carries a default-deny NetworkPolicy that admits only the ingress controller
+on the serving port (network-policy enforcement is switched on in the VPC CNI at
+provision time — Auto Mode accepts policies but does not enforce them by default).
 
 **Build isolation**:
 Application builds run in AWS CodeBuild within the user's account.
 
 **IAM isolation**:
-Platform uses AssumeRole with temporary credentials (1 hour TTL).
+Platform uses AssumeRole with temporary credentials (up to 2 hours, never persisted).
 
 **Security Group Rules**:
 - ALB → Container: tcp:{application.port} (auto-created)

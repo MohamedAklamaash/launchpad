@@ -12,6 +12,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job only reads the repository; none needs a writable GITHUB_TOKEN.
+permissions:
+  contents: read
+
 jobs:
   check-python:
     name: Lint & Syntax (python services)
@@ -24,13 +28,17 @@ jobs:
           - deployment-services
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install ruff
-        run: pip install ruff
+        # Pinned: an unpinned install means a new ruff release can turn CI red on a
+        # commit that changed nothing. Bump deliberately.
+        run: pip install ruff==0.16.5
 
       - name: Syntax check
         run: python -m compileall ${{ matrix.service }} -q
@@ -46,6 +54,8 @@ jobs:
         working-directory: identity-services
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -82,6 +92,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -108,6 +120,8 @@ jobs:
         working-directory: launchpad-frontend
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -126,3 +140,27 @@ jobs:
 
       - name: TypeScript
         run: npx tsc --noEmit
+
+  check-terraform:
+    name: Format & Validate (terraform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive deployment-services/infrastructure-service/infra/aws
+
+      - name: Terraform validate (modules)
+        run: |
+          for module in deployment-services/infrastructure-service/infra/aws/modules/*/; do
+            echo "::group::${module}"
+            terraform -chdir="${module}" init -backend=false -input=false
+            terraform -chdir="${module}" validate
+            echo "::endgroup::"
+          done

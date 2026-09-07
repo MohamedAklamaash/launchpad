@@ -10,8 +10,10 @@ from api.repositories.infrastructure import InfrastructureRepository
 from api.serializers.infrastructure import InfrastructureSerializer
 from api.services.infra_queue import InfraQueue
 from api.services.infrastructure_permissions import InfrastructurePermissions
+from django.conf import settings
 from django.db import transaction
 from shared.enums.cloud_provider import CloudProvider
+from shared.enums.orchestrator import ComputeType
 from shared.mode import is_dev_mode
 from shared.resilience.circuit_breaker import CircuitBreaker
 
@@ -29,7 +31,6 @@ def normalize_account_id(code) -> str:
         raise ValueError("AWS Account ID must be exactly 12 digits.")
     return account_id
 
-
 def validate_vpc_cidr(value) -> None:
     """Reject anything that isn't a strict CIDR literal."""
     try:
@@ -42,6 +43,37 @@ def validate_aws_region(value) -> None:
     """Reject anything not shaped like an AWS region name."""
     if not isinstance(value, str) or not _AWS_REGION.fullmatch(value):
         raise ValueError("Invalid aws_region")
+
+
+def validate_infra_metadata(metadata: dict) -> dict:
+    """Strip credential keys and shape-validate the fields that reach generated HCL.
+
+    metadata is otherwise free-form. vpc_cidr, aws_region and cluster_version are
+    interpolated into Terraform that the provisioning worker executes, so an
+    unvalidated value there is code execution on the worker, not merely a bad plan.
+    """
+    cleaned = {
+        k: v for k, v in metadata.items()
+        if k not in {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
+    }
+
+    if cleaned.get("aws_region") is not None:
+        validate_aws_region(cleaned["aws_region"])
+    if cleaned.get("vpc_cidr") is not None:
+        validate_vpc_cidr(cleaned["vpc_cidr"])
+
+    version = cleaned.get("cluster_version")
+    if version is not None:
+        # Local import: terraform_worker imports the validators above, so a module-level
+        # import here would close the cycle.
+        from api.services.terraform_worker import EKS_SUPPORTED_CLUSTER_VERSIONS
+        if str(version) not in EKS_SUPPORTED_CLUSTER_VERSIONS:
+            raise ValueError(
+                f"Invalid cluster_version. Must be one of: {', '.join(sorted(EKS_SUPPORTED_CLUSTER_VERSIONS))}."
+            )
+
+    return cleaned
+
 
 cloud_cb = CircuitBreaker(
     name="CloudProviderAPI",
@@ -79,24 +111,20 @@ class InfrastructureService:
         # without this filter a caller could set server-controlled fields directly
         # (is_cloud_authenticated, onboarding_token_*, id, user) and subvert the
         # onboarding state machine.
-        ALLOWED_CREATE_FIELDS = {"name", "cloud_provider", "max_cpu", "max_memory", "code", "metadata"}
+        ALLOWED_CREATE_FIELDS = {"name", "cloud_provider", "compute_type", "max_cpu", "max_memory", "code", "metadata"}
         infra_data = {k: v for k, v in infra_data.items() if k in ALLOWED_CREATE_FIELDS}
+        # Pop-then-reinsert: an explicit null must fall back to the model default instead of
+        # splatting compute_type=None into the constructor.
+        compute_type = infra_data.pop("compute_type", None)
+        if compute_type is not None:
+            compute_type = str(compute_type).lower()
+            if compute_type not in ComputeType.values:
+                raise ValueError(f"Invalid compute_type. Must be one of: {', '.join(ComputeType.values)}.")
+            if compute_type == ComputeType.EKS and not settings.EKS_ENABLED:
+                raise ValueError("EKS support is not enabled on this platform.")
+            infra_data["compute_type"] = compute_type
         if isinstance(infra_data.get("metadata"), dict):
-            # Never let a caller seed credential keys into metadata (it's serialized back
-            # out, and the worker treats these keys as live STS creds).
-            infra_data["metadata"] = {
-                k: v for k, v in infra_data["metadata"].items()
-                if k not in {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
-            }
-            # vpc_cidr and aws_region are f-string-interpolated into generated HCL by the
-            # terraform worker, so a crafted value could close the block and inject arbitrary
-            # config into a subprocess. Shape-validate them at the boundary.
-            vpc_cidr = infra_data["metadata"].get("vpc_cidr")
-            if vpc_cidr is not None:
-                validate_vpc_cidr(vpc_cidr)
-            aws_region = infra_data["metadata"].get("aws_region")
-            if aws_region is not None:
-                validate_aws_region(aws_region)
+            infra_data["metadata"] = validate_infra_metadata(infra_data["metadata"])
         if infra_data.get("cloud_provider"):
             infra_data["cloud_provider"] = infra_data["cloud_provider"].lower()
         cloud_provider = infra_data.get("cloud_provider")
@@ -277,9 +305,12 @@ class InfrastructureService:
         if not InfrastructurePermissions.can_update_infrastructure(infra, user_id):
             raise PermissionError("Only the infrastructure owner can update it")
         
+        if 'compute_type' in update_data:
+            raise ValueError("compute_type is immutable after creation.")
+
         # Validate updatable fields
         update_fields = []
-        
+
         if 'name' in update_data:
             infra.name = update_data['name']
             update_fields.append('name')
