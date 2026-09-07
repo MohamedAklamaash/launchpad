@@ -20,6 +20,7 @@ from api.models.database import Database
 from api.models.environment import Environment
 from api.models.infrastructure import Infrastructure
 from api.services.infrastructure import validate_aws_region, validate_vpc_cidr
+from api.services.log_redaction import clip_head, clip_tail, redact_provisioning_text
 from api.validators import validate_database_name
 from django.db import transaction
 from django.utils import timezone
@@ -32,6 +33,8 @@ TF_MODULES_DIR = Path(__file__).resolve().parent.parent.parent / "infra" / "aws"
 MAX_RETRIES = 3
 MOCK_PROVISION_DELAY_SECONDS = 4
 MAX_LOG_CHARS = 256_000
+MAX_ERROR_CHARS = 8_000
+_CREDENTIAL_KEYS = ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
 
 # Live (non-terminal) statuses whose Database row still gets a module block emitted into
 # generated config. DELETING/DELETED are excluded on purpose: omitting the block is what
@@ -52,10 +55,26 @@ def _capped_logs(*parts) -> str:
     Keeps the tail: terraform puts the error at the end, which is the part worth having.
     None-tolerant so callers can pass `env.logs` directly.
 
-    This is also the seam where write-time redaction belongs when runtime logs get
-    exposed — it has to run before truncation, or raw secrets stay in the stored text.
+    Redaction runs before truncation — the other order leaves raw secrets in the stored
+    text whenever the cut lands inside one. The cut lands on a line the redactor
+    classifies on its own, so the stored value stays a fixed point of the redactor.
     """
-    return "".join(part or "" for part in parts)[-MAX_LOG_CHARS:]
+    return clip_tail(redact_provisioning_text("".join(part or "" for part in parts)).text, MAX_LOG_CHARS)
+
+
+def _capped_error(*parts) -> str:
+    """Every write of terraform- or exception-derived text to `error_message` goes
+    through here. Every other write is a literal — `None` on a success or reprovision
+    path, or one fixed sentence in `_save_outputs` — and carries nothing to redact.
+
+    Each part is redacted and head-clipped on its own, then joined: the terraform error
+    comes first and the worker's composed suffix ("Cleanup: WARNING: Manual cleanup
+    required…") last, and a single head-slice over the whole string would drop that
+    suffix — the one sentence in the record the customer must not miss. The bound is
+    therefore `n * MAX_ERROR_CHARS + (n - 1)` for `n` parts, not `MAX_ERROR_CHARS`.
+    """
+    pieces = [clip_head(redact_provisioning_text(part).text, MAX_ERROR_CHARS) for part in parts if part]
+    return "\n".join(piece for piece in pieces if piece)
 
 
 class TerraformWorker:
@@ -145,8 +164,9 @@ class TerraformWorker:
         # A missing credential must never silently fall back to the AWS SDK's ambient
         # chain (IMDS, ~/.aws/credentials) — that chain can resolve to the platform's
         # own AWS identity, which can AssumeRole into every onboarded customer account.
-        if not all(credentials.get(k) for k in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")):
-            return {"success": False, "error": "Missing AWS credentials for terraform execution", "logs": ""}
+        if not all(credentials.get(k) for k in _CREDENTIAL_KEYS):
+            return TerraformWorker._tf_result(False, [], credentials,
+                                              error="Missing AWS credentials for terraform execution")
 
         bucket = f"launchpad-tf-state-{account_id}-{region}"
         table = f"launchpad-tf-locks-{account_id}-{region}"
@@ -200,10 +220,10 @@ class TerraformWorker:
                 check=False
             )
             logs.append(f"[INIT]\n{init_result.stdout}\n{init_result.stderr}")
-            
+
             if init_result.returncode != 0:
-                return {"success": False, "error": init_result.stderr, "logs": "\n".join(logs)}
-            
+                return TerraformWorker._tf_result(False, logs, credentials, error=init_result.stderr)
+
             result = subprocess.run(
                 cmd,
                 cwd=work_dir,
@@ -213,20 +233,39 @@ class TerraformWorker:
                 check=False
             )
             logs.append(f"[COMMAND]\n{result.stdout}\n{result.stderr}")
-            
+
             if result.returncode != 0:
-                return {"success": False, "error": result.stderr, "logs": "\n".join(logs)}
-            
-            return {"success": True, "output": result.stdout, "logs": "\n".join(logs)}
-        
+                return TerraformWorker._tf_result(False, logs, credentials, error=result.stderr)
+
+            return TerraformWorker._tf_result(True, logs, credentials, output=result.stdout)
+
         except Exception as e:
             error_msg = f"Terraform execution failed: {e!s}"
             logs.append(f"[ERROR] {error_msg}")
-            return {"success": False, "error": error_msg, "logs": "\n".join(logs)}
-        
+            return TerraformWorker._tf_result(False, logs, credentials, error=error_msg)
+
         finally:
             import shutil
             shutil.rmtree(work_dir, ignore_errors=True)
+
+    @staticmethod
+    def _tf_result(success: bool, logs: list, credentials: dict, *,
+                   error: str | None = None, output: str | None = None) -> dict:
+        """The only way out of `_exec_tf`. Raw terraform text never leaves it: `transient`
+        is classified on the raw stderr here, then `logs`/`error` are scrubbed of the
+        exact STS values terraform ran with and allowlist-redacted. `output` stays raw —
+        it is `terraform output -json`, parsed by `_save_outputs`, never persisted."""
+        secrets = [credentials.get(k, "") for k in _CREDENTIAL_KEYS]
+        result = {
+            "success": success,
+            "transient": TerraformWorker._is_transient_error(error or ""),
+            "logs": redact_provisioning_text("\n".join(logs), secrets=secrets).text,
+        }
+        if error is not None:
+            result["error"] = redact_provisioning_text(error, secrets=secrets).text
+        if output is not None:
+            result["output"] = output
+        return result
     
     @staticmethod
     def _ensure_app_security_group(credentials: dict, region: str, vpc_id: str, infra_id: str) -> str:
@@ -559,22 +598,24 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             logger.info(f"Infrastructure {infra_id} provisioned successfully")
 
         except Exception as e:
-            logger.exception(f"Provisioning failed for {infra_id}")
+            logger.error(f"Provisioning failed for {infra_id}: {redact_provisioning_text(str(e)).text}",
+                         exc_info=False)
             # An environment that has ever activated must not be reported dead over an
             # error that happened before any destructive step ran (e.g. AssumeRole
             # failing on a reprovision) — restore it instead of flipping to ERROR.
             env = Environment.objects.filter(infrastructure_id=infra_id).first()
             with transaction.atomic():
                 if env is not None and env.first_activated_at is not None:
+                    message = _capped_error(f"Update failed: {e!s}")
                     Environment.objects.filter(infrastructure_id=infra_id).update(
-                        status="ACTIVE", error_message=f"Update failed: {e!s}"
+                        status="ACTIVE", error_message=message
                     )
                     Database.objects.filter(
                         environment=env, status__in=['PENDING', 'PROVISIONING', 'DELETING']
-                    ).update(status='ERROR', error_message=f"Update failed: {e!s}")
+                    ).update(status='ERROR', error_message=message)
                 else:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
-                        status="ERROR", error_message=str(e)
+                        status="ERROR", error_message=_capped_error(str(e))
                     )
     
     @staticmethod
@@ -587,11 +628,11 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
 
         # Transient errors get their normal retry regardless of activation state — the
         # retry path never destroys anything, so there is nothing to gate here.
-        if TerraformWorker._is_transient_error(error) and retry_count < MAX_RETRIES:
+        if result["transient"] and retry_count < MAX_RETRIES:
             logger.warning(f"Transient error, will retry (attempt {retry_count + 1}/{MAX_RETRIES})")
             with transaction.atomic():
                 Environment.objects.filter(infrastructure_id=infra_id).update(
-                    logs=_capped_logs(logs), error_message=f"Retry {retry_count + 1}: {error}"
+                    logs=_capped_logs(logs), error_message=_capped_error(f"Retry {retry_count + 1}: {error}")
                 )
             from api.services.infra_queue import InfraQueue
             InfraQueue.release_lock(str(infra_id))
@@ -608,14 +649,14 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 Environment.objects.filter(infrastructure_id=infra_id).update(
                     status="ACTIVE",
                     logs=_capped_logs(env.logs, "\n[FAILED UPDATE]\n", logs),
-                    error_message=f"Update failed; environment restored to ACTIVE: {error}",
+                    error_message=_capped_error(f"Update failed; environment restored to ACTIVE: {error}"),
                 )
                 # Rows mid-flight in this apply have no confirmed outcome — never leave
                 # them silently stuck; ERROR is retryable (create again, or delete works
                 # from ERROR too).
                 Database.objects.filter(
                     environment=env, status__in=['PENDING', 'PROVISIONING', 'DELETING']
-                ).update(status='ERROR', error_message=f"Update failed: {error}")
+                ).update(status='ERROR', error_message=_capped_error(f"Update failed: {error}"))
             return
 
         logger.error(f"Permanent failure, triggering destroy for {infra_id}")
@@ -634,7 +675,8 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
         combined_logs = _capped_logs(logs, "\n[DESTROY]\n", destroy_result.get("logs", ""))
         with transaction.atomic():
             Environment.objects.filter(infrastructure_id=infra_id).update(
-                status="ERROR", logs=combined_logs, error_message=f"{error}\n\nCleanup: {cleanup_status}"
+                status="ERROR", logs=combined_logs,
+                error_message=_capped_error(error, f"Cleanup: {cleanup_status}"),
             )
     
     @staticmethod
@@ -779,7 +821,9 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 with transaction.atomic():
                     Environment.objects.filter(infrastructure_id=infra_id).update(
                         status="ACTIVE", logs=combined_logs,
-                        error_message=f"Apply succeeded but reading outputs failed: {output_result.get('error', 'Unknown error')}",
+                        error_message=_capped_error(
+                            f"Apply succeeded but reading outputs failed: {output_result.get('error', 'Unknown error')}"
+                        ),
                     )
                 # Any Database row mid-flight in this apply has an unconfirmed outcome —
                 # ACTIVE has no reaper coverage, so without a re-enqueue here a row could
@@ -894,7 +938,9 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 with transaction.atomic():
                     Environment.objects.filter(infrastructure_id=infra_id).update(
                         status="ERROR",
-                        error_message=f"Destroy blocked: {live_dbs.count()} database(s) must be deleted first",
+                        error_message=_capped_error(
+                            f"Destroy blocked: {live_dbs.count()} database(s) must be deleted first"
+                        ),
                     )
                 return
 
@@ -969,10 +1015,11 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 else:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
                         status="ERROR",
-                        error_message=f"Destroy failed: {result.get('error')}",
+                        error_message=_capped_error(f"Destroy failed: {result.get('error')}"),
                         logs=_capped_logs(result.get("logs", ""))
                     )
                     logger.error(f"Destroy failed for {infra_id}: {result.get('error')}")
         
-        except Exception:
-            logger.exception(f"Destroy failed for {infra_id}")
+        except Exception as e:
+            logger.error(f"Destroy failed for {infra_id}: {redact_provisioning_text(str(e)).text}",
+                         exc_info=False)
