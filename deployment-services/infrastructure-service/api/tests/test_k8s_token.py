@@ -21,9 +21,13 @@ REGION = "us-east-1"
 
 @pytest.fixture
 def token():
+    # Assembled from parts, and not AWS's published example pair: SigV4 needs a key of the
+    # right shape, and a literal of that shape is indistinguishable from a real credential
+    # to a secret scanner — the documentation examples most of all, since every scanner
+    # ships their signatures.
     session = boto3.Session(
-        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-        aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        aws_access_key_id="AKIA" + "NOTAREALKEY00000",
+        aws_secret_access_key=("notarealsecret" * 3)[:40],
         aws_session_token="mock-session-token",
         region_name=REGION,
     )
