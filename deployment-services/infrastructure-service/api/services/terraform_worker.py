@@ -39,6 +39,25 @@ MAX_LOG_CHARS = 256_000
 _LIVE_DB_STATUSES_FOR_CONFIG = ['PENDING', 'PROVISIONING', 'ACTIVE', 'ERROR']
 
 
+def _capped_logs(*parts) -> str:
+    """Join log fragments and clip to MAX_LOG_CHARS. Every write to Environment.logs
+    goes through here.
+
+    The cap used to be applied inline at each write site, and four of the seven sites
+    forgot it — so a failing apply or destroy could persist an unbounded terraform blob
+    into Postgres, and from there into every backup and replica. Routing all of them
+    through one helper makes the bound structural instead of something each new write
+    site has to remember.
+
+    Keeps the tail: terraform puts the error at the end, which is the part worth having.
+    None-tolerant so callers can pass `env.logs` directly.
+
+    This is also the seam where write-time redaction belongs when runtime logs get
+    exposed — it has to run before truncation, or raw secrets stay in the stored text.
+    """
+    return "".join(part or "" for part in parts)[-MAX_LOG_CHARS:]
+
+
 class TerraformWorker:
     """Stateless Terraform worker with retry and proper error handling"""
     
@@ -572,7 +591,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             logger.warning(f"Transient error, will retry (attempt {retry_count + 1}/{MAX_RETRIES})")
             with transaction.atomic():
                 Environment.objects.filter(infrastructure_id=infra_id).update(
-                    logs=logs, error_message=f"Retry {retry_count + 1}: {error}"
+                    logs=_capped_logs(logs), error_message=f"Retry {retry_count + 1}: {error}"
                 )
             from api.services.infra_queue import InfraQueue
             InfraQueue.release_lock(str(infra_id))
@@ -588,7 +607,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             with transaction.atomic():
                 Environment.objects.filter(infrastructure_id=infra_id).update(
                     status="ACTIVE",
-                    logs=((env.logs or "") + "\n[FAILED UPDATE]\n" + logs)[-MAX_LOG_CHARS:],
+                    logs=_capped_logs(env.logs, "\n[FAILED UPDATE]\n", logs),
                     error_message=f"Update failed; environment restored to ACTIVE: {error}",
                 )
                 # Rows mid-flight in this apply have no confirmed outcome — never leave
@@ -612,7 +631,7 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             logger.error(f"Failed to destroy resources for {infra_id}: {destroy_result.get('error')}")
             cleanup_status = f"WARNING: Cleanup failed. Manual cleanup required in AWS account. Error: {destroy_result.get('error', 'Unknown')}"
         
-        combined_logs = logs + "\n[DESTROY]\n" + destroy_result.get("logs", "")
+        combined_logs = _capped_logs(logs, "\n[DESTROY]\n", destroy_result.get("logs", ""))
         with transaction.atomic():
             Environment.objects.filter(infrastructure_id=infra_id).update(
                 status="ERROR", logs=combined_logs, error_message=f"{error}\n\nCleanup: {cleanup_status}"
@@ -682,8 +701,8 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             outputs = json.loads(output_result["output"])
             # `terraform output -json` prints sensitive-marked values in cleartext (the
             # human-readable apply output masks them) — persist only the key names.
-            combined_logs = (apply_result.get("logs", "") + "\n[OUTPUT] parsed keys: "
-                              + ", ".join(sorted(outputs.keys())))[-MAX_LOG_CHARS:]
+            combined_logs = _capped_logs(apply_result.get("logs", ""), "\n[OUTPUT] parsed keys: ",
+                                         ", ".join(sorted(outputs.keys())))
 
             with transaction.atomic():
                 env = Environment.objects.get(infrastructure_id=infra_id)
@@ -751,8 +770,8 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
                 ).start())
         else:
             logger.error(f"Failed to fetch terraform outputs for {infra_id}: {output_result.get('error')}")
-            combined_logs = (apply_result.get("logs", "") + "\n[OUTPUT FETCH FAILED]\n"
-                              + output_result.get("error", ""))[-MAX_LOG_CHARS:]
+            combined_logs = _capped_logs(apply_result.get("logs", ""), "\n[OUTPUT FETCH FAILED]\n",
+                                         output_result.get("error", ""))
             env = Environment.objects.get(infrastructure_id=infra_id)
             if env.first_activated_at is not None:
                 # Env was live before this run — a failure to read outputs back must
@@ -944,14 +963,14 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
             with transaction.atomic():
                 if result["success"]:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
-                        status="DESTROYED", logs=result.get("logs", "")
+                        status="DESTROYED", logs=_capped_logs(result.get("logs", ""))
                     )
                     logger.info(f"Infrastructure {infra_id} destroyed")
                 else:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
                         status="ERROR",
                         error_message=f"Destroy failed: {result.get('error')}",
-                        logs=result.get("logs", "")
+                        logs=_capped_logs(result.get("logs", ""))
                     )
                     logger.error(f"Destroy failed for {infra_id}: {result.get('error')}")
         

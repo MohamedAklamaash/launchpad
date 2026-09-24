@@ -1,5 +1,6 @@
 from typing import Any
 
+from api.cloud_providers.aws import iam_policy
 from api.models.infrastructure import Infrastructure
 from api.types.infrastructure import InfrastructureResponse
 
@@ -37,6 +38,9 @@ class InfrastructureSerializer:
             invited_users=invited_users_details,
             status=status,
             is_mock=instance.is_mock,
+            policy_version=instance.policy_version,
+            current_policy_version=iam_policy.version(),
+            policy_refresh_required=instance.policy_refresh_required(),
         )
         return response.to_dict()
 

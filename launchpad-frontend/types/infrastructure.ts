@@ -19,6 +19,14 @@ export interface Infrastructure {
   status: InfrastructureStatus;
   is_cloud_authenticated: boolean;
   is_mock?: boolean;
+  /** LaunchpadDeploymentPolicy version applied in the customer's account. Null when the
+   *  account was onboarded by a script predating policy versioning. */
+  policy_version?: number | null;
+  /** The version Launchpad currently ships. */
+  current_policy_version?: number | null;
+  /** True when the applied version is behind — the customer should re-run the refresh
+   *  script before the missing grants cause an AccessDenied mid-deploy. */
+  policy_refresh_required?: boolean;
   invited_users?: InvitedUserSummary[];
   metadata?: { aws_region?: string; [key: string]: string | undefined };
   created_at: string;

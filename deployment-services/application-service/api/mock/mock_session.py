@@ -138,7 +138,12 @@ class MockClient:
 
     def describe_listeners(self, **kwargs):
         lb_arn = kwargs.get("LoadBalancerArn", "alb")
-        return {"Listeners": [{"ListenerArn": self._arn(f"listener/app/{_suffix(lb_arn)}/80")}]}
+        # Port is load-bearing: get_listener_arn selects by it rather than taking the
+        # first listener, so a stub without it would strand every mock-mode deploy on
+        # "No listener found".
+        return {"Listeners": [
+            {"ListenerArn": self._arn(f"listener/app/{_suffix(lb_arn)}/80"), "Port": 80},
+        ]}
 
     def describe_rules(self, **kwargs):
         # Reflect rules created via create_rule so verify_target_group_attached and

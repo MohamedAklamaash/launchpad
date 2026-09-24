@@ -57,6 +57,12 @@ class InfrastructureResponse:
     status: str = "UNKNOWN"
     is_mock: bool = False
     code: str | None = None
+    # LaunchpadDeploymentPolicy version applied in the customer's account vs. the version
+    # Launchpad currently ships. The dashboard uses the gap to surface the Refresh policy
+    # script before a deploy fails with AccessDenied.
+    policy_version: int | None = None
+    current_policy_version: int | None = None
+    policy_refresh_required: bool = False
 
     def to_dict(self):
         data = asdict(self)

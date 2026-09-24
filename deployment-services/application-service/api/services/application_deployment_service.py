@@ -449,7 +449,7 @@ class ApplicationDeploymentService:
         
         listener_arn = alb.get_listener_arn(environment.alb_arn)
         if not listener_arn:
-            raise ValueError("No listener found for ALB")
+            raise ValueError(f"No :80 listener found on ALB {environment.alb_arn}")
 
         if application.listener_rule_arn:
             try:

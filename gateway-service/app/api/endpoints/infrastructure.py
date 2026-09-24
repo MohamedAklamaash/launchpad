@@ -101,6 +101,10 @@ class OnboardingCallbackBody(BaseModel):
     infra_id: str = Field(description="Infrastructure UUID this callback is for")
     account_id: str = Field(description="AWS Account ID where LaunchpadDeploymentRole was created")
     onboarding_token: str = Field(description="Single-use onboarding token issued at infra creation")
+    policy_version: int | None = Field(
+        default=None,
+        description="LaunchpadDeploymentPolicy version the script applied; absent on scripts pinned before versioning",
+    )
 
 
 @router.post("/onboarding/callback", summary="Onboarding callback from customer's AWS account",
@@ -133,6 +137,10 @@ class PolicyRefreshCallbackBody(BaseModel):
     script: str | None = Field(default=None, example="create_aws_role.sh")
     role_name: str | None = Field(default=None)
     policy_arn: str | None = Field(default=None)
+    policy_version: int | None = Field(
+        default=None,
+        description="LaunchpadDeploymentPolicy version the script applied; absent on scripts pinned before versioning",
+    )
 
 
 @router.post("/policy-refresh/callback", summary="Policy-refresh callback from customer's AWS account",

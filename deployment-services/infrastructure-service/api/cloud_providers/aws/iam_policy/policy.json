@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "version_hashes": {
+    "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3"
+  },
+  "notes": [
+    "ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure",
+    "s3: terraform state bucket + application asset storage",
+    "dynamodb: terraform state lock table",
+    "rds/elasticache/secretsmanager: create and manage managed databases you provision",
+    "  and the credentials Launchpad injects into your containers",
+    "iam:*: create execution roles for ECS tasks. This grant is account-wide — the",
+    "  launchpad-* role naming is a convention, not an enforced boundary",
+    "kms:*: encrypt state bucket and secrets"
+  ],
+  "statements": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:*",
+        "ecs:*",
+        "elasticloadbalancing:*",
+        "ecr:*",
+        "logs:*",
+        "s3:*",
+        "dynamodb:*",
+        "codebuild:*",
+        "rds:*",
+        "elasticache:*",
+        "secretsmanager:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iam:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "kms:*",
+      "Resource": "*"
+    }
+  ]
+}

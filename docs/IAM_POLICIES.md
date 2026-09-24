@@ -77,6 +77,7 @@ Create role `LaunchpadDeploymentRole` with this trust policy. Replace
 
 Attach this policy to the role:
 
+<!-- BEGIN GENERATED: deployment policy — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
 ```json
 {
   "Version": "2012-10-17",
@@ -111,6 +112,7 @@ Attach this policy to the role:
   ]
 }
 ```
+<!-- END GENERATED -->
 
 ---
 
@@ -162,7 +164,8 @@ cat > trust-policy.json <<EOF
 EOF
 
 # Create deployment policy file
-cat > deployment-policy.json <<EOF
+# BEGIN GENERATED: deployment policy (cli) — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json
+cat > deployment-policy.json <<'EOF'
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -196,6 +199,7 @@ cat > deployment-policy.json <<EOF
   ]
 }
 EOF
+# END GENERATED
 
 # Get your account ID
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
@@ -225,13 +229,25 @@ echo "Role ARN: arn:aws:iam::${ACCOUNT_ID}:role/LaunchpadDeploymentRole"
 
 ## Keeping the policy current
 
-When Launchpad adds capabilities, `LaunchpadDeploymentPolicy` may gain actions. If your
-deployments start failing with `AccessDenied`, re-run `create_aws_role.sh` — surfaced in
+The policy carries a **version number**. `create_aws_role.sh` reports the version it
+applied on both its callbacks, so the dashboard knows exactly which policy your account
+holds and flags the infrastructure when Launchpad ships a newer one — you no longer have
+to wait for an `AccessDenied` to find out. The infrastructure detail page shows the
+applied version alongside the current one.
+
+When Launchpad adds capabilities, `LaunchpadDeploymentPolicy` gains actions and the
+version is bumped. To pick up the new grants, re-run `create_aws_role.sh` — surfaced in
 the dashboard as the *Refresh policy script*. The same idempotent script re-applies the
 latest policy **and** trust policy in place; you don't recreate the role.
 
+Accounts onboarded before versioning existed report no version and are shown as needing a
+refresh — running it once records the current version and clears the flag.
+
 Because one script owns the action list, the bootstrap and refresh paths can never drift
 apart, so a refresh never narrows your permissions by accident.
+
+A released version's permissions are frozen: widening the policy always produces a new
+version rather than silently redefining one your account already applied.
 
 The refresh snippet also carries a **per-user API key** (`LAUNCHPAD_API_KEY`) and posts to
 a policy-refresh callback so Launchpad records who ran the refresh, against which account,
@@ -400,5 +416,9 @@ WARNING: This will prevent Launchpad from managing your infrastructure. Clean up
 This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
-**Version**: 2.1.0  
-**Last Updated**: 2026-08-30
+<!-- BEGIN GENERATED: policy version — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
+**Policy version**: 1
+<!-- END GENERATED -->
+
+**Document revision**: 2.2.0  
+**Last Updated**: 2026-09-07
