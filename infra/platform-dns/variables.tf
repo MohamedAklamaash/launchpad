@@ -1,6 +1,10 @@
+# A delegated subdomain, not the root. The root zone keeps its own records and its own
+# nameservers; only this label is delegated here, so the platform's DNS credential cannot
+# reach the root's mail or website even by mistake — they are not in this zone.
 variable "platform_base_domain" {
-  description = "Apex domain for platform-issued app hostnames, e.g. example.com. App URLs become {slug}.{dns_label}.{this}. No trailing dot."
+  description = "Zone apex for platform-issued app hostnames. App URLs become {slug}.{dns_label}.{this}. No trailing dot."
   type        = string
+  default     = "launchpad.aklamaash.me"
 
   validation {
     condition     = can(regex("^[a-z0-9][a-z0-9.-]*\\.[a-z]{2,}$", var.platform_base_domain))
