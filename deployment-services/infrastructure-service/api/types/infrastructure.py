@@ -64,6 +64,10 @@ class InfrastructureResponse:
     # script before a deploy fails with AccessDenied.
     policy_version: int | None = None
     current_policy_version: int | None = None
+    # The lowest version this infra's compute_type must be at — the actual staleness
+    # threshold. Distinct from current_policy_version, which is the global latest and
+    # can be ahead of what this compute_type has ever needed.
+    required_policy_version: int | None = None
     policy_refresh_required: bool = False
 
     def to_dict(self):

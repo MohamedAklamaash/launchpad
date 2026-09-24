@@ -58,6 +58,22 @@ def version_hashes() -> dict[str, str]:
     return dict(load()["version_hashes"])
 
 
+def document_hashes() -> dict[str, dict[str, str]]:
+    """Rendered-document hash per version per compute_type — what a customer's shell
+    actually wrote into their AWS account, not the statements structure `version_hashes`
+    hashes. Separate map, separate invariant: `version_hashes` gates "did anyone edit
+    statements without bumping the version"; this one answers "did compute_type X's
+    applied document change at version N", which is what staleness-per-compute_type
+    needs and a single global version cannot express.
+
+    v1's ecs_fargate entry is a verified fact, not a reconstruction: the v2 bump (EKS
+    support) left the base statements untouched, so document_json("ecs_fargate") is
+    byte-identical between v1 and v2 — confirmed by diffing the extracted heredocs
+    during that change. v1 has no eks entry because EKS did not exist at v1.
+    """
+    return json.loads(json.dumps(load()["document_hashes"]))
+
+
 def document(compute_type: str | None = None) -> dict:
     """The policy document exactly as it is written into the customer's account.
 
@@ -73,6 +89,38 @@ def document(compute_type: str | None = None) -> dict:
 
 def document_json(compute_type: str | None = None) -> str:
     return json.dumps(document(compute_type), indent=2)
+
+
+def document_hash(compute_type: str | None = None) -> str:
+    """SHA-256 of the rendered document a customer of `compute_type` applies. Naming a
+    compute_type with no extra statements (e.g. "ecs_fargate", which isn't a key in
+    compute_type_statements) renders the same document as `None` — the two are
+    interchangeable inputs, not two different documents."""
+    return hashlib.sha256(document_json(compute_type).encode()).hexdigest()
+
+
+def required_version_for(compute_type: str) -> int:
+    """The lowest policy version a customer of `compute_type` must be at to hold every
+    grant Launchpad currently ships for that type.
+
+    Walks recorded document_hashes ascending and returns the version at which that
+    type's rendered document last changed, or the version at which the type first
+    appears. A version bump made for a different compute_type — one that leaves this
+    type's document byte-identical — does not raise what this type requires.
+    """
+    hashes = document_hashes()
+    required = None
+    previous_hash = None
+    for version_str in sorted(hashes, key=int):
+        type_hash = hashes[version_str].get(compute_type)
+        if type_hash is None:
+            continue
+        if type_hash != previous_hash:
+            required = int(version_str)
+            previous_hash = type_hash
+    if required is None:
+        raise KeyError(f"no recorded document hash for compute_type {compute_type!r}")
+    return required
 
 
 def statements_hash() -> str:

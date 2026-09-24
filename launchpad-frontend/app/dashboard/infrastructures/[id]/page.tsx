@@ -121,11 +121,14 @@ export default function InfrastructureDetailPage() {
   // same as "behind": accounts onboarded before policy versioning report no version, and
   // showing them an out-of-date warning would be a false alarm on a policy they already
   // hold. `undefined` (rather than null) means the backend predates this field, so fall
-  // back to the passive copy instead of rendering "Policy vundefined".
+  // back to the passive copy instead of rendering "Policy vundefined". Compared against
+  // required_policy_version, not current_policy_version: the latter is the global
+  // latest and can be ahead of what this infra's compute_type has ever needed, e.g. an
+  // EKS-only bump doesn't make an ECS account stale.
   const policyState = ((): { kind: 'unknown' | 'unrecorded' | 'stale' | 'current'; title: string; detail: string } => {
     const applied = infra?.policy_version;
-    const current = infra?.current_policy_version;
-    if (applied === undefined || current === undefined || current === null) {
+    const required = infra?.required_policy_version;
+    if (applied === undefined || required === undefined || required === null) {
       return {
         kind: 'unknown',
         title: 'Refresh IAM Policy',
@@ -136,14 +139,14 @@ export default function InfrastructureDetailPage() {
       return {
         kind: 'unrecorded',
         title: 'Refresh IAM Policy',
-        detail: `Launchpad hasn't recorded which policy version this account holds. Run the refresh once to record it (current: v${current}).`,
+        detail: `Launchpad hasn't recorded which policy version this account holds. Run the refresh once to record it (required: v${required}).`,
       };
     }
-    if (applied < current) {
+    if (applied < required) {
       return {
         kind: 'stale',
         title: 'IAM policy out of date',
-        detail: `Your account has policy v${applied}; Launchpad now requires v${current}. Re-run the script before your next deploy.`,
+        detail: `Your account has policy v${applied}; Launchpad now requires v${required}. Re-run the script before your next deploy.`,
       };
     }
     return {
