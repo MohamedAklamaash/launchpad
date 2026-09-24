@@ -27,6 +27,7 @@ Environment variables (all optional unless noted):
   LAUNCHPAD_PLATFORM_USER          Launchpad platform IAM user (default: aklamaash-terraform)
   LAUNCHPAD_EXTERNAL_ID            Per-customer ExternalId binding the trust policy (defaults to LAUNCHPAD_INFRA_ID)
   LAUNCHPAD_REGION                 AWS region for deployment (default: us-east-1)
+  LAUNCHPAD_COMPUTE_TYPE           Infra compute target: "ecs_fargate" (default) or "eks".
   LAUNCHPAD_INFRA_ID               Infra UUID; required for either callback
   LAUNCHPAD_CALLBACK_URL           Launchpad callback URL; required for either callback
   LAUNCHPAD_ONBOARDING_TOKEN       Single-use onboarding token (first-time bootstrap)
@@ -55,6 +56,10 @@ ASSUME_EXTERNAL_ID="${LAUNCHPAD_EXTERNAL_ID:-${LAUNCHPAD_INFRA_ID:-}}"
 
 MOCK_MODE="${LAUNCHPAD_MOCK:-0}"
 
+# Selects which IAM statements the generated policy region below applies. Keep the
+# default in sync with policy_data.DEFAULT_COMPUTE_TYPE.
+COMPUTE_TYPE="${LAUNCHPAD_COMPUTE_TYPE:-ecs_fargate}"
+
 # Region must match where Launchpad provisions; customer's CLI default may differ.
 LAUNCHPAD_REGION="${LAUNCHPAD_REGION:-us-east-1}"
 export AWS_REGION="$LAUNCHPAD_REGION"
@@ -69,6 +74,7 @@ echo "Region:           ${LAUNCHPAD_REGION}"
 echo "Platform account: ${TRUSTED_ACCOUNT_ID}"
 echo "Platform user:    ${PLATFORM_USER}"
 [ "$MOCK_MODE" = "1" ] && echo "Mode:             MOCK (no AWS calls)"
+[ "$COMPUTE_TYPE" = "eks" ] && echo "Compute type:     EKS"
 echo "=========================================="
 
 ########################################
@@ -162,9 +168,17 @@ fi
 # - iam:*: create execution roles for ECS tasks. This grant is account-wide — the
 #   launchpad-* role naming is a convention, not an enforced boundary
 # - kms:*: encrypt state bucket and secrets
+# - eks (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): create and manage the
+#   customer's EKS cluster, access entries, addons, and node groups named infra-*
+# - eks Deny (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): blocks EKS access-entry
+#   and access-policy management, and DescribeCluster, outside resources named
+#   infra-*, as a defense-in-depth backstop; the iam:* grant above means this is
+#   not a hard containment boundary
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-POLICY_VERSION=1
-cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
+POLICY_VERSION=2
+case "$COMPUTE_TYPE" in
+  ecs_fargate)
+    cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -198,6 +212,83 @@ cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
   ]
 }
 EOF
+    ;;
+  eks)
+    cat > "$WORK_DIR/launchpad-policy.eks.json" <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:*",
+        "ecs:*",
+        "elasticloadbalancing:*",
+        "ecr:*",
+        "logs:*",
+        "s3:*",
+        "dynamodb:*",
+        "codebuild:*",
+        "rds:*",
+        "elasticache:*",
+        "secretsmanager:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iam:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:CreateCluster",
+        "eks:List*",
+        "eks:Describe*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "eks:*",
+      "Resource": [
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:addon/infra-*/*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:nodegroup/infra-*/*"
+      ]
+    },
+    {
+      "Effect": "Deny",
+      "Action": [
+        "eks:*AccessEntr*",
+        "eks:*AccessPolic*",
+        "eks:DescribeCluster"
+      ],
+      "NotResource": [
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*"
+      ]
+    }
+  ]
+}
+EOF
+    # __LAUNCHPAD_ACCOUNT_ID__ is a literal placeholder substituted here, not a
+    # shell variable; the heredoc above stays quoted so an IAM action can never be
+    # read as a shell expansion.
+    sed "s/__LAUNCHPAD_ACCOUNT_ID__/${ACCOUNT_ID}/g" "$WORK_DIR/launchpad-policy.eks.json" > "$WORK_DIR/launchpad-policy.json"
+    ;;
+  *)
+    echo "ERROR: unknown LAUNCHPAD_COMPUTE_TYPE '${COMPUTE_TYPE}' (expected \"ecs_fargate\" or \"eks\")." >&2
+    exit 1
+    ;;
+esac
 # END GENERATED
 
 ########################################

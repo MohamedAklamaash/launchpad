@@ -114,6 +114,51 @@ Attach this policy to the role:
 ```
 <!-- END GENERATED -->
 
+### EKS additions
+
+When `LAUNCHPAD_COMPUTE_TYPE=eks`, the script applies these statements on top of the
+deployment policy above. `__LAUNCHPAD_ACCOUNT_ID__` is a placeholder the script
+substitutes for your AWS account ID before the policy is applied; if you are following
+Manual Setup, replace every occurrence yourself.
+
+<!-- BEGIN GENERATED: deployment policy (eks) — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
+```json
+[
+  {
+    "Effect": "Allow",
+    "Action": [
+      "eks:CreateCluster",
+      "eks:List*",
+      "eks:Describe*"
+    ],
+    "Resource": "*"
+  },
+  {
+    "Effect": "Allow",
+    "Action": "eks:*",
+    "Resource": [
+      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
+      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*",
+      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:addon/infra-*/*",
+      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:nodegroup/infra-*/*"
+    ]
+  },
+  {
+    "Effect": "Deny",
+    "Action": [
+      "eks:*AccessEntr*",
+      "eks:*AccessPolic*",
+      "eks:DescribeCluster"
+    ],
+    "NotResource": [
+      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
+      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*"
+    ]
+  }
+]
+```
+<!-- END GENERATED -->
+
 ---
 
 ## Setup Instructions
@@ -417,7 +462,7 @@ This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
 <!-- BEGIN GENERATED: policy version — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
-**Policy version**: 1
+**Policy version**: 2
 <!-- END GENERATED -->
 
 **Document revision**: 2.2.0  
