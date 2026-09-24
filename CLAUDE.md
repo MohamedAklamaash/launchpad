@@ -28,6 +28,13 @@ account only (nothing provisions platform infrastructure).
 - **Onboarding token:** single-use, SHA-256-hashed token on `Infrastructure` (`issue_onboarding_token()`), burned by the onboarding callback.
 - **GitHub webhooks:** per-app secret, validated with `hmac.compare_digest` on `X-Hub-Signature-256`.
 
+## Roadmap
+
+`plan/README.md` is the status index for platform work — what is done, what is blocked, and
+on what. Per-feature files there carry claims re-verified against `main`; `plan/ROADMAP.md`
+is the original planning document and its claims are stale by design (it was written
+against a branch that had not merged). Verify against the code before acting on either.
+
 ## IAM policy source of truth
 
 `LaunchpadDeploymentPolicy` is defined once, as data, in
