@@ -16,6 +16,7 @@ from shared.aws.app_security_group import (
     get_or_create_app_security_group as _shared_get_or_create_app_sg,
 )
 from shared.enums.orchestrator import ComputeType
+from shared.errors.deploy_errors import sanitize_deploy_error
 
 from api.common.naming import app_slug as _slug
 from api.common.naming import image_tag as _image_tag
@@ -130,7 +131,10 @@ class ApplicationDeploymentService:
                         logger.error(f"Failed to cleanup {resource_type} {resource_id}: {cleanup_error}")
             
             application.status = 'FAILED'
-            application.error_message = str(e)
+            # Served back over the API and rendered in the dashboard, so the exception
+            # cannot go in raw: a boto3 AccessDenied names the platform's own IAM user,
+            # and a Kubernetes ApiException carries the whole HTTP response.
+            application.error_message = sanitize_deploy_error(e)
             application.save()
             raise
     
