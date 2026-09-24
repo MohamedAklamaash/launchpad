@@ -47,10 +47,12 @@ class ApplicationDeploymentService:
             application.save()
             
             # Step 4: Wait for Build Completion
-            self._wait_for_build(session, build_id)
+            resolved_sha = self._wait_for_build(session, build_id)
             
             # Step 5: Create ECS Task Definition
-            task_def_arn = self._create_task_definition(session, application, environment)
+            task_def_arn = self._create_task_definition(
+                session, application, environment, resolved_sha=resolved_sha
+            )
             application.task_definition_arn = task_def_arn
             application.status = 'DEPLOYING'
             application.save()
@@ -256,8 +258,9 @@ class ApplicationDeploymentService:
     def _wait_for_build(self, session, build_id):
         codebuild = CodeBuildClient(session)
         logger.info(f"Waiting for build {build_id} to complete")
-        codebuild.wait_for_build(build_id)
-        logger.info(f"Build {build_id} completed successfully")
+        resolved_sha = codebuild.wait_for_build(build_id)
+        logger.info(f"Build {build_id} completed successfully (commit {resolved_sha or 'unknown'})")
+        return resolved_sha
     
     def _database_env_prefix(self, db_name: str) -> str:
         return re.sub(r'[^A-Z0-9]', '_', db_name.upper())
@@ -292,7 +295,8 @@ class ApplicationDeploymentService:
 
         return plain_env, secrets
 
-    def _create_task_definition(self, session, application: Application, environment: Environment):
+    def _create_task_definition(self, session, application: Application, environment: Environment,
+                                resolved_sha: str | None = None):
         ecs = ECSClient(session)
         ecr = ECRClient(session)
         logs = session.client('logs')
@@ -304,8 +308,20 @@ class ApplicationDeploymentService:
         except logs.exceptions.ResourceAlreadyExistsException:
             logger.info(f"Log group {log_group_name} already exists")
 
-        image_tag = f"{_slug(application.name)}-latest"
+        # Pin the task definition to the immutable per-commit tag. `-latest` moves on every
+        # rebuild, so a task definition referencing it does not describe a fixed image and
+        # cannot be rolled back to. Falling back to `-latest` keeps deploys working against
+        # a CodeBuild project that predates the two-tag buildspec.
+        image_tag = (
+            f"{_slug(application.name)}-{resolved_sha}" if resolved_sha
+            else f"{_slug(application.name)}-latest"
+        )
         image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
+        logger.info(f"Task definition for {application.name} pinned to image tag {image_tag}")
+
+        # Now that every build pushes a second, per-commit tag, the repository grows
+        # without bound in the customer's account unless retention is set.
+        ecr.ensure_lifecycle_policy(ECRClient.repository_name_from_url(environment.ecr_repository_url))
 
         db_env, db_secrets = self._build_database_injections(application)
         # Injected names win: strip any application.envs key a database injection

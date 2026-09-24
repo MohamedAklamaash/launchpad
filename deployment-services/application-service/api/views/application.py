@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 
 from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
@@ -499,6 +500,20 @@ def application_github_webhook(request, app_id: str):
                 )
         except Exception:
             logger.warning(f"GitHub webhook dedup check failed for app {app_id}; proceeding")
+
+    # Advance the tracked commit to the SHA that was actually pushed. Without this,
+    # project_commit_hash keeps whatever was set at app creation forever, so every
+    # webhook rebuild checks out the same commit and produces an image tag identical to
+    # the last one — which is why the per-commit tag was not addressable and rollback had
+    # nothing to roll back to. `update()` rather than save(): `app` was read before the
+    # dedup check and must not write back any other field.
+    pushed_sha = payload.get('after')
+    if isinstance(pushed_sha, str) and re.fullmatch(r'[0-9a-f]{40}', pushed_sha):
+        Application.objects.filter(id=app_id).update(project_commit_hash=pushed_sha)
+        logger.info(f"GitHub webhook for app {app_id}: advanced commit to {pushed_sha}")
+    else:
+        # Not fatal — the build falls back to checking out the tracked branch.
+        logger.warning(f"GitHub webhook for app {app_id}: no usable 'after' SHA in payload")
 
     try:
         DeploymentQueue.enqueue_deployment(str(app_id), str(app.infrastructure_id))
