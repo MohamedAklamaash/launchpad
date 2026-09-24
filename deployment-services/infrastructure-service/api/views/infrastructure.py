@@ -32,6 +32,9 @@ class InfraResponseSerializer(serializers.Serializer):
     is_mock = serializers.BooleanField(help_text="True when this infra was created in dev mock mode; never touches real AWS")
     code = serializers.CharField(help_text="AWS Account ID")
     metadata = serializers.DictField(child=serializers.CharField(), help_text='e.g. {"aws_region":"us-east-1"}')
+    policy_version = serializers.IntegerField(allow_null=True, help_text="Policy version applied in the customer's account; null if never reported")
+    current_policy_version = serializers.IntegerField(help_text="Policy version Launchpad currently ships")
+    policy_refresh_required = serializers.BooleanField(help_text="True when the customer should re-run the Refresh policy script")
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
 
@@ -248,6 +251,10 @@ def infrastructure_reissue_token(request: HttpRequest, infra_id):
             "infra_id": {"type": "string", "format": "uuid"},
             "account_id": {"type": "string", "description": "AWS Account ID, must match infra.code"},
             "onboarding_token": {"type": "string", "description": "Single-use token issued at infra creation"},
+            "policy_version": {
+                "type": "integer",
+                "description": "LaunchpadDeploymentPolicy version the script applied; absent on older scripts",
+            },
         },
     },
     responses={
@@ -353,6 +360,14 @@ def infrastructure_onboarding_callback(request: HttpRequest):
         )
         response['Retry-After'] = '30'
         return response
+
+    # Record which LaunchpadDeploymentPolicy version the customer actually applied, so the
+    # dashboard can tell them to re-run the refresh script once Launchpad widens the grant
+    # set. Targeted update: authenticate_infrastructure just wrote metadata on its own row
+    # instance, and a full save() here would write back the pre-AssumeRole copy.
+    reported_version = InfraModel.parse_reported_policy_version(request.data.get('policy_version'))
+    if reported_version is not None:
+        InfraModel.objects.filter(id=infra.id).update(policy_version=reported_version)
 
     # Publish infrastructure.created so application-service / other consumers materialize their
     # local read-models. Deferred from create_infrastructure to here because pre-authenticated

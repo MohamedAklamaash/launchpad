@@ -64,6 +64,11 @@ DATABASE_MIN_STORAGE_GB = 20
 DATABASE_MAX_STORAGE_GB = 1000
 MAX_DATABASES_PER_INFRA = int(os.environ.get('MAX_DATABASES_PER_INFRA', '10'))
 
+# Apex domain custom-domain hostnames must not be able to spoof, e.g. `evil.launchpad.app`.
+# Matched against the normalized (IDNA-decoded, lowercased) hostname — see
+# api/models/custom_domain.py:normalize_hostname.
+RESERVED_DOMAIN_SUFFIX = os.environ.get('PLATFORM_BASE_DOMAIN', 'launchpad.app')
+
 
 # Application definition
 

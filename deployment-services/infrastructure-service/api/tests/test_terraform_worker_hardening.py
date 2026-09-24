@@ -14,6 +14,9 @@ import pytest
 from api.services.terraform_worker import MAX_RETRIES, TerraformWorker
 from django.utils import timezone
 
+# authenticate_infrastructure returns the STS credentials now — they are no longer
+# persisted on the infrastructure row. A bare MagicMock flows into the redactor as a
+# non-string secret and raises inside it, which surfaces as an unrelated ERROR state.
 CREDENTIALS = {
     "aws_access_key_id": "AKIA_CUSTOMER",
     "aws_secret_access_key": "customer-secret",
@@ -192,7 +195,8 @@ def test_provision_survives_output_fetch_hiccup_on_first_apply(make_infra_env):
     infra, env = make_infra_env(status="PENDING")
     apply_ok = {"success": True, "logs": "[COMMAND] apply ok"}
     output_fail = {"success": False, "error": "state lock timeout", "logs": ""}
-    with patch("api.services.terraform_worker.authenticate_infrastructure"), \
+    with patch("api.services.terraform_worker.authenticate_infrastructure",
+                  return_value=dict(CREDENTIALS)), \
             patch.object(TerraformWorker, "_exec_tf", side_effect=[apply_ok, output_fail]):
         TerraformWorker.provision(str(infra.id))
     env.refresh_from_db()
@@ -202,8 +206,8 @@ def test_provision_survives_output_fetch_hiccup_on_first_apply(make_infra_env):
 
 # ---- #6 provision-failure gate on a previously-activated environment ----
 
-FAILURE = {"error": "AccessDenied: not authorized", "logs": "[COMMAND] apply exploded"}
-TRANSIENT_FAILURE = {"error": "Throttling: rate exceeded", "logs": "[COMMAND] throttled"}
+FAILURE = {"error": "AccessDenied: not authorized", "logs": "[COMMAND] apply exploded", "transient": False}
+TRANSIENT_FAILURE = {"error": "Throttling: rate exceeded", "logs": "[COMMAND] throttled", "transient": True}
 
 
 def _handle_failure(infra, result, retry_count=0):
@@ -214,7 +218,8 @@ def _handle_failure(infra, result, retry_count=0):
 
 def test_failure_on_activated_environment_skips_destroy_and_restores_active(make_infra_env):
     infra, env = make_infra_env(
-        status="UPDATING", first_activated_at=timezone.now(), logs="[COMMAND] original apply"
+        status="UPDATING", first_activated_at=timezone.now(),
+        logs="[COMMAND]\nmodule.vpc.aws_vpc.main: Creating...",
     )
     with patch.object(TerraformWorker, "_exec_tf",
                       side_effect=AssertionError("destroy must not run for a live environment")):
@@ -222,7 +227,7 @@ def test_failure_on_activated_environment_skips_destroy_and_restores_active(make
     env.refresh_from_db()
     assert env.status == "ACTIVE"
     assert "[FAILED UPDATE]" in env.logs
-    assert "[COMMAND] original apply" in env.logs
+    assert "module.vpc.aws_vpc.main: Creating..." in env.logs
     assert "restored to ACTIVE" in env.error_message
 
 

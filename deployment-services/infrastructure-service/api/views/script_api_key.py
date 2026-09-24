@@ -1,6 +1,7 @@
 import logging
 import uuid
 
+from django.db import models
 from django.http import HttpRequest
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -68,6 +69,10 @@ def script_api_key_issue(request: HttpRequest):
             "script": {"type": "string", "description": "Script name, e.g. create_aws_role.sh"},
             "role_name": {"type": "string"},
             "policy_arn": {"type": "string"},
+            "policy_version": {
+                "type": "integer",
+                "description": "LaunchpadDeploymentPolicy version the script applied; absent on older scripts",
+            },
         },
     },
     responses={201: PolicyRefreshCallbackResponseSerializer,
@@ -104,6 +109,7 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
         else:
             infra = Infrastructure.objects.filter(id=infra_id, user=key.user).first()
 
+    reported_version = Infrastructure.parse_reported_policy_version(request.data.get('policy_version'))
     event = PolicyRefreshEvent.objects.create(
         user=key.user,
         infrastructure=infra,
@@ -112,7 +118,16 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
         script=str(request.data.get('script') or 'create_aws_role.sh')[:64],
         role_name=str(request.data.get('role_name') or '')[:128],
         policy_arn=str(request.data.get('policy_arn') or ''),
+        policy_version=reported_version,
     )
+    # Only advance, never rewind: an old pinned copy of the script re-run against an
+    # already-current account must not reopen the refresh prompt.
+    if infra is not None and reported_version is not None:
+        Infrastructure.objects.filter(
+            id=infra.id,
+        ).filter(
+            models.Q(policy_version__isnull=True) | models.Q(policy_version__lt=reported_version),
+        ).update(policy_version=reported_version)
     ScriptApiKey.objects.filter(pk=key.pk).update(last_used_at=timezone.now())
     logger.info(
         f"policy refresh recorded: user={key.user_id} account={account_id} "

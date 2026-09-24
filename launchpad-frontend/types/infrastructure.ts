@@ -1,4 +1,4 @@
-export type InfrastructureStatus = 'PENDING' | 'PROVISIONING' | 'ACTIVE' | 'ERROR' | 'DESTROYING' | 'DESTROYED';
+export type InfrastructureStatus = 'PENDING' | 'PROVISIONING' | 'ACTIVE' | 'UPDATING' | 'ERROR' | 'DESTROYING' | 'DESTROYED';
 
 export type ComputeType = 'ecs_fargate' | 'eks';
 
@@ -22,6 +22,14 @@ export interface Infrastructure {
   status: InfrastructureStatus;
   is_cloud_authenticated: boolean;
   is_mock?: boolean;
+  /** LaunchpadDeploymentPolicy version applied in the customer's account. Null when the
+   *  account was onboarded by a script predating policy versioning. */
+  policy_version?: number | null;
+  /** The version Launchpad currently ships. */
+  current_policy_version?: number | null;
+  /** True when the applied version is behind — the customer should re-run the refresh
+   *  script before the missing grants cause an AccessDenied mid-deploy. */
+  policy_refresh_required?: boolean;
   invited_users?: InvitedUserSummary[];
   metadata?: { aws_region?: string; [key: string]: string | undefined };
   created_at: string;
@@ -56,4 +64,14 @@ export interface InfrastructureCreate {
 // Returned only by POST /api/infrastructures/. The plaintext nonce is shown once and never re-served.
 export interface InfrastructureCreateResponse extends Infrastructure {
   onboarding_token: string;
+}
+
+// Owner-only. Served by GET /api/infrastructures/{id}/logs; invited users get 403.
+export interface ProvisioningLogs {
+  status: InfrastructureStatus;
+  error_message: string | null;
+  logs: string;
+  withheld_lines: number;
+  truncated: boolean;
+  updated_at: string;
 }

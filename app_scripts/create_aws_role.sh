@@ -28,8 +28,6 @@ Environment variables (all optional unless noted):
   LAUNCHPAD_EXTERNAL_ID            Per-customer ExternalId binding the trust policy (defaults to LAUNCHPAD_INFRA_ID)
   LAUNCHPAD_REGION                 AWS region for deployment (default: us-east-1)
   LAUNCHPAD_COMPUTE_TYPE           Infra compute target: "ecs_fargate" (default) or "eks".
-                                   "eks" adds EKS permissions scoped to Launchpad's own
-                                   infra-* clusters and raises the role session limit to 2h.
   LAUNCHPAD_INFRA_ID               Infra UUID; required for either callback
   LAUNCHPAD_CALLBACK_URL           Launchpad callback URL; required for either callback
   LAUNCHPAD_ONBOARDING_TOKEN       Single-use onboarding token (first-time bootstrap)
@@ -58,7 +56,8 @@ ASSUME_EXTERNAL_ID="${LAUNCHPAD_EXTERNAL_ID:-${LAUNCHPAD_INFRA_ID:-}}"
 
 MOCK_MODE="${LAUNCHPAD_MOCK:-0}"
 
-# Only the literal "eks" widens the policy; anything else gets the ECS-only document.
+# Selects which IAM statements the generated policy region below applies. Keep the
+# default in sync with policy_data.DEFAULT_COMPUTE_TYPE.
 COMPUTE_TYPE="${LAUNCHPAD_COMPUTE_TYPE:-ecs_fargate}"
 
 # Region must match where Launchpad provisions; customer's CLI default may differ.
@@ -74,8 +73,8 @@ echo "Launchpad AWS Role Setup"
 echo "Region:           ${LAUNCHPAD_REGION}"
 echo "Platform account: ${TRUSTED_ACCOUNT_ID}"
 echo "Platform user:    ${PLATFORM_USER}"
-[ "$COMPUTE_TYPE" = "eks" ] && echo "Compute target:   EKS (adds scoped eks permissions + 2h role sessions)"
 [ "$MOCK_MODE" = "1" ] && echo "Mode:             MOCK (no AWS calls)"
+[ "$COMPUTE_TYPE" = "eks" ] && echo "Compute type:     EKS"
 echo "=========================================="
 
 ########################################
@@ -155,64 +154,31 @@ else
   exit 1
 fi
 
+# Everything between the markers below is generated — edit the source file, then run
+#   python deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/generate.py --write
+# A hand-edit here fails CI, because a policy that disagrees with the one documented to
+# the customer's security reviewer is worse than either copy alone.
+# BEGIN GENERATED: deployment policy — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json
 # Permissions granted to Launchpad in YOUR account:
 # - ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure
 # - s3: terraform state bucket + application asset storage
 # - dynamodb: terraform state lock table
 # - rds/elasticache/secretsmanager: create and manage managed databases you provision
 #   and the credentials Launchpad injects into your containers
-# - iam:*: create execution roles for ECS tasks (scoped to launchpad-* roles in code)
+# - iam:*: create execution roles for ECS tasks. This grant is account-wide — the
+#   launchpad-* role naming is a convention, not an enforced boundary
 # - kms:*: encrypt state bucket and secrets
-# - eks (EKS infras only): cluster management scoped to Launchpad's infra-* clusters
+# - eks (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): create and manage the
+#   customer's EKS cluster, access entries, addons, and node groups named infra-*
+# - eks Deny (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): blocks EKS access-entry
+#   and access-policy management, and DescribeCluster, outside resources named
+#   infra-*, as a defense-in-depth backstop; the iam:* grant above means this is
+#   not a hard containment boundary
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-
-if [ "$COMPUTE_TYPE" = "eks" ]; then
-  # eks:CreateCluster and the List/catalog calls (eks:DescribeAddonVersions) genuinely
-  # cannot be resource-scoped, so they sit on "*". Every mutating action is scoped to
-  # infra-* clusters. Two Denies backstop that: eks:CreateAccessEntry is one API call to
-  # cluster-admin on a pre-existing cluster, and eks:DescribeCluster — which IS
-  # resource-scoped, despite sitting in the Describe* wildcard above — returns the API
-  # endpoint, CA and OIDC issuer for any cluster in the account.
-  EKS_STATEMENTS=$(cat <<EOF
-,
-    {
-      "Effect": "Allow",
-      "Action": [
-        "eks:CreateCluster",
-        "eks:List*",
-        "eks:Describe*"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": "eks:*",
-      "Resource": [
-        "arn:aws:eks:*:${ACCOUNT_ID}:cluster/infra-*",
-        "arn:aws:eks:*:${ACCOUNT_ID}:access-entry/infra-*/*",
-        "arn:aws:eks:*:${ACCOUNT_ID}:addon/infra-*/*",
-        "arn:aws:eks:*:${ACCOUNT_ID}:nodegroup/infra-*/*"
-      ]
-    },
-    {
-      "Effect": "Deny",
-      "Action": [
-        "eks:*AccessEntr*",
-        "eks:*AccessPolic*",
-        "eks:DescribeCluster"
-      ],
-      "NotResource": [
-        "arn:aws:eks:*:${ACCOUNT_ID}:cluster/infra-*",
-        "arn:aws:eks:*:${ACCOUNT_ID}:access-entry/infra-*/*"
-      ]
-    }
-EOF
-)
-else
-  EKS_STATEMENTS=""
-fi
-
-cat > "$WORK_DIR/launchpad-policy.json" <<EOF
+POLICY_VERSION=2
+case "$COMPUTE_TYPE" in
+  ecs_fargate)
+    cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
 {
   "Version": "2012-10-17",
   "Statement": [
@@ -242,10 +208,88 @@ cat > "$WORK_DIR/launchpad-policy.json" <<EOF
       "Effect": "Allow",
       "Action": "kms:*",
       "Resource": "*"
-    }${EKS_STATEMENTS}
+    }
   ]
 }
 EOF
+    ;;
+  eks)
+    cat > "$WORK_DIR/launchpad-policy.eks.json" <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:*",
+        "ecs:*",
+        "elasticloadbalancing:*",
+        "ecr:*",
+        "logs:*",
+        "s3:*",
+        "dynamodb:*",
+        "codebuild:*",
+        "rds:*",
+        "elasticache:*",
+        "secretsmanager:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iam:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:CreateCluster",
+        "eks:List*",
+        "eks:Describe*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "eks:*",
+      "Resource": [
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:addon/infra-*/*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:nodegroup/infra-*/*"
+      ]
+    },
+    {
+      "Effect": "Deny",
+      "Action": [
+        "eks:*AccessEntr*",
+        "eks:*AccessPolic*",
+        "eks:DescribeCluster"
+      ],
+      "NotResource": [
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*"
+      ]
+    }
+  ]
+}
+EOF
+    # __LAUNCHPAD_ACCOUNT_ID__ is a literal placeholder substituted here, not a
+    # shell variable; the heredoc above stays quoted so an IAM action can never be
+    # read as a shell expansion.
+    sed "s/__LAUNCHPAD_ACCOUNT_ID__/${ACCOUNT_ID}/g" "$WORK_DIR/launchpad-policy.eks.json" > "$WORK_DIR/launchpad-policy.json"
+    ;;
+  *)
+    echo "ERROR: unknown LAUNCHPAD_COMPUTE_TYPE '${COMPUTE_TYPE}' (expected \"ecs_fargate\" or \"eks\")." >&2
+    exit 1
+    ;;
+esac
+# END GENERATED
 
 ########################################
 # APPLY IAM (idempotent; skipped in mock mode)
@@ -264,7 +308,7 @@ else
       --role-name "${ROLE_NAME}" \
       --policy-document file://"$WORK_DIR/trust-policy.json"
     if [ "$COMPUTE_TYPE" = "eks" ]; then
-      # EKS cluster applies can outlive a 1h STS session; ECS-only roles keep the default.
+      # An EKS cluster apply can outlive a 1h STS session; ECS-only roles keep the default.
       echo "Raising role max session duration to 2h (EKS)..."
       aws iam update-role \
         --role-name "${ROLE_NAME}" \
@@ -369,7 +413,7 @@ if [ -n "${LAUNCHPAD_ONBOARDING_TOKEN:-}" ]; then
     --connect-timeout 5 --max-time 30 \
     -X POST "${LAUNCHPAD_CALLBACK_URL}" \
     -H 'Content-Type: application/json' \
-    -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"onboarding_token\":\"${LAUNCHPAD_ONBOARDING_TOKEN}\"}" \
+    -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"onboarding_token\":\"${LAUNCHPAD_ONBOARDING_TOKEN}\",\"policy_version\":${POLICY_VERSION}}" \
     || echo "000")
 
   echo "Callback HTTP status: ${CALLBACK_HTTP_CODE}"
@@ -397,7 +441,7 @@ elif [ -n "${LAUNCHPAD_API_KEY:-}" ]; then
        -X POST "$LAUNCHPAD_CALLBACK_URL" \
        -H "Content-Type: application/json" \
        -H "X-API-Key: ${LAUNCHPAD_API_KEY}" \
-       -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"caller_arn\":\"${CALLER_ARN}\",\"script\":\"create_aws_role.sh\",\"role_name\":\"${ROLE_NAME}\",\"policy_arn\":\"${POLICY_ARN}\"}"; then
+       -d "{\"infra_id\":\"${LAUNCHPAD_INFRA_ID}\",\"account_id\":\"${ACCOUNT_ID}\",\"caller_arn\":\"${CALLER_ARN}\",\"script\":\"create_aws_role.sh\",\"role_name\":\"${ROLE_NAME}\",\"policy_arn\":\"${POLICY_ARN}\",\"policy_version\":${POLICY_VERSION}}"; then
     echo ""
     echo "Refresh recorded with Launchpad."
   else

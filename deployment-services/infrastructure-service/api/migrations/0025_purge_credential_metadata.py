@@ -23,7 +23,7 @@ def purge_credential_metadata(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api', '0019_infrastructure_compute_type'),
+        ('api', '0024_infrastructure_compute_type'),
     ]
 
     operations = [

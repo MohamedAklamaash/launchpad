@@ -34,6 +34,7 @@ import { authApi } from '@/lib/api/auth';
 import { useAuthStore } from '@/lib/store/auth';
 import { toast } from 'sonner';
 import { DatabasesSection } from '@/components/databases-section';
+import { ProvisioningLogsPanel } from '@/components/provisioning-logs-panel';
 import { PolicyRefreshDialog } from '@/components/policy-refresh-dialog';
 
 const ROLE_COLORS: Record<string, string> = {
@@ -78,6 +79,7 @@ export default function InfrastructureDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [reprovisioning, setReprovisioning] = useState(false);
   const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
+  const [provisioningError, setProvisioningError] = useState<string | null>(null);
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -105,6 +107,51 @@ export default function InfrastructureDetailPage() {
   }, [id]);
 
   const isOwner = isSuperAdmin && infra?.user_id === user?.id;
+
+  useEffect(() => {
+    if (!isOwner || infra?.status !== 'ERROR') return;
+    let cancelled = false;
+    infrastructureApi.getLogs(id)
+      .then((logs) => { if (!cancelled) setProvisioningError(logs.error_message); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [id, isOwner, infra?.status]);
+
+  // Three distinct states, and they must not be collapsed. "Never recorded" is not the
+  // same as "behind": accounts onboarded before policy versioning report no version, and
+  // showing them an out-of-date warning would be a false alarm on a policy they already
+  // hold. `undefined` (rather than null) means the backend predates this field, so fall
+  // back to the passive copy instead of rendering "Policy vundefined".
+  const policyState = ((): { kind: 'unknown' | 'unrecorded' | 'stale' | 'current'; title: string; detail: string } => {
+    const applied = infra?.policy_version;
+    const current = infra?.current_policy_version;
+    if (applied === undefined || current === undefined || current === null) {
+      return {
+        kind: 'unknown',
+        title: 'Refresh IAM Policy',
+        detail: 'Re-apply the latest deployment policy if actions start failing with AccessDenied.',
+      };
+    }
+    if (applied === null) {
+      return {
+        kind: 'unrecorded',
+        title: 'Refresh IAM Policy',
+        detail: `Launchpad hasn't recorded which policy version this account holds. Run the refresh once to record it (current: v${current}).`,
+      };
+    }
+    if (applied < current) {
+      return {
+        kind: 'stale',
+        title: 'IAM policy out of date',
+        detail: `Your account has policy v${applied}; Launchpad now requires v${current}. Re-run the script before your next deploy.`,
+      };
+    }
+    return {
+      kind: 'current',
+      title: 'Refresh IAM Policy',
+      detail: `Policy v${applied} is current. Re-apply it if actions start failing with AccessDenied.`,
+    };
+  })();
 
   useEffect(() => {
     loadData();
@@ -290,8 +337,11 @@ export default function InfrastructureDetailPage() {
         </div>
       )}
       {infra.status === 'ERROR' && (
-        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 flex items-center justify-between">
+        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 space-y-2">
           <p className="text-xs text-destructive">Provisioning failed. Click <span className="font-medium">Reprovision</span> to retry.</p>
+          {provisioningError && (
+            <pre className="text-[11px] font-mono text-destructive/80 whitespace-pre-wrap break-words max-h-40 overflow-auto">{provisioningError}</pre>
+          )}
         </div>
       )}
       {infra.status === 'DESTROYING' && (
@@ -380,6 +430,8 @@ export default function InfrastructureDetailPage() {
 
       <DatabasesSection infraId={id} environmentActive={infra.status === 'ACTIVE'} canManage={isOwner} />
 
+      {isOwner && <ProvisioningLogsPanel infraId={id} status={infra.status} />}
+
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
         <SheetContent className="w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto resize-x">
           <SheetHeader className="mb-6">
@@ -435,14 +487,12 @@ export default function InfrastructureDetailPage() {
             {isOwner && infra.is_cloud_authenticated && (
               <div className="space-y-2">
                 <p className="eyebrow px-1">AWS Permissions</p>
-                <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
+                <div className={`rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3 ${policyState.kind === 'stale' ? 'ring-1 ring-warning/40' : ''}`}>
                   <div>
-                    <p className="text-xs font-medium text-foreground">Refresh IAM Policy</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">
-                      Re-apply the latest deployment policy if actions start failing with AccessDenied.
-                    </p>
+                    <p className="text-xs font-medium text-foreground">{policyState.title}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{policyState.detail}</p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
+                  <Button variant={policyState.kind === 'stale' ? 'default' : 'outline'} size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
                     <ShieldCheck className="w-3.5 h-3.5" /> Refresh
                   </Button>
                 </div>

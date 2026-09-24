@@ -48,8 +48,8 @@ def _fake_exec_tf(calls):
     def _exec(cmd, *args, **kwargs):
         calls.append(cmd[1])
         if cmd[1] == "output":
-            return {"success": True, "output": json.dumps(TF_OUTPUTS), "logs": "[OUTPUT] ok"}
-        return {"success": True, "logs": f"[COMMAND] {cmd[1]} ok"}
+            return {"success": True, "transient": False, "output": json.dumps(TF_OUTPUTS), "logs": "[OUTPUT] ok"}
+        return {"success": True, "transient": False, "logs": f"[COMMAND] {cmd[1]} ok"}
     return _exec
 
 
@@ -82,7 +82,7 @@ def test_eks_provision_happy_path_bootstraps_and_activates(make_real_eks_infra):
     assert env.target_group_arn is None
     assert env.ecs_task_execution_role_arn is None
     assert "[BOOTSTRAP]" in env.logs
-    assert "[phase:alb-wait] ok" in env.logs
+    assert "[phase:alb-wait]" in env.logs
     assert "[phase:apply]" in env.logs
 
 

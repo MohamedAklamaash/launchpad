@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api', '0018_add_database_model'),
+        ('api', '0023_backfill_dns_label'),
     ]
 
     operations = [

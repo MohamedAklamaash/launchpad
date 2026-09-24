@@ -172,9 +172,9 @@ def test_security_group_reap_requires_zero_enis():
 @pytest.mark.django_db
 def test_rollback_destroy_runs_eks_reap(make_eks_infra):
     infra, env = make_eks_infra(env_status="PROVISIONING")
-    result = {"error": "AccessDenied creating cluster", "logs": "[COMMAND] failed"}
+    result = {"error": "AccessDenied creating cluster", "transient": False, "logs": "[COMMAND] failed"}
     with patch.object(tw_mod, "cleanup_eks_orphans", return_value="[phase:k8s-reap] done") as reap, \
-            patch.object(TerraformWorker, "_exec_tf", return_value={"success": True, "logs": ""}), \
+            patch.object(TerraformWorker, "_exec_tf", return_value={"success": True, "transient": False, "logs": ""}), \
             patch("api.services.notification.NotificationService"):
         TerraformWorker._handle_provision_failure(
             str(infra.id), result, {}, CREDS, "us-east-1", "123456789012",
@@ -195,7 +195,7 @@ def test_destroy_dispatch_runs_eks_reap_before_terraform(make_eks_infra):
             patch.object(tw_mod, "authenticate_infrastructure", return_value=dict(CREDS)), \
             patch("boto3.client", MagicMock()), \
             patch.object(TerraformWorker, "_exec_tf",
-                         side_effect=lambda *a, **k: call_order.append("terraform") or {"success": True, "logs": "[DESTROY] ok"}):
+                         side_effect=lambda *a, **k: call_order.append("terraform") or {"success": True, "transient": False, "logs": "[DESTROY] ok"}):
         TerraformWorker.destroy(str(infra.id))
 
     reap.assert_called_once()

@@ -78,6 +78,22 @@ async def infrastructure_get(infra_id: str, request: Request):
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/", request)
 
 
+class ProvisioningLogsResponse(BaseModel):
+    status: str
+    error_message: str | None = Field(description="Last failure reason, redacted; null when the last run succeeded")
+    logs: str = Field(description="Allowlist-redacted terraform output; newest at the tail")
+    withheld_lines: int
+    truncated: bool = Field(description="True when the head was clipped to the storage cap")
+    updated_at: str
+
+
+@router.get("/{infra_id}/logs", summary="Provisioning logs for an infrastructure",
+            response_model=ProvisioningLogsResponse)
+async def infrastructure_logs(infra_id: str, request: Request):
+    """Owner only — invited users get 403. Redacted terraform output plus the last failure reason."""
+    return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/logs/", request)
+
+
 @router.delete("/{infra_id}", summary="Delete an infrastructure", status_code=204)
 async def infrastructure_delete(infra_id: str, request: Request):
     """Triggers Terraform destroy. Returns 409 if active applications exist."""
@@ -113,6 +129,10 @@ class OnboardingCallbackBody(BaseModel):
     infra_id: str = Field(description="Infrastructure UUID this callback is for")
     account_id: str = Field(description="AWS Account ID where LaunchpadDeploymentRole was created")
     onboarding_token: str = Field(description="Single-use onboarding token issued at infra creation")
+    policy_version: int | None = Field(
+        default=None,
+        description="LaunchpadDeploymentPolicy version the script applied; absent on scripts pinned before versioning",
+    )
 
 
 @router.post("/onboarding/callback", summary="Onboarding callback from customer's AWS account",
@@ -145,6 +165,10 @@ class PolicyRefreshCallbackBody(BaseModel):
     script: str | None = Field(default=None, example="create_aws_role.sh")
     role_name: str | None = Field(default=None)
     policy_arn: str | None = Field(default=None)
+    policy_version: int | None = Field(
+        default=None,
+        description="LaunchpadDeploymentPolicy version the script applied; absent on scripts pinned before versioning",
+    )
 
 
 @router.post("/policy-refresh/callback", summary="Policy-refresh callback from customer's AWS account",
