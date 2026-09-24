@@ -27,6 +27,10 @@ export interface Infrastructure {
   policy_version?: number | null;
   /** The version Launchpad currently ships. */
   current_policy_version?: number | null;
+  /** The lowest policy version this infra's compute_type must be at. Distinct from
+   *  current_policy_version, which is the global latest and can be ahead of what this
+   *  compute_type has ever needed. */
+  required_policy_version?: number | null;
   /** True when the applied version is behind — the customer should re-run the refresh
    *  script before the missing grants cause an AccessDenied mid-deploy. */
   policy_refresh_required?: boolean;

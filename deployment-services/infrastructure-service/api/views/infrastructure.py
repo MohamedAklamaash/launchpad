@@ -34,6 +34,7 @@ class InfraResponseSerializer(serializers.Serializer):
     metadata = serializers.DictField(child=serializers.CharField(), help_text='e.g. {"aws_region":"us-east-1"}')
     policy_version = serializers.IntegerField(allow_null=True, help_text="Policy version applied in the customer's account; null if never reported")
     current_policy_version = serializers.IntegerField(help_text="Policy version Launchpad currently ships")
+    required_policy_version = serializers.IntegerField(help_text="Lowest policy version this infra's compute_type must be at")
     policy_refresh_required = serializers.BooleanField(help_text="True when the customer should re-run the Refresh policy script")
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()

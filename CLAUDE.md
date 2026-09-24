@@ -52,8 +52,10 @@ Changing the granted actions requires bumping `version` in `policy.json` — the
 binds each version to a content hash of its statements and refuses to redefine a released
 one. The script reports that version on both callbacks; it lands on
 `Infrastructure.policy_version`, and the dashboard flags infrastructures whose applied
-version is behind so customers re-run the *Refresh policy* snippet before a deploy hits
-`AccessDenied`.
+version is behind **for their compute type** so customers re-run the *Refresh policy*
+snippet before a deploy hits `AccessDenied`. A version bump made for one compute type
+(e.g. an EKS-only grant) does not flag infrastructures of another compute type whose
+rendered document didn't change.
 
 **Bumping the policy version requires bumping `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF` in the
 same release.** The frontend pins `create_aws_role.sh` to a commit SHA; until that ref

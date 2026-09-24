@@ -4,6 +4,15 @@
     "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
     "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de"
   },
+  "document_hashes": {
+    "1": {
+      "ecs_fargate": "7cc185882582a857c2eaafa6e99818ffacffef493fc5731b147e0a7ce9051252"
+    },
+    "2": {
+      "ecs_fargate": "7cc185882582a857c2eaafa6e99818ffacffef493fc5731b147e0a7ce9051252",
+      "eks": "df3b99be60af21c5f349d61930bb118a9a1d7e3bd504d6e6feec804a1a4ce4b0"
+    }
+  },
   "notes": [
     "ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure",
     "s3: terraform state bucket + application asset storage",
