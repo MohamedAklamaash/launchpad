@@ -173,7 +173,9 @@ jobs:
           terraform_version: 1.7.0
 
       - name: Terraform fmt
-        run: terraform fmt -check -recursive deployment-services/infrastructure-service/infra/aws
+        run: |
+          terraform fmt -check -recursive deployment-services/infrastructure-service/infra/aws
+          terraform fmt -check -recursive infra/platform-dns
 
       - name: Terraform validate (modules)
         run: |
@@ -183,3 +185,10 @@ jobs:
             terraform -chdir="${module}" validate
             echo "::endgroup::"
           done
+
+      # Platform-owned, unlike every module above. It writes DNS for all tenants, so a
+      # typo in its IAM condition is not something to discover at apply time.
+      - name: Terraform validate (platform-dns)
+        run: |
+          terraform -chdir=infra/platform-dns init -backend=false -input=false
+          terraform -chdir=infra/platform-dns validate
