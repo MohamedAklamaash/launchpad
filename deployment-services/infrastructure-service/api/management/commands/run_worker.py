@@ -93,6 +93,7 @@ def reap_stuck_environments(stale_threshold_seconds):
     from api.models.environment import Environment
     from api.services.infra_queue import InfraQueue
     from api.services.notification import NotificationService
+    from api.services.terraform_worker import _capped_error
     from django.db.models import Q
     from django.utils import timezone
 
@@ -129,7 +130,7 @@ def reap_stuck_environments(stale_threshold_seconds):
             logger.error(f"Reaper giving up on {infra_id} after {MAX_REAP_ATTEMPTS} attempts; parking in {park_status}")
             Environment.objects.filter(infrastructure_id=infra_id).update(
                 status=park_status, locked_at=None, locked_by=None,
-                error_message=park_message,
+                error_message=_capped_error(park_message),
             )
             InfraQueue.release_lock(infra_id)
             InfraQueue.clear_reap_count(infra_id)
@@ -187,8 +188,9 @@ class Command(BaseCommand):
         from api.models.environment import Environment
         from api.models.infrastructure import Infrastructure
         from api.services.infra_queue import InfraQueue
+        from api.services.log_redaction import redact_provisioning_text
         from api.services.notification import NotificationService
-        from api.services.terraform_worker import TerraformWorker
+        from api.services.terraform_worker import TerraformWorker, _capped_error
 
         worker_id = str(uuid.uuid4())[:8]
         running = True
@@ -286,10 +288,11 @@ class Command(BaseCommand):
                 elif env.status == 'ERROR' and not pending_dbs:
                     NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
             except Exception as e:
-                logger.exception(f"Provision failed for {infra_id}")
+                logger.error(f"Provision failed for {infra_id}: {redact_provisioning_text(str(e)).text}",
+                             exc_info=False)
                 if infra:
                     try:
-                        NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, str(e))
+                        NotificationService.send_provision_failure(str(infra.user_id), infra_id, infra.name, _capped_error(str(e)))
                     except Exception:  # noqa: S110 - best-effort notification, must not mask the original failure
                         pass
             finally:
@@ -337,10 +340,11 @@ class Command(BaseCommand):
                     logger.info(f"Deleted DB records for {infra_id}")
                     _publish_infra_deleted(user_id, infra_id)
             except Exception as e:
-                logger.exception(f"Destroy failed for {infra_id}")
+                logger.error(f"Destroy failed for {infra_id}: {redact_provisioning_text(str(e)).text}",
+                             exc_info=False)
                 if infra:
                     try:
-                        NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, str(e))
+                        NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, _capped_error(str(e)))
                     except Exception:  # noqa: S110 - best-effort notification, must not mask the original failure
                         pass
             finally:
