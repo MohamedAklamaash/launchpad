@@ -36,6 +36,15 @@ _MARKER = re.compile(
     r"^(?:"
     r"\[INIT\]|\[COMMAND\]|\[ERROR\]|\[FAILED UPDATE\]|\[DESTROY\]"
     r"|\[OUTPUT\] parsed keys: .*|\[OUTPUT FETCH FAILED\]|\[MOCK.*"
+    # EKS phase markers, emitted as `[<iso timestamp>] [phase:<name>]`. Marker only —
+    # whatever follows is re-classified like any other tail, so a bootstrap line carrying
+    # the k8s bearer token (`k8s-aws-v1.<base64 presigned STS URL>`) cannot ride in on it.
+    r"|(?:\[[0-9T:+.Z-]+\] )?\[phase:[a-z0-9-]+\]"
+    r"|\[k8s\]|\[alb-wait\]|\[bootstrap-error\]|\[BOOTSTRAP\]"
+    # Machine-readable bootstrap failure code. It classifies the failure for the
+    # notification taxonomy the same way an AWS error code does, so withholding it
+    # leaves the customer — and the emailer — with no reason at all.
+    r"|EKS_BOOTSTRAP_ALB_TIMED_OUT"
     r"|Retry \d+:|Update failed(?:; environment restored to ACTIVE)?:"
     r"|Cleanup:(?: All resources were destroyed\.)?"
     r"|WARNING: Cleanup failed\. Manual cleanup required in AWS account\."

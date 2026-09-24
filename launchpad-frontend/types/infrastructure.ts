@@ -1,5 +1,7 @@
 export type InfrastructureStatus = 'PENDING' | 'PROVISIONING' | 'ACTIVE' | 'UPDATING' | 'ERROR' | 'DESTROYING' | 'DESTROYED';
 
+export type ComputeType = 'ecs_fargate' | 'eks';
+
 export interface InvitedUserSummary {
   id: string;
   email: string;
@@ -14,6 +16,7 @@ export interface Infrastructure {
   max_cpu: number;
   max_memory: number;
   code: string;
+  compute_type: ComputeType;
   owner_id: string;
   user_id: string;
   status: InfrastructureStatus;
@@ -54,6 +57,7 @@ export interface InfrastructureCreate {
   max_cpu: number;
   max_memory: number;
   code: string;
+  compute_type: ComputeType;
   metadata?: { aws_region?: string;[key: string]: string | undefined };
 }
 

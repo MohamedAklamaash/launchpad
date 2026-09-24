@@ -6,6 +6,7 @@ from django.conf import settings
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 from shared.enums.cloud_provider import CloudProvider
+from shared.enums.orchestrator import ComputeType
 from shared.utils.uuid import uuid7_pk
 
 from .reserved_dns_label import ReservedDnsLabel
@@ -39,6 +40,11 @@ class Infrastructure(models.Model):
     cloud_provider = models.CharField(
         max_length=30,
         choices = CloudProvider.choices
+    )
+    compute_type = models.CharField(
+        max_length=30,
+        choices=ComputeType.choices,
+        default=ComputeType.ECS_FARGATE,
     )
     max_cpu = models.FloatField()
     max_memory = models.FloatField()

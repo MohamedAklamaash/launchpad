@@ -7,7 +7,10 @@ import pytest
 from api.services.log_redaction import redact_provisioning_text
 from django.core.management import call_command
 
-SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# Assembled from parts: the tests match on shape, never the characters, and a literal
+# of credential shape — AWS's published examples most of all — reads as a real secret
+# to a scanner.
+SECRET_KEY = ("notarealsecret" * 3)[:40]
 RAW_LOGS = f"[COMMAND]\nprovider config: secret_key = {SECRET_KEY}\nmodule.vpc.aws_vpc.main: Creating...\n"
 RAW_ERROR = f"Terraform execution failed: key {SECRET_KEY}"
 CLEAN_LOGS = redact_provisioning_text(RAW_LOGS).text

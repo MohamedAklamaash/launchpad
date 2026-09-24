@@ -16,7 +16,7 @@ def _sts_returning(access_key, expiry):
     return sts
 
 
-def test_assume_role_raw_persists_and_returns(monkeypatch):
+def test_assume_role_raw_returns_without_persisting(monkeypatch):
     from aws import session as S
 
     future = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -27,11 +27,13 @@ def test_assume_role_raw_persists_and_returns(monkeypatch):
     out = S._assume_role_raw(infra)
 
     assert out == {"access_key": "AK_NEW", "secret_key": "SK", "token": "TK", "expiry_time": future.isoformat()}
-    assert infra.metadata["aws_access_key_id"] == "AK_NEW"
-    infra.save.assert_called_once()
+    # STS credentials must never reach the DB row (they survive into backups and replicas,
+    # where _redact_metadata does not protect them).
+    assert infra.metadata == {}
+    infra.save.assert_not_called()
 
 
-def test_valid_seed_is_used_without_reassuming(monkeypatch):
+def test_stored_seed_credentials_are_ignored(monkeypatch):
     from aws import session as S
 
     future = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -48,8 +50,9 @@ def test_valid_seed_is_used_without_reassuming(monkeypatch):
     )
     frozen = S._build_real_session(infra).get_credentials().get_frozen_credentials()
 
-    assert frozen.access_key == "AK_SEED"
-    sts.assume_role.assert_not_called()
+    # Leftover credentials on a row written before the purge migration must not be trusted.
+    assert frozen.access_key == "AK_REFRESHED"
+    sts.assume_role.assert_called()
 
 
 def test_expired_seed_triggers_reassume(monkeypatch):

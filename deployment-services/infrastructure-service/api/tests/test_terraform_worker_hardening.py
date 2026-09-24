@@ -14,6 +14,9 @@ import pytest
 from api.services.terraform_worker import MAX_RETRIES, TerraformWorker
 from django.utils import timezone
 
+# authenticate_infrastructure returns the STS credentials now — they are no longer
+# persisted on the infrastructure row. A bare MagicMock flows into the redactor as a
+# non-string secret and raises inside it, which surfaces as an unrelated ERROR state.
 CREDENTIALS = {
     "aws_access_key_id": "AKIA_CUSTOMER",
     "aws_secret_access_key": "customer-secret",
@@ -192,7 +195,8 @@ def test_provision_survives_output_fetch_hiccup_on_first_apply(make_infra_env):
     infra, env = make_infra_env(status="PENDING")
     apply_ok = {"success": True, "logs": "[COMMAND] apply ok"}
     output_fail = {"success": False, "error": "state lock timeout", "logs": ""}
-    with patch("api.services.terraform_worker.authenticate_infrastructure"), \
+    with patch("api.services.terraform_worker.authenticate_infrastructure",
+                  return_value=dict(CREDENTIALS)), \
             patch.object(TerraformWorker, "_exec_tf", side_effect=[apply_ok, output_fail]):
         TerraformWorker.provision(str(infra.id))
     env.refresh_from_db()

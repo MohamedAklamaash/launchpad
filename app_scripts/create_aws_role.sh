@@ -307,11 +307,25 @@ else
     aws iam update-assume-role-policy \
       --role-name "${ROLE_NAME}" \
       --policy-document file://"$WORK_DIR/trust-policy.json"
+    if [ "$COMPUTE_TYPE" = "eks" ]; then
+      # An EKS cluster apply can outlive a 1h STS session; ECS-only roles keep the default.
+      echo "Raising role max session duration to 2h (EKS)..."
+      aws iam update-role \
+        --role-name "${ROLE_NAME}" \
+        --max-session-duration 7200
+    fi
   else
     echo "Creating IAM role..."
-    aws iam create-role \
-      --role-name "${ROLE_NAME}" \
-      --assume-role-policy-document file://"$WORK_DIR/trust-policy.json"
+    if [ "$COMPUTE_TYPE" = "eks" ]; then
+      aws iam create-role \
+        --role-name "${ROLE_NAME}" \
+        --assume-role-policy-document file://"$WORK_DIR/trust-policy.json" \
+        --max-session-duration 7200
+    else
+      aws iam create-role \
+        --role-name "${ROLE_NAME}" \
+        --assume-role-policy-document file://"$WORK_DIR/trust-policy.json"
+    fi
   fi
 
   echo "Ensuring deployment policy (latest permissions)..."

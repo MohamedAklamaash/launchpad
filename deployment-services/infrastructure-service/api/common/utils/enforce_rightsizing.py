@@ -28,16 +28,16 @@ def enforce_rightsizing():
             continue
 
         try:
-            authenticate_infrastructure(infra)
+            # Credentials come from the AssumeRole return value, never from metadata:
+            # STS credentials are no longer persisted there. Empty creds would silently
+            # fall back to the default boto3 chain (env vars / IMDS) and operate on the
+            # LAUNCHPAD platform account instead of the customer's.
+            credentials = authenticate_infrastructure(infra)
             metadata = infra.metadata or {}
 
-            # Empty creds would silently fall back to the default boto3 chain
-            # (env vars / IMDS) and operate on the LAUNCHPAD platform account
-            # instead of the customer's. Skip rather than risk stop_instances
-            # against the wrong account.
-            if not metadata.get("aws_access_key_id") or not metadata.get("aws_secret_access_key"):
+            if not credentials.get("aws_access_key_id") or not credentials.get("aws_secret_access_key"):
                 logger.warning(
-                    "Skipping rightsizing for infra %s: missing AWS credentials in metadata. "
+                    "Skipping rightsizing for infra %s: AssumeRole returned no usable credentials. "
                     "Empty creds would silently fall back to platform credentials and operate on the wrong account.",
                     infra.id,
                 )
@@ -46,17 +46,17 @@ def enforce_rightsizing():
             compute_optimizer = boto3.client(
                 "compute-optimizer",
                 region_name=metadata.get("aws_region", "us-west-2"),
-                aws_access_key_id=metadata.get("aws_access_key_id", ""),
-                aws_secret_access_key=metadata.get("aws_secret_access_key", ""),
-                aws_session_token=metadata.get("aws_session_token", ""),
+                aws_access_key_id=credentials["aws_access_key_id"],
+                aws_secret_access_key=credentials["aws_secret_access_key"],
+                aws_session_token=credentials.get("aws_session_token"),
             )
             
             ec2 = boto3.client(
                 "ec2",
                 region_name=metadata.get("aws_region", "us-west-2"),
-                aws_access_key_id=metadata.get("aws_access_key_id", ""),
-                aws_secret_access_key=metadata.get("aws_secret_access_key", ""),
-                aws_session_token=metadata.get("aws_session_token", ""),
+                aws_access_key_id=credentials["aws_access_key_id"],
+                aws_secret_access_key=credentials["aws_secret_access_key"],
+                aws_session_token=credentials.get("aws_session_token"),
             )
             
             logger.info(f"Querying EC2 recommendations for infra ID: {infra.id}")

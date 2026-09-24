@@ -15,6 +15,9 @@ from api.services.log_redaction import redact_provisioning_text
 from api.services.terraform_worker import MAX_LOG_CHARS, TerraformWorker, _capped_logs
 from django.utils import timezone
 
+# authenticate_infrastructure returns the STS credentials now — they are no longer
+# persisted on the infrastructure row. A bare MagicMock flows into the redactor as a
+# non-string secret and raises inside it, which surfaces as an unrelated ERROR state.
 CREDENTIALS = {
     "aws_access_key_id": "AKIA_CUSTOMER",
     "aws_secret_access_key": "customer-secret",
@@ -140,8 +143,9 @@ def test_rollback_destroy_caps_combined_logs(make_infra_env):
 
 def test_destroy_success_caps_logs(make_infra_env):
     infra, env = make_infra_env(status="DESTROYING", first_activated_at=timezone.now())
-    with patch("api.services.terraform_worker.authenticate_infrastructure"), \
-            patch.object(TerraformWorker, "_pre_destroy_cleanup"), \
+    with patch("api.services.terraform_worker.authenticate_infrastructure",
+                  return_value=dict(CREDENTIALS)), \
+            patch.object(TerraformWorker, "_pre_destroy_cleanup", return_value=""), \
             patch.object(TerraformWorker, "_exec_tf",
                          return_value={"success": True, "logs": HUGE}):
         TerraformWorker.destroy(str(infra.id))
@@ -152,8 +156,9 @@ def test_destroy_success_caps_logs(make_infra_env):
 
 def test_destroy_failure_caps_logs(make_infra_env):
     infra, env = make_infra_env(status="DESTROYING", first_activated_at=timezone.now())
-    with patch("api.services.terraform_worker.authenticate_infrastructure"), \
-            patch.object(TerraformWorker, "_pre_destroy_cleanup"), \
+    with patch("api.services.terraform_worker.authenticate_infrastructure",
+                  return_value=dict(CREDENTIALS)), \
+            patch.object(TerraformWorker, "_pre_destroy_cleanup", return_value=""), \
             patch.object(TerraformWorker, "_exec_tf",
                          return_value={"success": False, "error": "stuck", "logs": HUGE}):
         TerraformWorker.destroy(str(infra.id))

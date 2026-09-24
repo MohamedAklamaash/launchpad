@@ -11,6 +11,7 @@ class InfrastructureCreateInput:
     max_cpu: float
     max_memory: float
     metadata: dict[str, Any] | None = None
+    compute_type: str = "ecs_fargate"
 
 @dataclass
 class InfrastructureUpdateInput:
@@ -57,6 +58,7 @@ class InfrastructureResponse:
     status: str = "UNKNOWN"
     is_mock: bool = False
     code: str | None = None
+    compute_type: str = "ecs_fargate"
     # LaunchpadDeploymentPolicy version applied in the customer's account vs. the version
     # Launchpad currently ships. The dashboard uses the gap to surface the Refresh policy
     # script before a deploy fails with AccessDenied.

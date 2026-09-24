@@ -111,6 +111,14 @@ class Command(BaseCommand):
                 infra = Infrastructure.objects.get(id=job['infrastructure_id'])
                 session = create_boto3_session(infra)
                 cleanup = ApplicationCleanupService()
+                # No "runtime" key means a job from the legacy ECS shape — route it to ECS so
+                # jobs enqueued before this release stay valid.
+                if job.get('runtime') == 'eks':
+                    from api.k8s.deployer import delete_runtime_resources
+                    delete_runtime_resources(session, infra, infra.environments.first(), job.get('refs') or {})
+                    logger.info(f"Cleaned up Kubernetes resources for deleted app {app_id}")
+                    DeploymentQueue.ack_job(job)
+                    return
                 if job.get('service_arn'):
                     env = infra.environments.first()
                     cleanup._delete_ecs_service(session, env.cluster_arn if env else None, job['service_arn'])

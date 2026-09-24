@@ -12,6 +12,11 @@ router = APIRouter(prefix="/infrastructures", tags=["Infrastructures"])
 class InfraCreateBody(BaseModel):
     name: str = Field(example="prod-infra")
     cloud_provider: str = Field(example="AWS", description="Only AWS is supported")
+    compute_type: str | None = Field(
+        default=None,
+        example="ecs_fargate",
+        description="Compute target: ecs_fargate (default) or eks. Immutable after creation.",
+    )
     max_cpu: float = Field(example=4096, description="Total CPU units ceiling across all apps (1024 = 1 vCPU)")
     max_memory: float = Field(example=8192, description="Total memory ceiling in MB across all apps")
     code: str = Field(example="123456789012", description="AWS Account ID where infrastructure will be provisioned")
@@ -59,6 +64,13 @@ async def infrastructure_list(request: Request):
 async def infrastructure_create(body: InfraCreateBody, request: Request):
     """Creates the infra row and mints a single-use onboarding token. Provisioning starts after the customer runs the bootstrap script."""
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/", request)
+
+
+# Must precede the /{infra_id} routes: FastAPI matches in registration order, so the
+# path parameter would otherwise capture "capabilities" as an infrastructure id.
+@router.get("/capabilities", summary="Compute targets this deployment will accept")
+async def list_capabilities(request: Request):
+    return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/capabilities/", request)
 
 
 @router.get("/{infra_id}", summary="Get infrastructure details", response_model=InfraResponse)

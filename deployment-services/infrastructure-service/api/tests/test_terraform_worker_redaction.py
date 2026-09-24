@@ -25,6 +25,9 @@ from django.utils import timezone
 # literal of the exact shape is, to a secret scanner, indistinguishable from a real
 # credential. api/tests/test_mode.py sidesteps the same detector by using a deliberately
 # over-length key; this suite cannot, since the length is the thing under test.
+# authenticate_infrastructure returns the STS credentials now — they are no longer
+# persisted on the infrastructure row. A bare MagicMock flows into the redactor as a
+# non-string secret and raises inside it, which surfaces as an unrelated ERROR state.
 CREDENTIALS = {
     "aws_access_key_id": "ASIA" + "NOTAREALKEY00000",
     "aws_secret_access_key": ("notarealsecret" * 3)[:40],
@@ -116,7 +119,8 @@ def test_exec_tf_success_keeps_output_raw_for_json_parsing():
 
 def test_transient_retry_still_fires_after_redaction(make_infra_env):
     infra, env = make_infra_env()
-    with patch("api.services.terraform_worker.authenticate_infrastructure"), \
+    with patch("api.services.terraform_worker.authenticate_infrastructure",
+                  return_value=dict(CREDENTIALS)), \
             patch.object(TerraformWorker, "_ensure_backend", return_value=("bucket", "table")), \
             patch("api.services.terraform_worker.subprocess.run",
                   side_effect=[INIT_OK, _failed("Throttling: rate exceeded\n")]), \
