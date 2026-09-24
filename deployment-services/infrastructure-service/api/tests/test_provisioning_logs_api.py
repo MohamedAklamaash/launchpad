@@ -12,7 +12,10 @@ from api.services.terraform_worker import MAX_LOG_CHARS, _capped_logs
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 DRIFT_LOGGER = "api.services.provisioning_logs_service"
-SECRET_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# Assembled from parts: the tests match on shape, never the characters, and a literal
+# of credential shape — AWS's published examples most of all — reads as a real secret
+# to a scanner.
+SECRET_KEY = ("notarealsecret" * 3)[:40]
 PROGRESS_LINE = "module.vpc.aws_vpc.main: Still creating... [10s elapsed]\n"
 HUGE = PROGRESS_LINE * (MAX_LOG_CHARS // len(PROGRESS_LINE) + 100)
 RAW_LOGS = f"[COMMAND]\nprovider config: secret_key = {SECRET_KEY}\nmodule.vpc.aws_vpc.main: Creating...\n"
