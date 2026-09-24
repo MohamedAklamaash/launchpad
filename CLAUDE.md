@@ -29,7 +29,7 @@ cross-account IAM AssumeRole (`LaunchpadDeploymentRole`, ExternalId = infrastruc
 
 `LaunchpadDeploymentPolicy` is defined once, as data, in
 `deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json`.
-Every customer-facing copy — the heredoc in `create_aws_role.sh` and the three blocks in
+Every customer-facing copy — the heredocs in `create_aws_role.sh` and the four blocks in
 `docs/IAM_POLICIES.md` — is a generated region between `BEGIN GENERATED` / `END GENERATED`
 markers. **Never hand-edit those regions**; edit `policy.json` and run:
 
@@ -38,6 +38,12 @@ python deployment-services/infrastructure-service/api/cloud_providers/aws/iam_po
 ```
 
 CI runs the same script with `--check` (job `check-iam-policy`) and fails on any drift.
+
+EKS-only grants live under `compute_type_statements` in the same file. The script selects a
+policy by `LAUNCHPAD_COMPUTE_TYPE` and substitutes `__LAUNCHPAD_ACCOUNT_ID__` at run time —
+the heredocs stay quoted, so the account id cannot be a shell variable, and it must not be
+widened to `*` because the EKS `Deny` uses `NotResource`, where a wider account matches
+fewer resources and weakens the backstop.
 
 Changing the granted actions requires bumping `version` in `policy.json` — the generator
 binds each version to a content hash of its statements and refuses to redefine a released

@@ -1,7 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
   "version_hashes": {
-    "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3"
+    "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
+    "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de"
   },
   "notes": [
     "ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure",
@@ -11,7 +12,13 @@
     "  and the credentials Launchpad injects into your containers",
     "iam:*: create execution roles for ECS tasks. This grant is account-wide — the",
     "  launchpad-* role naming is a convention, not an enforced boundary",
-    "kms:*: encrypt state bucket and secrets"
+    "kms:*: encrypt state bucket and secrets",
+    "eks (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): create and manage the",
+    "  customer's EKS cluster, access entries, addons, and node groups named infra-*",
+    "eks Deny (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): blocks EKS access-entry",
+    "  and access-policy management, and DescribeCluster, outside resources named",
+    "  infra-*, as a defense-in-depth backstop; the iam:* grant above means this is",
+    "  not a hard containment boundary"
   ],
   "statements": [
     {
@@ -41,5 +48,40 @@
       "Action": "kms:*",
       "Resource": "*"
     }
-  ]
+  ],
+  "compute_type_statements": {
+    "eks": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "eks:CreateCluster",
+          "eks:List*",
+          "eks:Describe*"
+        ],
+        "Resource": "*"
+      },
+      {
+        "Effect": "Allow",
+        "Action": "eks:*",
+        "Resource": [
+          "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
+          "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*",
+          "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:addon/infra-*/*",
+          "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:nodegroup/infra-*/*"
+        ]
+      },
+      {
+        "Effect": "Deny",
+        "Action": [
+          "eks:*AccessEntr*",
+          "eks:*AccessPolic*",
+          "eks:DescribeCluster"
+        ],
+        "NotResource": [
+          "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
+          "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*"
+        ]
+      }
+    ]
+  }
 }

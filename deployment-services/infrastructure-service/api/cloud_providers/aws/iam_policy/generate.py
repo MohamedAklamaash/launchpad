@@ -5,7 +5,7 @@
 
 The policy used to exist only as a bash heredoc, hand-duplicated twice in
 `docs/IAM_POLICIES.md`. Three copies of a security boundary is three chances to drift,
-and a drifted doc is what a customer's security reviewer reads. Now the heredoc and both
+and a drifted doc is what a customer's security reviewer reads. Now the heredoc and the
 doc blocks are generated regions, and `--check` runs in CI.
 
 `create_aws_role.sh` stays self-contained, offline-auditable bash — the policy is baked
@@ -34,6 +34,10 @@ DOCS_PATH = REPO_ROOT / "docs" / "IAM_POLICIES.md"
 
 SOURCE_HINT = "deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json"
 
+# Any dunder-style token in a rendered policy that isn't the one recognized account-id
+# placeholder. Catches a future placeholder introduced without generator/script support.
+_PLACEHOLDER_RE = re.compile(r"__[A-Z_]+__")
+
 
 class DriftError(Exception):
     """A generated region on disk does not match what policy.json renders."""
@@ -55,15 +59,42 @@ def _script_region() -> str:
     lines += [
         "# Review before running. To narrow scope, edit launchpad-policy.json before this script runs.",
         f"POLICY_VERSION={policy_data.version()}",
-        'cat > "$WORK_DIR/launchpad-policy.json" <<\'EOF\'',
+        'case "$COMPUTE_TYPE" in',
+        f"  {policy_data.DEFAULT_COMPUTE_TYPE})",
+        '    cat > "$WORK_DIR/launchpad-policy.json" <<\'EOF\'',
         policy_data.document_json(),
         "EOF",
+        "    ;;",
+        "  eks)",
+        '    cat > "$WORK_DIR/launchpad-policy.eks.json" <<\'EOF\'',
+        policy_data.document_json("eks"),
+        "EOF",
+        f"    # {policy_data.ACCOUNT_ID_PLACEHOLDER} is a literal placeholder substituted here, not a",
+        "    # shell variable; the heredoc above stays quoted so an IAM action can never be",
+        "    # read as a shell expansion.",
+        (
+            f'    sed "s/{policy_data.ACCOUNT_ID_PLACEHOLDER}/${{ACCOUNT_ID}}/g" '
+            f'"$WORK_DIR/launchpad-policy.eks.json" > "$WORK_DIR/launchpad-policy.json"'
+        ),
+        "    ;;",
+        "  *)",
+        (
+            f'    echo "ERROR: unknown LAUNCHPAD_COMPUTE_TYPE \'${{COMPUTE_TYPE}}\' '
+            f'(expected \\"{policy_data.DEFAULT_COMPUTE_TYPE}\\" or \\"eks\\")." >&2'
+        ),
+        "    exit 1",
+        "    ;;",
+        "esac",
     ]
     return "\n".join(lines)
 
 
 def _docs_json_region() -> str:
     return "```json\n" + policy_data.document_json() + "\n```"
+
+
+def _docs_eks_region() -> str:
+    return "```json\n" + json.dumps(policy_data.compute_type_statements()["eks"], indent=2) + "\n```"
 
 
 def _docs_cli_region() -> str:
@@ -79,6 +110,7 @@ def _docs_version_region() -> str:
 REGIONS = [
     (SCRIPT_PATH, "#", "deployment policy", _script_region),
     (DOCS_PATH, "<!--", "deployment policy", _docs_json_region),
+    (DOCS_PATH, "<!--", "deployment policy (eks)", _docs_eks_region),
     (DOCS_PATH, "#", "deployment policy (cli)", _docs_cli_region),
     (DOCS_PATH, "<!--", "policy version", _docs_version_region),
 ]
@@ -109,16 +141,35 @@ def _replace_region(text: str, comment: str, name: str, body: str, path: Path) -
 
 
 def _assert_invariants() -> None:
-    rendered = policy_data.document_json()
+    compute_types = [None, *sorted(policy_data.compute_type_statements())]
+    for compute_type in compute_types:
+        rendered = policy_data.document_json(compute_type)
 
-    # The script writes this JSON through a quoted heredoc, so `$` and backticks are
-    # inert today. Assert anyway: unquoting the heredoc is a one-character edit, and a
-    # `$` in a policy action would then expand to the empty string in the customer's
-    # shell and silently narrow the policy they apply.
-    for char in ("$", "`"):
-        if char in rendered:
+        # The script writes this JSON through a quoted heredoc, so `$` and backticks are
+        # inert today. Assert anyway: unquoting the heredoc is a one-character edit, and
+        # a `$` in a policy action would then expand to the empty string in the
+        # customer's shell and silently narrow the policy they apply.
+        for char in ("$", "`"):
+            if char in rendered:
+                raise DriftError(
+                    f"rendered policy (compute_type={compute_type!r}) contains {char!r}, "
+                    "which is unsafe to embed in a shell heredoc"
+                )
+
+        tokens = set(_PLACEHOLDER_RE.findall(rendered))
+        unrecognized = tokens - {policy_data.ACCOUNT_ID_PLACEHOLDER}
+        if unrecognized:
             raise DriftError(
-                f"rendered policy contains {char!r}, which is unsafe to embed in a shell heredoc"
+                f"rendered policy (compute_type={compute_type!r}) contains unrecognized "
+                f"placeholder(s) {sorted(unrecognized)}; only {policy_data.ACCOUNT_ID_PLACEHOLDER} "
+                "is substituted by the script"
+            )
+        # The default (ecs_fargate) branch never runs the placeholder substitution, so a
+        # placeholder in the base statements would ship into the customer's account verbatim.
+        if compute_type is None and tokens:
+            raise DriftError(
+                f"the default policy document contains {policy_data.ACCOUNT_ID_PLACEHOLDER} "
+                f"but the {policy_data.DEFAULT_COMPUTE_TYPE} branch never substitutes it"
             )
 
     for statement in policy_data.statements():
