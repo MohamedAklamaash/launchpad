@@ -81,6 +81,34 @@ RATE_BUDGET_DATABASES_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_DATABASES
 RATE_BUDGET_EVIDENCE_LIMIT = int(os.environ.get('RATE_BUDGET_EVIDENCE_LIMIT', '10'))
 RATE_BUDGET_EVIDENCE_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_EVIDENCE_WINDOW_SECONDS', '300'))
 
+# Per-user budget for the exit-export endpoint (F6) — the heaviest read this service does
+# per request (an internal call to application-service plus assembling a multi-file
+# archive), requested even more rarely than the evidence pack. A separate, tighter
+# one-per-infrastructure-per-hour gate (EXIT_EXPORT_PER_INFRA_WINDOW_SECONDS) sits behind
+# the owner check so an invited ADMIN's denied attempt can never burn the owner's slot.
+RATE_BUDGET_EXIT_EXPORT_LIMIT = int(os.environ.get('RATE_BUDGET_EXIT_EXPORT_LIMIT', '5'))
+RATE_BUDGET_EXIT_EXPORT_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_EXIT_EXPORT_WINDOW_SECONDS', '3600'))
+EXIT_EXPORT_PER_INFRA_WINDOW_SECONDS = int(os.environ.get('EXIT_EXPORT_PER_INFRA_WINDOW_SECONDS', '3600'))
+# How fresh the caller's JWT `iat` must be to download an export or complete exit —
+# re-authentication for this operation specifically (plan/F6-exit-export.md Decisions).
+EXIT_EXPORT_REAUTH_MAX_AGE_SECONDS = int(os.environ.get('EXIT_EXPORT_REAUTH_MAX_AGE_SECONDS', '600'))
+# Timeout for the same-origin call to application-service's export-inventory endpoint.
+# Kept well under the gateway's fixed 10s proxy timeout (gateway-service/app/services/
+# proxy.py) so a slow upstream surfaces as this service's own 502, not a gateway 504.
+EXIT_EXPORT_UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get('EXIT_EXPORT_UPSTREAM_TIMEOUT_SECONDS', '6'))
+# How long "Complete exit" waits for the platform DNS writer to confirm teardown before
+# responding 202 instead of 200 — also bounded by the gateway's 10s proxy timeout.
+EXIT_COMPLETE_DNS_TEARDOWN_TIMEOUT_SECONDS = int(os.environ.get('EXIT_COMPLETE_DNS_TEARDOWN_TIMEOUT_SECONDS', '7'))
+# Per-user budget for the complete-exit endpoint — a one-time, high-consequence action, so
+# the default is tighter than exit-export's own budget rather than reusing it.
+RATE_BUDGET_COMPLETE_EXIT_LIMIT = int(os.environ.get('RATE_BUDGET_COMPLETE_EXIT_LIMIT', '5'))
+RATE_BUDGET_COMPLETE_EXIT_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_COMPLETE_EXIT_WINDOW_SECONDS', '3600'))
+
+# Same-origin base URL for application-service, used only by the exit-export endpoint's
+# server-to-server call (api/services/exit_export.py) — every other cross-service call in
+# this codebase today is either a RabbitMQ event or gateway-proxied.
+APPLICATION_SERVICE_URL = os.environ.get('APPLICATION_SERVICE_URL', 'http://localhost:8001')
+
 # The Launchpad platform's own IAM identity, as trusted by the customer's role's trust
 # policy (see app_scripts/create_aws_role.sh: LAUNCHPAD_PLATFORM_ACCOUNT_ID / _USER).
 # Only used to verify a customer's live trust policy names the right principal

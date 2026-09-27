@@ -43,6 +43,7 @@ class InfrastructureSerializer:
             current_policy_version=iam_policy.version(),
             required_policy_version=iam_policy.required_version_for(instance.compute_type),
             policy_refresh_required=instance.policy_refresh_required(),
+            exited_at=instance.exited_at,
         )
         return response.to_dict()
 

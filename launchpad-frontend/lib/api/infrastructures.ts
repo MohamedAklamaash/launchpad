@@ -63,6 +63,26 @@ export const infrastructureApi = {
     return data;
   },
 
+  // Owner only. Zip: README + revocation instructions, a regenerated Terraform bundle,
+  // redacted task-definitions/Kubernetes manifests, the CI buildspec, and a GitHub
+  // webhook removal list. Requires a JWT issued within the last few minutes — a 401 with
+  // code "reauth_required" is handled by the axios interceptor (forces re-login).
+  downloadExitExport: async (id: string): Promise<Blob> => {
+    const { data } = await apiClient.get(`/api/infrastructures/${id}/exit-export`, {
+      responseType: 'blob',
+    });
+    return data;
+  },
+
+  // Owner only. Requests platform DNS teardown for this infrastructure and marks it
+  // exited. The one exit action that changes anything; the export itself is read-only.
+  // 202 (dns_teardown: "pending") is a distinct, non-final outcome from 200 (confirmed) —
+  // callers need the status code, not just the body, to tell them apart.
+  completeExit: async (id: string): Promise<{ status: number; data: { status: string; dns_teardown: string; message?: string } }> => {
+    const response = await apiClient.post(`/api/infrastructures/${id}/exit`, { confirm: true });
+    return { status: response.status, data: response.data };
+  },
+
   getCosts: async (id: string, months: number = 1): Promise<InfrastructureCosts> => {
     const { data } = await apiClient.get(`/api/infrastructures/${id}/costs`, { params: { months } });
     return data;

@@ -14,7 +14,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 | [F3](F3-rollback.md) | Rollback | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F4](F4-cost-tagging.md) | Cost attribution | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F5](F5-evidence-pack.md) | Compliance pack | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
-| [F6](F6-exit-export.md) | Exit export | **not started** | F3, F5, F1b (teardown) |
+| [F6](F6-exit-export.md) | Exit export | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 
 ## Recommended order
 
@@ -27,7 +27,8 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 4. **[F1b TLS activation](F1b-tls-activation.md)** — start the NS delegation now regardless;
    that part is wall-clock, not work.
 5. **[F2 runtime logs](F2-runtime-logs.md)** — highest remaining risk, lowest urgency.
-6. **[F6 exit export](F6-exit-export.md)** — depends on F3, F5, and F1b's teardown.
+6. **[F6 exit export](F6-exit-export.md)** — done; depended on F3, F5, and F1b part 1's
+   teardown, all now shipped.
 
 ## Mock first, real AWS later
 

@@ -62,10 +62,10 @@ const statusOf = (status: string) =>
 
 const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
-// A blob-response request (evidence pack) gets its error body back as a Blob too, so
-// the usual `err.response?.data?.error` read is undefined — read the blob's text and
-// parse it to recover the server's actual message (e.g. a 429's retry-later text).
-async function extractBlobErrorMessage(error: unknown): Promise<string> {
+// A blob-response request (evidence pack, exit export) gets its error body back as a
+// Blob too, so the usual `err.response?.data?.error` read is undefined — read the blob's
+// text and parse it to recover the server's actual message (e.g. a 429's retry-later text).
+async function extractBlobErrorMessage(error: unknown, fallback = 'Failed to download evidence pack'): Promise<string> {
   const data = (error as { response?: { data?: unknown } })?.response?.data;
   if (data instanceof Blob) {
     try {
@@ -75,7 +75,7 @@ async function extractBlobErrorMessage(error: unknown): Promise<string> {
       // Not JSON (or empty) — fall through to the generic message below.
     }
   }
-  return 'Failed to download evidence pack';
+  return fallback;
 }
 
 export default function InfrastructureDetailPage() {
@@ -98,6 +98,10 @@ export default function InfrastructureDetailPage() {
   const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
   const [provisioningError, setProvisioningError] = useState<string | null>(null);
   const [downloadingEvidence, setDownloadingEvidence] = useState(false);
+  const [exitExportOpen, setExitExportOpen] = useState(false);
+  const [downloadingExitExport, setDownloadingExitExport] = useState(false);
+  const [completeExitOpen, setCompleteExitOpen] = useState(false);
+  const [completingExit, setCompletingExit] = useState(false);
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -276,6 +280,55 @@ export default function InfrastructureDetailPage() {
       toast.error(await extractBlobErrorMessage(error));
     } finally {
       setDownloadingEvidence(false);
+    }
+  };
+
+  const handleDownloadExitExport = async () => {
+    setDownloadingExitExport(true);
+    try {
+      const blob = await infrastructureApi.downloadExitExport(id);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `exit-export-${id}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+      setExitExportOpen(false);
+    } catch (error: unknown) {
+      // A reauth_required 401 already triggers a redirect to /login via the axios
+      // interceptor; this toast is a best-effort message in the moment before that lands.
+      toast.error(await extractBlobErrorMessage(error, 'Failed to download exit export'));
+    } finally {
+      setDownloadingExitExport(false);
+    }
+  };
+
+  const handleCompleteExit = async () => {
+    setCompletingExit(true);
+    try {
+      const { status: httpStatus } = await infrastructureApi.completeExit(id);
+      if (httpStatus === 202) {
+        // Not final: the teardown request was published but not yet confirmed, and
+        // exited_at is deliberately left unset server-side. Keep the dialog open so the
+        // owner can retry rather than implying the exit already completed.
+        toast.info('DNS teardown still in progress — retry to finish exit');
+        return;
+      }
+      toast.success('Exit complete — platform DNS records removed');
+      setCompleteExitOpen(false);
+      await loadData();
+    } catch (error: unknown) {
+      const err = error as { response?: { status?: number; data?: { error?: string } } };
+      if (err.response?.status === 409) {
+        toast.error('This infrastructure has already exited');
+        setCompleteExitOpen(false);
+      } else {
+        toast.error(err.response?.data?.error || 'Failed to complete exit');
+      }
+    } finally {
+      setCompletingExit(false);
     }
   };
 
@@ -560,6 +613,35 @@ export default function InfrastructureDetailPage() {
               </div>
             )}
 
+            {isOwner && !infra.exited_at && (
+              <div className="space-y-2">
+                <p className="eyebrow px-1">Continuity</p>
+                <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-foreground">Exit Export</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      A handover archive: inventory, revocation steps, Terraform, and CI seed — read-only.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setExitExportOpen(true)} className="gap-1.5 shrink-0">
+                    <Download className="w-3.5 h-3.5" /> Export
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {infra.exited_at && (
+              <div className="space-y-2">
+                <p className="eyebrow px-1">Continuity</p>
+                <div className="rounded-xl panel-inset px-4 py-3">
+                  <p className="text-xs font-medium text-foreground">Exited</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    This infrastructure exited on {new Date(infra.exited_at).toLocaleString()}. Platform hostnames no longer resolve.
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="space-y-2">
               <p className="eyebrow px-1">Users ({infra.invited_users?.length ?? 0})</p>
               {!infra.invited_users || infra.invited_users.length === 0 ? (
@@ -598,6 +680,22 @@ export default function InfrastructureDetailPage() {
             {isOwner && (
               <div className="space-y-2">
                 <p className="eyebrow px-1 text-destructive/70">Danger Zone</p>
+                {!infra.exited_at && (
+                  <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-medium text-foreground">Complete Exit</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">Tears down platform DNS for this infrastructure. Your AWS resources are untouched.</p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCompleteExitOpen(true)}
+                      className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive gap-1.5 shrink-0 ml-4"
+                    >
+                      Complete Exit
+                    </Button>
+                  </div>
+                )}
                 <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-foreground">Delete Infrastructure</p>
@@ -632,6 +730,48 @@ export default function InfrastructureDetailPage() {
             </Button>
             <Button variant="destructive" onClick={handleDeleteInfra} disabled={deleting}>
               {deleting ? 'Deleting…' : 'Delete'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={exitExportOpen} onOpenChange={setExitExportOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base font-display font-semibold">Download Exit Export</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            Downloads a handover archive for <span className="text-foreground font-mono">{infra.name}</span>: inventory and ARNs,
+            revocation instructions, a Terraform bundle, redacted task-definitions or Kubernetes manifests, the CI buildspec,
+            and a GitHub webhook removal list. Every environment value is redacted — this is strictly read-only against your AWS account.
+          </p>
+          <div className="flex gap-2 justify-end mt-2">
+            <Button variant="outline" onClick={() => setExitExportOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleDownloadExitExport} disabled={downloadingExitExport}>
+              {downloadingExitExport ? 'Preparing…' : 'Download'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={completeExitOpen} onOpenChange={setCompleteExitOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base font-display font-semibold">Complete Exit</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            This requests removal of <span className="text-foreground font-mono">{infra.name}</span>&apos;s platform DNS records and marks it exited.
+            Your AWS resources keep running unaffected — only Launchpad&apos;s own DNS zone changes. Platform hostnames will stop resolving.
+            This cannot be undone. Download the exit export first if you have not already.
+          </p>
+          <div className="flex gap-2 justify-end mt-2">
+            <Button variant="outline" onClick={() => setCompleteExitOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleCompleteExit} disabled={completingExit}>
+              {completingExit ? 'Completing…' : 'Complete Exit'}
             </Button>
           </div>
         </DialogContent>

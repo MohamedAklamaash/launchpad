@@ -105,6 +105,32 @@ async def infrastructure_evidence_pack(infra_id: UUID, request: Request):
     )
 
 
+@router.get("/{infra_id}/exit-export", summary="Exit export: a continuity handover archive")
+async def infrastructure_exit_export(infra_id: UUID, request: Request):
+    """Owner only — invited users get 403. Requires a JWT issued within the last few
+    minutes (401 reauth_required otherwise). Streams a zip: README + revocation
+    instructions, a regenerated Terraform bundle, cleaned/redacted task-definitions or
+    Kubernetes manifests, the CI buildspec, and a GitHub webhook removal list. Strictly
+    read-only against the customer's AWS account."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/exit-export/", request
+    )
+
+
+class CompleteExitBody(BaseModel):
+    confirm: bool = Field(example=True)
+
+
+@router.post("/{infra_id}/exit", summary="Complete exit: tear down platform DNS and mark this infrastructure exited")
+async def infrastructure_complete_exit(infra_id: UUID, body: CompleteExitBody, request: Request):
+    """Owner only. The one exit action that changes anything — and only in Launchpad's
+    own platform DNS zone, never the customer's AWS account. Idempotent; a second call
+    after success returns 409."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/exit/", request
+    )
+
+
 class AppCost(BaseModel):
     app: str
     amount_usd: float
