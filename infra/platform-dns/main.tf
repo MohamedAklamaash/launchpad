@@ -63,7 +63,8 @@ data "aws_iam_policy_document" "dns_writer" {
   # hostname construction cannot take the platform's own mail or website offline.
   #
   # ForAllValues, not ForAnyValue: a single batch containing one disallowed name is
-  # rejected whole rather than partially applied.
+  # rejected whole rather than partially applied. ForAllValues is vacuously true when the
+  # key is absent or empty, so the Null condition makes a missing key a deny, not an allow.
   statement {
     sid       = "WriteTenantRecordsOnly"
     effect    = "Allow"
@@ -74,6 +75,12 @@ data "aws_iam_policy_document" "dns_writer" {
       test     = "ForAllValues:StringLike"
       variable = "route53:ChangeResourceRecordSetsNormalizedRecordNames"
       values   = ["*.*.${var.platform_base_domain}"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "route53:ChangeResourceRecordSetsNormalizedRecordNames"
+      values   = ["false"]
     }
   }
 }

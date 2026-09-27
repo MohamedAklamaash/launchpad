@@ -95,11 +95,16 @@ labels below the zone apex.
 
 So `launchpad.aklamaash.me` itself, and any single-label record under it, are unreachable
 from this credential. Combined with the root living in a different zone entirely, a bug in
-hostname construction cannot take your mail offline, cannot touch the root, and cannot
-repoint another infrastructure's `edge.` record at a different load balancer.
+hostname construction cannot take your mail offline or touch the root.
+
+It does **not** isolate tenants from each other: every tenant's records match the same
+two-label pattern, so this credential can still write another infrastructure's `edge.`
+record. Cross-tenant isolation has to come from the writer service validating the
+`dns_label` it is asked to write, not from this policy.
 
 `ForAllValues` rather than `ForAnyValue` means a batch containing a single disallowed name
-is rejected whole rather than partially applied.
+is rejected whole rather than partially applied. Because `ForAllValues` is vacuously true
+when the key is missing, a `Null` condition requires the key to be present.
 
 ## Verify the guard before relying on it
 
