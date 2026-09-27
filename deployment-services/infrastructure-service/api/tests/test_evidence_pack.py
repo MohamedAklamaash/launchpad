@@ -279,8 +279,28 @@ def _write_policy(path, raw: dict):
     policy_data.load.cache_clear()
 
 
+def _without_ce_actions(statements: list[dict]) -> list[dict]:
+    """Drop any ce: action from every statement, dropping statements left with none.
+    `policy.json` on main carries a ce: grant since F4 (v3) — copying it verbatim is no
+    longer a "no ce action" baseline, so this constructs one explicitly instead."""
+    stripped = []
+    for statement in statements:
+        actions = statement["Action"]
+        actions = [actions] if isinstance(actions, str) else actions
+        kept = [a for a in actions if not a.lower().startswith("ce:")]
+        if kept:
+            stripped.append({**statement, "Action": kept})
+    return stripped
+
+
 def test_ce_caveat_absent_when_no_ce_action_in_policy(make_infra, policy_sandbox):
     raw = json.loads(policy_data.POLICY_PATH.read_text())
+    raw["statements"] = _without_ce_actions(raw["statements"])
+    # The evidence pack also echoes every policy.json note verbatim regardless of
+    # whether the grant it describes is still present (true for every note, not just
+    # ce: — narrowing statements alone never scrubs documentation). A policy that
+    # genuinely has no ce: action wouldn't carry a note explaining one either.
+    raw["notes"] = [n for n in raw["notes"] if "cost explorer" not in n.lower() and not n.strip().startswith("ce:")]
     _write_policy(policy_sandbox, raw)
     _owner, infra = make_infra()
 
