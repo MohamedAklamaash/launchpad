@@ -212,6 +212,49 @@ def _check_version_binding() -> None:
         )
 
 
+def _check_document_hashes() -> None:
+    current = str(policy_data.version())
+    recorded = policy_data.document_hashes().get(current, {})
+    compute_types = {policy_data.DEFAULT_COMPUTE_TYPE, *policy_data.compute_type_statements()}
+    for compute_type in sorted(compute_types):
+        if compute_type not in recorded:
+            raise DriftError(
+                f'document_hashes["{current}"] has no entry for compute_type '
+                f"{compute_type!r}. Run this script with --write to record it."
+            )
+        actual = policy_data.document_hash(compute_type)
+        if recorded[compute_type] != actual:
+            raise DriftError(
+                f"the {compute_type!r} document changed but document_hashes[\"{current}\"]"
+                f'["{compute_type}"] still records the old hash.\n'
+                f"  recorded: {recorded[compute_type]}\n"
+                f"  actual:   {actual}\n"
+                "Run this script with --write to record it."
+            )
+
+
+def _record_document_hashes() -> bool:
+    """Bind the current version's rendered document hash for every compute type.
+    Returns True if policy.json changed. Never touches an older version's entry — v1
+    stays exactly as seeded."""
+    raw = json.loads(policy_data.POLICY_PATH.read_text())
+    current = str(raw["version"])
+    compute_types = {policy_data.DEFAULT_COMPUTE_TYPE, *policy_data.compute_type_statements()}
+    current_entry = raw.setdefault("document_hashes", {}).setdefault(current, {})
+
+    changed = False
+    for compute_type in compute_types:
+        actual = policy_data.document_hash(compute_type)
+        if current_entry.get(compute_type) != actual:
+            current_entry[compute_type] = actual
+            changed = True
+    if not changed:
+        return False
+    policy_data.POLICY_PATH.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n")
+    policy_data.load.cache_clear()
+    return True
+
+
 def _record_version_hash() -> bool:
     """Bind the current version to the current statements. Returns True if policy.json changed."""
     raw = json.loads(policy_data.POLICY_PATH.read_text())
@@ -250,6 +293,7 @@ def run(write: bool) -> int:
 
     if not write:
         _check_version_binding()
+        _check_document_hashes()
         for path, updated in rendered.items():
             if updated != path.read_text():
                 raise DriftError(
@@ -262,7 +306,10 @@ def run(write: bool) -> int:
     changed = []
     if _record_version_hash():
         changed.append(policy_data.POLICY_PATH)
+    if _record_document_hashes() and policy_data.POLICY_PATH not in changed:
+        changed.append(policy_data.POLICY_PATH)
     _check_version_binding()
+    _check_document_hashes()
     for path, updated in rendered.items():
         if updated != path.read_text():
             path.write_text(updated)

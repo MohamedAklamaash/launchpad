@@ -41,6 +41,7 @@ class InfrastructureSerializer:
             is_mock=instance.is_mock,
             policy_version=instance.policy_version,
             current_policy_version=iam_policy.version(),
+            required_policy_version=iam_policy.required_version_for(instance.compute_type),
             policy_refresh_required=instance.policy_refresh_required(),
         )
         return response.to_dict()

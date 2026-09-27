@@ -113,7 +113,9 @@ class Infrastructure(models.Model):
 
         # NULL means onboarded before versioning existed, which is indistinguishable
         # from stale — treat it as stale so those customers get prompted.
-        return self.policy_version is None or self.policy_version < iam_policy.version()
+        if self.policy_version is None:
+            return True
+        return self.policy_version < iam_policy.required_version_for(self.compute_type)
 
     def issue_onboarding_token(self) -> str:
         # Returns the plaintext exactly once; only the hash is persisted so a DB read cannot replay it.

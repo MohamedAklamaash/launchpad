@@ -254,3 +254,59 @@ def test_script_selects_the_policy_by_compute_type():
 def test_script_default_compute_type_matches_the_generator_default():
     script = generate.SCRIPT_PATH.read_text()
     assert f'COMPUTE_TYPE="${{LAUNCHPAD_COMPUTE_TYPE:-{policy_data.DEFAULT_COMPUTE_TYPE}}}"' in script
+
+
+# ── per-compute-type staleness ────────────────────────────────────────────────
+
+def test_document_hash_of_ecs_fargate_equals_the_default_document():
+    """Pins the contract the per-compute-type staleness design rests on: naming
+    "ecs_fargate" explicitly renders the same document as passing nothing."""
+    assert policy_data.document_hash("ecs_fargate") == policy_data.document_hash(None)
+
+
+def test_required_version_for_matches_committed_data():
+    """ECS was unchanged by the v2 (EKS) bump, so it still requires only v1. EKS didn't
+    exist before v2, so it requires v2."""
+    assert policy_data.required_version_for("ecs_fargate") == 1
+    assert policy_data.required_version_for("eks") == 2
+
+
+def test_check_fails_when_a_compute_type_is_missing_from_document_hashes(sandbox):
+    data = json.loads(sandbox.policy.read_text())
+    del data["document_hashes"][str(data["version"])]["eks"]
+    _rewrite_policy(sandbox.policy, document_hashes=data["document_hashes"])
+
+    with pytest.raises(generate.DriftError, match="run --write|--write to record it"):
+        generate.run(write=False)
+
+
+def test_bumping_over_a_changed_base_statement_raises_the_required_version_for_every_type(sandbox):
+    """A base-statement change affects every compute_type's rendered document, so the
+    requirement moves for ecs_fargate and eks alike."""
+    next_version = policy_data.version() + 1
+    statements = json.loads(sandbox.policy.read_text())["statements"]
+    statements[0]["Action"].append("acm:*")
+    _rewrite_policy(sandbox.policy, statements=statements, version=next_version)
+
+    assert generate.run(write=True) == 0
+
+    assert policy_data.required_version_for("ecs_fargate") == next_version
+    assert policy_data.required_version_for("eks") == next_version
+
+
+def test_bumping_over_a_changed_eks_only_statement_leaves_ecs_fargate_alone(sandbox):
+    """Mirrors the bug this design fixes: a compute-type-only change must not raise the
+    required version for compute types whose rendered document didn't change."""
+    next_version = policy_data.version() + 1
+    data = json.loads(sandbox.policy.read_text())
+    data["compute_type_statements"]["eks"][0]["Action"].append("eks:TagResource")
+    _rewrite_policy(
+        sandbox.policy,
+        compute_type_statements=data["compute_type_statements"],
+        version=next_version,
+    )
+
+    assert generate.run(write=True) == 0
+
+    assert policy_data.required_version_for("ecs_fargate") == 1
+    assert policy_data.required_version_for("eks") == next_version
