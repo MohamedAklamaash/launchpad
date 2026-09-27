@@ -108,6 +108,15 @@ Attach this policy to the role:
       "Effect": "Allow",
       "Action": "kms:*",
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:UpdateCostAllocationTagsStatus",
+        "ce:ListCostAllocationTags"
+      ],
+      "Resource": "*"
     }
   ]
 }
@@ -239,6 +248,15 @@ cat > deployment-policy.json <<'EOF'
     {
       "Effect": "Allow",
       "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:UpdateCostAllocationTagsStatus",
+        "ce:ListCostAllocationTags"
+      ],
       "Resource": "*"
     }
   ]
@@ -462,7 +480,7 @@ This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
 <!-- BEGIN GENERATED: policy version — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
-**Policy version**: 2
+**Policy version**: 3
 <!-- END GENERATED -->
 
 **Document revision**: 2.2.0  

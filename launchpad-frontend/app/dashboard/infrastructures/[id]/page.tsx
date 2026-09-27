@@ -35,6 +35,7 @@ import { useAuthStore } from '@/lib/store/auth';
 import { toast } from 'sonner';
 import { DatabasesSection } from '@/components/databases-section';
 import { ProvisioningLogsPanel } from '@/components/provisioning-logs-panel';
+import { CostsPanel } from '@/components/costs-panel';
 import { PolicyRefreshDialog } from '@/components/policy-refresh-dialog';
 
 const ROLE_COLORS: Record<string, string> = {
@@ -470,6 +471,8 @@ export default function InfrastructureDetailPage() {
       </div>
 
       <DatabasesSection infraId={id} environmentActive={infra.status === 'ACTIVE'} canManage={isOwner} />
+
+      {isOwner && <CostsPanel infraId={id} />}
 
       {isOwner && <ProvisioningLogsPanel infraId={id} status={infra.status} />}
 

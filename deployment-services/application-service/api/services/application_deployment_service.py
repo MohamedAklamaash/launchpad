@@ -8,6 +8,7 @@ from aws.codebuild import CodeBuildClient
 from aws.ecr import ECRClient
 from aws.ecs import ECSClient
 from aws.session import create_boto3_session
+from aws.tags import app_tags, as_key_value_tags, infra_tags
 from botocore.exceptions import ClientError
 from shared.aws.app_security_group import (
     app_security_group_name,
@@ -324,10 +325,14 @@ class ApplicationDeploymentService:
             role_response = iam.create_role(
                 RoleName=role_name,
                 AssumeRolePolicyDocument=json.dumps(assume_role_policy),
-                Description="Service role for CodeBuild"
+                Description="Service role for CodeBuild",
+                # infra-level only: this role builds every app on the infra, so an
+                # app-level tag would misattribute other apps' build cost to whichever
+                # app happened to trigger the role's creation.
+                Tags=as_key_value_tags(infra_tags(application.infrastructure_id)),
             )
             service_role_arn = role_response['Role']['Arn']
-            
+
             iam.attach_role_policy(
                 RoleName=role_name,
                 PolicyArn='arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser'
@@ -341,7 +346,10 @@ class ApplicationDeploymentService:
             time.sleep(15)
             logger.info(f"Created CodeBuild role: {service_role_arn}")
         
-        codebuild.ensure_project_exists(project_name, service_role_arn, session.region_name)
+        codebuild.ensure_project_exists(
+            project_name, service_role_arn, session.region_name,
+            tags=infra_tags(application.infrastructure_id),
+        )
         
         dockerfile_path = application.dockerfile_path or "Dockerfile"
         build_context = application.build_context or ""
@@ -459,6 +467,7 @@ class ApplicationDeploymentService:
             container_port=application.port,
             app_name=_slug(application.name),
             secrets=db_secrets,
+            tags=app_tags(application.infrastructure_id, _slug(application.name)),
         )
         
         logger.info(f"Created task definition {task_def_arn}")
@@ -488,7 +497,10 @@ class ApplicationDeploymentService:
         # Include infra ID suffix to prevent name collisions across infrastructures
         infra_suffix = str(application.infrastructure_id)[:8]
         tg_name = f"{_slug(application.name)}-{infra_suffix}-tg"[:32]
-        target_group_arn = alb.create_target_group(name=tg_name, vpc_id=environment.vpc_id, port=80)
+        target_group_arn = alb.create_target_group(
+            name=tg_name, vpc_id=environment.vpc_id, port=80,
+            tags=app_tags(application.infrastructure_id, _slug(application.name)),
+        )
         logger.info(f"Created target group {target_group_arn}")
         return target_group_arn
     
@@ -573,7 +585,8 @@ class ApplicationDeploymentService:
             security_group_ids=security_group_ids,
             container_name=f"{_slug(application.name)}-task",
             container_port=application.port,
-            use_nginx=True
+            use_nginx=True,
+            tags=app_tags(application.infrastructure_id, _slug(application.name)),
         )
         
         logger.info(f"Created ECS service {service_arn}")
@@ -603,7 +616,8 @@ class ApplicationDeploymentService:
             listener_arn=listener_arn,
             target_group_arn=application.target_group_arn,
             path_pattern=f"/{_slug(application.name)}*",
-            priority=priority
+            priority=priority,
+            tags=app_tags(application.infrastructure_id, _slug(application.name)),
         )
         
         logger.info(f"Created listener rule {listener_rule_arn}")

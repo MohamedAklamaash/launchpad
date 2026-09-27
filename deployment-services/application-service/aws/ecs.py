@@ -3,6 +3,7 @@ import logging
 import os
 
 from aws.container_config import generate_nginx_config, inject_routing_envs
+from aws.tags import as_lower_tags
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ class ECSClient:
         self.service_stable_poll_interval = int(os.environ.get('ECS_SERVICE_STABLE_POLL_INTERVAL', '10'))
         self.failed_tasks_threshold = int(os.environ.get('ECS_FAILED_TASKS_THRESHOLD', '3'))
     
-    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None, secrets=None):
+    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None, secrets=None, tags=None):
         env_vars = [{'name': k, 'value': str(v)} for k, v in (envs or {}).items()]
         logger.info(f"Creating task definition with {len(env_vars)} environment variables: {list(envs.keys()) if envs else []}")
         
@@ -142,14 +143,15 @@ class ECSClient:
             cpu=cpu_str,
             memory=memory_str,
             executionRoleArn=execution_role_arn,
-            containerDefinitions=container_definitions
+            containerDefinitions=container_definitions,
+            **({'tags': as_lower_tags(tags)} if tags else {}),
         )
         return response['taskDefinition']['taskDefinitionArn']
     
     def _generate_nginx_config(self, app_name, backend_port):
         return generate_nginx_config(app_name, backend_port)
     
-    def create_service(self, cluster_arn, service_name, task_definition_arn, target_group_arn, subnet_ids, security_group_ids, container_name, container_port=8000, use_nginx=False):
+    def create_service(self, cluster_arn, service_name, task_definition_arn, target_group_arn, subnet_ids, security_group_ids, container_name, container_port=8000, use_nginx=False, tags=None):
         try:
             try:
                 response = self.client.describe_services(
@@ -159,7 +161,19 @@ class ECSClient:
                 if response['services'] and response['services'][0]['status'] != 'INACTIVE':
                     existing_service = response['services'][0]
                     logger.info(f"Service {service_name} already exists, updating it")
-                    
+
+                    # update_service has no `tags` parameter — propagateTags='SERVICE' only
+                    # copies the SERVICE resource's *own* tags onto new tasks, so a service
+                    # that predates tagging (zero tags of its own) would propagate nothing
+                    # no matter how many times it redeploys. tag_resource is what actually
+                    # puts launchpad:infra/launchpad:app on the service; only then does
+                    # reasserting propagation below make the next task replacement inherit
+                    # them, making a redeploy genuinely self-healing.
+                    if tags:
+                        self.client.tag_resource(
+                            resourceArn=existing_service['serviceArn'], tags=as_lower_tags(tags),
+                        )
+
                     self.client.update_service(
                         cluster=cluster_arn,
                         service=service_name,
@@ -178,14 +192,16 @@ class ECSClient:
                             'maximumPercent': 200,
                             'minimumHealthyPercent': 100,
                         },
+                        enableECSManagedTags=True,
+                        propagateTags='SERVICE',
                     )
                     return existing_service['serviceArn']
             except Exception as e:
                 logger.debug(f"Service doesn't exist, creating new: {e}")
-            
+
             lb_container_name = f"{container_name}-nginx" if use_nginx else container_name
             lb_container_port = 80 if use_nginx else container_port
-            
+
             response = self.client.create_service(
                 cluster=cluster_arn,
                 serviceName=service_name,
@@ -209,7 +225,12 @@ class ECSClient:
                     'maximumPercent': 200,
                     'minimumHealthyPercent': 100,
                 },
-                healthCheckGracePeriodSeconds=self.health_check_grace_period
+                healthCheckGracePeriodSeconds=self.health_check_grace_period,
+                # Tasks are where the cost actually lands, and a task is not directly
+                # taggable — SERVICE propagation is what makes launchpad:app reach them.
+                enableECSManagedTags=True,
+                propagateTags='SERVICE',
+                **({'tags': as_lower_tags(tags)} if tags else {}),
             )
             return response['service']['serviceArn']
         except Exception as e:

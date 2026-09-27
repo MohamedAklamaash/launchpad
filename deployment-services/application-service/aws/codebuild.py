@@ -2,21 +2,24 @@ import logging
 import re
 import time
 
+from aws.tags import as_lower_tags
+
 logger = logging.getLogger(__name__)
 
 class CodeBuildClient:
     def __init__(self, session):
         self._session = session
         self.client = session.client('codebuild')
-    
-    def ensure_project_exists(self, project_name, service_role_arn, region):
+
+    def ensure_project_exists(self, project_name, service_role_arn, region, tags=None):
         buildspec = self._get_buildspec()
         try:
             response = self.client.batch_get_projects(names=[project_name])
             if response.get('projects'):
                 self.client.update_project(
                     name=project_name,
-                    source={'type': 'NO_SOURCE', 'buildspec': buildspec}
+                    source={'type': 'NO_SOURCE', 'buildspec': buildspec},
+                    **({'tags': as_lower_tags(tags)} if tags else {}),
                 )
                 logger.info(f"Updated buildspec for CodeBuild project {project_name}")
                 return
@@ -44,7 +47,8 @@ class CodeBuildClient:
                             'status': 'ENABLED',
                             'groupName': f'/aws/codebuild/{project_name}'
                         }
-                    }
+                    },
+                    **({'tags': as_lower_tags(tags)} if tags else {}),
                 )
                 logger.info(f"Successfully created CodeBuild project {project_name}")
                 return

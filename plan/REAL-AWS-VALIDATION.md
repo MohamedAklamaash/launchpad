@@ -48,6 +48,56 @@ DNS** account (`infra/platform-dns`).
       real push after `Resume auto-deploy` — confirm the resumed deploy builds the latest
       push and not a stale `project_commit_hash`.
 
+## F4 cost tagging
+
+- [ ] Managed tags actually reach the Fargate **task**, not just the service: deploy an
+      app, describe the running task, confirm `launchpad:infra`/`launchpad:app` are
+      present (this is what `enableECSManagedTags`/`propagateTags='SERVICE'` claims to do
+      — mocks can't verify propagation, only that the flags were sent).
+- [ ] Cost Explorer actually groups by tag once activated: activate
+      `launchpad:app`/`launchpad:infra` via the real callback flow, wait the documented
+      ~24h lag, then `GetCostAndUsage` with `GroupBy=[{"Type":"TAG","Key":"launchpad:app"}]`
+      returns non-empty groups. Also check `GetCostAndUsage` **before** a tag is active
+      (or within 24h of first use): confirm AWS actually returns `ValidationException`
+      in that case (mapped to 422 `cost_tags_not_activated` in `_actual_ecs_costs`) rather
+      than a different code or an empty result — the mapping is unverified against real
+      AWS.
+- [ ] `UpdateCostAllocationTagsStatus` in a **standalone** account (Launchpad's call
+      should succeed) vs an **AWS Organizations member** account (should fail with the
+      payer-only error `cost_service._activate_cost_allocation_tags` maps to
+      `reason: "payer_account_required"` — confirm the actual error code AWS returns
+      matches `AccessDenied`/`AccessDeniedException` and isn't a third code this mapping
+      misses). Also check what happens when a key was first used <24h ago — AWS may
+      refuse activation with a distinct error the daily cache means Launchpad silently
+      retries the next day; confirm that's the actual behavior, not a permanent failure.
+      Also confirm `ListCostAllocationTags` actually reports `Active` once activation
+      succeeds, so the skip-the-write fast path in `_activate_cost_allocation_tags`
+      engages on the next cache miss instead of re-attempting the write every time.
+- [ ] Terraform's `default_tags` now sets `launchpad:infra` (alongside the pre-existing
+      `InfraID`) on every resource the provider creates, including inside child modules
+      (vpc/ecs/alb/ecr) — confirm this against a real applied account: (a) a **new**
+      infra's ALB/NAT gateway/VPC/ECS cluster carry `launchpad:infra` = the infra's full
+      id immediately after apply; (b) an infra provisioned **before** this change picks up
+      the tag via an in-place update on its next reconcile-apply, with terraform reporting
+      it as a plain tag update (no resource replacement) in the plan; (c) once activated,
+      `GetCostAndUsage` folds that spend into `cost_service`'s `shared` line, not just the
+      CodeBuild project it covered before this fix.
+- [ ] **Tenant isolation on a shared AWS account**: onboard two infrastructures into the
+      *same* customer AWS account (two different `Infrastructure.id`s, one account),
+      deploy an app under each, and confirm a `GetCostAndUsage` call filtered on one
+      infra's `launchpad:infra` value returns only that infra's tagged spend — never the
+      other infra's apps or shared resources. Mocks can't exercise this: the Filter is
+      exercised in tests, but a real account is the only way to confirm Cost Explorer
+      itself doesn't fold same-account spend together in a way the tag filter doesn't
+      actually separate.
+- [ ] `tag_existing_app_resources --dry-run` then for real against an infra with apps
+      deployed before this feature; confirm tags land, then confirm a task replacement
+      (`update_service` without `forceNewDeployment`) actually results in the *next*
+      naturally-scheduled task picking up the tag rather than requiring a manual force.
+- [ ] v2 → v3 policy refresh on a real customer account: `create_aws_role.sh` refresh
+      installs the `ce:*` statement, `policy_version` updates to 3 on the callback, and a
+      cost query that previously 422'd with `policy_refresh_required` now succeeds.
+
 ## F5 evidence pack
 
 - [ ] `GetPolicyVersion.PolicyVersion.Document` and `GetRole.Role.AssumeRolePolicyDocument`

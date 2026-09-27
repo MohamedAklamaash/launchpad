@@ -2,6 +2,8 @@ import logging
 import os
 import threading
 
+from aws.tags import as_key_value_tags
+
 logger = logging.getLogger(__name__)
 
 # Per-listener lock to prevent priority races under concurrent deploys
@@ -23,7 +25,7 @@ class ALBClient:
         self.healthy_threshold = int(os.environ.get('ALB_HEALTHY_THRESHOLD', '2'))
         self.unhealthy_threshold = int(os.environ.get('ALB_UNHEALTHY_THRESHOLD', '3'))
     
-    def create_target_group(self, name, vpc_id, port=80):
+    def create_target_group(self, name, vpc_id, port=80, tags=None):
         try:
             response = self.client.create_target_group(
                 Name=name,
@@ -37,7 +39,8 @@ class ALBClient:
                 HealthCheckTimeoutSeconds=self.health_check_timeout,
                 HealthyThresholdCount=self.healthy_threshold,
                 UnhealthyThresholdCount=self.unhealthy_threshold,
-                Matcher={'HttpCode': '200-499'}
+                Matcher={'HttpCode': '200-499'},
+                **({'Tags': as_key_value_tags(tags)} if tags else {}),
             )
             return response['TargetGroups'][0]['TargetGroupArn']
         except self.client.exceptions.DuplicateTargetGroupNameException:
@@ -49,10 +52,10 @@ class ALBClient:
                 logger.warning(f"Existing TG {name} is in VPC {tg['VpcId']}, not {vpc_id} — creating with unique name")
                 import time
                 unique_name = f"{name[:24]}-{int(time.time()) % 10000}"
-                return self.create_target_group(unique_name, vpc_id, port)
+                return self.create_target_group(unique_name, vpc_id, port, tags=tags)
             return tg['TargetGroupArn']
-    
-    def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority):
+
+    def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority, tags=None):
         import time
         # Lock per listener to prevent priority races under concurrent deploys
         with _get_listener_lock(listener_arn):
@@ -62,7 +65,8 @@ class ALBClient:
                     ListenerArn=listener_arn,
                     Conditions=[{'Field': 'path-pattern', 'Values': [path_pattern]}],
                     Actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
-                    Priority=priority
+                    Priority=priority,
+                    **({'Tags': as_key_value_tags(tags)} if tags else {}),
                 )
                 rule_arn = response['Rules'][0]['RuleArn']
                 logger.info(f"Created listener rule with priority {priority}")
@@ -73,7 +77,8 @@ class ALBClient:
                     ListenerArn=listener_arn,
                     Conditions=[{'Field': 'path-pattern', 'Values': [path_pattern]}],
                     Actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
-                    Priority=priority
+                    Priority=priority,
+                    **({'Tags': as_key_value_tags(tags)} if tags else {}),
                 )
                 rule_arn = response['Rules'][0]['RuleArn']
                 logger.info(f"Created listener rule with priority {priority} (retry)")

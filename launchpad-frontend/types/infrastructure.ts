@@ -79,3 +79,40 @@ export interface ProvisioningLogs {
   truncated: boolean;
   updated_at: string;
 }
+
+// Owner-only. Served by GET /api/infrastructures/{id}/costs; invited users get 403.
+// ecs_fargate infras carry source="actual" everywhere; eks infras carry source="estimate"
+// everywhere (a Kubernetes pod isn't a taggable AWS resource, so there is no actual figure
+// to fall back to). Can return 422 with PolicyRefreshRequiredError if the applied IAM
+// policy predates the Cost Explorer grants (v3).
+export type CostSource = 'actual' | 'estimate' | 'mock';
+
+export interface AppCost {
+  app: string;
+  amount_usd: number;
+  source: CostSource;
+}
+
+export interface SharedCost {
+  amount_usd: number;
+  source: CostSource;
+  note?: string;
+}
+
+export interface TagActivation {
+  activated: boolean | null;
+  reason: string | null;
+}
+
+export interface InfrastructureCosts {
+  infrastructure_id: string;
+  compute_type: ComputeType;
+  window_start: string;
+  window_end: string;
+  currency: string;
+  apps: AppCost[];
+  shared: SharedCost;
+  tag_activation: TagActivation;
+  is_mock: boolean;
+  cached: boolean;
+}

@@ -47,6 +47,8 @@ class ApplicationEventConsumer:
                         'infrastructure_id': data['infrastructure_id'],
                         'name': data['name'],
                         'user_id': data['user_id'],
+                        'alloted_cpu': data.get('alloted_cpu', 0.0),
+                        'alloted_memory': data.get('alloted_memory', 0.0),
                     },
                 )
                 logger.info(f"Synced application created: {data['id']}")
@@ -54,6 +56,8 @@ class ApplicationEventConsumer:
                 Application.objects.filter(id=data['id']).update(
                     name=data['name'],
                     infrastructure_id=data['infrastructure_id'],
+                    alloted_cpu=data.get('alloted_cpu', 0.0),
+                    alloted_memory=data.get('alloted_memory', 0.0),
                 )
                 logger.info(f"Synced application updated: {data['id']}")
             elif routing_key == 'application.deleted':
