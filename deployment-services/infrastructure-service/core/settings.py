@@ -70,6 +70,24 @@ MAX_DATABASES_PER_INFRA = int(os.environ.get('MAX_DATABASES_PER_INFRA', '10'))
 RATE_BUDGET_DATABASES_LIMIT = int(os.environ.get('RATE_BUDGET_DATABASES_LIMIT', '60'))
 RATE_BUDGET_DATABASES_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_DATABASES_WINDOW_SECONDS', '60'))
 
+# Per-user budget for the evidence-pack endpoint (F5) — an AssumeRole plus a handful of
+# read-only IAM calls in the customer's account, requested rarely (an auditor pulling
+# evidence, not a polling dashboard), so the default is much tighter than `databases`.
+RATE_BUDGET_EVIDENCE_LIMIT = int(os.environ.get('RATE_BUDGET_EVIDENCE_LIMIT', '10'))
+RATE_BUDGET_EVIDENCE_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_EVIDENCE_WINDOW_SECONDS', '300'))
+
+# The Launchpad platform's own IAM identity, as trusted by the customer's role's trust
+# policy (see app_scripts/create_aws_role.sh: LAUNCHPAD_PLATFORM_ACCOUNT_ID / _USER).
+# Defaults match that script's defaults; only used to verify a customer's live trust
+# policy names the right principal (api/services/evidence_pack.py).
+LAUNCHPAD_PLATFORM_PRINCIPAL_ARN = os.environ.get(
+    'LAUNCHPAD_PLATFORM_PRINCIPAL_ARN',
+    'arn:aws:iam::{}:user/{}'.format(
+        os.environ.get('LAUNCHPAD_PLATFORM_ACCOUNT_ID', '221082203366'),
+        os.environ.get('LAUNCHPAD_PLATFORM_USER', 'aklamaash-terraform'),
+    ),
+)
+
 # Apex domain custom-domain hostnames must not be able to spoof, e.g. `evil.launchpad.app`.
 # Matched against the normalized (IDNA-decoded, lowercased) hostname — see
 # api/models/custom_domain.py:normalize_hostname.

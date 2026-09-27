@@ -25,7 +25,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download } from 'lucide-react';
 import { Infrastructure, InvitedUserSummary } from '@/types/infrastructure';
 import { ApplicationSummary } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
@@ -80,6 +80,7 @@ export default function InfrastructureDetailPage() {
   const [reprovisioning, setReprovisioning] = useState(false);
   const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
   const [provisioningError, setProvisioningError] = useState<string | null>(null);
+  const [downloadingEvidence, setDownloadingEvidence] = useState(false);
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -237,6 +238,25 @@ export default function InfrastructureDetailPage() {
     } finally {
       setDeleting(false);
       setDeleteOpen(false);
+    }
+  };
+
+  const handleDownloadEvidencePack = async () => {
+    setDownloadingEvidence(true);
+    try {
+      const blob = await infrastructureApi.downloadEvidencePack(id);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `evidence-pack-${id}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Failed to download evidence pack');
+    } finally {
+      setDownloadingEvidence(false);
     }
   };
 
@@ -497,6 +517,23 @@ export default function InfrastructureDetailPage() {
                   </div>
                   <Button variant={policyState.kind === 'stale' ? 'default' : 'outline'} size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
                     <ShieldCheck className="w-3.5 h-3.5" /> Refresh
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {isOwner && (
+              <div className="space-y-2">
+                <p className="eyebrow px-1">Compliance</p>
+                <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-foreground">Evidence Pack</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      What Launchpad can do in your account, what it actually has, and where they differ.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={handleDownloadEvidencePack} disabled={downloadingEvidence} className="gap-1.5 shrink-0">
+                    <Download className="w-3.5 h-3.5" /> {downloadingEvidence ? 'Preparing…' : 'Download'}
                   </Button>
                 </div>
               </div>

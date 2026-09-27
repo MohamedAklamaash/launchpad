@@ -47,3 +47,28 @@ DNS** account (`infra/platform-dns`).
 - [ ] A real GitHub webhook redelivery while `auto_deploy_paused` is set, followed by a
       real push after `Resume auto-deploy` — confirm the resumed deploy builds the latest
       push and not a stale `project_commit_hash`.
+
+## F5 evidence pack
+
+- [ ] `GetPolicyVersion.PolicyVersion.Document` and `GetRole.Role.AssumeRolePolicyDocument`
+      encoding against a real account: botocore's `json_decode_policies` handler decodes
+      both to a dict before boto3 returns them (confirmed empirically against a Stubber
+      client), but `diff_live_policy`'s `_decode_policy_document` also handles a raw
+      URL-encoded string defensively — confirm a real IAM response never reaches that
+      fallback path in a way that changes the diff.
+- [ ] Live drift against a real account after a manual policy edit in the AWS console
+      (add a statement, remove an action from an existing one): confirm `missing_grants`
+      / `extra_grants` match what was actually changed, and that removing the whole
+      `LaunchpadDeploymentPolicy` attachment reports `policy_not_attached` rather than an
+      unhandled error.
+- [ ] Trust policy shape on a real role created by `create_aws_role.sh`: confirm
+      `Principal.AWS` is a plain ARN (not rewritten to an `AIDA...` unique id — AWS does
+      this when the referenced IAM user is later deleted) and that the
+      `LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1` escape-hatch shape (`Condition` entirely absent)
+      round-trips through `_diff_trust_policy` as `external_id_present: false` rather than
+      raising.
+- [ ] `iam:SimulatePrincipalPolicy`-adjacent calls (`ListAttachedRolePolicies`,
+      `GetPolicy`, `GetPolicyVersion`, `GetRole`) against a role whose trust policy denies
+      the platform principal: confirm `AccessDenied` surfaces as `policy.reason` /
+      `trust_policy.reason` without leaking `Error.Message` (it carries the assumed-role
+      session ARN) into the pack or the access log.

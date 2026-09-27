@@ -1,6 +1,7 @@
 from api.views.aws import list_aws_regions
 from api.views.capabilities import list_capabilities
 from api.views.database import database_detail, database_list_create
+from api.views.evidence_pack import evidence_pack
 from api.views.health import health, liveness, readiness
 from api.views.infrastructure import (
     infrastructure_detail,
@@ -31,6 +32,7 @@ urlpatterns = [
     path('infrastructures/<str:infra_id>/reprovision/', infrastructure_reprovision, name='infrastructure-reprovision'),
     path('infrastructures/<str:infra_id>/reissue-token/', infrastructure_reissue_token, name='infrastructure-reissue-token'),
     path('infrastructures/<str:infra_id>/logs/', provisioning_logs, name='provisioning-logs'),
+    path('infrastructures/<str:infra_id>/evidence-pack/', evidence_pack, name='evidence-pack'),
     path('infrastructures/onboarding/callback/', infrastructure_onboarding_callback, name='infrastructure-onboarding-callback'),
     path('infrastructures/<str:infra_id>/users/<str:user_id>/', infrastructure_remove_user, name='infrastructure-remove-user'),
     path('healthz/', health, name='health'),

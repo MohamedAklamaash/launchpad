@@ -13,7 +13,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 | [F2](F2-runtime-logs.md) | Logs | provisioning **done** (#70, #71); runtime **not started** | nothing technical |
 | [F3](F3-rollback.md) | Rollback | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F4](F4-cost-tagging.md) | Cost attribution | **not started** | nothing |
-| [F5](F5-evidence-pack.md) | Compliance pack | generator **done** (#67, #72); pack **not started** | nothing |
+| [F5](F5-evidence-pack.md) | Compliance pack | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F6](F6-exit-export.md) | Exit export | **not started** | F3, F5, F1b (teardown) |
 
 ## Recommended order
