@@ -1,6 +1,6 @@
 # F0 — Per-user budget for customer-account calls, plus the two unowned bugs
 
-**Status:** not started · **Depends on:** nothing · **Blocked by:** nothing
+**Status:** done (mock-verified) · **Depends on:** nothing · **Blocked by:** nothing
 
 F2, F4, F5 and F6 each add an endpoint whose every request costs an AssumeRole plus at
 least one API call **in the customer's account** — billed to them, consuming their API
@@ -49,3 +49,49 @@ Gateway: the exemptions are gone.
 ## Security pre-review
 
 Not required — it narrows access, adds no data path.
+
+## Decisions
+
+- **Only the `databases` bucket is wired up.** The plan names five buckets (`costs`,
+  `evidence`, `runtime_logs`, `exit_export`, `databases`), but only `databases` has an
+  endpoint today — the other four belong to F2/F4/F5/F6, none of which have shipped.
+  `shared/ratelimit/budget.py` (`customer_call_budget(user_id, bucket, limit, window)`,
+  the `rate_limited(bucket, limit, window)` DRF decorator) is bucket-agnostic and takes
+  no settings names, so each later feature wires its own bucket/limit/window at its own
+  call site without touching this module.
+- **Defaults: 60 requests / 60s per user for `databases`**, covering every method on
+  both routes (list/get/create/delete) under one bucket, not a finer per-method split.
+  `RATE_BUDGET_DATABASES_LIMIT` / `RATE_BUDGET_DATABASES_WINDOW_SECONDS`, env-overridable
+  in `deployment-services/infrastructure-service/{core/settings.py,env.example}`.
+- **Fixed window, keyed `budget:{bucket}:{user_id}`**, same INCR+TTL/EXPIRE pattern as
+  the gateway's per-IP limiter and `api/services/infra_queue.py`'s dedup lock, reusing
+  the same `REDIS_HOST/PORT/PASSWORD/DB` the service already has — no new Redis DB index.
+- **Fail-closed is a caught exception, not the DRF exception-handler chain.**
+  `customer_call_budget` raises `HttpError(status_code=503)` on a Redis error; the
+  `rate_limited` decorator catches it locally and returns `{"error": ...}` itself,
+  matching how `database.py`/`provisioning_logs.py` already handle their own errors
+  (they never rely on `settings.REST_FRAMEWORK["EXCEPTION_HANDLER"]` either — every
+  `HttpError` in this codebase is caught by hand). This also means the decorator behaves
+  identically under `test_settings.py`, which doesn't configure that handler at all.
+- **No `fakeredis` dependency added.** Not already a dependency anywhere in the repo;
+  tests monkeypatch `shared.ratelimit.budget._redis`, matching the existing convention
+  of monkeypatching the bound Redis-touching name (`InfraQueue` in the database/logs
+  tests) rather than faking the wire protocol.
+
+## Known risks, not fixed here
+
+- **The gateway's per-IP default was below ordinary dashboard traffic** (10 req / 300s
+  across all of `/api`, while the app page polls every 3s and database status every 5s);
+  the databases exemption was masking that. The default is now 600 / 300s. It is the outer
+  bound only — calls that cost the customer money are bounded per user downstream.
+- **One `databases` bucket covers both cheap GETs and the AssumeRole-plus-IAM-simulate
+  POST.** 60 creates/min into a customer account is generous for what should be a rare
+  operation; a tighter write-only bucket is a reasonable follow-up once usage data
+  exists, not designed in blind.
+- **The fail-closed path can hold a request for the pool's `socket_timeout` (5s) before
+  returning 503** if Redis is unreachable rather than down outright (matches the
+  connection pool tuning `infra_queue.py` already uses).
+- **Same orphaned-key edge as the gateway's limiter**: a crash between `INCR` and
+  `EXPIRE` leaves a budget key with no TTL, undercounting that user's remaining budget
+  until it's manually cleared. The gateway has carried this same gap since before F0;
+  not introduced here, not fixed here.

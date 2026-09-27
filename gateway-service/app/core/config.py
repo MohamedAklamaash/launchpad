@@ -25,7 +25,9 @@ class Settings(BaseSettings):
     INTERNAL_API_TOKEN:str = os.getenv("INTERNAL_API_TOKEN", "")
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     MAX_REQUESTS: int = int(os.getenv("MAX_REQUESTS", "100"))
-    MAX_USER_REQUESTS: int = int(os.getenv("MAX_USER_REQUESTS", "10"))
+    # Per-IP outer bound across all of /api. It has to admit ordinary dashboard polling (3-5s
+    # intervals); the calls that cost the customer money are bounded per user downstream.
+    MAX_USER_REQUESTS: int = int(os.getenv("MAX_USER_REQUESTS", "600"))
     RATE_LIMIT_WINDOW_SECONDS: int = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "300"))
     # Number of trusted proxy hops in front of the gateway (e.g. 1 for a single ALB). When >0,
     # the rate-limit client IP is read from X-Forwarded-For instead of the immediate peer, so

@@ -26,6 +26,13 @@ def _skip_iam_precheck(monkeypatch):
     monkeypatch.setattr("api.services.database_service.precheck_database_create", lambda infra, engine: None)
 
 
+@pytest.fixture(autouse=True)
+def _stub_rate_budget(monkeypatch):
+    """These views are budget-limited (F0). Most tests aren't about the budget itself,
+    and no Redis is available in the test environment — default to "always allowed"."""
+    monkeypatch.setattr("shared.ratelimit.budget.customer_call_budget", lambda *a, **k: None)
+
+
 @pytest.fixture
 def factory():
     return APIRequestFactory()
@@ -339,3 +346,86 @@ def test_create_rejects_eks_infrastructure(factory, make_infra_env):
     resp = _create(factory, database_list_create, owner, str(infra.id), **VALID_CREATE)
     assert resp.status_code == 400
     assert "ecs_fargate" in resp.data["error"]
+
+
+# ── malformed UUID (F0) ──────────────────────────────────────────────────────────
+# A malformed id reaching Django's UUIDField raises ValidationError, not ValueError,
+# and would otherwise escape the view's error mapping as a 500.
+
+def test_malformed_infra_id_on_list_returns_404(factory, make_user):
+    from api.views.database import database_list_create
+
+    resp = _list(factory, database_list_create, make_user(), "not-a-uuid")
+    assert resp.status_code == 404
+
+
+def test_malformed_infra_id_on_create_returns_404(factory, make_user):
+    from api.views.database import database_list_create
+
+    resp = _create(factory, database_list_create, make_user(), "not-a-uuid", **VALID_CREATE)
+    assert resp.status_code == 404
+
+
+def test_malformed_infra_id_on_get_returns_404(factory, make_user):
+    from api.views.database import database_detail
+
+    resp = _get(factory, database_detail, make_user(), "not-a-uuid", "also-not-a-uuid")
+    assert resp.status_code == 404
+
+
+def test_malformed_infra_id_on_delete_returns_404(factory, make_user):
+    from api.views.database import database_detail
+
+    resp = _delete(factory, database_detail, make_user(), "not-a-uuid", "also-not-a-uuid")
+    assert resp.status_code == 404
+
+
+def test_malformed_database_id_on_get_returns_404(factory, make_infra_env):
+    from api.views.database import database_detail
+
+    owner, infra, _env = make_infra_env()
+    resp = _get(factory, database_detail, owner, str(infra.id), "not-a-uuid")
+    assert resp.status_code == 404
+
+
+def test_malformed_database_id_on_delete_returns_404(factory, make_infra_env):
+    from api.views.database import database_detail
+
+    owner, infra, _env = make_infra_env()
+    resp = _delete(factory, database_detail, owner, str(infra.id), "not-a-uuid", confirm_name="x")
+    assert resp.status_code == 404
+
+
+# ── rate budget wiring (F0) ──────────────────────────────────────────────────────
+# The fixtures above stub customer_call_budget to always-allow so the CRUD tests aren't
+# coupled to it. These override that stub to prove @rate_limited is actually applied to
+# the real views, not just exercised in isolation against a dummy view.
+
+def test_list_over_budget_returns_429_before_touching_the_service(factory, make_infra_env, monkeypatch):
+    from api.views.database import database_list_create
+
+    calls = []
+    monkeypatch.setattr("api.services.database_service.DatabaseService.list_databases", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr("shared.ratelimit.budget.customer_call_budget", lambda *a, **k: 30)
+
+    owner, infra, _env = make_infra_env()
+    resp = _list(factory, database_list_create, owner, str(infra.id))
+
+    assert resp.status_code == 429
+    assert resp["Retry-After"] == "30"
+    assert calls == []
+
+
+def test_detail_returns_503_when_limiter_unavailable(factory, make_infra_env, monkeypatch):
+    from api.views.database import database_detail
+    from shared.errors.exception import HttpError
+
+    def _down(*args, **kwargs):
+        raise HttpError("Rate limiter unavailable", status_code=503)
+
+    monkeypatch.setattr("shared.ratelimit.budget.customer_call_budget", _down)
+
+    owner, infra, _env = make_infra_env()
+    resp = _get(factory, database_detail, owner, str(infra.id), str(uuid.uuid4()))
+
+    assert resp.status_code == 503

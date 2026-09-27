@@ -64,6 +64,12 @@ DATABASE_MIN_STORAGE_GB = 20
 DATABASE_MAX_STORAGE_GB = 1000
 MAX_DATABASES_PER_INFRA = int(os.environ.get('MAX_DATABASES_PER_INFRA', '10'))
 
+# Per-user budget for the databases endpoints (F0) — see shared.ratelimit.budget. Keyed
+# on request.user.id, independent of the gateway's per-IP limit and of other features'
+# buckets, so a single user can't exhaust another feature's quota or vice versa.
+RATE_BUDGET_DATABASES_LIMIT = int(os.environ.get('RATE_BUDGET_DATABASES_LIMIT', '60'))
+RATE_BUDGET_DATABASES_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_DATABASES_WINDOW_SECONDS', '60'))
+
 # Apex domain custom-domain hostnames must not be able to spoof, e.g. `evil.launchpad.app`.
 # Matched against the normalized (IDNA-decoded, lowercased) hostname — see
 # api/models/custom_domain.py:normalize_hostname.

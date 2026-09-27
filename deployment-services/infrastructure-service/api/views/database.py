@@ -2,6 +2,7 @@ import logging
 
 from api.serializers.database import DatabaseSerializer
 from api.services.database_service import DatabaseService, PolicyRefreshRequiredError
+from django.conf import settings
 from django.http import HttpRequest
 from django.views.decorators.csrf import csrf_exempt
 from drf_spectacular.types import OpenApiTypes
@@ -9,6 +10,7 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers, status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from shared.ratelimit import rate_limited
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,7 @@ def _error_response(e: Exception):
 )
 @csrf_exempt
 @api_view(['GET', 'POST'])
+@rate_limited('databases', limit=settings.RATE_BUDGET_DATABASES_LIMIT, window=settings.RATE_BUDGET_DATABASES_WINDOW_SECONDS)
 def database_list_create(request: HttpRequest, infra_id):
     if request.method == 'GET':
         try:
@@ -120,6 +123,7 @@ def database_list_create(request: HttpRequest, infra_id):
 )
 @csrf_exempt
 @api_view(['GET', 'DELETE'])
+@rate_limited('databases', limit=settings.RATE_BUDGET_DATABASES_LIMIT, window=settings.RATE_BUDGET_DATABASES_WINDOW_SECONDS)
 def database_detail(request: HttpRequest, infra_id, database_id):
     if request.method == 'GET':
         try:
