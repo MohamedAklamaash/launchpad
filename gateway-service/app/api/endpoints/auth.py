@@ -45,7 +45,7 @@ class RefreshBody(BaseModel):
     token: str = Field(example="eyJhbGciOiJIUzI1NiJ9...")
 
 class RevokeBody(BaseModel):
-    userId: str = Field(example="018e1234-abcd-7000-8000-000000000001")
+    refreshToken: str | None = Field(default=None, example="eyJhbGciOiJIUzI1NiJ9...")
 
 class SuccessResponse(BaseModel):
     success: bool
@@ -116,7 +116,7 @@ async def auth_refresh(body: RefreshBody, request: Request):
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/refresh", request)
 
 
-@router.post("/revoke", summary="Revoke all refresh tokens for a user", status_code=204)
+@router.post("/revoke", summary="Revoke all of the caller's own refresh tokens", status_code=204)
 async def auth_revoke(body: RevokeBody, request: Request):
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/revoke", request)
 

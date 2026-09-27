@@ -43,12 +43,21 @@ const REAUTH_REQUIRED_CODE = 'reauth_required';
 // stolen from it) can no longer silently mint a fresh session for a sensitive action —
 // closing that door here, not just locally clearing storage, is the point of revoking
 // server-side rather than merely discarding the local copy.
+//
+// /api/auth/revoke only ever revokes the caller's own sessions — it derives the userId
+// from a verified credential, never from a request body — so this call authenticates
+// with whatever of the access/refresh token pair is still in local storage rather than
+// naming a target user.
 async function revokeCurrentUserSessions(): Promise<void> {
   try {
-    const stored = localStorage.getItem('user');
-    const userId = stored ? (JSON.parse(stored) as { id?: string }).id : undefined;
-    if (!userId) return;
-    await axios.post(`${API_GATEWAY}/api/auth/revoke`, { userId });
+    const accessToken = localStorage.getItem('access_token');
+    const refreshToken = localStorage.getItem('refresh_token');
+    if (!accessToken && !refreshToken) return;
+    await axios.post(
+      `${API_GATEWAY}/api/auth/revoke`,
+      refreshToken ? { refreshToken } : {},
+      accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : undefined,
+    );
   } catch {
     // Never block the redirect on this — an unreachable auth-service must not trap the
     // user on the current page instead of sending them to re-login.

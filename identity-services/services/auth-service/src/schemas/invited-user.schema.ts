@@ -61,6 +61,9 @@ export const refreshSchema = z.object({
 
 export const revokeSchema = z.object({
     body: z.object({
-        userId: z.uuid(),
+        // The caller's own userId is derived from the verified Authorization access
+        // token or this refresh token — never from a body field — so there is nothing
+        // here to identify a target user with.
+        refreshToken: z.string().optional(),
     }),
 });
