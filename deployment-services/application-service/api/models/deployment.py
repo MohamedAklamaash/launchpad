@@ -34,6 +34,14 @@ class Deployment(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="deployments")
 
     image_tag = models.CharField(max_length=255)
+    # The ECR repository is tag-MUTABLE (shared per environment, one repo for every app on
+    # the infra). A later build of the same commit — a re-run, a retagged CI job — can
+    # silently repoint this tag at different bytes without changing anything recorded here.
+    # The digest is the actual content address; when present, rollback pins to
+    # `repo@sha256:...` instead of `repo:tag`, so a tag mutation after this row was written
+    # can't change what a rollback deploys. Null on rows written before this field existed,
+    # or if the digest lookup failed at record time — those fall back to pinning by tag.
+    image_digest = models.CharField(max_length=128, null=True, blank=True)
     commit_sha = models.CharField(max_length=255, null=True, blank=True)
     # Only a `resolved_sha` row is addressable by rollback: it names a tag the buildspec
     # will never overwrite. A `latest` row (a CodeBuild project that predates the two-tag

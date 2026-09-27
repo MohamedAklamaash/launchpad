@@ -125,6 +125,7 @@ class ApplicationDeploymentService:
             self._record_deployment(
                 application, image_tag=self._pinned_image_tag(application, resolved_sha),
                 resolved_sha=resolved_sha, status='SUCCEEDED', triggered_by='DEPLOY',
+                session=session, environment=environment,
             )
             logger.info(f"Application {application.name} deployed successfully at {deployment_url}")
             return deployment_url
@@ -204,6 +205,7 @@ class ApplicationDeploymentService:
         self._record_deployment(
             application, image_tag=image_tag, resolved_sha=resolved_sha,
             status='SUCCEEDED', triggered_by='DEPLOY',
+            session=session, environment=environment,
         )
         logger.info(f"Application {application.name} deployed to EKS at {deployment_url}")
         return deployment_url
@@ -220,18 +222,30 @@ class ApplicationDeploymentService:
 
     def _record_deployment(self, application: Application, image_tag: str, resolved_sha: str | None,
                            status: str, triggered_by: str, tag_source: str | None = None,
-                           rolled_back_from=None):
+                           rolled_back_from=None, image_digest: str | None = None,
+                           session=None, environment: Environment | None = None):
         """Append-only deploy history. Snapshot the env's shape, never its values.
         Best-effort — a history row must never be the reason a deploy or rollback that
-        actually succeeded gets reported as failed."""
+        actually succeeded gets reported as failed.
+
+        `image_digest`: pass it explicitly when it's already known (a rollback just copies
+        its target's digest). Otherwise, given `session`+`environment`, it is looked up —
+        the ECR repository is tag-MUTABLE, so a tag alone is not a stable pointer to what
+        was actually deployed."""
         from api.models.deployment import Deployment
         from api.services.deployment_snapshot import snapshot_env
 
         try:
-            keys, values_hash = snapshot_env(application.envs or {})
+            if image_digest is None and session is not None and environment is not None:
+                ecr = ECRClient(session)
+                repo_name = ECRClient.repository_name_from_url(environment.ecr_repository_url)
+                image_digest = ecr.get_image_digest(repo_name, image_tag)
+
+            keys, values_hash = snapshot_env(application.id, application.envs or {})
             Deployment.objects.create(
                 application=application,
                 image_tag=image_tag,
+                image_digest=image_digest,
                 commit_sha=resolved_sha,
                 tag_source=tag_source or (Deployment.TAG_SOURCE_RESOLVED_SHA if resolved_sha else Deployment.TAG_SOURCE_LATEST),
                 compute_type=application.infrastructure.compute_type,
@@ -398,7 +412,8 @@ class ApplicationDeploymentService:
         return plain_env, secrets
 
     def _create_task_definition(self, session, application: Application, environment: Environment,
-                                resolved_sha: str | None = None, image_tag: str | None = None):
+                                resolved_sha: str | None = None, image_tag: str | None = None,
+                                image_digest: str | None = None):
         ecs = ECSClient(session)
         ecr = ECRClient(session)
         logs = session.client('logs')
@@ -416,10 +431,12 @@ class ApplicationDeploymentService:
         # a CodeBuild project that predates the two-tag buildspec. A rollback passes the
         # exact tag from its target Deployment row instead of recomputing one — the app may
         # have been renamed since, and slug-from-current-name would no longer resolve to the
-        # image that was actually pushed.
+        # image that was actually pushed. When a digest is also known, `get_image_ref` pins
+        # to it instead — the tag alone is not a stable pointer, since the ECR repository is
+        # tag-MUTABLE and a later build of the same commit could have repointed it.
         image_tag = image_tag or self._pinned_image_tag(application, resolved_sha)
-        image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
-        logger.info(f"Task definition for {application.name} pinned to image tag {image_tag}")
+        image_uri = ecr.get_image_ref(environment.ecr_repository_url, image_tag, image_digest)
+        logger.info(f"Task definition for {application.name} pinned to {image_uri}")
 
         # Now that every build pushes a second, per-commit tag, the repository grows
         # without bound in the customer's account unless retention is set.
@@ -646,7 +663,7 @@ class ApplicationDeploymentService:
 
             ecr = ECRClient(session)
             repo_name = ECRClient.repository_name_from_url(environment.ecr_repository_url)
-            if not ecr.image_exists(repo_name, target.image_tag):
+            if not ecr.image_exists(repo_name, target.image_tag, digest=target.image_digest):
                 raise ValueError(
                     f"Image '{target.image_tag}' is no longer available in the container "
                     "registry — it was likely expired by the ECR retention policy. Choose "
@@ -672,14 +689,14 @@ class ApplicationDeploymentService:
             self._record_deployment(
                 application, image_tag=target.image_tag, resolved_sha=target.commit_sha,
                 status='FAILED', triggered_by='ROLLBACK', tag_source=target.tag_source,
-                rolled_back_from=target,
+                rolled_back_from=target, image_digest=target.image_digest,
             )
             raise
 
         self._record_deployment(
             application, image_tag=target.image_tag, resolved_sha=target.commit_sha,
             status='SUCCEEDED', triggered_by='ROLLBACK', tag_source=target.tag_source,
-            rolled_back_from=target,
+            rolled_back_from=target, image_digest=target.image_digest,
         )
         logger.info(f"Application {application.name} rolled back to deployment {target.id}")
         return deployment_url
@@ -695,7 +712,8 @@ class ApplicationDeploymentService:
         application.alloted_cpu, application.alloted_memory, application.port = target.cpu, target.memory, target.port
         try:
             task_def_arn = self._create_task_definition(
-                session, application, environment, image_tag=target.image_tag,
+                session, application, environment,
+                image_tag=target.image_tag, image_digest=target.image_digest,
             )
             service_name = f"{_slug(application.name)}-service"
             ecs.client.update_service(
@@ -728,7 +746,7 @@ class ApplicationDeploymentService:
 
     def _rollback_eks(self, session, application: Application, environment: Environment, target, created_resources: list) -> str:
         ecr = ECRClient(session)
-        image_uri = ecr.get_image_uri(environment.ecr_repository_url, target.image_tag)
+        image_uri = ecr.get_image_ref(environment.ecr_repository_url, target.image_tag, target.image_digest)
 
         # EKSDeployer reads cpu/memory/port/envs straight off `application`, so the snapshot
         # values have to be in place before it builds the manifest. `deploy()` patches the

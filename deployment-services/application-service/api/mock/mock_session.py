@@ -219,11 +219,21 @@ class MockClient:
         return {}
 
     def describe_images(self, **kwargs):
-        # Mock images never expire — every tag rollback might target is "found". Tests for
-        # the expired-tag rejection exercise ECRClient.image_exists directly against a fake
-        # client that raises ImageNotFoundException, the way real ECR would.
-        image_ids = kwargs.get("imageIds") or []
-        return {"imageDetails": [{"imageTags": [i.get("imageTag")] } for i in image_ids if i.get("imageTag")]}
+        # Mock images never expire — every tag or digest rollback might target is "found".
+        # Tests for the expired-tag rejection exercise ECRClient.image_exists directly
+        # against a fake client that raises ImageNotFoundException, the way real ECR would.
+        # A deterministic digest (derived from the tag, not random) so a test can assert the
+        # same digest was both recorded on a Deployment row and used to build an image ref.
+        details = []
+        for image_id in kwargs.get("imageIds") or []:
+            tag, digest = image_id.get("imageTag"), image_id.get("imageDigest")
+            if not tag and not digest:
+                continue
+            details.append({
+                "imageTags": [tag] if tag else [],
+                "imageDigest": digest or f"sha256:{hashlib.sha256(tag.encode()).hexdigest()}",
+            })
+        return {"imageDetails": details}
 
     def put_lifecycle_policy(self, **kwargs):
         return {

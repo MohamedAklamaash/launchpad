@@ -66,7 +66,7 @@ def ecs_app(schema_db):
 def old_deployment(ecs_app):
     """An earlier, smaller deploy with a different env shape — the rollback target."""
     app, _env = ecs_app
-    keys, digest = snapshot_env({"NODE_ENV": "staging"})
+    keys, digest = snapshot_env(app.id, {"NODE_ENV": "staging"})
     return Deployment.objects.create(
         application=app, image_tag="my-app-" + "b" * 40, commit_sha="b" * 40,
         tag_source=Deployment.TAG_SOURCE_RESOLVED_SHA, compute_type="ecs_fargate",
@@ -90,22 +90,35 @@ def _req(user_id):
 
 # ── snapshot the shape, not the values ──────────────────────────────────────────
 
+_DUMMY_APP_ID = uuid.uuid4()
+_OTHER_APP_ID = uuid.uuid4()
+
+
 def test_snapshot_env_returns_keys_and_a_keyed_hash_not_values():
-    keys, digest = snapshot_env({"B": "1", "A": SECRET_VALUE})
+    keys, digest = snapshot_env(_DUMMY_APP_ID, {"B": "1", "A": SECRET_VALUE})
     assert keys == ["A", "B"]  # sorted, so key order never leaks insertion order
     assert SECRET_VALUE not in digest
     assert len(digest) == 64  # hex sha256
 
 
 def test_snapshot_hash_is_stable_regardless_of_dict_order():
-    _, d1 = snapshot_env({"A": "1", "B": "2"})
-    _, d2 = snapshot_env({"B": "2", "A": "1"})
+    _, d1 = snapshot_env(_DUMMY_APP_ID, {"A": "1", "B": "2"})
+    _, d2 = snapshot_env(_DUMMY_APP_ID, {"B": "2", "A": "1"})
     assert d1 == d2
 
 
 def test_snapshot_hash_changes_when_a_value_changes():
-    _, d1 = snapshot_env({"A": "1"})
-    _, d2 = snapshot_env({"A": "2"})
+    _, d1 = snapshot_env(_DUMMY_APP_ID, {"A": "1"})
+    _, d2 = snapshot_env(_DUMMY_APP_ID, {"A": "2"})
+    assert d1 != d2
+
+
+def test_snapshot_hash_is_domain_separated_per_app():
+    """Two different apps with byte-identical envs must never compare equal — otherwise the
+    'values changed' indicator on one app's rollback preview would leak information about
+    an unrelated app's env values matching or not."""
+    _, d1 = snapshot_env(_DUMMY_APP_ID, {"A": "1"})
+    _, d2 = snapshot_env(_OTHER_APP_ID, {"A": "1"})
     assert d1 != d2
 
 
@@ -120,6 +133,78 @@ def test_deployment_row_never_stores_the_secret_value(ecs_app, mock_service):
     assert SECRET_VALUE not in str(list(row.__dict__.values()))
     assert set(row.env_keys) == {"NODE_ENV", "API_KEY"}
     assert row.env_values_hash != ""
+
+
+# ── ECR is tag-MUTABLE: pin by content digest when one is known ─────────────
+
+@pytest.mark.django_db
+def test_record_deployment_resolves_and_stores_the_image_digest(ecs_app, mock_service):
+    import hashlib
+
+    app, env = ecs_app
+    tag = "my-app-" + "c" * 40
+    mock_service._record_deployment(
+        app, image_tag=tag, resolved_sha="c" * 40, status="SUCCEEDED", triggered_by="DEPLOY",
+        session=mock_service._create_aws_session(app.infrastructure), environment=env,
+    )
+    row = Deployment.objects.get(application=app)
+    assert row.image_digest == f"sha256:{hashlib.sha256(tag.encode()).hexdigest()}"
+
+
+@pytest.fixture
+def old_deployment_with_digest(ecs_app):
+    """A rollback target recorded with a digest — the tag-mutation-proof pinning path."""
+    app, _env = ecs_app
+    keys, digest = snapshot_env(app.id, {"NODE_ENV": "staging"})
+    return Deployment.objects.create(
+        application=app, image_tag="my-app-" + "f" * 40, commit_sha="f" * 40,
+        image_digest="sha256:" + "1" * 64,
+        tag_source=Deployment.TAG_SOURCE_RESOLVED_SHA, compute_type="ecs_fargate",
+        env_keys=keys, env_values_hash=digest, attached_database_ids=[],
+        cpu=64, memory=128, port=4000,
+        status=Deployment.STATUS_SUCCEEDED, triggered_by=Deployment.TRIGGERED_BY_DEPLOY,
+    )
+
+
+@pytest.mark.django_db
+def test_rollback_pins_by_digest_when_the_target_row_has_one(ecs_app, old_deployment_with_digest, mock_service):
+    app, _env = ecs_app
+
+    with patch("aws.ecs.ECSClient.create_task_definition", side_effect=Exception("stop-here")) as create_td, \
+            pytest.raises(Exception, match="stop-here"):
+        mock_service.rollback_application(app, old_deployment_with_digest)
+
+    image = create_td.call_args.kwargs["image"]
+    assert image.endswith(f"@{old_deployment_with_digest.image_digest}")
+
+
+@pytest.mark.django_db
+def test_rollback_falls_back_to_tag_when_no_digest_is_recorded(ecs_app, old_deployment, mock_service):
+    """Rows written before digest tracking existed have no image_digest and must still be
+    addressable — pinned by tag, same as before this feature."""
+    app, _env = ecs_app
+    assert old_deployment.image_digest is None
+
+    with patch("aws.ecs.ECSClient.create_task_definition", side_effect=Exception("stop-here")) as create_td, \
+            pytest.raises(Exception, match="stop-here"):
+        mock_service.rollback_application(app, old_deployment)
+
+    image = create_td.call_args.kwargs["image"]
+    assert image.endswith(f":{old_deployment.image_tag}")
+    assert "@" not in image
+
+
+@pytest.mark.django_db
+def test_expired_digest_is_rejected_the_same_way_as_an_expired_tag(ecs_app, old_deployment_with_digest, mock_service):
+    app, _env = ecs_app
+
+    with patch.object(ECRClient, "image_exists", return_value=False) as image_exists, \
+            pytest.raises(ValueError, match="no longer available"):
+        mock_service.rollback_application(app, old_deployment_with_digest)
+
+    image_exists.assert_called_once_with(
+        "launchpad-abc", old_deployment_with_digest.image_tag, digest=old_deployment_with_digest.image_digest,
+    )
 
 
 @pytest.mark.django_db
@@ -217,7 +302,7 @@ def test_rollback_pins_old_image_restores_resources_and_never_touches_codebuild(
     assert new_row.rolled_back_from_id == old_deployment.id
     # The row recorded by *this* rollback reflects envs re-read at rollback time
     # (current app.envs), not the target's stale snapshot.
-    current_keys, current_hash = snapshot_env(app.envs)
+    current_keys, current_hash = snapshot_env(app.id, app.envs)
     assert set(new_row.env_keys) == set(current_keys)
     assert new_row.env_values_hash == current_hash
 
@@ -303,6 +388,37 @@ def test_image_exists_reraises_other_client_errors():
         ECRClient(_FakeSession(_Fake())).image_exists("repo", "tag")
 
 
+def test_image_exists_checks_by_digest_when_one_is_given():
+    class _Fake:
+        def describe_images(self, **kwargs):
+            assert kwargs["imageIds"] == [{"imageDigest": "sha256:abc"}]
+            return {"imageDetails": [{}]}
+
+    assert ECRClient(_FakeSession(_Fake())).image_exists("repo", "tag", digest="sha256:abc") is True
+
+
+def test_get_image_digest_returns_none_on_failure_rather_than_raising():
+    class _Fake:
+        def describe_images(self, **kwargs):
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "DescribeImages")
+
+    assert ECRClient(_FakeSession(_Fake())).get_image_digest("repo", "tag") is None
+
+
+def test_get_image_digest_returns_the_first_matching_digest():
+    class _Fake:
+        def describe_images(self, **kwargs):
+            return {"imageDetails": [{"imageDigest": "sha256:xyz"}]}
+
+    assert ECRClient(_FakeSession(_Fake())).get_image_digest("repo", "tag") == "sha256:xyz"
+
+
+def test_get_image_ref_prefers_digest_over_tag():
+    ecr = ECRClient(_FakeSession(_FakeEcrClient(True)))
+    assert ecr.get_image_ref("repo-url", "mytag", "sha256:abc") == "repo-url@sha256:abc"
+    assert ecr.get_image_ref("repo-url", "mytag", None) == "repo-url:mytag"
+
+
 @pytest.mark.django_db
 def test_rollback_on_an_expired_tag_fails_with_a_usable_message_before_touching_ecs(
     ecs_app, old_deployment, mock_service,
@@ -365,6 +481,22 @@ def test_trigger_rollback_enqueues_and_pauses_auto_deploy(ecs_app, old_deploymen
     enqueue.assert_called_once_with(str(app.id), str(app.infrastructure_id), str(old_deployment.id))
 
 
+@pytest.mark.django_db
+def test_trigger_rollback_does_not_pause_when_enqueue_fails(ecs_app, old_deployment, monkeypatch):
+    app, _env = ecs_app
+    monkeypatch.setattr("api.services.rollback_service.DeploymentLock.is_locked", lambda self, _id: False)
+    monkeypatch.setattr(
+        "api.services.rollback_service.DeploymentQueue.enqueue_rollback",
+        MagicMock(side_effect=RuntimeError("redis unavailable")),
+    )
+
+    with pytest.raises(RuntimeError):
+        RollbackService().trigger_rollback(app.user_id, str(app.id), str(old_deployment.id))
+
+    app.refresh_from_db()
+    assert app.auto_deploy_paused is False
+
+
 # ── cross-tenant authz: 404 stranger / 403 invited ──────────────────────────
 
 @pytest.mark.django_db
@@ -410,6 +542,7 @@ def test_owner_can_list_and_preview(ecs_app, old_deployment):
     list_resp = ApplicationDeploymentsView().get(_req(app.user_id), pk=str(app.id))
     assert list_resp.status_code == 200
     assert len(list_resp.data) == 1
+    assert list_resp.data[0]["rollback_addressable"] is True
     assert SECRET_VALUE not in str(list_resp.data)
 
     preview_resp = ApplicationRollbackPreviewView().get(
@@ -418,6 +551,29 @@ def test_owner_can_list_and_preview(ecs_app, old_deployment):
     assert preview_resp.status_code == 200
     assert preview_resp.data["deployment_id"] == str(old_deployment.id)
     assert SECRET_VALUE not in str(preview_resp.data)
+
+
+@pytest.mark.django_db
+def test_list_flags_a_latest_tagged_row_as_not_addressable(ecs_app):
+    """A `latest`-tag row (a CodeBuild project predating the two-tag buildspec) shows up in
+    history but the frontend must be able to tell it apart from a real rollback target."""
+    from api.views.application import ApplicationDeploymentsView
+
+    app, _env = ecs_app
+    keys, digest = snapshot_env(app.id, {})
+    Deployment.objects.create(
+        application=app, image_tag="my-app-latest", commit_sha=None,
+        tag_source=Deployment.TAG_SOURCE_LATEST, compute_type="ecs_fargate",
+        env_keys=keys, env_values_hash=digest, attached_database_ids=[],
+        cpu=256, memory=512, port=8080,
+        status=Deployment.STATUS_SUCCEEDED, triggered_by=Deployment.TRIGGERED_BY_DEPLOY,
+    )
+
+    resp = ApplicationDeploymentsView().get(_req(app.user_id), pk=str(app.id))
+
+    assert resp.status_code == 200
+    row = next(d for d in resp.data if d["image_tag"] == "my-app-latest")
+    assert row["rollback_addressable"] is False
 
 
 @pytest.mark.django_db
@@ -464,6 +620,87 @@ def test_webhook_ignores_push_while_paused_but_advances_commit(ecs_app, monkeypa
     enqueue.assert_not_called()
     app.refresh_from_db()
     assert app.project_commit_hash == sha  # pointer still advances so resume deploys the latest push
+
+
+@pytest.mark.django_db
+def test_webhook_deploy_is_tagged_with_its_source(ecs_app, monkeypatch):
+    """The worker re-checks the pause at dequeue time for webhook jobs only — it has to be
+    able to tell a webhook-triggered job apart from a manual one."""
+    import hashlib
+    import hmac
+    import json
+
+    from rest_framework.test import APIRequestFactory
+
+    from api.views.application import application_github_webhook
+
+    app, _env = ecs_app
+    app.github_webhook_secret = "whsec-" + uuid.uuid4().hex
+    app.save(update_fields=["github_webhook_secret"])
+
+    enqueue = MagicMock()
+    monkeypatch.setattr("api.views.application.DeploymentQueue.enqueue_deployment", enqueue)
+
+    body = json.dumps({"ref": "refs/heads/main", "after": "e" * 40}).encode()
+    sig = "sha256=" + hmac.new(app.github_webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+    request = APIRequestFactory().post(
+        f"/api/v1/webhooks/github/{app.id}/", data=body, content_type="application/json",
+        HTTP_X_GITHUB_EVENT="push", HTTP_X_HUB_SIGNATURE_256=sig,
+    )
+
+    response = application_github_webhook(request, app_id=str(app.id))
+
+    assert response.status_code == 202
+    enqueue.assert_called_once_with(str(app.id), str(app.infrastructure_id), source="webhook")
+
+
+# ── worker: closing the race between a queued webhook deploy and a rollback pin ─
+
+@pytest.mark.django_db
+def test_worker_skips_a_webhook_job_when_the_app_is_paused_at_dequeue_time(ecs_app, monkeypatch):
+    """The webhook already checks auto_deploy_paused before enqueueing, but a job already
+    sitting in the queue when a rollback pins the app must not still run once the worker
+    picks it up — the worker re-reads the row and checks again."""
+    from api.management.commands.run_worker import execute_deploy_job
+
+    app, _env = ecs_app
+    app.auto_deploy_paused = True
+    app.save(update_fields=["auto_deploy_paused"])
+
+    ack = MagicMock()
+    deploy = MagicMock()
+    monkeypatch.setattr("api.services.deployment_queue.DeploymentQueue.ack_job", ack)
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.ApplicationDeploymentService.deploy_application", deploy,
+    )
+
+    execute_deploy_job(str(app.id), {"app_id": str(app.id), "action": "deploy", "source": "webhook"})
+
+    deploy.assert_not_called()
+    ack.assert_called_once()
+
+
+@pytest.mark.django_db
+def test_worker_still_deploys_a_manual_job_even_if_somehow_paused(ecs_app, monkeypatch):
+    """The source tag is what gates the re-check — a manual deploy job (no `source`) must
+    never be silently skipped, since the view that enqueues it already cleared the pause."""
+    from api.management.commands.run_worker import execute_deploy_job
+
+    app, _env = ecs_app
+    app.auto_deploy_paused = True
+    app.save(update_fields=["auto_deploy_paused"])
+
+    ack = MagicMock()
+    deploy = MagicMock(return_value="http://example.com")
+    monkeypatch.setattr("api.services.deployment_queue.DeploymentQueue.ack_job", ack)
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.ApplicationDeploymentService.deploy_application", deploy,
+    )
+
+    execute_deploy_job(str(app.id), {"app_id": str(app.id), "action": "deploy"})
+
+    deploy.assert_called_once()
+    ack.assert_called_once()
 
 
 @pytest.mark.django_db
@@ -530,7 +767,7 @@ def eks_app(schema_db):
 @pytest.fixture
 def eks_old_deployment(eks_app):
     app, _env = eks_app
-    keys, digest = snapshot_env({"FOO": "old-value"})
+    keys, digest = snapshot_env(app.id, {"FOO": "old-value"})
     return Deployment.objects.create(
         application=app, image_tag="myapp-" + "e" * 40, commit_sha="e" * 40,
         tag_source=Deployment.TAG_SOURCE_RESOLVED_SHA, compute_type="eks",

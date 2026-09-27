@@ -431,6 +431,9 @@ class DeploymentListItemSerializer(serializers.Serializer):
     status = serializers.CharField()
     triggered_by = serializers.CharField()
     created_at = serializers.DateTimeField()
+    rollback_addressable = serializers.BooleanField(
+        help_text="False for a row tagged 'latest' (predates the per-commit buildspec) — not a valid rollback target",
+    )
 
 
 class RollbackPreviewSerializer(serializers.Serializer):
@@ -486,10 +489,12 @@ class ApplicationDeploymentsView(APIView):
             deployments = self.service.list_deployments(request.user.id, pk)
         except Exception as e:
             return _rollback_error_response(e)
+        from api.models.deployment import Deployment
         return Response([{
             "id": str(d.id), "image_tag": d.image_tag, "commit_sha": d.commit_sha,
             "compute_type": d.compute_type, "status": d.status, "triggered_by": d.triggered_by,
             "created_at": d.created_at,
+            "rollback_addressable": d.tag_source == Deployment.TAG_SOURCE_RESOLVED_SHA,
         } for d in deployments])
 
 
@@ -693,7 +698,7 @@ def application_github_webhook(request, app_id: str):
         )
 
     try:
-        DeploymentQueue.enqueue_deployment(str(app_id), str(app.infrastructure_id))
+        DeploymentQueue.enqueue_deployment(str(app_id), str(app.infrastructure_id), source="webhook")
     except Exception:
         logger.exception(f"GitHub webhook failed to enqueue deployment for app {app_id}")
         return Response({"error": "Failed to enqueue deployment"},

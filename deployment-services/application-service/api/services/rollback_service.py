@@ -68,7 +68,7 @@ class RollbackService:
         app = self._get_owned_application(user_id, app_id)
         target = self._get_target(app, deployment_id)
 
-        current_keys, current_hash = snapshot_env(app.envs or {})
+        current_keys, current_hash = snapshot_env(app.id, app.envs or {})
         current_key_set = set(current_keys)
         target_key_set = set(target.env_keys)
 
@@ -96,12 +96,14 @@ class RollbackService:
                 "A deployment is already in progress for this application. Try again once it finishes."
             )
 
-        # Pause before enqueueing: a push landing while the rollback job is still queued
-        # must not redeploy over it once the worker gets to it.
+        # Enqueue before pausing: if the enqueue itself fails, the app must not be left
+        # pinned with no rollback actually in flight to justify it. A push landing in the
+        # narrow window between the enqueue and the pause save is closed by the worker's own
+        # re-check of auto_deploy_paused for webhook-sourced jobs (see execute_deploy_job).
+        DeploymentQueue.enqueue_rollback(str(app.id), str(app.infrastructure_id), str(target.id))
+
         app.auto_deploy_paused = True
         app.save(update_fields=['auto_deploy_paused'])
-
-        DeploymentQueue.enqueue_rollback(str(app.id), str(app.infrastructure_id), str(target.id))
         return target
 
     def resume_auto_deploy(self, user_id, app_id):

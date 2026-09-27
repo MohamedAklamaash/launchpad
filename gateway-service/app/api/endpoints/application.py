@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
@@ -163,6 +165,7 @@ class DeploymentListItem(BaseModel):
     status: str
     triggered_by: str
     created_at: str
+    rollback_addressable: bool = True
 
 
 class RollbackPreviewResponse(BaseModel):
@@ -188,14 +191,14 @@ class RollbackQueuedResponse(BaseModel):
 
 @router.get("/{app_id}/deployments", summary="List deployment history for an application",
             response_model=list[DeploymentListItem])
-async def application_deployments(app_id: str, request: Request):
+async def application_deployments(app_id: uuid.UUID, request: Request):
     """Owner only. Newest first; only successful deploys/rollbacks are addressable."""
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/", request)
 
 
 @router.get("/{app_id}/deployments/{deployment_id}/preview", summary="Preview a rollback's config diff",
             response_model=RollbackPreviewResponse)
-async def application_rollback_preview(app_id: str, deployment_id: str, request: Request):
+async def application_rollback_preview(app_id: uuid.UUID, deployment_id: uuid.UUID, request: Request):
     """Owner only. Key-name changes and a values-changed indicator — never the values themselves."""
     return await proxy_request(
         f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/{deployment_id}/preview/", request,
@@ -204,7 +207,7 @@ async def application_rollback_preview(app_id: str, deployment_id: str, request:
 
 @router.post("/{app_id}/deployments/{deployment_id}/rollback", summary="Roll back to a previous deployment",
              response_model=RollbackQueuedResponse, status_code=202)
-async def application_rollback(app_id: str, deployment_id: str, request: Request):
+async def application_rollback(app_id: uuid.UUID, deployment_id: uuid.UUID, request: Request):
     """Owner only. No request body. Skips CodeBuild; pauses auto-deploy until resumed."""
     return await proxy_request(
         f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/{deployment_id}/rollback/", request,
@@ -212,7 +215,7 @@ async def application_rollback(app_id: str, deployment_id: str, request: Request
 
 
 @router.post("/{app_id}/resume-auto-deploy", summary="Resume auto-deploy on push")
-async def application_resume_auto_deploy(app_id: str, request: Request):
+async def application_resume_auto_deploy(app_id: uuid.UUID, request: Request):
     """Owner only. No request body. Clears the pin a rollback set."""
     return await proxy_request(
         f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/resume-auto-deploy/", request,

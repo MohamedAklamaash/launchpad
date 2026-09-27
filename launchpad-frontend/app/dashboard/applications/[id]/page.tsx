@@ -44,6 +44,7 @@ export default function ApplicationDetailPage() {
   const [editingEnvs, setEditingEnvs] = useState(false);
   const [envRows, setEnvRows] = useState<[string, string][]>([]);
   const [savingEnvs, setSavingEnvs] = useState(false);
+  const [hasRollbackAccess, setHasRollbackAccess] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const user = useAuthStore((s) => s.user);
   const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
@@ -236,7 +237,7 @@ export default function ApplicationDetailPage() {
             <RefreshCw className="w-3.5 h-3.5" /> Retry
           </Button>
         )}
-        {app.auto_deploy_paused && canEdit && (
+        {app.auto_deploy_paused && canEdit && hasRollbackAccess && (
           <Button variant="outline" size="sm" className="gap-1.5"
             onClick={() => action(() => applicationApi.resumeAutoDeploy(id), 'Auto-deploy resumed')} disabled={actionLoading}>
             <PlayCircle className="w-3.5 h-3.5" /> Resume auto-deploy
@@ -414,7 +415,13 @@ export default function ApplicationDetailPage() {
         </div>
       )}
 
-      <DeploymentHistory appId={id} canRollback={!!canEdit} onRolledBack={() => loadApp()} />
+      <DeploymentHistory
+        appId={id}
+        appStatus={app.status}
+        canRollback={!!canEdit}
+        onRolledBack={() => loadApp()}
+        onAccessChange={setHasRollbackAccess}
+      />
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

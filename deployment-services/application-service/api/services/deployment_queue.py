@@ -59,11 +59,17 @@ class DeploymentQueue:
         return redis.Redis(connection_pool=_pool)
 
     @staticmethod
-    def enqueue_deployment(app_id: str, infrastructure_id: str | None = None):
+    def enqueue_deployment(app_id: str, infrastructure_id: str | None = None, source: str | None = None):
         try:
             job = {"app_id": str(app_id), "action": "deploy", "retry_count": 0}
             if infrastructure_id:
                 job["infrastructure_id"] = str(infrastructure_id)
+            # Lets the worker distinguish a webhook-triggered deploy from a manual one — a
+            # manual deploy already clears auto_deploy_paused before enqueueing, but a
+            # webhook job must re-check the flag at dequeue time to close the race where a
+            # rollback pins the app after the job is already queued.
+            if source:
+                job["source"] = source
             DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
             logger.info(f"Enqueued deployment for application {app_id}")
         except Exception as e:

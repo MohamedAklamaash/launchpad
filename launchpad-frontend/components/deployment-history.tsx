@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { History, RotateCcw, GitCommitHorizontal } from 'lucide-react';
 import { applicationApi } from '@/lib/api/applications';
 import { Deployment } from '@/types/application';
@@ -8,25 +8,43 @@ import { RollbackDialog } from '@/components/rollback-dialog';
 
 interface Props {
   appId: string;
+  appStatus: string;
   canRollback: boolean;
   onRolledBack: () => void;
+  /** Fires once the list call settles, so the parent can gate other owner-only affordances
+   * (e.g. Resume auto-deploy) on the same access check instead of a separate role guess. */
+  onAccessChange?: (hasAccess: boolean) => void;
 }
 
-export function DeploymentHistory({ appId, canRollback, onRolledBack }: Props) {
+export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack, onAccessChange }: Props) {
   const [deployments, setDeployments] = useState<Deployment[] | null>(null);
   const [target, setTarget] = useState<Deployment | null>(null);
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
     applicationApi
       .listDeployments(appId)
-      .then(setDeployments)
+      .then((data) => {
+        setDeployments(data);
+        onAccessChange?.(true);
+      })
       .catch((e: unknown) => {
         const error = e as { response?: { data?: { error?: string } } };
         // Owner-only endpoint: an invited viewer gets 403 here. Fail quiet rather than
         // toast an error for a view that simply isn't theirs to see.
-        if (error.response) setDeployments([]);
+        if (error.response) {
+          setDeployments([]);
+          onAccessChange?.(false);
+        }
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appId]);
+
+  // Re-fetch whenever the app's status changes — a rollback runs on the deploy worker, so
+  // the new history row only exists once that finishes, which shows up here as the app
+  // cycling through DEPLOYING (or BUILDING for a normal deploy) back to ACTIVE/FAILED.
+  useEffect(() => {
+    refresh();
+  }, [refresh, appStatus]);
 
   if (!deployments || deployments.length === 0) return null;
 
@@ -48,13 +66,23 @@ export function DeploymentHistory({ appId, canRollback, onRolledBack }: Props) {
               </div>
             </div>
             {canRollback && (
-              <button
-                onClick={() => setTarget(d)}
-                className="shrink-0 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
-                title="Roll back to this deployment"
-              >
-                <RotateCcw className="w-3 h-3" /> Roll back
-              </button>
+              d.rollback_addressable ? (
+                <button
+                  onClick={() => setTarget(d)}
+                  className="shrink-0 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
+                  title="Roll back to this deployment"
+                >
+                  <RotateCcw className="w-3 h-3" /> Roll back
+                </button>
+              ) : (
+                <button
+                  disabled
+                  className="shrink-0 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/30 cursor-not-allowed rounded px-1.5 py-1"
+                  title="This deploy predates per-commit image tagging and can't be rolled back to"
+                >
+                  <RotateCcw className="w-3 h-3" /> Roll back
+                </button>
+              )
             )}
           </div>
         ))}
@@ -65,7 +93,10 @@ export function DeploymentHistory({ appId, canRollback, onRolledBack }: Props) {
         onOpenChange={(o) => { if (!o) setTarget(null); }}
         appId={appId}
         deployment={target}
-        onRolledBack={onRolledBack}
+        onRolledBack={() => {
+          refresh();
+          onRolledBack();
+        }}
       />
     </div>
   );

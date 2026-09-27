@@ -46,6 +46,8 @@ export interface Deployment {
   status: 'SUCCEEDED' | 'FAILED';
   triggered_by: DeploymentTriggeredBy;
   created_at: string;
+  /** False for a row tagged 'latest' (predates the per-commit buildspec) — not a valid rollback target. */
+  rollback_addressable: boolean;
 }
 
 export interface RollbackPreview {

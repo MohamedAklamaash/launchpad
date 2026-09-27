@@ -145,6 +145,36 @@ settled on owner-only).
     The webhook's own pointer (`project_commit_hash`) still advances while paused so that
     resuming (or a later manual deploy) redeploys the latest push, not the pre-rollback
     commit.
+12. **Rolling back is owner-only, but clearing the pause is not, and that's deliberate.**
+    Manual deploy/retry are gated on `can_update_application` (SUPER_ADMIN or ADMIN), the
+    same check every other deploy-triggering endpoint uses — not on ownership. An invited
+    ADMIN who cannot see deploy history or trigger a rollback can still clear
+    `auto_deploy_paused` by triggering an ordinary deploy. This is consistent rather than a
+    gap: that ADMIN could already deploy over the rollback's pinned image at will (rollback
+    only pins the *next automatic* deploy, not the ADMIN's ability to redeploy manually), so
+    letting a manual deploy also clear the flag it's about to make moot doesn't grant them
+    anything they didn't already have.
+13. **A queued webhook job re-checks `auto_deploy_paused` at the worker, not just at
+    enqueue time.** The webhook already declines to enqueue while paused, but a job
+    enqueued moments before a rollback pins the app would otherwise still run once the
+    worker dequeues it. `execute_deploy_job` re-reads the application and skips webhook-
+    sourced jobs (`job["source"] == "webhook"`) if it finds the pause set, closing that
+    race. A manual-deploy job carries no `source` tag and is never skipped this way — the
+    view that enqueues it has already cleared the pause synchronously.
+14. **Rollback pins to `Deployment.image_digest` when one was recorded, falling back to
+    `image_tag`.** The customer's ECR repository is tag-MUTABLE
+    (`infra/aws/modules/ecr/main.tf`) and shared across every app on the infrastructure, so
+    a later build of the same commit — a re-run, a retagged CI job — can silently repoint a
+    tag at different bytes without changing anything recorded on the Deployment row. The
+    digest is fetched (best-effort, via `ecr describe_images`) when a deploy or rollback
+    succeeds and is checked for continued existence the same way an expired tag is. Rows
+    written before this field existed have no digest and roll back pinned by tag, as before.
+15. **Enqueue the rollback job before setting `auto_deploy_paused`, not after.** If
+    `enqueue_rollback` itself fails (Redis unavailable), the app must not be left pinned
+    with nothing actually in flight to justify it. The narrow window between a successful
+    enqueue and the pause save landing is closed the same way as decision 13: a webhook job
+    that races into that window is caught by the worker's own re-check, not by ordering
+    alone.
 
 ## Out of scope
 
