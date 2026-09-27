@@ -1,8 +1,9 @@
 {
-  "version": 2,
+  "version": 3,
   "version_hashes": {
     "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
-    "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de"
+    "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de",
+    "3": "e310fd84891a43b61b8eb9d8c66c33d720b16b787617373ef6e75e9fca047d58"
   },
   "document_hashes": {
     "1": {
@@ -11,6 +12,10 @@
     "2": {
       "ecs_fargate": "7cc185882582a857c2eaafa6e99818ffacffef493fc5731b147e0a7ce9051252",
       "eks": "df3b99be60af21c5f349d61930bb118a9a1d7e3bd504d6e6feec804a1a4ce4b0"
+    },
+    "3": {
+      "eks": "b22a00a90cfca6cf1bfc615e628739341351a87cdd416cb4254b7fb30e73570a",
+      "ecs_fargate": "03b61b3d2d566c4544565a397b27e7ec0c7288622025b7baa45323519c6da9c7"
     }
   },
   "notes": [
@@ -22,6 +27,14 @@
     "iam:*: create execution roles for ECS tasks. This grant is account-wide — the",
     "  launchpad-* role naming is a convention, not an enforced boundary",
     "kms:*: encrypt state bucket and secrets",
+    "ce:GetCostAndUsage/ce:ListCostAllocationTags/ce:UpdateCostAllocationTagsStatus:",
+    "  read your Cost Explorer data grouped by the launchpad:app/launchpad:infra tags, and",
+    "  activate those tags for cost allocation. Cost Explorer actions carry no",
+    "  resource-level permissions in AWS's IAM model, so this is account-wide financial",
+    "  visibility covering spend unrelated to Launchpad, not scoped to Launchpad-created",
+    "  resources. UpdateCostAllocationTagsStatus fails harmlessly in an AWS Organizations",
+    "  member account — only the payer account can activate cost allocation tags there —",
+    "  and Launchpad reports infra-level-only attribution in that case",
     "eks (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): create and manage the",
     "  customer's EKS cluster, access entries, addons, and node groups named infra-*",
     "eks Deny (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): blocks EKS access-entry",
@@ -55,6 +68,15 @@
     {
       "Effect": "Allow",
       "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:UpdateCostAllocationTagsStatus",
+        "ce:ListCostAllocationTags"
+      ],
       "Resource": "*"
     }
   ],

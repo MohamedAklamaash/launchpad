@@ -168,6 +168,14 @@ fi
 # - iam:*: create execution roles for ECS tasks. This grant is account-wide — the
 #   launchpad-* role naming is a convention, not an enforced boundary
 # - kms:*: encrypt state bucket and secrets
+# - ce:GetCostAndUsage/ce:ListCostAllocationTags/ce:UpdateCostAllocationTagsStatus:
+#   read your Cost Explorer data grouped by the launchpad:app/launchpad:infra tags, and
+#   activate those tags for cost allocation. Cost Explorer actions carry no
+#   resource-level permissions in AWS's IAM model, so this is account-wide financial
+#   visibility covering spend unrelated to Launchpad, not scoped to Launchpad-created
+#   resources. UpdateCostAllocationTagsStatus fails harmlessly in an AWS Organizations
+#   member account — only the payer account can activate cost allocation tags there —
+#   and Launchpad reports infra-level-only attribution in that case
 # - eks (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): create and manage the
 #   customer's EKS cluster, access entries, addons, and node groups named infra-*
 # - eks Deny (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): blocks EKS access-entry
@@ -175,7 +183,7 @@ fi
 #   infra-*, as a defense-in-depth backstop; the iam:* grant above means this is
 #   not a hard containment boundary
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-POLICY_VERSION=2
+POLICY_VERSION=3
 case "$COMPUTE_TYPE" in
   ecs_fargate)
     cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
@@ -207,6 +215,15 @@ case "$COMPUTE_TYPE" in
     {
       "Effect": "Allow",
       "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:UpdateCostAllocationTagsStatus",
+        "ce:ListCostAllocationTags"
+      ],
       "Resource": "*"
     }
   ]
@@ -243,6 +260,15 @@ EOF
     {
       "Effect": "Allow",
       "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ce:GetCostAndUsage",
+        "ce:UpdateCostAllocationTagsStatus",
+        "ce:ListCostAllocationTags"
+      ],
       "Resource": "*"
     },
     {

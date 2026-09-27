@@ -97,16 +97,25 @@ def test_current_policy_version_is_not_stale(make_infra):
 
 # ── staleness is per compute_type ─────────────────────────────────────────────
 
-def test_ecs_infra_on_v1_is_not_flagged_by_an_eks_only_bump(make_infra):
+def test_ecs_infra_on_v1_is_not_flagged_by_an_eks_only_bump(make_infra, monkeypatch):
     """The entire point of this fix: an EKS-only policy bump must not tell every ECS
-    customer their identical, already-applied policy is out of date."""
+    customer their identical, already-applied policy is out of date. Pins
+    required_version_for to a synthetic v1(ecs)/v2(eks) state so this stays true
+    regardless of what the live policy has bumped to since (e.g. F4's v3, which — unlike
+    v2 — does change the base statements and so does move ecs_fargate's requirement)."""
+    monkeypatch.setattr(
+        iam_policy, "required_version_for", lambda compute_type: {"ecs_fargate": 1, "eks": 2}[compute_type]
+    )
     infra = make_infra(compute_type="ecs_fargate", policy_version=1)
     assert infra.policy_refresh_required() is False
 
 
-def test_eks_infra_on_v1_is_flagged(make_infra):
+def test_eks_infra_on_v1_is_flagged(make_infra, monkeypatch):
     """EKS didn't exist at v1, so an EKS infra reporting v1 cannot hold the EKS grants
     added at v2 — it must be flagged."""
+    monkeypatch.setattr(
+        iam_policy, "required_version_for", lambda compute_type: {"ecs_fargate": 1, "eks": 2}[compute_type]
+    )
     infra = make_infra(compute_type="eks", policy_version=1)
     assert infra.policy_refresh_required() is True
 
@@ -129,18 +138,23 @@ def test_serializer_exposes_the_version_gap(make_infra):
     assert data["policy_refresh_required"] is True
 
 
-def test_serializer_required_policy_version_is_per_compute_type(make_infra):
+def test_serializer_required_policy_version_is_per_compute_type(make_infra, monkeypatch):
+    """Pins required_version_for to a synthetic v1(ecs)/v2(eks) state — see the
+    matching note on test_ecs_infra_on_v1_is_not_flagged_by_an_eks_only_bump."""
     from api.serializers.infrastructure import InfrastructureSerializer
 
+    monkeypatch.setattr(
+        iam_policy, "required_version_for", lambda compute_type: {"ecs_fargate": 1, "eks": 2}[compute_type]
+    )
     ecs_infra = make_infra(compute_type="ecs_fargate", policy_version=1)
     eks_infra = make_infra(compute_type="eks", policy_version=1)
 
     ecs_data = InfrastructureSerializer.serialize_instance(ecs_infra)
     eks_data = InfrastructureSerializer.serialize_instance(eks_infra)
 
-    assert ecs_data["required_policy_version"] == iam_policy.required_version_for("ecs_fargate")
+    assert ecs_data["required_policy_version"] == 1
     assert ecs_data["policy_refresh_required"] is False
-    assert eks_data["required_policy_version"] == iam_policy.required_version_for("eks")
+    assert eks_data["required_policy_version"] == 2
     assert eks_data["policy_refresh_required"] is True
 
 

@@ -76,7 +76,14 @@ def test_every_prechecked_action_is_actually_granted():
 
 def test_grants_rejects_actions_outside_the_policy():
     assert not iam_policy.grants("acm:RequestCertificate")
-    assert not iam_policy.grants("ce:GetCostAndUsage")
+    assert not iam_policy.grants("sns:Publish")
+
+
+def test_v3_grants_the_cost_explorer_actions():
+    """v3 adds account-wide Cost Explorer read + tag-activation grants for F4."""
+    assert iam_policy.grants("ce:GetCostAndUsage")
+    assert iam_policy.grants("ce:UpdateCostAllocationTagsStatus")
+    assert iam_policy.grants("ce:ListCostAllocationTags")
 
 
 def test_hand_editing_a_generated_region_fails_the_check(sandbox):
@@ -265,10 +272,10 @@ def test_document_hash_of_ecs_fargate_equals_the_default_document():
 
 
 def test_required_version_for_matches_committed_data():
-    """ECS was unchanged by the v2 (EKS) bump, so it still requires only v1. EKS didn't
-    exist before v2, so it requires v2."""
-    assert policy_data.required_version_for("ecs_fargate") == 1
-    assert policy_data.required_version_for("eks") == 2
+    """v3 (F4 cost tagging) added a base-statement grant (ce:*), which changes every
+    compute type's rendered document — both now require v3."""
+    assert policy_data.required_version_for("ecs_fargate") == 3
+    assert policy_data.required_version_for("eks") == 3
 
 
 def test_check_fails_when_a_compute_type_is_missing_from_document_hashes(sandbox):
@@ -298,6 +305,7 @@ def test_bumping_over_a_changed_eks_only_statement_leaves_ecs_fargate_alone(sand
     """Mirrors the bug this design fixes: a compute-type-only change must not raise the
     required version for compute types whose rendered document didn't change."""
     next_version = policy_data.version() + 1
+    baseline_ecs_fargate_required = policy_data.required_version_for("ecs_fargate")
     data = json.loads(sandbox.policy.read_text())
     data["compute_type_statements"]["eks"][0]["Action"].append("eks:TagResource")
     _rewrite_policy(
@@ -308,5 +316,5 @@ def test_bumping_over_a_changed_eks_only_statement_leaves_ecs_fargate_alone(sand
 
     assert generate.run(write=True) == 0
 
-    assert policy_data.required_version_for("ecs_fargate") == 1
+    assert policy_data.required_version_for("ecs_fargate") == baseline_ecs_fargate_required
     assert policy_data.required_version_for("eks") == next_version
