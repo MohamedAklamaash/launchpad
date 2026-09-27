@@ -75,8 +75,43 @@ def test_every_prechecked_action_is_actually_granted():
 
 
 def test_grants_rejects_actions_outside_the_policy():
-    assert not iam_policy.grants("acm:RequestCertificate")
     assert not iam_policy.grants("sns:Publish")
+    assert not iam_policy.grants("route53:ChangeResourceRecordSets")
+
+
+def test_v4_grants_the_acm_actions():
+    """v4 (F1b TLS activation) adds ACM certificate lifecycle grants."""
+    assert iam_policy.grants("acm:RequestCertificate")
+    assert iam_policy.grants("acm:DescribeCertificate")
+    assert iam_policy.grants("acm:ListCertificates")
+    assert iam_policy.grants("acm:ListTagsForCertificate")
+    assert iam_policy.grants("acm:AddTagsToCertificate")
+    assert iam_policy.grants("acm:DeleteCertificate")
+
+
+def test_acm_add_tags_and_delete_are_conditioned_not_unconditional():
+    """Security review R3: acm:AddTagsToCertificate must never be a blank grant — an
+    unconditioned tag-write lets this role tag any certificate in the account
+    ManagedBy=launchpad and then delete it under acm:DeleteCertificate's own condition.
+    grants() doesn't model conditions (by design — see its docstring), so this test reads
+    policy_data.statements() directly."""
+    def _find(action):
+        for statement in policy_data.statements():
+            actions = statement["Action"]
+            actions = [actions] if isinstance(actions, str) else actions
+            if action in actions:
+                return statement
+        raise AssertionError(f"no statement grants {action}")
+
+    add_tags = _find("acm:AddTagsToCertificate")
+    assert add_tags["Condition"]["StringEquals"]["aws:RequestTag/ManagedBy"] == "launchpad"
+    assert add_tags["Condition"]["ForAllValues:StringEquals"]["aws:TagKeys"] == ["ManagedBy"]
+
+    delete = _find("acm:DeleteCertificate")
+    assert delete["Condition"]["StringEquals"]["aws:ResourceTag/ManagedBy"] == "launchpad"
+
+    request = _find("acm:RequestCertificate")
+    assert request["Condition"]["StringEquals"]["aws:RequestTag/ManagedBy"] == "launchpad"
 
 
 def test_v3_grants_the_cost_explorer_actions():
@@ -272,10 +307,10 @@ def test_document_hash_of_ecs_fargate_equals_the_default_document():
 
 
 def test_required_version_for_matches_committed_data():
-    """v3 (F4 cost tagging) added a base-statement grant (ce:*), which changes every
-    compute type's rendered document — both now require v3."""
-    assert policy_data.required_version_for("ecs_fargate") == 3
-    assert policy_data.required_version_for("eks") == 3
+    """v4 (F1b TLS activation) added a base-statement grant (acm:*), which changes
+    every compute type's rendered document — both now require v4."""
+    assert policy_data.required_version_for("ecs_fargate") == 4
+    assert policy_data.required_version_for("eks") == 4
 
 
 def test_check_fails_when_a_compute_type_is_missing_from_document_hashes(sandbox):

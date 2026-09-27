@@ -378,6 +378,12 @@ def infrastructure_onboarding_callback(request: HttpRequest):
     reported_version = InfraModel.parse_reported_policy_version(request.data.get('policy_version'))
     if reported_version is not None:
         InfraModel.objects.filter(id=infra.id).update(policy_version=reported_version)
+        # R4: same policy-refresh recovery as the script-API-key callback — this path is
+        # normally onboarding (environment not yet ACTIVE, so this is a no-op), but a
+        # later re-run of the same callback against an already-active infra must not leave
+        # a POLICY_STALE certificate stuck.
+        from api.services.cert_bootstrap import maybe_reenqueue_after_policy_refresh
+        maybe_reenqueue_after_policy_refresh(infra.id)
 
     # Publish infrastructure.created so application-service / other consumers materialize their
     # local read-models. Deferred from create_infrastructure to here because pre-authenticated

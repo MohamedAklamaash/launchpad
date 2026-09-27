@@ -122,3 +122,59 @@ def test_bootstrap_refuses_a_mock_infra_outside_dev_mode(monkeypatch):
             SimpleNamespace(id="x", is_mock=True),
             credentials={}, region="us-east-1", cluster_name="infra-x",
         )
+
+
+# ── F1b part 2: ALB Auto Mode group name uses dns_label, never a UUIDv7 prefix ──────────
+
+def test_ingress_group_name_uses_dns_label():
+    infra = SimpleNamespace(id="11111111-2222-3333-4444-555555555555", dns_label="a1b2c3d4e5f6a7b8")
+    assert eb._ingress_group_name(infra) == "launchpad-a1b2c3d4e5f6a7b8"
+
+
+def test_ingress_group_name_falls_back_to_id_prefix_without_a_dns_label():
+    infra = SimpleNamespace(id="11111111-2222-3333-4444-555555555555", dns_label=None)
+    assert eb._ingress_group_name(infra) == "launchpad-11111111"
+
+
+def test_ingress_group_name_never_uses_the_id_prefix_when_a_label_exists():
+    """The regression this replaces: str(infra.id)[:8] repeats every ~65s platform-wide
+    (UUIDv7's leading 48 bits are a millisecond timestamp) and is forceable from the row's
+    own created_at — dns_label is independent random entropy instead (CLAUDE.md)."""
+    infra = SimpleNamespace(id="11111111-2222-3333-4444-555555555555", dns_label="a1b2c3d4e5f6a7b8")
+    group_name = eb._ingress_group_name(infra)
+    assert str(infra.id)[:8] not in group_name
+
+
+def test_bootstrap_ensures_ingress_class_with_the_dns_label_group_name(monkeypatch):
+    """Existing clusters are unaffected: _ensure_ingress_class only creates the
+    IngressClassParams object once (_get_or_create swallows 409, never updates it), so
+    this only changes what a *first-time* bootstrap requests, never an existing cluster's
+    already-recorded group."""
+    infra = SimpleNamespace(id="11111111-2222-3333-4444-555555555555", dns_label="a1b2c3d4e5f6a7b8", is_mock=False)
+    monkeypatch.setattr(eb, "is_dev_mode", lambda mode: False)
+
+    session = MagicMock()
+    session.client.return_value.describe_cluster.return_value = {
+        "cluster": {"endpoint": "https://x", "certificateAuthority": {"data": "ca"}}
+    }
+    monkeypatch.setattr(eb, "_boto_session", lambda credentials, region: session)
+    monkeypatch.setattr(eb, "mint_eks_token", lambda *a, **k: "token")
+
+    api_cm = MagicMock()
+    monkeypatch.setattr(eb, "k8s_api_client", lambda *a, **k: api_cm)
+    api_cm.__enter__.return_value = object()
+    api_cm.__exit__.return_value = False
+
+    calls = {}
+
+    def _fake_ensure_ingress_class(api, group_name, lines):
+        calls["group_name"] = group_name
+
+    monkeypatch.setattr(eb, "_ensure_ingress_class", _fake_ensure_ingress_class)
+    monkeypatch.setattr(eb, "_enable_network_policy_enforcement", lambda api, lines: None)
+    monkeypatch.setattr(eb, "_ensure_bootstrap_ingress", lambda api, lines: None)
+    monkeypatch.setattr(eb, "_wait_for_alb_hostname", lambda api, lines: "alb.example.com")
+
+    eb.bootstrap_eks_environment(infra, credentials={}, region="us-east-1", cluster_name="infra-x")
+
+    assert calls["group_name"] == "launchpad-a1b2c3d4e5f6a7b8"

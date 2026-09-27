@@ -128,6 +128,11 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
         ).filter(
             models.Q(policy_version__isnull=True) | models.Q(policy_version__lt=reported_version),
         ).update(policy_version=reported_version)
+        # R4: a POLICY_STALE certificate never re-evaluates itself on a timer — without
+        # this a customer who just refreshed past the TLS policy version stays stuck until
+        # some unrelated trigger re-provisions.
+        from api.services.cert_bootstrap import maybe_reenqueue_after_policy_refresh
+        maybe_reenqueue_after_policy_refresh(infra.id)
     ScriptApiKey.objects.filter(pk=key.pk).update(last_used_at=timezone.now())
     logger.info(
         f"policy refresh recorded: user={key.user_id} account={account_id} "

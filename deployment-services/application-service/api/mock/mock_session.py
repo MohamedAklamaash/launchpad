@@ -139,6 +139,9 @@ class MockClient:
     def delete_target_group(self, **kwargs):
         return {}
 
+    def modify_target_group(self, **kwargs):
+        return {"TargetGroups": [{"TargetGroupArn": kwargs.get("TargetGroupArn", "")}]}
+
     def describe_listeners(self, **kwargs):
         lb_arn = kwargs.get("LoadBalancerArn", "alb")
         # Port is load-bearing: get_listener_arn selects by it rather than taking the

@@ -184,8 +184,27 @@ fi
 #   and access-policy management, and DescribeCluster, outside resources named
 #   infra-*, as a defense-in-depth backstop; the iam:* grant above means this is
 #   not a hard containment boundary
+# - acm:RequestCertificate (v4, TLS activation): only when the request is tagged
+#   aws:RequestTag/ManagedBy=launchpad, so a certificate this account did not ask
+#   Launchpad to manage can never be requested under this grant
+# - acm:DescribeCertificate/ListCertificates/ListTagsForCertificate: read certificate
+#   state and validation records to poll issuance and to find an existing tagged
+#   certificate for reuse
+# - acm:AddTagsToCertificate: only when the call's own tags are exactly
+#   ManagedBy=launchpad (aws:RequestTag + aws:TagKeys), so this grant can never be used
+#   to attach an unrelated tag value or an extra tag key. It CANNOT be restricted to
+#   only certificates Launchpad itself created — aws:RequestTag governs the tags being
+#   set, not which existing resource is targeted, and ACM has no aws:ResourceTag-style
+#   condition usable here without already having the tag. In practice this is
+#   defense-in-depth, not a hard boundary: the iam:* grant above already lets this role
+#   do far more than tag a certificate, so a compromised role could reach the same
+#   outcome other ways regardless of this condition
+# - acm:DeleteCertificate: only when aws:ResourceTag/ManagedBy=launchpad — this account
+#   cannot delete a certificate it did not let Launchpad tag as its own. No new
+#   elasticloadbalancing actions were needed: elasticloadbalancing:* above already
+#   covers the 443 listener and per-app host-header rules
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-POLICY_VERSION=3
+POLICY_VERSION=4
 case "$COMPUTE_TYPE" in
   ecs_fargate)
     cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
@@ -227,6 +246,50 @@ case "$COMPUTE_TYPE" in
         "ce:ListCostAllocationTags"
       ],
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:RequestCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListCertificates",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:AddTagsToCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "ManagedBy"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:DeleteCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/ManagedBy": "launchpad"
+        }
+      }
     }
   ]
 }
@@ -272,6 +335,50 @@ EOF
         "ce:ListCostAllocationTags"
       ],
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:RequestCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListCertificates",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:AddTagsToCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "ManagedBy"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:DeleteCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/ManagedBy": "launchpad"
+        }
+      }
     },
     {
       "Effect": "Allow",

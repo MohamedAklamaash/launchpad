@@ -225,3 +225,65 @@ def test_exec_tf_env_allowlist(monkeypatch):
     assert "PATH" in captured
     for key in captured:
         assert key in ("PATH", "HOME") or key.startswith(("TF_", "AWS_")), key
+
+
+# ── F1b part 2: conditional 443 listener ────────────────────────────────────────────
+
+VALID_CERT_ARN = f"arn:aws:acm:us-east-1:{ACCOUNT_ID}:certificate/12345678-1234-1234-1234-123456789012"
+
+
+@pytest.mark.django_db
+def test_enable_https_unset_is_byte_identical_to_golden():
+    """Restates test_ecs_config_is_string_identical_to_golden through the dispatcher, with
+    account_id threaded through — the new parameter must not perturb the no-TLS output."""
+    config = TerraformWorker._generate_config_ecs(VARS, *ARGS, ACCOUNT_ID)
+    assert config == GOLDEN_ECS
+
+
+@pytest.mark.django_db
+def test_enable_https_true_adds_listener_vars_and_output():
+    tls_vars = {**VARS, "enable_https": True, "certificate_arn": VALID_CERT_ARN}
+    config = TerraformWorker._generate_config_ecs(tls_vars, *ARGS, ACCOUNT_ID)
+
+    assert "enable_https           = true" in config
+    assert f'certificate_arn        = "{VALID_CERT_ARN}"' in config
+    assert 'output "https_listener_arn" { value = module.alb.https_listener_arn }' in config
+    # Nothing else in the module/output shape changed.
+    assert config.replace(
+        f'\n  enable_https           = true\n  certificate_arn        = "{VALID_CERT_ARN}"', ""
+    ).replace(
+        '\noutput "https_listener_arn" { value = module.alb.https_listener_arn }', ""
+    ) == GOLDEN_ECS
+
+
+@pytest.mark.django_db
+def test_missing_certificate_arn_with_enable_https_leaves_output_unmodified():
+    """enable_https alone (no cert_arn yet) must never emit the listener vars — the
+    listener is only ever applied once ACM has actually issued something to point at."""
+    tls_vars = {**VARS, "enable_https": True}
+    config = TerraformWorker._generate_config_ecs(tls_vars, *ARGS, ACCOUNT_ID)
+    assert config == GOLDEN_ECS
+
+
+@pytest.mark.django_db
+def test_hostile_certificate_arn_is_rejected_at_the_sink():
+    """certificate_arn is a new interpolation sink — bound to the infra's own
+    region+account, exactly like the EKS account_id sink above."""
+    hostile_arns = [
+        'arn:aws:acm:us-east-1:123456789012:certificate/x"\n  provisioner "local-exec" {}',
+        f"arn:aws:acm:eu-west-1:{ACCOUNT_ID}:certificate/12345678-1234-1234-1234-123456789012",  # wrong region
+        "arn:aws:acm:us-east-1:999999999999:certificate/12345678-1234-1234-1234-123456789012",  # wrong account
+        f"arn:aws:acm:us-east-1:{ACCOUNT_ID}:certificate/not-a-uuid",
+    ]
+    for arn in hostile_arns:
+        tls_vars = {**VARS, "enable_https": True, "certificate_arn": arn}
+        with pytest.raises(ValueError, match="certificate_arn"):
+            TerraformWorker._generate_config_ecs(tls_vars, *ARGS, ACCOUNT_ID)
+
+
+@pytest.mark.django_db
+def test_certificate_arn_requires_a_valid_account_id():
+    tls_vars = {**VARS, "enable_https": True, "certificate_arn": VALID_CERT_ARN}
+    for bad_account in (None, "", "not-12-digits"):
+        with pytest.raises(ValueError, match="certificate_arn|account_id"):
+            TerraformWorker._generate_config_ecs(tls_vars, *ARGS, bad_account)

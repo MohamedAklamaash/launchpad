@@ -219,6 +219,85 @@ def test_refresh_callback_never_rewinds_a_recorded_version(
     assert infra.policy_version == 5
 
 
+def test_refresh_callback_reenqueues_provision_when_crossing_the_tls_threshold(
+    factory, refresh_view, make_user, make_infra
+):
+    """R4: a POLICY_STALE certificate never re-evaluates itself on a timer — the refresh
+    callback must re-enqueue provisioning once the reported version crosses
+    MIN_POLICY_VERSION_FOR_TLS, but only when the environment is already ACTIVE."""
+    from unittest.mock import patch
+
+    from api.models.environment import Environment
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.models.script_api_key import ScriptApiKey
+    from api.services.cert_bootstrap import MIN_POLICY_VERSION_FOR_TLS
+
+    user = make_user()
+    infra = make_infra(user, policy_version=MIN_POLICY_VERSION_FOR_TLS - 1)
+    Environment.objects.create(infrastructure=infra, status="ACTIVE")
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, tls_status=InfrastructureCertificate.TLS_POLICY_STALE,
+    )
+    api_key = ScriptApiKey.issue(user)
+
+    with patch("api.services.infra_queue.InfraQueue.enqueue_provision") as enqueue:
+        response = _post_refresh(
+            factory, refresh_view, api_key,
+            infra_id=str(infra.id), policy_version=MIN_POLICY_VERSION_FOR_TLS,
+        )
+
+    assert response.status_code == 201
+    enqueue.assert_called_once_with(str(infra.id))
+
+
+def test_refresh_callback_does_not_reenqueue_when_environment_is_not_active(
+    factory, refresh_view, make_user, make_infra
+):
+    from unittest.mock import patch
+
+    from api.models.environment import Environment
+    from api.models.script_api_key import ScriptApiKey
+    from api.services.cert_bootstrap import MIN_POLICY_VERSION_FOR_TLS
+
+    user = make_user()
+    infra = make_infra(user, policy_version=MIN_POLICY_VERSION_FOR_TLS - 1)
+    Environment.objects.create(infrastructure=infra, status="PENDING")
+    api_key = ScriptApiKey.issue(user)
+
+    with patch("api.services.infra_queue.InfraQueue.enqueue_provision") as enqueue:
+        response = _post_refresh(
+            factory, refresh_view, api_key,
+            infra_id=str(infra.id), policy_version=MIN_POLICY_VERSION_FOR_TLS,
+        )
+
+    assert response.status_code == 201
+    enqueue.assert_not_called()
+
+
+def test_refresh_callback_does_not_reenqueue_below_the_tls_threshold(
+    factory, refresh_view, make_user, make_infra
+):
+    from unittest.mock import patch
+
+    from api.models.environment import Environment
+    from api.models.script_api_key import ScriptApiKey
+    from api.services.cert_bootstrap import MIN_POLICY_VERSION_FOR_TLS
+
+    user = make_user()
+    infra = make_infra(user, policy_version=1)
+    Environment.objects.create(infrastructure=infra, status="ACTIVE")
+    api_key = ScriptApiKey.issue(user)
+
+    with patch("api.services.infra_queue.InfraQueue.enqueue_provision") as enqueue:
+        response = _post_refresh(
+            factory, refresh_view, api_key,
+            infra_id=str(infra.id), policy_version=MIN_POLICY_VERSION_FOR_TLS - 1,
+        )
+
+    assert response.status_code == 201
+    enqueue.assert_not_called()
+
+
 def test_refresh_callback_does_not_touch_an_infra_the_key_owner_does_not_own(
     factory, refresh_view, make_user, make_infra
 ):

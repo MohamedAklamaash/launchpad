@@ -2,7 +2,7 @@
 F1b part 1 pre-review §3 and §6 items 2/3/5.
 """
 import uuid
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from api.models.platform_dns_record import PlatformDnsRecord
@@ -405,3 +405,203 @@ def test_mock_real_mismatch_refused_before_teardown_marker_is_set(make_infra, mo
     teardown.assert_not_called()
     infra.refresh_from_db()
     assert infra.dns_teardown_requested_at is None
+
+
+# ---- F1b part 2: acm:DeleteCertificate wired into destroy(), after terraform destroy ----
+
+def _destroy_success_patches(infra):
+    creds = {"aws_access_key_id": "AKIA", "aws_secret_access_key": "s", "aws_session_token": "t", "account_id": infra.code}
+    return (
+        patch("api.services.terraform_worker.request_and_await_dns_teardown"),
+        patch("api.services.terraform_worker.authenticate_infrastructure", return_value=creds),
+        patch("api.services.terraform_worker.TerraformWorker._pre_destroy_cleanup", return_value=""),
+        patch("api.services.terraform_worker.TerraformWorker._exec_tf", return_value={"success": True, "logs": "ok"}),
+    )
+
+
+def test_destroy_calls_delete_certificate_hook_after_terraform_destroy_succeeds(make_infra):
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services.terraform_worker import TerraformWorker
+    from django.utils import timezone
+
+    infra = make_infra()
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, cert_arn="arn:aws:acm:us-east-1:123456789012:certificate/abc",
+        tls_status="ISSUED", tls_requested_at=timezone.now(),
+    )
+
+    p1, p2, p3, p4 = _destroy_success_patches(infra)
+    with p1, p2, p3, p4, patch(
+        "api.services.terraform_worker.delete_acm_certificate_after_listener_removed"
+    ) as delete_cert:
+        TerraformWorker.destroy(str(infra.id))
+
+    delete_cert.assert_called_once()
+    called_infra_id = delete_cert.call_args.args[0]
+    assert str(called_infra_id) == str(infra.id)
+
+
+def test_delete_certificate_hook_failure_does_not_block_destroy_or_leave_validation_orphaned(make_infra):
+    """The ACM DeleteCertificate attempt is best-effort: it must never raise out of
+    destroy(), and the validation CNAME's removal (via request_and_await_dns_teardown,
+    already awaited earlier in destroy()) never depended on it succeeding."""
+    from api.models.environment import Environment
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services.terraform_worker import TerraformWorker
+    from django.utils import timezone
+
+    infra = make_infra()
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, cert_arn="arn:aws:acm:us-east-1:123456789012:certificate/abc",
+        tls_status="ISSUED", tls_requested_at=timezone.now(),
+    )
+    PlatformDnsRecord.objects.create(
+        infrastructure_id=infra.id, kind="validation",
+        record_name=f"_abc123.{infra.dns_label}.launchpad.app", record_type="CNAME",
+        record_value="_def456.xyz.acm-validations.aws.", ttl=300,
+    )
+
+    def _teardown_deletes_ledger(infra_id, **kwargs):
+        # Simulates the writer having already converged desired state to empty —
+        # validation record gone regardless of what happens to the ACM certificate.
+        PlatformDnsRecord.objects.filter(infrastructure_id=infra_id).delete()
+
+    _p1, p2, p3, p4 = _destroy_success_patches(infra)
+    with patch(
+        "api.services.terraform_worker.request_and_await_dns_teardown",
+        side_effect=_teardown_deletes_ledger,
+    ), p2, p3, p4, patch(
+        "boto3.client",
+        side_effect=RuntimeError("ResourceInUseException"),
+    ):
+        TerraformWorker.destroy(str(infra.id))
+
+    env = Environment.objects.get(infrastructure_id=infra.id)
+    assert env.status == "DESTROYED"
+    assert not PlatformDnsRecord.objects.filter(infrastructure_id=infra.id, kind="validation").exists()
+
+
+def test_delete_certificate_hook_is_a_noop_with_no_cert_row(make_infra):
+    from api.services.platform_dns.teardown import (
+        delete_acm_certificate_after_listener_removed,
+    )
+
+    infra = make_infra()
+    # Must not raise, must not attempt any AWS call.
+    with patch("boto3.client") as client_factory:
+        delete_acm_certificate_after_listener_removed(
+            str(infra.id), credentials={}, region="us-east-1",
+        )
+    client_factory.assert_not_called()
+
+
+def test_delete_certificate_retries_resource_in_use_then_succeeds(make_infra):
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services.platform_dns.teardown import (
+        delete_acm_certificate_after_listener_removed,
+    )
+    from botocore.exceptions import ClientError
+    from django.utils import timezone
+
+    infra = make_infra()
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, cert_arn="arn:aws:acm:us-east-1:123456789012:certificate/abc",
+        tls_status="ISSUED", tls_requested_at=timezone.now(),
+    )
+
+    acm_client = MagicMock()
+    acm_client.delete_certificate.side_effect = [
+        ClientError({"Error": {"Code": "ResourceInUseException"}}, "DeleteCertificate"),
+        ClientError({"Error": {"Code": "ResourceInUseException"}}, "DeleteCertificate"),
+        None,
+    ]
+
+    with patch("boto3.client", return_value=acm_client), patch("time.sleep") as sleep_mock:
+        delete_acm_certificate_after_listener_removed(
+            str(infra.id), credentials={}, region="us-east-1",
+        )
+
+    assert acm_client.delete_certificate.call_count == 3
+    assert sleep_mock.call_count == 2
+
+
+def test_delete_certificate_gives_up_after_max_retries_and_logs_error(make_infra, caplog):
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services.platform_dns import teardown as teardown_module
+    from api.services.platform_dns.teardown import (
+        delete_acm_certificate_after_listener_removed,
+    )
+    from botocore.exceptions import ClientError
+    from django.utils import timezone
+
+    infra = make_infra()
+    cert_arn = "arn:aws:acm:us-east-1:123456789012:certificate/abc"
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, cert_arn=cert_arn, tls_status="ISSUED", tls_requested_at=timezone.now(),
+    )
+
+    acm_client = MagicMock()
+    acm_client.delete_certificate.side_effect = ClientError(
+        {"Error": {"Code": "ResourceInUseException"}}, "DeleteCertificate",
+    )
+
+    with caplog.at_level("ERROR"), patch("boto3.client", return_value=acm_client), patch("time.sleep"):
+        delete_acm_certificate_after_listener_removed(
+            str(infra.id), credentials={}, region="us-east-1",
+        )
+
+    assert acm_client.delete_certificate.call_count == teardown_module._DELETE_CERT_RETRY_ATTEMPTS
+    assert any(cert_arn in record.message for record in caplog.records if record.levelname == "ERROR")
+
+
+def test_delete_certificate_does_not_retry_a_non_resource_in_use_error(make_infra):
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services.platform_dns.teardown import (
+        delete_acm_certificate_after_listener_removed,
+    )
+    from botocore.exceptions import ClientError
+    from django.utils import timezone
+
+    infra = make_infra()
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, cert_arn="arn:aws:acm:us-east-1:123456789012:certificate/abc",
+        tls_status="ISSUED", tls_requested_at=timezone.now(),
+    )
+
+    acm_client = MagicMock()
+    acm_client.delete_certificate.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException"}}, "DeleteCertificate",
+    )
+
+    with patch("boto3.client", return_value=acm_client), patch("time.sleep") as sleep_mock:
+        delete_acm_certificate_after_listener_removed(
+            str(infra.id), credentials={}, region="us-east-1",
+        )
+
+    assert acm_client.delete_certificate.call_count == 1
+    sleep_mock.assert_not_called()
+
+
+def test_delete_certificate_uses_the_mock_real_gate_not_raw_boto3(make_infra):
+    """infra_is_mock/dev_mode mismatch must be refused the same way every other ACM call
+    in this feature refuses it — not a plain unconditional boto3.client."""
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services.platform_dns.teardown import (
+        delete_acm_certificate_after_listener_removed,
+    )
+    from django.utils import timezone
+
+    infra = make_infra()
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, cert_arn="arn:aws:acm:us-east-1:123456789012:certificate/abc",
+        tls_status="ISSUED", tls_requested_at=timezone.now(),
+    )
+
+    with patch("boto3.client") as client_factory:
+        # infra_is_mock=True with dev_mode=False is a mismatch _acm_client refuses.
+        delete_acm_certificate_after_listener_removed(
+            str(infra.id), credentials={}, region="us-east-1",
+            infra_is_mock=True, dev_mode=False,
+        )
+
+    client_factory.assert_not_called()

@@ -59,7 +59,7 @@ def bootstrap_eks_environment(infra, *, credentials: dict, region: str, cluster_
             token_provider=lambda: mint_eks_token(session, cluster_name, region),
         ) as api:
             _enable_network_policy_enforcement(api, lines)
-            _ensure_ingress_class(api, f"launchpad-{str(infra.id)[:8]}", lines)
+            _ensure_ingress_class(api, _ingress_group_name(infra), lines)
             _ensure_bootstrap_ingress(api, lines)
             lines.append(phase_marker("alb-wait"))
             alb_dns = _wait_for_alb_hostname(api, lines)
@@ -70,6 +70,29 @@ def bootstrap_eks_environment(infra, *, credentials: dict, region: str, cluster_
     except Exception as e:
         lines.append(f"[bootstrap-error] {e}")
         raise EksBootstrapError(str(e), logs="\n".join(lines)) from e
+
+
+def _ingress_group_name(infra) -> str:
+    """The ALB Auto Mode group name shared by every Ingress in this cluster's
+    IngressClassParams.
+
+    `dns_label` (an independent random token, CLAUDE.md) replaces the old
+    `str(infra.id)[:8]` — a UUIDv7 prefix repeats every ~65s platform-wide and is
+    forceable from this row's own `created_at`, so two infrastructures created moments
+    apart could be handed the same ALB group. Falls back to the old prefix only for an
+    infra that somehow has no dns_label yet (pre-F1b rows, or a race before mint_dns_label
+    runs) — never raises, since a missing group name must not block EKS bootstrap.
+
+    Safe for an already-bootstrapped cluster: `_ensure_ingress_class` only *creates* the
+    IngressClassParams object (`_get_or_create` swallows 409 and does not update it), so a
+    cluster whose object already exists under the old formula keeps that group name
+    forever regardless of what this function computes on a later bootstrap call — no
+    ALB recreation, no edge cutover, no downtime. Only a cluster bootstrapping for the
+    first time after this change gets the new dns_label-based group.
+    """
+    if infra.dns_label:
+        return f"launchpad-{infra.dns_label}"
+    return f"launchpad-{str(infra.id)[:8]}"
 
 
 def _boto_session(credentials: dict, region: str) -> boto3.Session:

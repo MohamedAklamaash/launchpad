@@ -117,6 +117,50 @@ Attach this policy to the role:
         "ce:ListCostAllocationTags"
       ],
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:RequestCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListCertificates",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:AddTagsToCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "ManagedBy"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:DeleteCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/ManagedBy": "launchpad"
+        }
+      }
     }
   ]
 }
@@ -258,6 +302,50 @@ cat > deployment-policy.json <<'EOF'
         "ce:ListCostAllocationTags"
       ],
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:RequestCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListCertificates",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:AddTagsToCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "ManagedBy"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:DeleteCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/ManagedBy": "launchpad"
+        }
+      }
     }
   ]
 }
@@ -480,7 +568,7 @@ This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
 <!-- BEGIN GENERATED: policy version — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
-**Policy version**: 3
+**Policy version**: 4
 <!-- END GENERATED -->
 
 **Document revision**: 2.2.0  

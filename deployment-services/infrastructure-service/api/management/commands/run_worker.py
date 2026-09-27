@@ -49,6 +49,161 @@ def _publish_infra_deleted(user_id, infra_id):
     except Exception:
         logger.exception(f"Failed to publish infrastructure.deleted for {infra_id}")
 
+CERT_RECHECK_TIME_BUDGET_SECONDS = int(os.environ.get('INFRA_CERT_RECHECK_TIME_BUDGET_SECONDS', '20'))
+
+
+def _cert_recheck_eligible(infra, env) -> bool:
+    """Shared eligibility gate for every action a cert-recheck tick can take against an
+    infra. `dns_teardown_requested_at` is monotonic and one-way (see
+    Infrastructure.mark_dns_teardown_requested's docstring): once set it never clears, so
+    an infra past it — or an environment not currently ACTIVE (DESTROYING/DESTROYED after
+    a completed or timed-out teardown, ERROR, PROVISIONING/UPDATING already mid-flight) —
+    must never have this background loop call enqueue_provision on it. Without this gate,
+    a certificate that happens to flip to ISSUED after teardown was requested (teardown
+    timed out, or the destroy itself failed and parked the environment in ERROR) would
+    resurrect the infrastructure via a fresh terraform apply.
+
+    `exited_at` (F6) is checked too, belt-and-suspenders: complete_exit always calls
+    request_and_await_dns_teardown (which sets dns_teardown_requested_at) before ever
+    setting exited_at, so this should already be implied by the first check — but an
+    exited infra is exactly the kind of "must never resurrect" case this gate exists for,
+    so it's asserted directly rather than relying on that ordering staying true forever.
+    """
+    return (
+        infra.dns_teardown_requested_at is None
+        and infra.exited_at is None
+        and env is not None and env.status == 'ACTIVE'
+    )
+
+
+def check_pending_certificates():
+    """Advance PENDING InfrastructureCertificate rows toward ISSUED/FAILED, and recover a
+    lost enqueue_provision for a row that is already ISSUED but never got its 443 listener
+    applied.
+
+    F1b part 2: runs from the worker's main loop every CERT_CHECK_INTERVAL_SECONDS
+    (~30s, bounded by ISSUED_CHECK_TIMEOUT ~30min and this tick's own
+    CERT_RECHECK_TIME_BUDGET_SECONDS) — never inside a dispatched provisioning job's lock,
+    per the pre-review (the DNS writer never holds customer credentials; this is a
+    customer-account DescribeCertificate call, so it belongs here, not in run_dns_writer).
+    Uses `assume_role_credentials_only`, not `authenticate_infrastructure` — the latter
+    writes `is_cloud_authenticated`/`metadata` on every call, which a transient failure in
+    this background poll must not be allowed to flip on the customer-facing row. A row
+    past ISSUED_CHECK_TIMEOUT is marked FAILED without ever touching Environment.status —
+    the environment stays ACTIVE on its path URL, and the row is retried the next time
+    provision() runs cert_bootstrap.ensure_certificate. Every action here is additionally
+    gated by `_cert_recheck_eligible` — see its docstring.
+    """
+    from api.cloud_providers.aws.authenticate import assume_role_credentials_only
+    from api.common.envs.application import app_config
+    from api.models.environment import Environment
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services import cert_bootstrap
+    from api.services.infra_queue import InfraQueue
+    from django.utils import timezone
+    from shared.mode import is_dev_mode
+
+    dev_mode = is_dev_mode(app_config.mode)
+    deadline = time.monotonic() + CERT_RECHECK_TIME_BUDGET_SECONDS
+
+    pending = InfrastructureCertificate.objects.filter(
+        tls_status=InfrastructureCertificate.TLS_PENDING,
+    ).select_related("infrastructure")
+
+    for cert in pending:
+        if time.monotonic() > deadline:
+            logger.warning("TLS PENDING re-check hit its time budget; remaining rows deferred to next tick")
+            break
+
+        infra = cert.infrastructure
+        env = Environment.objects.filter(infrastructure_id=infra.id).first()
+        if not _cert_recheck_eligible(infra, env):
+            continue
+
+        timed_out = (
+            cert.tls_requested_at is not None
+            and timezone.now() - cert.tls_requested_at > cert_bootstrap.ISSUED_CHECK_TIMEOUT
+        )
+        if timed_out:
+            InfrastructureCertificate.objects.filter(
+                id=cert.id, tls_status=InfrastructureCertificate.TLS_PENDING,
+            ).update(tls_status=InfrastructureCertificate.TLS_FAILED)
+            logger.warning(
+                f"TLS bootstrap timed out for infra {infra.id} after "
+                f"{cert_bootstrap.ISSUED_CHECK_TIMEOUT}; marking FAILED (env stays ACTIVE on path URL)"
+            )
+            continue
+
+        if not cert.cert_arn:
+            # R1 defense in depth: a null ARN should no longer happen (cert_arn is now
+            # persisted immediately after RequestCertificate), but a row from before that
+            # fix, or a bug, must still age out via the same timeout rather than stay
+            # PENDING forever with nothing to check against ACM.
+            continue
+
+        try:
+            credentials = assume_role_credentials_only(infra)
+            region = (infra.metadata or {}).get("aws_region", "us-west-2")
+            client = cert_bootstrap._acm_client(
+                infra_is_mock=infra.is_mock, dev_mode=dev_mode, credentials=credentials, region=region,
+            )
+            status = client.describe_certificate(CertificateArn=cert.cert_arn)["Certificate"]["Status"]
+        except Exception:
+            logger.warning(f"TLS ISSUED re-check failed for infra {infra.id} (will retry next tick)", exc_info=True)
+            continue
+
+        if status == "ISSUED":
+            updated = InfrastructureCertificate.objects.filter(
+                id=cert.id, tls_status=InfrastructureCertificate.TLS_PENDING,
+            ).update(tls_status=InfrastructureCertificate.TLS_ISSUED)
+            if updated:
+                logger.info(f"TLS certificate ISSUED for infra {infra.id}; re-enqueuing provision to apply 443")
+                InfraQueue.enqueue_provision(str(infra.id))
+        elif status in ("FAILED", "VALIDATION_TIMED_OUT", "REVOKED"):
+            InfrastructureCertificate.objects.filter(
+                id=cert.id, tls_status=InfrastructureCertificate.TLS_PENDING,
+            ).update(tls_status=InfrastructureCertificate.TLS_FAILED)
+            logger.warning(f"ACM reports {status} for infra {infra.id} certificate; marking FAILED")
+
+    _reenqueue_issued_certs_missing_https_listener(deadline)
+
+
+def _reenqueue_issued_certs_missing_https_listener(deadline):
+    """Recovery for a lost enqueue_provision on the ISSUED transition above — e.g. the
+    Redis dedup key InfraQueue.enqueue_provision checks was already held by an unrelated
+    concurrent provision that committed before the certificate flipped to ISSUED, silently
+    dropping that one enqueue attempt. ECS only: EKS applies TLS via the Ingress class
+    patch, not `Environment.https_listener_arn`. Cheap to call every tick — a row whose
+    listener is already applied never matches the filter again, and InfraQueue's own
+    dedup key makes a redundant enqueue while one is already queued/running a no-op."""
+    from api.models.environment import Environment
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services.infra_queue import InfraQueue
+    from shared.enums.orchestrator import ComputeType
+
+    issued = InfrastructureCertificate.objects.filter(
+        tls_status=InfrastructureCertificate.TLS_ISSUED,
+    ).select_related("infrastructure")
+
+    for cert in issued:
+        if time.monotonic() > deadline:
+            logger.warning("TLS ISSUED re-enqueue sweep hit its time budget; remaining rows deferred to next tick")
+            break
+
+        infra = cert.infrastructure
+        if infra.compute_type != ComputeType.ECS_FARGATE:
+            continue
+
+        env = Environment.objects.filter(infrastructure_id=infra.id).first()
+        if not _cert_recheck_eligible(infra, env):
+            continue
+        if env.https_listener_arn:
+            continue
+
+        logger.info(f"TLS ISSUED for infra {infra.id} but https_listener_arn is unset; re-enqueuing provision")
+        InfraQueue.enqueue_provision(str(infra.id))
+
+
 MAX_PROVISION_WORKERS = int(os.environ.get('INFRA_MAX_PROVISION_WORKERS', '5'))
 MAX_DESTROY_WORKERS = int(os.environ.get('INFRA_MAX_DESTROY_WORKERS', '3'))
 SHUTDOWN_TIMEOUT = int(os.environ.get('INFRA_SHUTDOWN_TIMEOUT', '300'))
@@ -59,6 +214,8 @@ PROVISION_PER_DESTROY = int(os.environ.get('INFRA_PROVISION_PER_DESTROY', '1'))
 STUCK_THRESHOLD = max(int(os.environ.get('INFRA_STUCK_THRESHOLD_SECONDS', str(DB_LOCK_STALENESS_SECONDS))),
                       DB_LOCK_STALENESS_SECONDS)
 REAP_INTERVAL = int(os.environ.get('INFRA_REAP_INTERVAL_SECONDS', '120'))
+# F1b part 2: how often the worker re-checks PENDING certificates for ISSUED/FAILED.
+CERT_CHECK_INTERVAL_SECONDS = int(os.environ.get('INFRA_CERT_CHECK_INTERVAL_SECONDS', '30'))
 # The running/queued job refreshes its lock this often; must be well under DB_LOCK_STALENESS_SECONDS
 # so a live job never looks crashed to the reaper or acquire_db_lock.
 LOCK_HEARTBEAT_SECONDS = int(os.environ.get('INFRA_LOCK_HEARTBEAT_SECONDS', '60'))
@@ -461,8 +618,10 @@ class Command(BaseCommand):
                 raise
 
         reap_lock_key = "infra:worker:reap_lock"
+        cert_check_lock_key = "infra:worker:cert_check_lock"
         provision_counter = 0
         last_reap = time.monotonic()
+        last_cert_check = time.monotonic()
         while running:
             try:
                 # Periodically re-drive stuck jobs. A short-lived Redis lock rate-limits it to
@@ -474,6 +633,17 @@ class Command(BaseCommand):
                             reap_stuck_environments(STUCK_THRESHOLD)
                         except Exception:
                             logger.exception("Reaper sweep failed")
+
+                # F1b part 2: advance PENDING TLS certificates toward ISSUED/FAILED. Same
+                # fleet-wide rate limit as the reaper above — one worker per interval, never
+                # inside a dispatched job's lock.
+                if time.monotonic() - last_cert_check >= CERT_CHECK_INTERVAL_SECONDS:
+                    last_cert_check = time.monotonic()
+                    if r.set(cert_check_lock_key, worker_id, nx=True, ex=max(CERT_CHECK_INTERVAL_SECONDS - 5, 10)):
+                        try:
+                            check_pending_certificates()
+                        except Exception:
+                            logger.exception("TLS certificate re-check sweep failed")
 
                 # Always drain destroy queue first (non-blocking), then provision
                 had_destroy = dispatch_destroy()
