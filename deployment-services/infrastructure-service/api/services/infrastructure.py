@@ -185,6 +185,20 @@ class InfrastructureService:
         serialized_infra["onboarding_token"] = onboarding_token
         return serialized_infra
 
+    @staticmethod
+    def _assert_dns_teardown_complete(infra_id):
+        """Refuse a hard delete while any platform DNS state for this infra is still live.
+        A live PlatformDnsRecord ledger row means Route53 may still have a wildcard/edge/
+        validation record pointing at nothing once this row is gone; a set
+        tls_requested_at means a certificate flow may be mid-flight. Deliberately never
+        checks Environment.status — see api/services/platform_dns/desired_state.py."""
+        from api.services.platform_dns.teardown import has_live_dns_state
+        if has_live_dns_state(infra_id):
+            raise ValueError(
+                "Cannot delete infrastructure: platform DNS records for it are still "
+                "live. Wait for DNS teardown to complete and try again."
+            )
+
     def _enqueue_env_destroy(self, env, infra_id):
         env.status = 'DESTROYING'
         env.save(update_fields=['status'])
@@ -250,10 +264,12 @@ class InfrastructureService:
                 # PENDING, DESTROYED, or never-provisioned ERROR: no live AWS resources,
                 # delete immediately. Without this a customer who created an infra but
                 # never ran the bootstrap script would be stuck with an undeletable record.
+                self._assert_dns_teardown_complete(infra_id)
                 logger.info(f"Infrastructure {infra_id} in {env.status} state, deleting records")
                 env.delete()
 
             except Environment.DoesNotExist:
+                self._assert_dns_teardown_complete(infra_id)
                 logger.warning(f"No environment found for infrastructure {infra_id}, deleting record")
 
         deleted = self.repo.delete(user_id, infra_id)

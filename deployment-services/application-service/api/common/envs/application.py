@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 from shared.mode import normalize_mode
+from shared.process_role import assert_no_platform_dns_credentials
 
 load_dotenv()
 
@@ -24,6 +25,9 @@ class ApplicationConfig:
 
     @classmethod
     def from_env(cls) -> "ApplicationConfig":
+        # application-service has no dns_writer role — its web and worker processes must
+        # never hold platform DNS credentials under any circumstance.
+        assert_no_platform_dns_credentials("application-service")
         return cls(
             mode=normalize_mode(os.environ.get("MODE", "prod")),
             django_secret=os.environ["DJANGO_SECRET"],

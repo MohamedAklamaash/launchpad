@@ -74,6 +74,13 @@ class Infrastructure(models.Model):
     # stale. Source of truth for the version itself is
     # api/cloud_providers/aws/iam_policy/policy.json.
     policy_version = models.IntegerField(null=True, blank=True)
+    # Monotonic — set once by the destroy path, never cleared, deliberately independent of
+    # Environment.status (which the reaper can rewrite, e.g. DESTROYING -> ERROR after
+    # MAX_REAP_ATTEMPTS). The platform DNS writer treats a set value as "desired state is
+    # empty" regardless of what the DB still has recorded for dns_label/alb_dns, and
+    # delete_infrastructure treats it (together with a live PlatformDnsRecord row or a set
+    # InfrastructureCertificate.tls_requested_at) as a reason to refuse a hard delete.
+    dns_teardown_requested_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -155,3 +162,13 @@ class Infrastructure(models.Model):
             f"Could not mint a unique dns_label for infrastructure {self.id} after "
             f"{DNS_LABEL_MINT_MAX_ATTEMPTS} attempts."
         )
+
+    def mark_dns_teardown_requested(self) -> None:
+        """Idempotent, monotonic — a no-op if teardown was already requested."""
+        if self.dns_teardown_requested_at is not None:
+            return
+        updated = type(self).objects.filter(
+            id=self.id, dns_teardown_requested_at__isnull=True,
+        ).update(dns_teardown_requested_at=timezone.now())
+        if updated:
+            self.refresh_from_db(fields=["dns_teardown_requested_at"])

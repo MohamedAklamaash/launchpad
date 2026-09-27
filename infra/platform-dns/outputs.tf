@@ -12,3 +12,8 @@ output "dns_writer_user_arn" {
   description = "The Route53 writer. Create its access key out of band — deliberately not a terraform resource, so the secret never enters state."
   value       = aws_iam_user.dns_writer.arn
 }
+
+output "dns_write_denied_topic_arn" {
+  description = "Subscribe an email/Slack/PagerDuty endpoint out of band — fires on a denied route53:ChangeResourceRecordSets."
+  value       = aws_sns_topic.dns_write_denied.arn
+}
