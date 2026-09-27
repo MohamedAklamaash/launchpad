@@ -12,7 +12,19 @@ EXCLUDED_PREFIXES = ["/admin", "/static/", "/favicon.ico", "/health", "/api/v1/h
 
 # Exact-match exemptions for callback/webhook routes — startswith would over-exempt
 # anything sharing the prefix (e.g. /api/v1/payments/webhook/foo).
-EXEMPT_EXACT_PATHS = ["/api/v1/infrastructures/onboarding/callback/", "/api/v1/infrastructures/policy-refresh/callback/", "/api/v1/payments/webhook/", "/api/v1/payments/success/", "/api/v1/payments/cancel/"]
+#
+# F1b part 3b (custom domains): the three internal/custom-domains/* paths are pure
+# machine-to-machine calls between infrastructure-service and application-service — no
+# user JWT is ever sent with them (unlike export-inventory, which forwards the caller's
+# own token). Fixed literal paths, no path-param UUID, so they match here the same way
+# the callback routes do. Still enforced by X-INTERNAL-TOKEN — not listed in either
+# service's INTERNAL_AUTH_EXEMPT_PATHS/_PREFIXES.
+EXEMPT_EXACT_PATHS = [
+    "/api/v1/infrastructures/onboarding/callback/", "/api/v1/infrastructures/policy-refresh/callback/",
+    "/api/v1/payments/webhook/", "/api/v1/payments/success/", "/api/v1/payments/cancel/",
+    "/api/v1/internal/custom-domains/attach/", "/api/v1/internal/custom-domains/detach/",
+    "/api/v1/internal/custom-domains/disable-for-application/",
+]
 
 class JWTAuthMiddleware:
     def __init__(self, get_response):

@@ -9,7 +9,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 |---|---|---|---|
 | — | Phase 0 prework | **done**; the rate-limit carve-out is replaced by F0 | — |
 | [F0](F0-rate-budget.md) | Per-user budget for customer-account calls + two unowned bugs | **done** (mock-verified) | nothing |
-| [F1](F1b-tls-activation.md) | TLS, custom domains | Phase 1 **done** (#68); decisions + zone terraform **done** (#75); parts 1–2 (DNS writer; cert bootstrap, ACM policy v4, 443 listener, EKS group-name fix) **done** (mock-verified); part 3a (host URLs end-to-end: readiness contract, ECS/EKS deploy wiring, DNS `synced_at`, publish gating, backfill) **done** (mock-verified); custom domains **not started** | zone not yet applied (real AWS) |
+| [F1](F1b-tls-activation.md) | TLS, custom domains | **done** (mock-verified): Phase 1 (#68); decisions + zone terraform (#75); parts 1–2 (DNS writer; cert bootstrap, ACM policy v4, 443 listener, EKS group-name fix); part 3a (host URLs end-to-end: readiness contract, ECS/EKS deploy wiring, DNS `synced_at`, publish gating, backfill); part 3b (customer custom domains: claim/verify/list/delete API + dashboard UI, authoritative-TXT ownership, per-domain ACM, ALB SNI cap, teardown at every entry point, periodic re-validation) | zone not yet applied (real AWS) — see REAL-AWS-VALIDATION |
 | [F2](F2-runtime-logs.md) | Logs | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing technical |
 | [F3](F3-rollback.md) | Rollback | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F4](F4-cost-tagging.md) | Cost attribution | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |

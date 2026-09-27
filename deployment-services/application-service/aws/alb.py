@@ -2,9 +2,23 @@ import logging
 import os
 import threading
 
+from botocore.exceptions import ClientError
+
 from aws.tags import as_key_value_tags
 
 logger = logging.getLogger(__name__)
+
+
+class SniCertificateCapExceeded(RuntimeError):
+    """The listener already carries as many SNI certificates as this platform will place
+    on it. Raised both by ALBClient.add_listener_certificate's own AWS-side TooManyCertificates
+    catch and by the caller's own pre-check (see custom_domains.attach_custom_domain) —
+    either way, the caller must not have already committed anything to the database."""
+
+    def __init__(self, listener_arn: str):
+        super().__init__(f"SNI certificate cap reached on listener {listener_arn}")
+        self.listener_arn = listener_arn
+
 
 # Per-listener lock to prevent priority races under concurrent deploys
 _priority_locks: dict = {}
@@ -265,3 +279,82 @@ class ALBClient:
         while priority in used:
             priority += 1
         return priority
+
+    def delete_rule(self, rule_arn):
+        """Idempotent: a rule already gone (previous attempt partially succeeded, or a
+        concurrent cleanup already removed it) is not an error — teardown must never wedge
+        on a rule that simply isn't there anymore."""
+        try:
+            self.client.delete_rule(RuleArn=rule_arn)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "RuleNotFound":
+                raise
+            logger.info(f"Listener rule {rule_arn} already gone, nothing to delete")
+
+    # ── custom-domain SNI certificate attach/detach (F1b part 3b) ──────────────────
+    #
+    # A per-app host-forward/redirect rule (above) routes traffic once a Host header
+    # matches; a custom domain also needs its own certificate presented over TLS for that
+    # Host, which is a property of the *listener*, not a rule. AddListenerCertificates
+    # attaches an additional SNI certificate to the existing 443 listener without
+    # replacing its default certificate (the platform wildcard cert from part 2) — this is
+    # deliberately boto3, not Terraform: the set of attached certificates changes on every
+    # custom-domain claim, and Terraform doesn't track resources it didn't create.
+
+    def count_listener_certificates(self, listener_arn) -> int:
+        """Count of SNI certificates on this listener, excluding its default certificate
+        (IsDefault=True) — the default is the platform wildcard cert from Terraform, not a
+        custom-domain attachment, and doesn't count against the SNI cap."""
+        count = 0
+        paginator_token = None
+        while True:
+            kwargs = {"ListenerArn": listener_arn}
+            if paginator_token:
+                kwargs["Marker"] = paginator_token
+            response = self.client.describe_listener_certificates(**kwargs)
+            count += sum(1 for c in response.get("Certificates", []) if not c.get("IsDefault"))
+            paginator_token = response.get("NextMarker")
+            if not paginator_token:
+                return count
+
+    def has_listener_certificate(self, listener_arn, cert_arn) -> bool:
+        paginator_token = None
+        while True:
+            kwargs = {"ListenerArn": listener_arn}
+            if paginator_token:
+                kwargs["Marker"] = paginator_token
+            response = self.client.describe_listener_certificates(**kwargs)
+            if any(c.get("CertificateArn") == cert_arn for c in response.get("Certificates", [])):
+                return True
+            paginator_token = response.get("NextMarker")
+            if not paginator_token:
+                return False
+
+    def add_listener_certificate(self, listener_arn, cert_arn):
+        """Idempotent — AWS itself no-ops re-adding a certificate already on the
+        listener, so no existence check is needed before calling. TooManyCertificates is
+        AWS's own hard SNI-cap enforcement (25/listener) — belt-and-suspenders behind this
+        module's own count_listener_certificates check, surfaced as a distinct exception
+        so a race that slips past the count check still fails cleanly."""
+        try:
+            self.client.add_listener_certificates(
+                ListenerArn=listener_arn, Certificates=[{"CertificateArn": cert_arn}],
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "TooManyCertificates":
+                raise SniCertificateCapExceeded(listener_arn) from e
+            raise
+
+    def remove_listener_certificate(self, listener_arn, cert_arn):
+        """Idempotent: RemoveListenerCertificates doesn't error on a certificate that
+        isn't attached (AWS silently no-ops), so the only ClientError worth swallowing
+        here is the listener itself being gone (a teardown race, e.g. infra destroy
+        already removed the ALB) — there's nothing left to detach either way."""
+        try:
+            self.client.remove_listener_certificates(
+                ListenerArn=listener_arn, Certificates=[{"CertificateArn": cert_arn}],
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ListenerNotFound":
+                raise
+            logger.info(f"Listener {listener_arn} already gone, nothing to detach {cert_arn} from")

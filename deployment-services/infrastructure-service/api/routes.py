@@ -1,6 +1,12 @@
 from api.views.aws import list_aws_regions
 from api.views.capabilities import list_capabilities
 from api.views.costs import infrastructure_costs
+from api.views.custom_domain import (
+    custom_domain_detail,
+    custom_domain_list_create,
+    custom_domain_verify,
+)
+from api.views.custom_domain_internal import custom_domain_disable_for_application
 from api.views.database import database_detail, database_list_create
 from api.views.evidence_pack import evidence_pack
 from api.views.exit_export import exit_export, infrastructure_complete_exit
@@ -30,6 +36,12 @@ urlpatterns = [
     path('infrastructures/<str:infra_id>/databases/', database_list_create, name='database-list-create'),
     path('infrastructures/<str:infra_id>/databases/<str:database_id>/', database_detail, name='database-detail'),
     path('infrastructures/<str:infra_id>/costs/', infrastructure_costs, name='infrastructure-costs'),
+    path('infrastructures/<str:infra_id>/custom-domains/', custom_domain_list_create, name='custom-domain-list-create'),
+    path('infrastructures/<str:infra_id>/custom-domains/<str:domain_id>/', custom_domain_detail, name='custom-domain-detail'),
+    path('infrastructures/<str:infra_id>/custom-domains/<str:domain_id>/verify/', custom_domain_verify, name='custom-domain-verify'),
+    # Internal-only, fixed literal path (no gateway route). Called same-origin by
+    # application-service's app-delete cleanup (F1b part 3b).
+    path('internal/custom-domains/disable-for-application/', custom_domain_disable_for_application, name='custom-domain-disable-for-application'),
     path('infrastructures/<str:infra_id>/', infrastructure_detail, name='infrastructure-detail'),
     path('infrastructures/<str:infra_id>/update/', infrastructure_update, name='infrastructure-update'),
     path('infrastructures/<str:infra_id>/reprovision/', infrastructure_reprovision, name='infrastructure-reprovision'),

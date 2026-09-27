@@ -276,6 +276,18 @@ def infrastructure_complete_exit(request: HttpRequest, infra_id):
         return _deny(status.HTTP_500_INTERNAL_SERVER_ERROR,
                       {"error": "Internal error"}, infrastructure_id=infra.id)
 
+    # F1b part 3b: the customer keeps their own AWS resources on exit (this is not an
+    # infra destroy), but Launchpad stops managing routing for it — every custom domain's
+    # ALB rules/SNI cert/ACM cert must go too. Best-effort and never gates exited_at: a
+    # failure here must never block the platform-DNS teardown outcome above (H2), which is
+    # what this endpoint is actually accountable for confirming.
+    try:
+        from api.services.custom_domain_service import CustomDomainService
+        CustomDomainService().teardown_for_infrastructure(infra)
+    except Exception:
+        logger.warning("custom-domain teardown failed during complete_exit for %s (non-fatal)",
+                        infra.id, exc_info=True)
+
     infra.exited_at = timezone.now()
     infra.save(update_fields=["exited_at"])
     record_access(

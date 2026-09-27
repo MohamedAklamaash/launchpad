@@ -325,6 +325,12 @@ STUCK_THRESHOLD = max(int(os.environ.get('INFRA_STUCK_THRESHOLD_SECONDS', str(DB
 REAP_INTERVAL = int(os.environ.get('INFRA_REAP_INTERVAL_SECONDS', '120'))
 # F1b part 2: how often the worker re-checks PENDING certificates for ISSUED/FAILED.
 CERT_CHECK_INTERVAL_SECONDS = int(os.environ.get('INFRA_CERT_CHECK_INTERVAL_SECONDS', '30'))
+# F1b part 3b: how often the worker re-validates VALIDATED custom domains' ownership TXT
+# and sweeps expired PENDING claims. Slower than the TLS cert check — an authoritative DNS
+# query per domain is heavier than a DescribeCertificate call, and losing ownership of a
+# custom domain is a slow-moving condition (a customer transferring a domain away, letting
+# a TXT record lapse), not one that needs sub-minute detection.
+CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS = int(os.environ.get('INFRA_CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS', '300'))
 # The running/queued job refreshes its lock this often; must be well under DB_LOCK_STALENESS_SECONDS
 # so a live job never looks crashed to the reaper or acquire_db_lock.
 LOCK_HEARTBEAT_SECONDS = int(os.environ.get('INFRA_LOCK_HEARTBEAT_SECONDS', '60'))
@@ -728,9 +734,11 @@ class Command(BaseCommand):
 
         reap_lock_key = "infra:worker:reap_lock"
         cert_check_lock_key = "infra:worker:cert_check_lock"
+        custom_domain_check_lock_key = "infra:worker:custom_domain_check_lock"
         provision_counter = 0
         last_reap = time.monotonic()
         last_cert_check = time.monotonic()
+        last_custom_domain_check = time.monotonic()
         while running:
             try:
                 # Periodically re-drive stuck jobs. A short-lived Redis lock rate-limits it to
@@ -753,6 +761,25 @@ class Command(BaseCommand):
                             check_pending_certificates()
                         except Exception:
                             logger.exception("TLS certificate re-check sweep failed")
+
+                # F1b part 3b: re-validate VALIDATED custom domains' ownership TXT and
+                # sweep expired PENDING claims. Same fleet-wide rate limit as the checks
+                # above — one worker per interval, never inside a dispatched job's lock
+                # (each domain's own AssumeRole + DNS/ACM calls are independent of any
+                # infra's provisioning lock).
+                if time.monotonic() - last_custom_domain_check >= CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS:
+                    last_custom_domain_check = time.monotonic()
+                    if r.set(custom_domain_check_lock_key, worker_id,
+                             nx=True, ex=max(CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS - 5, 10)):
+                        try:
+                            from api.services.custom_domain_service import (
+                                CustomDomainService,
+                            )
+                            service = CustomDomainService()
+                            service.sweep_expired_claims()
+                            service.revalidate_validated_domains()
+                        except Exception:
+                            logger.exception("custom-domain re-validation/sweep failed")
 
                 # Always drain destroy queue first (non-blocking), then provision
                 had_destroy = dispatch_destroy()

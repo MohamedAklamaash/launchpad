@@ -15,6 +15,7 @@ from api.views.application import (
     application_github_webhook,
     application_rotate_webhook_secret,
 )
+from api.views.custom_domains_internal import custom_domain_attach, custom_domain_detach
 from api.views.exit_inventory import export_inventory
 from api.views.health import health_check, liveness_check, readiness_check
 from api.views.infrastructure_validation import infrastructure_validation
@@ -39,6 +40,11 @@ urlpatterns = [
     # Internal-only: no gateway route exists for this path. Called same-origin by
     # infrastructure-service's exit-export endpoint (F6).
     path('infrastructures/<uuid:infra_id>/export-inventory/', export_inventory, name='infrastructure-export-inventory'),
+    # Internal-only, fixed literal paths (no gateway route, no path-param UUID — see
+    # shared/middleware/authentication.py's EXEMPT_EXACT_PATHS, which matches by exact
+    # string). Called same-origin by infrastructure-service (F1b part 3b).
+    path('internal/custom-domains/attach/', custom_domain_attach, name='custom-domain-attach'),
+    path('internal/custom-domains/detach/', custom_domain_detach, name='custom-domain-detach'),
     path('healthz/', health_check, name='health'),
     path('liveness/', liveness_check, name='liveness'),
     path('readiness/', readiness_check, name='readiness'),

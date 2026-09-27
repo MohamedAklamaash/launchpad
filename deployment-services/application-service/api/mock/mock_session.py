@@ -65,13 +65,14 @@ class _MockPaginator:
 
 class MockClient:
     def __init__(self, service: str, region: str, account_id: str, deleted_services: set,
-                 listener_rules: dict, infra_id: str | None = None):
+                 listener_rules: dict, infra_id: str | None = None, listener_certificates: dict | None = None):
         self._service = service
         self._region = region
         self._account_id = account_id
         self._infra_id = infra_id
         self._deleted_services = deleted_services
         self._listener_rules = listener_rules
+        self._listener_certificates = listener_certificates if listener_certificates is not None else {}
         self.meta = _MockMeta(region)
         self.exceptions = _MockClientExceptions(service)
 
@@ -212,6 +213,28 @@ class MockClient:
         rule_arn = kwargs.get("RuleArn")
         for rules in self._listener_rules.values():
             rules[:] = [r for r in rules if r["RuleArn"] != rule_arn]
+        return {}
+
+    def describe_listener_certificates(self, **kwargs):
+        listener_arn = kwargs.get("ListenerArn", "listener")
+        return {"Certificates": list(self._listener_certificates.get(listener_arn, []))}
+
+    def add_listener_certificates(self, **kwargs):
+        # Real ALB's SNI cap (25/listener) isn't modeled here — the mock never runs
+        # 25+ custom-domain claims, and the cap-exceeded path is exercised against the
+        # real ALBClient methods directly (test_alb_sni_certificates.py), not this mock.
+        listener_arn = kwargs.get("ListenerArn", "listener")
+        certs = self._listener_certificates.setdefault(listener_arn, [])
+        for cert in kwargs.get("Certificates", []):
+            if not any(c["CertificateArn"] == cert["CertificateArn"] for c in certs):
+                certs.append({"CertificateArn": cert["CertificateArn"], "IsDefault": False})
+        return {}
+
+    def remove_listener_certificates(self, **kwargs):
+        listener_arn = kwargs.get("ListenerArn", "listener")
+        arns = {c["CertificateArn"] for c in kwargs.get("Certificates", [])}
+        certs = self._listener_certificates.get(listener_arn, [])
+        certs[:] = [c for c in certs if c["CertificateArn"] not in arns]
         return {}
 
     def set_rule_priorities(self, **kwargs):
@@ -424,9 +447,11 @@ class MockSession:
         self._infra_id = infra_id
         self._deleted_services: set = set()
         self._listener_rules: dict = {}
+        self._listener_certificates: dict = {}
 
     def client(self, service_name: str, **kwargs):
         return MockClient(
             service_name, self.region_name, self._account_id,
             self._deleted_services, self._listener_rules, infra_id=self._infra_id,
+            listener_certificates=self._listener_certificates,
         )

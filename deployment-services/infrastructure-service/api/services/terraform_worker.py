@@ -1318,6 +1318,21 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             # per the F1b security pre-review.
             request_and_await_dns_teardown(infra_id)
 
+            # F1b part 3b: every custom domain on this infra must have its ALB rules, SNI
+            # certificate, and ACM certificate gone before the ALB itself is destroyed
+            # (real) or the infra is marked DESTROYED (mock) — an ACM certificate survives
+            # ALB deletion, so leaving this any later would orphan it in the customer's
+            # account forever. Runs for both mock and real (the gate above already
+            # confirmed infra.is_mock == dev_mode). teardown_for_infrastructure already
+            # catches a single domain's failure internally; the try/except here is a
+            # second line of defense so nothing about custom domains can ever block a
+            # destroy or the DNS teardown above (H2).
+            try:
+                from api.services.custom_domain_service import CustomDomainService
+                CustomDomainService().teardown_for_infrastructure(infra)
+            except Exception:
+                logger.warning("custom-domain teardown failed for infra %s (non-fatal)", infra_id, exc_info=True)
+
             if infra.is_mock:
                 logger.warning(
                     "MOCK destroy in dev mode (no terraform, no AWS)",

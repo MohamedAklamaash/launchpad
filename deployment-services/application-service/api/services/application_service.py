@@ -252,10 +252,12 @@ class ApplicationService:
             target_group_arn = app.target_group_arn
             task_definition_arn = app.task_definition_arn
             runtime_refs = app.runtime_refs
+            host_forward_rule_arn = app.host_forward_rule_arn
 
             result = self.app_repo.delete(app_id)
 
-            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn, runtime_refs]):
+            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn,
+                    runtime_refs, host_forward_rule_arn]):
                 try:
                     DeploymentQueue.enqueue_cleanup(
                         app_id=app_id,
@@ -266,9 +268,29 @@ class ApplicationService:
                         task_definition_arn=task_definition_arn,
                         runtime=(runtime_refs or {}).get('runtime'),
                         refs=runtime_refs,
+                        host_forward_rule_arn=host_forward_rule_arn,
                     )
                 except Exception as e:
                     logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")
+
+            # F1b part 3b: custom-domain ALB rules/SNI cert are this app's own resources
+            # too, but tracked in CustomDomainRoute (application-service's own record,
+            # keyed by application_id — see that model's docstring), not on Application
+            # itself, so this doesn't go through the Redis job queue above. Always
+            # attempted, even if the app never had a target group (a custom domain can't
+            # exist without one, but this must never depend on that invariant holding).
+            try:
+                from api.services.custom_domain_routing import (
+                    detach_custom_domains_for_application,
+                    notify_infrastructure_service_of_deleted_application,
+                )
+                if detach_custom_domains_for_application(app_id):
+                    notify_infrastructure_service_of_deleted_application(infrastructure_id, app_id)
+            except Exception:
+                logger.warning(
+                    "custom-domain cleanup failed for deleted application %s (non-fatal)",
+                    app_id, exc_info=True,
+                )
 
             ApplicationEventProducer.publish_application_deleted(app_id)
         finally:

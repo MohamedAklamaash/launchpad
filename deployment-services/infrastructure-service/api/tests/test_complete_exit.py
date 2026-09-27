@@ -232,3 +232,35 @@ def test_unhandled_teardown_error_is_a_500_and_is_audited(mock_teardown, factory
     assert infra.exited_at is None
     row = ExitExportAccess.objects.get(infrastructure_id=infra.id, action="complete_exit", status_code=500)
     assert row.user_id == owner.id
+
+
+@patch("api.views.exit_export.request_and_await_dns_teardown")
+def test_complete_exit_tears_down_custom_domains(mock_teardown, factory, make_infra):
+    """F1b part 3b: exit is not an infra destroy (the customer keeps their AWS resources),
+    but Launchpad stops managing routing for it — every custom domain must be detached and
+    have its certificate deleted too."""
+    mock_teardown.return_value = None
+    owner, infra = make_infra()
+
+    with patch("api.services.custom_domain_service.CustomDomainService.teardown_for_infrastructure") as teardown:
+        resp = _post(factory, _jwt_user(owner, auth_time=_fresh_auth_time()), str(infra.id), {"confirm": True})
+
+    assert resp.status_code == 200
+    teardown.assert_called_once()
+    assert teardown.call_args.args[0].id == infra.id
+
+
+@patch("api.views.exit_export.request_and_await_dns_teardown")
+def test_complete_exit_succeeds_even_if_custom_domain_teardown_fails(mock_teardown, factory, make_infra):
+    """Never gates exited_at — a custom-domain teardown failure must not block the
+    outcome this endpoint is actually accountable for confirming (the DNS teardown)."""
+    mock_teardown.return_value = None
+    owner, infra = make_infra()
+
+    with patch("api.services.custom_domain_service.CustomDomainService.teardown_for_infrastructure",
+               side_effect=RuntimeError("boom")):
+        resp = _post(factory, _jwt_user(owner, auth_time=_fresh_auth_time()), str(infra.id), {"confirm": True})
+
+    assert resp.status_code == 200
+    infra.refresh_from_db()
+    assert infra.exited_at is not None
