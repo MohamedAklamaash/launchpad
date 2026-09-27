@@ -294,7 +294,7 @@ def backfill_fixtures(schema_db):
 
 
 def test_backfill_tags_every_existing_resource(backfill_fixtures, monkeypatch):
-    infra, app = backfill_fixtures
+    _infra, _app = backfill_fixtures
     session = _FakeBackfillSession()
     monkeypatch.setattr(
         "api.management.commands.tag_existing_app_resources.create_boto3_session",
@@ -313,7 +313,7 @@ def test_backfill_tags_every_existing_resource(backfill_fixtures, monkeypatch):
 
 
 def test_backfill_is_idempotent(backfill_fixtures, monkeypatch):
-    infra, app = backfill_fixtures
+    _infra, _app = backfill_fixtures
     session = _FakeBackfillSession()
     monkeypatch.setattr(
         "api.management.commands.tag_existing_app_resources.create_boto3_session",
@@ -329,7 +329,7 @@ def test_backfill_is_idempotent(backfill_fixtures, monkeypatch):
 
 
 def test_backfill_dry_run_makes_no_aws_calls(backfill_fixtures, monkeypatch):
-    infra, app = backfill_fixtures
+    _infra, _app = backfill_fixtures
     session = _FakeBackfillSession()
     create_session_calls = []
     monkeypatch.setattr(

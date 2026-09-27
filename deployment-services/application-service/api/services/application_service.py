@@ -194,7 +194,8 @@ class ApplicationService:
         transaction.on_commit(lambda: DeploymentQueue.enqueue_deployment(app_id_str, infra_id_str))
 
         ApplicationEventProducer.publish_application_created(
-            app.id, app.infrastructure_id, app.name, user.id
+            app.id, app.infrastructure_id, app.name, user.id,
+            alloted_cpu=app.alloted_cpu, alloted_memory=app.alloted_memory,
         )
         
         return app

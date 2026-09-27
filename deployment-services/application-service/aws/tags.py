@@ -6,9 +6,7 @@ activated (see infrastructure-service's `cost_service.py`). Tags are not retroac
 a resource created before this module existed stays untagged until either redeployed or
 picked up by `tag_existing_app_resources` (application-service management command).
 """
-
-TAG_INFRA_KEY = "launchpad:infra"
-TAG_APP_KEY = "launchpad:app"
+from shared.aws.cost_tags import TAG_APP_KEY, TAG_INFRA_KEY
 
 
 def app_tags(infra_id, app_name: str) -> dict[str, str]:

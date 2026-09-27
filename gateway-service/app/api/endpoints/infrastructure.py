@@ -105,6 +105,46 @@ async def infrastructure_evidence_pack(infra_id: UUID, request: Request):
     )
 
 
+class AppCost(BaseModel):
+    app: str
+    amount_usd: float
+    source: str = Field(description="actual | estimate | mock")
+
+
+class SharedCost(BaseModel):
+    amount_usd: float
+    source: str = Field(description="actual | estimate | mock")
+    note: str | None = None
+
+
+class TagActivation(BaseModel):
+    activated: bool | None
+    reason: str | None
+
+
+class InfraCostsResponse(BaseModel):
+    infrastructure_id: str
+    compute_type: str
+    window_start: str
+    window_end: str
+    currency: str
+    apps: list[AppCost]
+    shared: SharedCost
+    tag_activation: TagActivation
+    is_mock: bool
+    cached: bool
+
+
+@router.get("/{infra_id}/costs", summary="Per-app cost attribution for an infrastructure",
+            response_model=InfraCostsResponse)
+async def infrastructure_costs(infra_id: UUID, request: Request):
+    """Owner only — invited users get 403. ECS infras return Cost Explorer actuals grouped
+    by app; EKS infras return a labelled estimate from pod resource requests. Accepts an
+    optional `months` query param (1-3, default 1). Returns 422 with policy_refresh_required
+    if the customer's applied IAM policy predates the Cost Explorer grants (v3)."""
+    return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/costs/", request)
+
+
 @router.delete("/{infra_id}", summary="Delete an infrastructure", status_code=204)
 async def infrastructure_delete(infra_id: str, request: Request):
     """Triggers Terraform destroy. Returns 409 if active applications exist."""

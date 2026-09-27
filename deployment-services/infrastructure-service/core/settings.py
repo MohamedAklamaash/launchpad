@@ -96,6 +96,26 @@ else:
         "principal the evidence-pack live drift check trusts, and has no safe default."
     )
 
+# Per-user budget for the costs endpoint (F4). Lower than `databases`: unlike a database
+# create/list, every cache-miss call here costs the customer $0.01 (Cost Explorer) and the
+# dashboard has no reason to poll it as often as deploy status.
+RATE_BUDGET_COSTS_LIMIT = int(os.environ.get('RATE_BUDGET_COSTS_LIMIT', '20'))
+RATE_BUDGET_COSTS_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_COSTS_WINDOW_SECONDS', '60'))
+
+# Bounded query window for the costs endpoint — a customer-controlled start/end could
+# otherwise page through years of Cost Explorer history at $0.01/request.
+COST_QUERY_MAX_MONTHS = int(os.environ.get('COST_QUERY_MAX_MONTHS', '3'))
+
+# EKS cost-estimate pricing constants (F4). No split cost allocation data exists for a
+# Kubernetes pod, so the estimate is each app's alloted_cpu/alloted_memory (the values its
+# pod's resource requests were set to) times AWS Fargate on-demand pricing, us-east-1,
+# Linux/x86 — verified against https://aws.amazon.com/fargate/pricing/ and
+# https://aws.amazon.com/eks/pricing/ on 2026-09-27; re-verify before relying on this
+# against a real account (see plan/F4-cost-tagging.md Decisions).
+COST_ESTIMATE_VCPU_HOUR_USD = float(os.environ.get('COST_ESTIMATE_VCPU_HOUR_USD', '0.040478'))
+COST_ESTIMATE_GB_HOUR_USD = float(os.environ.get('COST_ESTIMATE_GB_HOUR_USD', '0.004446'))
+COST_ESTIMATE_EKS_CONTROL_PLANE_HOUR_USD = float(os.environ.get('COST_ESTIMATE_EKS_CONTROL_PLANE_HOUR_USD', '0.10'))
+
 # Apex domain custom-domain hostnames must not be able to spoof, e.g. `evil.launchpad.app`.
 # Matched against the normalized (IDNA-decoded, lowercased) hostname — see
 # api/models/custom_domain.py:normalize_hostname.

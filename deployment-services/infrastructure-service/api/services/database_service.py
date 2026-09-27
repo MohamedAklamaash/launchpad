@@ -9,6 +9,7 @@ from api.models.database import Database
 from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from api.services.infra_queue import InfraQueue
+from api.services.policy_errors import PolicyRefreshRequiredError
 from api.validators import validate_database_name
 from django.conf import settings
 from django.db import transaction
@@ -16,17 +17,7 @@ from shared.enums.orchestrator import ComputeType
 
 logger = logging.getLogger(__name__)
 
-
-class PolicyRefreshRequiredError(ValueError):
-    """Raised when the customer's assumed role can't perform the create actions yet.
-
-    Distinguished from a generic ValueError so the view can return a 422 with a
-    machine-readable code instead of the usual 400.
-    """
-
-    def __init__(self, message, denied_actions=None):
-        super().__init__(message)
-        self.denied_actions = denied_actions or []
+__all__ = ["DatabaseService", "PolicyRefreshRequiredError"]
 
 
 def _require_valid_uuid(value, not_found_message):

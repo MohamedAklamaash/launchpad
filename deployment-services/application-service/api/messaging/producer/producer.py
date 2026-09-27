@@ -24,12 +24,14 @@ class ApplicationEventProducer:
             logger.error(f"Failed to publish {routing_key}: {e}")
 
     @staticmethod
-    def publish_application_created(app_id, infrastructure_id, name, user_id):
+    def publish_application_created(app_id, infrastructure_id, name, user_id, alloted_cpu=0.0, alloted_memory=0.0):
         ApplicationEventProducer._publish("application.created", {
             "id": str(app_id),
             "infrastructure_id": str(infrastructure_id),
             "name": name,
             "user_id": str(user_id),
+            "alloted_cpu": alloted_cpu,
+            "alloted_memory": alloted_memory,
         })
 
     @staticmethod

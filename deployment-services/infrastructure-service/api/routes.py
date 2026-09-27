@@ -1,5 +1,6 @@
 from api.views.aws import list_aws_regions
 from api.views.capabilities import list_capabilities
+from api.views.costs import infrastructure_costs
 from api.views.database import database_detail, database_list_create
 from api.views.evidence_pack import evidence_pack
 from api.views.health import health, liveness, readiness
@@ -27,6 +28,7 @@ urlpatterns = [
     path('infrastructures/policy-refresh/callback/', infrastructure_policy_refresh_callback, name='infrastructure-policy-refresh-callback'),
     path('infrastructures/<str:infra_id>/databases/', database_list_create, name='database-list-create'),
     path('infrastructures/<str:infra_id>/databases/<str:database_id>/', database_detail, name='database-detail'),
+    path('infrastructures/<str:infra_id>/costs/', infrastructure_costs, name='infrastructure-costs'),
     path('infrastructures/<str:infra_id>/', infrastructure_detail, name='infrastructure-detail'),
     path('infrastructures/<str:infra_id>/update/', infrastructure_update, name='infrastructure-update'),
     path('infrastructures/<str:infra_id>/reprovision/', infrastructure_reprovision, name='infrastructure-reprovision'),

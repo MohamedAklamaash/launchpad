@@ -1,4 +1,5 @@
 from .application import Application
+from .cost_report import CostReport
 from .custom_domain import CustomDomain
 from .database import Database
 from .environment import Environment
@@ -9,6 +10,6 @@ from .script_api_key import ScriptApiKey
 from .user import User
 
 __all__ = [
-    "Application", "CustomDomain", "Database", "Environment", "Infrastructure",
+    "Application", "CostReport", "CustomDomain", "Database", "Environment", "Infrastructure",
     "PolicyRefreshEvent", "ReservedDnsLabel", "ScriptApiKey", "User",
 ]
