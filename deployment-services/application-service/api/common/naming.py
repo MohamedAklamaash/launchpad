@@ -17,6 +17,15 @@ def image_tag(application) -> str:
     return f"{app_slug(application.name)}-{uuid4().hex[:12]}"
 
 
+def ecs_log_group(slug: str) -> str:
+    """The CloudWatch log group ECSClient.create_task_definition wires every container to.
+    Single source so a future rename only has to change one place — see
+    application_deployment_service._create_task_definition and
+    application_cleanup_service._delete_log_group, which currently re-derive this string
+    independently (tracked as a follow-up, not fixed here)."""
+    return f"/ecs/{slug}-task"
+
+
 def require_k8s_safe_slug(name: str) -> str:
     """Slugs admit '.' and '_' (legal in Docker tags) which k8s object names reject.
     Refuse rather than re-sanitize: 'my.app' and 'my-app' would collapse onto one

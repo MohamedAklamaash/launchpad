@@ -63,7 +63,10 @@ def runtime_refs_for(slug: str) -> dict:
 
 
 @contextmanager
-def k8s_apis(session, infrastructure, cluster_name: str):
+def k8s_apis(session, infrastructure, cluster_name: str, config=None):
+    """config, when given, overrides the Config used for the EKS describe_cluster call and
+    the {cluster}-deploy AssumeRole (used by the runtime-logs path to bound both inside its
+    own request deadline). Every other caller omits it and keeps today's client defaults."""
     dev_mode = is_dev_mode(app_config.mode)
     is_mock = bool(getattr(infrastructure, "is_mock", False))
     if is_mock and not dev_mode:
@@ -71,13 +74,13 @@ def k8s_apis(session, infrastructure, cluster_name: str):
     if dev_mode and not is_mock:
         raise ValueError("Refusing mock Kubernetes access against a real infrastructure")
 
-    cluster = EKSClient(session).describe_cluster(cluster_name)
+    cluster = EKSClient(session, config=config).describe_cluster(cluster_name)
     if is_mock:
         yield mock_k8s.get_mock_apis(str(infrastructure.id))
         return
 
     region = session.region_name
-    deploy_session = assume_deploy_role(session, infrastructure.code, cluster_name, region)
+    deploy_session = assume_deploy_role(session, infrastructure.code, cluster_name, region, config=config)
 
     def mint():
         return mint_eks_token(deploy_session, cluster_name, region)

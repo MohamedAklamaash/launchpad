@@ -23,6 +23,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Not CORS-safelisted by default, so the browser can't read them cross-origin
+    # otherwise: Retry-After (429 backoff) and X-Request-Id (runtime-logs correlation).
+    expose_headers=["Retry-After", "X-Request-Id"],
 )
 
 @app.get("/")
@@ -73,9 +76,11 @@ async def global_exception_handler(request: Request, exc: Exception):
             content={"message": exc.detail},
         )
     logger.error(f"Global exception caught: {exc}", exc_info=exc)
+    # str(exc) never reaches the client: an upstream failure mid-stream (e.g. the runtime
+    # logs endpoint) could otherwise put customer application log content into this body.
     return JSONResponse(
         status_code=500,
-        content={"message": "Internal Server Error", "details": str(exc)},
+        content={"message": "Internal Server Error"},
     )
 
 if __name__ == "__main__":

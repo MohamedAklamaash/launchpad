@@ -1,5 +1,13 @@
 import { apiClient } from './client';
-import { Application, ApplicationCreate, ApplicationUpdate, Deployment, RollbackPreview } from '@/types/application';
+import {
+  Application,
+  ApplicationCreate,
+  ApplicationUpdate,
+  Deployment,
+  RollbackPreview,
+  RuntimeLogsQuery,
+  RuntimeLogsResponse,
+} from '@/types/application';
 
 export const applicationApi = {
   list: async (infrastructureId: string): Promise<Application[]> => {
@@ -59,5 +67,11 @@ export const applicationApi = {
 
   resumeAutoDeploy: async (id: string): Promise<void> => {
     await apiClient.post(`/api/applications/${id}/resume-auto-deploy`);
+  },
+
+  // Never cache/persist the response — it's unredacted customer application output.
+  logs: async (id: string, params: RuntimeLogsQuery): Promise<RuntimeLogsResponse> => {
+    const { data } = await apiClient.get(`/api/applications/${id}/logs`, { params });
+    return data;
   },
 };

@@ -60,6 +60,10 @@ REDIS_PORT = 6379
 REDIS_PASSWORD = ""
 REDIS_DB = 0
 
+RATE_BUDGET_RUNTIME_LOGS_LIMIT = 30
+RATE_BUDGET_RUNTIME_LOGS_WINDOW_SECONDS = 60
+RUNTIME_LOGS_CURSOR_SECRET = "x" * 40
+
 LOGGING_CONFIG = None
 
 # Per-app ceiling for Kubernetes applications. Fargate has a fixed CPU/memory ladder

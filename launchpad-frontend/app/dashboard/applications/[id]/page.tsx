@@ -6,7 +6,9 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff, Github, Copy, Globe, PackageX, Pin, PlayCircle } from 'lucide-react';
 import { Application } from '@/types/application';
+import { Infrastructure } from '@/types/infrastructure';
 import { applicationApi } from '@/lib/api/applications';
+import { infrastructureApi } from '@/lib/api/infrastructures';
 import { useAuthStore } from '@/lib/store/auth';
 import { toast } from 'sonner';
 import {
@@ -15,6 +17,7 @@ import {
 import { EditAppSheet } from '@/components/edit-app-sheet';
 import { EnvEditor } from '@/components/env-editor';
 import { DeploymentHistory } from '@/components/deployment-history';
+import { RuntimeLogsPanel } from '@/components/runtime-logs-panel';
 
 const POLLING_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
 
@@ -34,6 +37,7 @@ export default function ApplicationDetailPage() {
   const router = useRouter();
   const { id } = useParams<{ id: string }>();
   const [app, setApp] = useState<Application | null>(null);
+  const [infra, setInfra] = useState<Infrastructure | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -48,6 +52,11 @@ export default function ApplicationDetailPage() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const user = useAuthStore((s) => s.user);
   const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
+  // Runtime logs are gated on ownership of THIS application's infrastructure, not the
+  // global JWT role — an infra owner isn't necessarily super_admin platform-wide, and a
+  // platform super_admin viewing someone else's infra isn't its owner. The backend
+  // enforces this regardless; this only decides whether to show the panel at all.
+  const isOwner = !!infra && !!user && infra.user_id === user.id;
 
   const loadApp = useCallback(async () => {
     try {
@@ -65,6 +74,11 @@ export default function ApplicationDetailPage() {
   useEffect(() => {
     loadApp();
   }, [id, loadApp]);
+
+  useEffect(() => {
+    if (!app?.infrastructure_id) return;
+    infrastructureApi.get(app.infrastructure_id).then(setInfra).catch(() => setInfra(null));
+  }, [app?.infrastructure_id]);
 
   useEffect(() => {
     if (!app) return;
@@ -422,6 +436,8 @@ export default function ApplicationDetailPage() {
         onRolledBack={() => loadApp()}
         onAccessChange={setHasRollbackAccess}
       />
+
+      {isOwner && <RuntimeLogsPanel appId={id} computeType={infra?.compute_type} />}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
