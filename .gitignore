@@ -19,3 +19,7 @@ volumes/
 logs/
 .ruff_cache/
 .claude/
+# terraform working state (platform-dns is applied from a workstation, not CI)
+infra/platform-dns/.terraform/
+infra/platform-dns/.terraform.lock.hcl
+infra/platform-dns/*.tfstate*

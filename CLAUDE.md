@@ -17,9 +17,13 @@ cross-account IAM AssumeRole (`LaunchpadDeploymentRole`, ExternalId = infrastruc
 | `app_scripts/` | bash | Customer-run onboarding script (`create_aws_role.sh`) — one idempotent script for both first-time bootstrap and later policy refresh; picks the callback by which credential is injected (`MODE=dev` sets `LAUNCHPAD_MOCK=1` to skip AWS entirely). Its IAM policy heredoc is **generated** — see *IAM policy source of truth*. |
 | `infra/.docker/` | docker compose | Local dev stack: Postgres, MySQL, Mongo, Redis, RabbitMQ, Prometheus/Grafana. Ports come from `.env`; `docker-compose.override.yml` is applied automatically. |
 
-There is no repo-root `infra/aws/`. All Terraform lives at
-`deployment-services/infrastructure-service/infra/aws/` and provisions the **customer's**
-account only (nothing provisions platform infrastructure).
+Customer-account Terraform lives at
+`deployment-services/infrastructure-service/infra/aws/`. There is no repo-root `infra/aws/`.
+
+`infra/platform-dns/` is the one exception and the only **platform-owned** infrastructure:
+the Route53 zone for app hostnames, applied to a dedicated DNS account. It is deliberately
+not in the customer tree and deliberately not reachable by the provisioning worker's
+credentials — see its README.
 
 ## Auth model
 
