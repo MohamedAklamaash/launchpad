@@ -216,7 +216,22 @@ this feature would have shipped secrets.
     sensitive action either. `POST /api/v1/auth/revoke` was already implemented
     (`InvitedUserAuthService.revokeRefreshTokensForUser`) but is itself unauthenticated —
     any caller who knows a `userId` can revoke that user's sessions. Pre-existing, not
-    introduced or fixed by this feature; flagged for a separate fix.
+    introduced by this feature; fixed on `fix/auth-revoke-authz`: the controller
+    (`invited-user.controller.ts`) no longer reads `userId` from the body at all. It
+    resolves the caller's own id via `resolveRevokeCallerId` (`utils/revoke-authz.ts`)
+    from a verified `Authorization` access token (signature-valid and unexpired — no
+    auth_time freshness check, since this is called at the exact moment the original
+    access token failed only that freshness gate) or, if that is missing or fails, a
+    `refreshToken` in the body as a fallback proof of possession. `revokeSchema` no
+    longer requires `userId`; the gateway's `RevokeBody` and the frontend's
+    `revokeCurrentUserSessions` were updated to match (it now sends the caller's own
+    `Authorization` header and, when present, a `refreshToken` body field sourced from
+    local storage — never a `userId`). A grep of every auth-service controller for a
+    body/param-supplied `userId` used without an auth check found no other instance of
+    this pattern. Known gap left as-is: the refresh-token fallback only checks the JWT's
+    signature and expiry, not whether its DB row survived rotation — narrower than the
+    original bug since it can only ever name the token's own subject, not fixed here to
+    keep the DB out of this endpoint's otherwise pure authorization check.
 12. **`_copy_terraform_modules` is an allowlist (`.tf` only today), not a denylist, and
     resolves every candidate path before copying it.** A denylist of "known bad" suffixes
     only ever excludes what someone thought to name; `Path.rglob` also follows directory

@@ -5,6 +5,7 @@ import { USER_ROLE } from '@/types/auth.invited_user.types';
 import { getAuthHeader } from '@/utils/auth-header';
 import { verifyAccessToken } from '@/utils/handle-token';
 import { superAdminMiddleware } from '@/utils/super-admin';
+import { resolveRevokeCallerId } from '@/utils/revoke-authz';
 import { env } from '@/config/env';
 
 const invitedUserFacade = new InvitedUserFacade();
@@ -197,7 +198,8 @@ export const RefreshTokenForUser = async (req: Request, res: Response) => {
 
 export const RevokeRefreshToken = async (req: Request, res: Response) => {
     try {
-        const { userId } = req.body;
+        const { refreshToken } = (req.body ?? {}) as { refreshToken?: string };
+        const userId = resolveRevokeCallerId(req.headers.authorization, refreshToken);
         await invitedUserFacade.revokeRefreshToken(userId);
         return res.status(204).send();
     } catch (error: unknown) {

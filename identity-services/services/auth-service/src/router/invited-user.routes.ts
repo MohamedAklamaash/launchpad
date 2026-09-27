@@ -330,20 +330,24 @@ authRouter.post(
  * @swagger
  * /api/v1/auth/revoke:
  *   post:
- *     summary: Revoke all refresh tokens for a user
+ *     summary: Revoke all of the caller's own refresh tokens
+ *     description: >
+ *       Revokes every refresh token for the authenticated caller only — there is no
+ *       parameter to target another user. Accepts either an `Authorization: Bearer`
+ *       access token (signature-valid and unexpired; a stale auth_time is fine) or a
+ *       refresh token in the body as proof of possession.
  *     tags: [Auth]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
- *       required: true
+ *       required: false
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required: [userId]
  *             properties:
- *               userId: { type: string, format: uuid, example: 018e1234-abcd-7000-8000-000000000001 }
+ *               refreshToken: { type: string, example: eyJhbGciOiJIUzI1NiJ9... }
  *     responses:
  *       204: { description: Tokens revoked }
- *       401: { description: Unauthorized }
+ *       401: { description: No valid access token or refresh token was presented }
  */
 authRouter.post('/revoke', validateRequest({ body: revokeSchema.shape.body }), RevokeRefreshToken);
