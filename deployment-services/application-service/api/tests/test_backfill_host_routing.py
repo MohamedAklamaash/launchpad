@@ -2,6 +2,7 @@
 app into host mode once its infra becomes TLS-ready, without a new code push (F1b part 3a).
 """
 import uuid
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -190,13 +191,36 @@ def test_evaluate_backfill_eligibility_reports_the_same_skip_reason(backfill_fix
 
 # ── management command: lock + real dry-run ──────────────────────────────────────────────
 
+class _InMemoryDeploymentLock:
+    """Stands in for the Redis-backed DeploymentLock so these tests need no Redis server.
+    Holders are shared across instances, like keys in a real Redis."""
+
+    _holders: ClassVar[dict] = {}
+
+    def acquire(self, app_id, worker_id):
+        if app_id in self._holders:
+            return False
+        self._holders[app_id] = worker_id
+        return True
+
+    def release(self, app_id, worker_id):
+        if self._holders.get(app_id) == worker_id:
+            del self._holders[app_id]
+
+    def is_locked(self, app_id):
+        return app_id in self._holders
+
+
 @pytest.fixture
-def command_session_patch(backfill_fixtures):
+def command_session_patch(backfill_fixtures, monkeypatch):
     """The management command constructs its own ApplicationDeploymentService instance,
     so the fixture's per-instance _create_aws_session patch doesn't reach it — patch at
     the class level instead for these command-level tests."""
+    from api.services import deployment_lock
     from api.services.application_deployment_service import ApplicationDeploymentService
 
+    _InMemoryDeploymentLock._holders = {}
+    monkeypatch.setattr(deployment_lock, "DeploymentLock", _InMemoryDeploymentLock)
     service, app, env, infra = backfill_fixtures
     with patch.object(ApplicationDeploymentService, "_create_aws_session", return_value=service._create_aws_session(infra)):
         yield app, env, infra
