@@ -80,29 +80,64 @@ by hand against a real deployment's Redis when testing this.
 ## RabbitMQ
 
 Restrict the writer's AMQP user to only its own queues (the main reconcile queue and its
-DLQ) via `rabbitmqctl`'s permission patterns, which are regexes matched against
-configure/write/read operations independently:
+DLQ) plus, since F1b part 3a, publish-only access to `infrastructure.events` for the
+`infrastructure.host_readiness_updated` event — see below — via `rabbitmqctl`'s permission
+patterns, which are regexes matched against configure/write/read operations independently:
 
 ```bash
 rabbitmqctl add_user launchpad_dns_writer CHANGE_ME_PASSWORD
 rabbitmqctl set_permissions -p / launchpad_dns_writer \
-    "^platform_dns\.events$" \
-    "^platform_dns\.events$" \
+    "^(platform_dns\.events|infrastructure\.events)$" \
+    "^(platform_dns\.events|infrastructure\.events)$" \
     "^infrastructure-service\.platform-dns-writer(\.dlq)?$"
 ```
 
-The three patterns are configure / write / read. This user can declare and bind only the
-`platform_dns.events` exchange, publish only to it, and consume only from
-`infrastructure-service.platform-dns-writer` or its `.dlq` queue — it cannot touch
-`infrastructure.events`, `application_events`, or the Redis-backed `infra:provision`/
+The three patterns are configure / write / read. This user can declare and publish to the
+`platform_dns.events` exchange (its own reconcile/DLQ topology) and the `infrastructure.events`
+exchange, and consume only from `infrastructure-service.platform-dns-writer` or its `.dlq`
+queue — it cannot touch `application_events`, or the Redis-backed `infra:provision`/
 `infra:destroy` queues (those aren't AMQP at all, but the same user also can't declare or
 bind any other exchange/queue).
+
+**`infrastructure.events` is shared, publish-only, and the routing key is not enforceable
+by RabbitMQ permissions.** That exchange already exists — infrastructure-service's main
+process (not the writer) declares it and publishes `infrastructure.created`/`.updated`/
+`.deleted`/`.user_removed`/`environment.updated` on it; the writer's own publish
+(`api/services/host_readiness.py:publish_host_readiness`, called from
+`platform_dns/dispatch.py`'s converge loop) only ever sends
+`infrastructure.host_readiness_updated`, and needs no read access to it at all — it never
+consumes anything bound there. RabbitMQ's permission model matches **exchange and queue
+names**, not routing keys, so this grant cannot be narrowed to "only the
+`infrastructure.host_readiness_updated` routing key": the writer's AMQP user, if
+compromised, could technically publish a forged `infrastructure.created`/`.deleted`/etc.
+message onto the same exchange. The application-layer defenses this depends on instead:
+every consumer of `infrastructure.events` (application-service's
+`InfraEventConsumer`/`InfraUpdatedEventConsumer`/`InfraDeletedEventConsumer`/
+`EnvironmentEventConsumer`/`HostReadinessEventConsumer`) treats every payload as an
+untrusted read-model snapshot, never an authorization grant, and the write-once (R4) and
+version-ordering (RECOMMENDED item 2) checks in `HostReadinessEventConsumer` specifically
+bound what a forged `host_readiness_updated` message could actually change (dns_synced/
+https_ready/tls_status booleans and strings, never dns_label once set, never anything
+security-relevant like `is_cloud_authenticated` or `code`). A forged `infrastructure.created`/
+`.deleted` from this credential is a real residual risk this permission grant alone does not
+close — narrowing it further needs either a routing-key-aware broker (RabbitMQ does not
+support this natively) or moving `host_readiness_updated` onto its own dedicated exchange
+the writer is the sole publisher for, tracked as a follow-up.
 
 Wire the resulting credential into a dedicated `PLATFORM_DNS_RABBITMQ_URL`-style variable
 for the writer's environment once a broker with a real vhost/user setup exists to test
 against — `RABBITMQ_URL` is currently shared with every other process in this service
 (it carries no AWS/DB secret, so sharing it is lower risk than the Postgres/AWS
 credentials, but a dedicated user is still strictly better).
+
+**Local dev (`infra/.docker`):** not configured — the compose stack's single RabbitMQ user
+(`guest`/`guest` or whatever `RABBITMQ_URL` in `.env` points at) is shared by every service,
+same as Redis above, and per-user permissions require a dedicated vhost/user that would
+have to be threaded through every service's `RABBITMQ_URL`, not just the writer's. Cheap to
+add later (`rabbitmqctl` runs fine against the compose container), but changing one
+service's broker identity without breaking the other eight consumers/producers sharing this
+same instance is more than a "for local dev if cheap" change — tracked as a follow-up
+alongside the Redis ACL gap above.
 
 ## What's actually enforced today vs documented
 

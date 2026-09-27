@@ -68,6 +68,26 @@ def test_ensure_bootstrap_ingress_is_rerun_safe(monkeypatch):
     assert all("already exists" in line for line in lines)
 
 
+def test_ensure_bootstrap_ingress_declares_only_http_80_at_creation(monkeypatch):
+    """No certificate exists yet at bootstrap time (this runs before any infra has ever
+    requested one), and an ALB HTTPS listener cannot be created without one — a hard
+    CreateListener constraint, not a controller choice. Declaring HTTPS:443 here would make
+    the controller fail to resolve a certificate for the group and never write an ALB
+    hostname onto this Ingress's status, timing out bootstrap for every new EKS cluster
+    (a real regression caught and reverted during the B1 security review's second round).
+    HTTPS:443 is added later, only once a certificate actually exists — see
+    apply_eks_tls."""
+    core = MagicMock()
+    networking = MagicMock()
+    monkeypatch.setattr(eb.k8s, "CoreV1Api", lambda api: core)
+    monkeypatch.setattr(eb.k8s, "NetworkingV1Api", lambda api: networking)
+
+    eb._ensure_bootstrap_ingress(object(), [])
+
+    _namespace, ingress = networking.create_namespaced_ingress.call_args.args
+    assert ingress.metadata.annotations["alb.ingress.kubernetes.io/listen-ports"] == '[{"HTTP": 80}]'
+
+
 def _ingress_with_hostname(hostname):
     entry = SimpleNamespace(hostname=hostname)
     load_balancer = SimpleNamespace(ingress=[entry] if hostname else [])
@@ -178,3 +198,92 @@ def test_bootstrap_ensures_ingress_class_with_the_dns_label_group_name(monkeypat
     eb.bootstrap_eks_environment(infra, credentials={}, region="us-east-1", cluster_name="infra-x")
 
     assert calls["group_name"] == "launchpad-a1b2c3d4e5f6a7b8"
+
+
+# ── F1b part 3a: apply_eks_tls ──────────────────────────────────────────────────────────
+
+def test_apply_eks_tls_refuses_mock_infra_outside_dev_mode():
+    from api.services.platform_dns.route53_client import MockRealMismatch
+
+    with pytest.raises(MockRealMismatch):
+        eb.apply_eks_tls(
+            SimpleNamespace(id="x"), credentials={}, region="us-east-1", cluster_name="c",
+            cert_arn="arn:aws:acm:us-east-1:1:certificate/x", infra_is_mock=True, dev_mode=False,
+        )
+
+
+def test_apply_eks_tls_refuses_real_infra_inside_dev_mode():
+    from api.services.platform_dns.route53_client import MockRealMismatch
+
+    with pytest.raises(MockRealMismatch):
+        eb.apply_eks_tls(
+            SimpleNamespace(id="x"), credentials={}, region="us-east-1", cluster_name="c",
+            cert_arn="arn:aws:acm:us-east-1:1:certificate/x", infra_is_mock=False, dev_mode=True,
+        )
+
+
+def test_apply_eks_tls_dev_mode_skips_k8s_and_returns_true(monkeypatch):
+    """Mock end-to-end: there is no real cluster to patch (bootstrap_eks_environment already
+    refuses to run against one), so a mock/dev caller gets True with no k8s API traffic."""
+    session = MagicMock()
+    monkeypatch.setattr(eb, "_boto_session", lambda credentials, region: session)
+
+    result = eb.apply_eks_tls(
+        SimpleNamespace(id="x"), credentials={}, region="us-east-1", cluster_name="c",
+        cert_arn="arn:aws:acm:us-east-1:1:certificate/x", infra_is_mock=True, dev_mode=True,
+    )
+
+    assert result is True
+    session.client.assert_not_called()
+
+
+def test_apply_eks_tls_patches_the_cert_onto_the_class_and_443_onto_the_bootstrap_ingress(monkeypatch):
+    infra = SimpleNamespace(id="x", is_mock=False)
+    session = MagicMock()
+    session.client.return_value.describe_cluster.return_value = {
+        "cluster": {"endpoint": "https://x", "certificateAuthority": {"data": "ca"}}
+    }
+    monkeypatch.setattr(eb, "_boto_session", lambda credentials, region: session)
+    monkeypatch.setattr(eb, "mint_eks_token", lambda *a, **k: "token")
+
+    api_cm = MagicMock()
+    monkeypatch.setattr(eb, "k8s_api_client", lambda *a, **k: api_cm)
+    api_cm.__enter__.return_value = object()
+    api_cm.__exit__.return_value = False
+
+    manager = MagicMock()
+    monkeypatch.setattr(eb.k8s, "CustomObjectsApi", lambda api: manager.custom)
+    monkeypatch.setattr(eb.k8s, "NetworkingV1Api", lambda api: manager.networking)
+
+    cert_arn = "arn:aws:acm:us-east-1:1:certificate/abc"
+    result = eb.apply_eks_tls(
+        infra, credentials={}, region="us-east-1", cluster_name="infra-x",
+        cert_arn=cert_arn, infra_is_mock=False, dev_mode=False,
+    )
+
+    assert result is True
+    # B1 (security review, second round): listenPorts is deliberately NOT patched onto the
+    # shared class — the AWS Load Balancer Controller documents class-level
+    # IngressClassParams fields as overriding the equivalent per-Ingress annotation, so
+    # setting it here would silently widen every Ingress (including the host-only one
+    # scoped to HTTPS:443) back onto both ports.
+    manager.custom.patch_cluster_custom_object.assert_called_once_with(
+        "eks.amazonaws.com", "v1", "ingressclassparams", eb.INGRESS_CLASS_NAME,
+        {"spec": {"certificateARNs": [cert_arn]}},
+    )
+    # HTTPS:443 is added to the bootstrap Ingress here — the first point a certificate is
+    # known to exist — not at _ensure_bootstrap_ingress time (no cert exists there yet, and
+    # an ALB HTTPS listener cannot be created without one).
+    manager.networking.patch_namespaced_ingress.assert_called_once_with(
+        "bootstrap", eb.BOOTSTRAP_NAMESPACE,
+        {"metadata": {"annotations": {
+            "alb.ingress.kubernetes.io/listen-ports": '[{"HTTP": 80}, {"HTTPS": 443}]',
+        }}},
+    )
+    # The certificate patch must land before the Ingress patch that triggers the
+    # controller's reconcile of it, or the reconcile could run against a class with no
+    # resolvable certificate yet.
+    call_order = [name for name, _args, _kwargs in manager.mock_calls]
+    assert call_order.index("custom.patch_cluster_custom_object") < call_order.index(
+        "networking.patch_namespaced_ingress"
+    )

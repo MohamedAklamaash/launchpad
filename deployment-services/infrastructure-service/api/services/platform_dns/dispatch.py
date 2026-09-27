@@ -84,6 +84,12 @@ def converge_from_infra_id(infra_id: str, *, dev_mode: bool) -> None:
                 raise PermanentReconcileError(f"permanent Route53 error {code}: {exc}") from exc
         raise
 
+    # F1b part 3a: a successful converge may have just changed dns_synced (the ledger's
+    # synced_at moved, or the edge/wildcard pair was created or torn down) — refresh
+    # application-service's read-model snapshot. Best-effort, never raises.
+    from api.services.host_readiness import publish_host_readiness
+    publish_host_readiness(infra_id)
+
 
 def process_reconcile_message(body: bytes, *, dev_mode: bool) -> None:
     """Convenience wrapper used by tests that only care about success/exception, not the

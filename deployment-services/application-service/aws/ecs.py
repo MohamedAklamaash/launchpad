@@ -15,7 +15,7 @@ class ECSClient:
         self.service_stable_poll_interval = int(os.environ.get('ECS_SERVICE_STABLE_POLL_INTERVAL', '10'))
         self.failed_tasks_threshold = int(os.environ.get('ECS_FAILED_TASKS_THRESHOLD', '3'))
     
-    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None, secrets=None, tags=None):
+    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None, secrets=None, tags=None, host_mode=False, app_hostname=None):
         env_vars = [{'name': k, 'value': str(v)} for k, v in (envs or {}).items()]
         logger.info(f"Creating task definition with {len(env_vars)} environment variables: {list(envs.keys()) if envs else []}")
         
@@ -42,10 +42,13 @@ class ECSClient:
         
         memory_str = str(int(memory * 1024))
         
-        nginx_config = self._generate_nginx_config(app_name, container_port) if app_name else None
-        
+        nginx_config = (
+            self._generate_nginx_config(app_name, container_port, host_mode=host_mode, app_hostname=app_hostname)
+            if app_name else None
+        )
+
         if app_name:
-            env_vars = inject_routing_envs(env_vars, app_name)
+            env_vars = inject_routing_envs(env_vars, app_name, host_mode=host_mode)
         
         container_definitions = []
         
@@ -148,8 +151,8 @@ class ECSClient:
         )
         return response['taskDefinition']['taskDefinitionArn']
     
-    def _generate_nginx_config(self, app_name, backend_port):
-        return generate_nginx_config(app_name, backend_port)
+    def _generate_nginx_config(self, app_name, backend_port, host_mode=False, app_hostname=None):
+        return generate_nginx_config(app_name, backend_port, host_mode=host_mode, app_hostname=app_hostname)
     
     def create_service(self, cluster_arn, service_name, task_definition_arn, target_group_arn, subnet_ids, security_group_ids, container_name, container_port=8000, use_nginx=False, tags=None):
         try:

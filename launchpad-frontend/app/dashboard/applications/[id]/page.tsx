@@ -208,6 +208,20 @@ export default function ApplicationDetailPage() {
         )}
       </div>
 
+      {app.host_url && (
+        <a href={app.host_url} target="_blank" rel="noopener noreferrer"
+          className="group flex items-center gap-4 rounded-xl border border-azure/30 bg-azure/10 px-4 py-3.5 transition-colors hover:border-azure/50 hover:bg-azure/[0.14] outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
+          <span className="w-10 h-10 rounded-lg bg-azure/15 border border-azure/30 flex items-center justify-center shrink-0">
+            <Globe className="w-4 h-4 text-azure" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <span className="eyebrow text-azure">Host URL</span>
+            <p className="mt-0.5 text-sm font-mono text-azure truncate">{app.host_url}</p>
+          </div>
+          <ExternalLink className="w-4 h-4 text-azure/70 shrink-0 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+        </a>
+      )}
+
       {app.deployment_url && (
         <a href={app.deployment_url} target="_blank" rel="noopener noreferrer"
           className="group flex items-center gap-4 rounded-xl border border-azure/30 bg-azure/10 px-4 py-3.5 transition-colors hover:border-azure/50 hover:bg-azure/[0.14] outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
@@ -215,7 +229,7 @@ export default function ApplicationDetailPage() {
             <Globe className="w-4 h-4 text-azure" />
           </span>
           <div className="min-w-0 flex-1">
-            <span className="eyebrow text-azure">Live URL</span>
+            <span className="eyebrow text-azure">{app.host_url ? 'Path URL' : 'Live URL'}</span>
             <p className="mt-0.5 text-sm font-mono text-azure truncate">{app.deployment_url}</p>
           </div>
           <ExternalLink className="w-4 h-4 text-azure/70 shrink-0 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />

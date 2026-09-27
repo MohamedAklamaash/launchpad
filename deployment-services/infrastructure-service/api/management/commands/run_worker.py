@@ -6,10 +6,12 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import timedelta
 
 from api.services.infra_queue import DB_LOCK_STALENESS_SECONDS
 from django.core.management.base import BaseCommand
 from django.db import connections, transaction
+from django.utils import timezone
 
 os.environ['DB_CONN_MAX_AGE'] = '0'
 
@@ -132,6 +134,7 @@ def check_pending_certificates():
                 f"TLS bootstrap timed out for infra {infra.id} after "
                 f"{cert_bootstrap.ISSUED_CHECK_TIMEOUT}; marking FAILED (env stays ACTIVE on path URL)"
             )
+            _publish_host_readiness(infra.id)
             continue
 
         if not cert.cert_arn:
@@ -159,13 +162,21 @@ def check_pending_certificates():
             if updated:
                 logger.info(f"TLS certificate ISSUED for infra {infra.id}; re-enqueuing provision to apply 443")
                 InfraQueue.enqueue_provision(str(infra.id))
+                _publish_host_readiness(infra.id)
         elif status in ("FAILED", "VALIDATION_TIMED_OUT", "REVOKED"):
             InfrastructureCertificate.objects.filter(
                 id=cert.id, tls_status=InfrastructureCertificate.TLS_PENDING,
             ).update(tls_status=InfrastructureCertificate.TLS_FAILED)
             logger.warning(f"ACM reports {status} for infra {infra.id} certificate; marking FAILED")
+            _publish_host_readiness(infra.id)
 
     _reenqueue_issued_certs_missing_https_listener(deadline)
+    _apply_eks_tls_for_issued_certs(deadline, dev_mode)
+
+
+def _publish_host_readiness(infra_id) -> None:
+    from api.services.host_readiness import publish_host_readiness
+    publish_host_readiness(infra_id)
 
 
 def _reenqueue_issued_certs_missing_https_listener(deadline):
@@ -202,6 +213,104 @@ def _reenqueue_issued_certs_missing_https_listener(deadline):
 
         logger.info(f"TLS ISSUED for infra {infra.id} but https_listener_arn is unset; re-enqueuing provision")
         InfraQueue.enqueue_provision(str(infra.id))
+
+
+# R3 (security review): bounded retry for a persistently failing EKS TLS patch attempt
+# against a STABLE target cert_arn — mirrors cert_bootstrap.ISSUED_CHECK_TIMEOUT's own
+# age-based cutoff for the PENDING-certificate loop, so an unreachable cluster or a k8s API
+# throttle doesn't get a fresh AssumeRole + describe_cluster + patch attempt every ~30s
+# tick forever.
+EKS_TLS_PATCH_TIMEOUT = timedelta(minutes=30)
+
+
+def _apply_eks_tls_for_issued_certs(deadline, dev_mode: bool):
+    """EKS counterpart to _reenqueue_issued_certs_missing_https_listener above: patch the
+    cluster's IngressClassParams once TLS is ISSUED, instead of re-enqueuing a terraform
+    apply (EKS's 443 wiring is a k8s object patch, not a terraform module). Uses
+    `assume_role_credentials_only`, same reasoning as the PENDING re-check loop — a
+    transient failure here must not flip `is_cloud_authenticated`/`metadata` on the
+    customer-facing row.
+
+    R3: `eks_ingress_tls_ready` alone is not enough to decide "nothing to do" — a
+    certificate re-issue (FAILED -> a fresh RequestCertificate, a new ARN) after this
+    field was already True from a now-superseded cert must trigger a re-patch, or the
+    Ingress class keeps serving a stale/deleted certificate ARN forever. `eks_ingress_tls_
+    cert_arn` tracks which cert_arn eks_ingress_tls_ready actually reflects (or is
+    currently being attempted against); a mismatch against the currently-ISSUED cert's own
+    ARN means "needs (re-)patching," never a one-shot latch.
+    """
+    from api.cloud_providers.aws.authenticate import assume_role_credentials_only
+    from api.models.environment import Environment
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+    from api.services.eks_bootstrap import apply_eks_tls
+    from api.services.host_readiness import publish_host_readiness
+    from shared.enums.orchestrator import ComputeType
+
+    issued = InfrastructureCertificate.objects.filter(
+        tls_status=InfrastructureCertificate.TLS_ISSUED,
+    ).select_related("infrastructure")
+
+    for cert in issued:
+        if time.monotonic() > deadline:
+            logger.warning("EKS TLS patch sweep hit its time budget; remaining rows deferred to next tick")
+            break
+
+        infra = cert.infrastructure
+        if infra.compute_type != ComputeType.EKS:
+            continue
+
+        env = Environment.objects.filter(infrastructure_id=infra.id).first()
+        if not _cert_recheck_eligible(infra, env):
+            continue
+        if not env.cluster_arn or not cert.cert_arn:
+            continue
+
+        already_patched = env.eks_ingress_tls_ready and env.eks_ingress_tls_cert_arn == cert.cert_arn
+        if already_patched:
+            continue
+
+        now = timezone.now()
+        target_changed = env.eks_ingress_tls_cert_arn != cert.cert_arn
+        if target_changed:
+            # A fresh target (first attempt ever, or the cert was re-issued since the
+            # last one we patched/attempted) — reset the attempt clock and drop the
+            # ready flag immediately, so a stale True is never left mirrored out while a
+            # re-patch is pending.
+            Environment.objects.filter(id=env.id).update(
+                eks_ingress_tls_ready=False, eks_ingress_tls_cert_arn=cert.cert_arn,
+                eks_ingress_tls_patch_attempted_at=now,
+            )
+            env.eks_ingress_tls_cert_arn = cert.cert_arn
+            env.eks_ingress_tls_patch_attempted_at = now
+            publish_host_readiness(infra.id)
+        elif (
+            env.eks_ingress_tls_patch_attempted_at is not None
+            and now - env.eks_ingress_tls_patch_attempted_at > EKS_TLS_PATCH_TIMEOUT
+        ):
+            logger.warning(
+                f"EKS TLS patch for infra {infra.id} has been failing against cert "
+                f"{cert.cert_arn} for over {EKS_TLS_PATCH_TIMEOUT}; giving up until the "
+                "target certificate changes"
+            )
+            continue
+
+        try:
+            credentials = assume_role_credentials_only(infra)
+            region = (infra.metadata or {}).get("aws_region", "us-west-2")
+            cluster_name = env.cluster_arn.split("/")[-1]
+            apply_eks_tls(
+                infra, credentials=credentials, region=region, cluster_name=cluster_name,
+                cert_arn=cert.cert_arn, infra_is_mock=infra.is_mock, dev_mode=dev_mode,
+            )
+        except Exception:
+            logger.warning(f"EKS TLS patch failed for infra {infra.id} (will retry next tick)", exc_info=True)
+            continue
+
+        Environment.objects.filter(id=env.id).update(
+            eks_ingress_tls_ready=True, eks_ingress_tls_patch_attempted_at=None,
+        )
+        logger.info(f"EKS IngressClassParams patched with TLS for infra {infra.id}")
+        publish_host_readiness(infra.id)
 
 
 MAX_PROVISION_WORKERS = int(os.environ.get('INFRA_MAX_PROVISION_WORKERS', '5'))

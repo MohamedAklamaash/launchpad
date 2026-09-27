@@ -37,7 +37,15 @@ class ApplicationCleanupService:
             # Step 2: Delete Listener Rule
             if application.listener_rule_arn:
                 self._delete_listener_rule(session, application.listener_rule_arn)
-            
+
+            # Step 2.5: Delete the host-mode 443 forward rule (F1b part 3a), if this app
+            # was ever deployed in host mode. The per-infra :80 wildcard redirect rule
+            # (aws/alb.py:ensure_host_redirect_rule) is intentionally NOT deleted here — it
+            # is shared by every app on this infra, not owned by this one, and is torn
+            # down with the ALB itself at infra teardown.
+            if application.host_forward_rule_arn:
+                self._delete_listener_rule(session, application.host_forward_rule_arn)
+
             # Step 3: Delete Target Group
             if application.target_group_arn:
                 self._delete_target_group(session, application.target_group_arn)

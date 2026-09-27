@@ -106,11 +106,17 @@ def _acm_client(*, infra_is_mock: bool, dev_mode: bool, credentials: dict, regio
 def ensure_certificate(infra, *, credentials: dict, region: str, infra_is_mock: bool, dev_mode: bool) -> None:
     """Idempotent. Safe to call on every successful apply — a no-op once ISSUED or while a
     request is already PENDING within its poll window. Never raises."""
+    from api.services.host_readiness import publish_host_readiness
+
     try:
         _ensure_certificate(infra, credentials=credentials, region=region,
                              infra_is_mock=infra_is_mock, dev_mode=dev_mode)
     except Exception:
         logger.exception("ACM cert bootstrap failed for infrastructure %s (non-fatal)", infra.id)
+    finally:
+        # tls_status may have just moved (PENDING/POLICY_STALE/no-op) — refresh
+        # application-service's read-model snapshot (F1b part 3a).
+        publish_host_readiness(infra.id)
 
 
 def _ensure_certificate(infra, *, credentials: dict, region: str, infra_is_mock: bool, dev_mode: bool) -> None:

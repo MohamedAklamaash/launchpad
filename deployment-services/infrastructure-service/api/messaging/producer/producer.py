@@ -15,6 +15,10 @@ class InfraEventProducer:
     ROUTING_KEY_INFRA_DELETED = "infrastructure.deleted"
     ROUTING_KEY_INFRA_USER_REMOVED = "infrastructure.user_removed"
     ROUTING_KEY_ENV_UPDATED = "environment.updated"
+    # F1b part 3a: cross-service host-routing readiness contract (see
+    # api/services/host_readiness.py). A pure state mirror — the consumer never treats this
+    # payload as an authorization decision, only as read-model fields to upsert.
+    ROUTING_KEY_HOST_READINESS_UPDATED = "infrastructure.host_readiness_updated"
 
     def __init__(self):
         self.producer = ResilientPikaProducer(
@@ -45,6 +49,7 @@ class InfraEventProducer:
         is_mock=False,
         invited_users=None,
         metadata=None,
+        dns_label=None,
         correlation_id=None,
     ):
         """
@@ -72,6 +77,12 @@ class InfraEventProducer:
                 "code": code,
                 "is_cloud_authenticated": is_cloud_authenticated,
                 "is_mock": is_mock,
+                # dns_label is minted once at infra creation (Infrastructure.mint_dns_label)
+                # and never changes — carried here (in addition to the dedicated
+                # host_readiness_updated event) so it reaches application-service's
+                # read-model even if that event is ever lost, since infrastructure.created
+                # fires on every apply.
+                "dns_label": dns_label,
                 "invited_users": invited_users or [],
                 # Never ship live STS credentials over the broker / into the read-model DB.
                 # application-service re-assumes the role itself, so these keys are redundant.
@@ -234,6 +245,50 @@ class InfraEventProducer:
             },
         )
         self.producer.publish(routing_key=self.ROUTING_KEY_ENV_UPDATED, body=event)
+
+    def publish_host_readiness_updated(
+        self,
+        infra_id,
+        version,
+        dns_label=None,
+        tls_status=None,
+        dns_synced=False,
+        https_ready=False,
+        correlation_id=None,
+    ):
+        """Publish infrastructure.host_readiness_updated — see api/services/host_readiness.py.
+        A fresh snapshot every time, not a diff: the consumer just upserts these fields onto
+        its read-model. `version` (required, positional — see host_readiness.py:
+        publish_host_readiness) is `Infrastructure.host_readiness_version`, a per-infra
+        monotonic counter incremented under a row lock before every publish — RECOMMENDED
+        item 2 (security review): several concurrent publishers (a terraform apply, the TLS
+        re-check tick, the DNS writer's own converge loop) give no cross-publisher
+        wall-clock ordering guarantee, but this integer is strictly increasing regardless of
+        which one fires or how their clocks compare. `metadata.version` below is this
+        event's own schema/payload-shape version — an unrelated, pre-existing convention
+        shared by every event this producer publishes — not this counter."""
+        cid = correlation_id or str(uuid.uuid4())
+        event = {
+            "type": self.ROUTING_KEY_HOST_READINESS_UPDATED,
+            "payload": {
+                "infra_id": str(infra_id),
+                "host_readiness_version": version,
+                "dns_label": dns_label,
+                "tls_status": tls_status,
+                "dns_synced": bool(dns_synced),
+                "https_ready": bool(https_ready),
+            },
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"version": 1, "correlation_id": cid},
+        }
+        self.producer.publish(routing_key=self.ROUTING_KEY_HOST_READINESS_UPDATED, body=event)
+        logger.info(
+            "Published infrastructure.host_readiness_updated event",
+            extra={
+                "correlation_id": cid, "infra_id": str(infra_id),
+                "tls_status": tls_status, "dns_synced": bool(dns_synced), "https_ready": bool(https_ready),
+            },
+        )
 
     def close(self):
         self.producer.close()

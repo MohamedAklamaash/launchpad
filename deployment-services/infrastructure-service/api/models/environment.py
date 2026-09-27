@@ -28,7 +28,26 @@ class Environment(models.Model):
     # and used as one leg of the "host URL is safe to publish" gate alongside
     # InfrastructureCertificate.tls_status == ISSUED and the DNS ledger's synced_at.
     https_listener_arn = models.CharField(max_length=512, null=True, blank=True)
-    
+    # EKS counterpart to https_listener_arn: set once the cluster's shared IngressClassParams
+    # object has been patched with this infra's ACM certificate ARN and the 80+443 listen
+    # ports (see api/services/eks_bootstrap.py:apply_eks_tls). ECS never sets this — its
+    # readiness signal is https_listener_arn instead. Null for every EKS infra whose
+    # certificate isn't ISSUED yet, or whose patch attempt hasn't succeeded.
+    eks_ingress_tls_ready = models.BooleanField(default=False)
+    # R3 (security review): the ACM certificate ARN eks_ingress_tls_ready was last patched
+    # (or is currently being attempted) against. A cert re-issue after a FAILED/re-request
+    # cycle gets a new ARN — comparing against this is how the TLS sweep
+    # (run_worker.py:_apply_eks_tls_for_issued_certs) notices the patched cert is stale and
+    # re-patches, instead of eks_ingress_tls_ready staying True forever once set. Cleared on
+    # teardown alongside eks_ingress_tls_ready.
+    eks_ingress_tls_cert_arn = models.CharField(max_length=255, null=True, blank=True)
+    # When the current attempt cycle against eks_ingress_tls_cert_arn started — reset
+    # whenever that target cert_arn changes, and used to bound how long a persistently
+    # failing patch attempt (unreachable cluster, k8s API throttling) gets retried every
+    # ~30s tick before giving up, mirroring cert_bootstrap.ISSUED_CHECK_TIMEOUT's own
+    # age-based cutoff for the PENDING-certificate loop. Null once patched successfully.
+    eks_ingress_tls_patch_attempted_at = models.DateTimeField(null=True, blank=True)
+
     status = models.CharField(
         max_length=50,
         choices=[

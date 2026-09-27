@@ -4,6 +4,7 @@ import time
 import uuid
 
 from api.common.envs.application import app_config
+from api.common.host_url import is_valid_dns_label
 from api.repositories.infrastructure import InfrastructureRepository
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import OperationalError, connection, transaction
@@ -256,6 +257,166 @@ class InfraUpdatedEventConsumer:
             transient = self._is_transient(exc)
             log.exception(
                 "Error processing infrastructure.updated event",
+                extra={"correlation_id": correlation_id, "infra_id": infra_id},
+            )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
+
+    def start(self):
+        self.consumer.start(self.callback)
+
+    def stop(self):
+        self.consumer.stop()
+
+    def close(self):
+        self.stop()
+
+
+class HostReadinessEventConsumer:
+    """Consume infrastructure.host_readiness_updated and mirror it onto the read-model
+    (F1b part 3a — see infrastructure-service's api/services/host_readiness.py).
+
+    A pure state mirror: this consumer only ever writes read-model fields, never anything
+    that grants access or bypasses a check — the payload must not be trusted for
+    authorization. Every field is a fresh snapshot, not a diff, so a message applied out of
+    order only risks a stale value briefly winning over a fresher one; `host_readiness_version`
+    (a per-infra monotonic counter minted by infrastructure-service, not a wall clock —
+    RECOMMENDED item 2, security review) closes that window. Required: a payload missing it
+    is discarded rather than treated as "always current"."""
+
+    EXCHANGE_NAME = "infrastructure.events"
+    ROUTING_KEY = "infrastructure.host_readiness_updated"
+    QUEUE_NAME = "application-service.host-readiness-events"
+    MAX_RETRIES = 10
+
+    def __init__(self):
+        self._retry_counts: dict = {}
+        self.consumer = ResilientPikaConsumer(
+            url=app_config.rabbitmq_url,
+            exchange=self.EXCHANGE_NAME,
+            queue=self.QUEUE_NAME,
+            routing_key=self.ROUTING_KEY,
+            name="application-service-host-readiness-consumer",
+            prefetch_count=1,
+        )
+
+    @staticmethod
+    def _is_transient(exc: Exception) -> bool:
+        return isinstance(exc, (ObjectDoesNotExist, OperationalError))
+
+    def callback(self, ch, method, properties, body):
+        correlation_id = (
+            properties.correlation_id
+            if properties and properties.correlation_id
+            else str(uuid.uuid4())
+        )
+        log = logger.getChild("host_readiness_event")
+
+        try:
+            event = json.loads(body)
+        except json.JSONDecodeError:
+            log.error("JSON decode failed — discarding", extra={"correlation_id": correlation_id})
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        payload = event.get("payload", {})
+        infra_id = payload.get("infra_id")
+        if not infra_id:
+            log.warning("host_readiness event missing infra_id — discarding", extra={"correlation_id": correlation_id})
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        # RECOMMENDED item 2 (security review): required, not just preferred — a payload
+        # missing this counter cannot be ordered against what's already stored, and treating
+        # "missing" as "always current" (the old occurred_at-is-None behavior) would let a
+        # stripped or malformed field bypass the staleness check entirely.
+        incoming_version = payload.get("host_readiness_version")
+        if not isinstance(incoming_version, int):
+            log.error(
+                "host_readiness event missing/invalid host_readiness_version — discarding",
+                extra={"correlation_id": correlation_id, "infra_id": infra_id},
+            )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        try:
+            from api.models.infrastructure import Infrastructure
+
+            connection.close()
+
+            infra = Infrastructure.objects.filter(id=infra_id).first()
+            if infra is None:
+                retry_count = self._retry_counts.get(infra_id, 0)
+                if retry_count >= self.MAX_RETRIES:
+                    log.warning(
+                        "host_readiness event unresolved after max retries — discarding (likely stale infra)",
+                        extra={"correlation_id": correlation_id, "infra_id": infra_id},
+                    )
+                    self._retry_counts.pop(infra_id, None)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                else:
+                    self._retry_counts[infra_id] = retry_count + 1
+                    delay = min(2 ** retry_count, 30)
+                    log.warning(
+                        "host_readiness event deferred — infra not synced yet (attempt %d/%d, delay %ds)",
+                        retry_count + 1, self.MAX_RETRIES, delay,
+                        extra={"correlation_id": correlation_id, "infra_id": infra_id},
+                    )
+                    time.sleep(delay)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                return
+
+            with transaction.atomic():
+                # Never let an older snapshot overwrite a fresher one — this service's
+                # several publishers (a terraform apply, the TLS re-check tick, the DNS
+                # writer's own converge loop) give no cross-publisher ordering guarantee.
+                # host_readiness_version is a per-infra monotonic counter minted by
+                # infrastructure-service under a row lock, immune to clock skew between
+                # those publishers the way a wall-clock timestamp is not.
+                if incoming_version <= infra.host_readiness_version:
+                    log.info(
+                        "host_readiness event is stale — discarding without applying",
+                        extra={"correlation_id": correlation_id, "infra_id": infra_id},
+                    )
+                else:
+                    update_fields = ["dns_synced", "https_ready", "host_readiness_version"]
+                    infra.dns_synced = bool(payload.get("dns_synced", False))
+                    infra.https_ready = bool(payload.get("https_ready", False))
+                    infra.host_readiness_version = incoming_version
+                    # R4 (security review): write-once, same as upsert_infrastructure — a
+                    # stored non-null dns_label that disagrees with the incoming payload is
+                    # refused and logged rather than overwritten. This field feeds directly
+                    # into every hostname this service builds (api/common/host_url.py).
+                    incoming_dns_label = payload.get("dns_label")
+                    if incoming_dns_label and not is_valid_dns_label(incoming_dns_label):
+                        log.error(
+                            "host_readiness event carries a malformed dns_label — ignoring",
+                            extra={"correlation_id": correlation_id, "infra_id": infra_id},
+                        )
+                    elif incoming_dns_label:
+                        if infra.dns_label is None:
+                            infra.dns_label = incoming_dns_label
+                            update_fields.append("dns_label")
+                        elif infra.dns_label != incoming_dns_label:
+                            log.error(
+                                "host_readiness event dns_label disagrees with the stored "
+                                "value — refusing to overwrite",
+                                extra={
+                                    "correlation_id": correlation_id, "infra_id": infra_id,
+                                    "stored_dns_label": infra.dns_label,
+                                },
+                            )
+                    if "tls_status" in payload:
+                        infra.tls_status = payload.get("tls_status")
+                        update_fields.append("tls_status")
+                    infra.save(update_fields=update_fields)
+
+            self._retry_counts.pop(infra_id, None)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        except Exception as exc:
+            transient = self._is_transient(exc)
+            log.exception(
+                "Error processing host_readiness event",
                 extra={"correlation_id": correlation_id, "infra_id": infra_id},
             )
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)

@@ -90,10 +90,16 @@ class ALBClient:
         return response['Rules'][0]['RuleArn']
 
     def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority, tags=None):
+        """`path_pattern` accepts either a single glob string (legacy callers) or a list
+        of exact/prefix patterns — see the R1 note on `_configure_alb_routing`'s caller:
+        a bare `/{slug}*` glob matches any OTHER slug sharing that prefix (`/a*` matches
+        `/ab/x`), so the deploy flow now always passes `[f"/{slug}", f"/{slug}/*"]`
+        instead. ALB OR-matches multiple Values on one path-pattern condition."""
         import time
+        patterns = path_pattern if isinstance(path_pattern, list) else [path_pattern]
         rule_arn = self._create_rule_with_retry(
             listener_arn,
-            conditions=[{'Field': 'path-pattern', 'Values': [path_pattern]}],
+            conditions=[{'Field': 'path-pattern', 'Values': patterns}],
             actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
             tags=tags,
         )
@@ -131,6 +137,83 @@ class ALBClient:
             }],
             tags=tags,
         )
+
+    def ensure_host_redirect_rule(self, listener_arn, dns_label, base_domain, tags=None):
+        """One per-infra wildcard :80 redirect (`*.{dns_label}.{base_domain}` -> https),
+        not a per-app rule. ALB evaluates rules lowest-priority-number-first, and the
+        existing per-app :80 path rules (`create_listener_rule`) always allocate from the
+        lowest free priority (`get_next_priority`) — a per-app host-redirect rule created
+        the normal way would therefore usually sit at a HIGHER priority number than an
+        app's own path rule and lose to it. A request for
+        `Host: a.{label}.{base}` + path `/a/x` would match app A's `/a*` path rule first,
+        forward plaintext to A's target group, and reach A's nginx host-mode block over
+        HTTP — exactly the "never forwards an app hostname" violation this rule exists to
+        prevent.
+
+        Reserving priority 1 for this ONE wildcard rule sidesteps the whole ordering
+        problem instead of trying to out-allocate every path rule: it matches every app's
+        host-mode hostname on this infra, is created (and priority-swapped into place)
+        once, and is a plain idempotent lookup on every later deploy. This also keeps :80
+        rule consumption to one rule per infra instead of one per app (ALB caps a
+        listener's rule count).
+        """
+        wildcard_host = f"*.{dns_label}.{base_domain}"
+        with _get_listener_lock(listener_arn):
+            existing_rules = self.client.describe_rules(ListenerArn=listener_arn).get('Rules', [])
+            for rule in existing_rules:
+                for condition in rule.get('Conditions', []):
+                    if condition.get('Field') == 'host-header' and wildcard_host in condition.get('Values', []):
+                        # R1: a rule found already at priority 1 is the common case and
+                        # needs nothing further. One NOT at priority 1 — a previous
+                        # set_rule_priorities call that never ran or failed partway, or a
+                        # later path rule created before this repair runs — must be
+                        # reclaimed on every call, not only at creation, or it stays
+                        # outranked by a path rule forever (the plaintext-forward
+                        # violation this rule exists to prevent).
+                        if rule.get('Priority') != '1':
+                            self._reprioritize_to_one(listener_arn, rule['RuleArn'], existing_rules)
+                        return rule['RuleArn']
+
+            priority = self.get_next_priority(listener_arn)
+            response = self.client.create_rule(
+                ListenerArn=listener_arn,
+                Conditions=[{'Field': 'host-header', 'Values': [wildcard_host]}],
+                Actions=[{
+                    'Type': 'redirect',
+                    'RedirectConfig': {
+                        'Protocol': 'HTTPS', 'Port': '443', 'StatusCode': 'HTTP_301',
+                        'Host': '#{host}', 'Path': '/#{path}', 'Query': '#{query}',
+                    },
+                }],
+                Priority=priority,
+                **({'Tags': as_key_value_tags(tags)} if tags else {}),
+            )
+            new_rule_arn = response['Rules'][0]['RuleArn']
+
+            if priority != 1:
+                self._reprioritize_to_one(listener_arn, new_rule_arn, existing_rules)
+
+        return new_rule_arn
+
+    def _reprioritize_to_one(self, listener_arn, rule_arn, existing_rules):
+        """Swap `rule_arn` into priority 1, displacing whatever currently holds it (if
+        anything, and if it isn't `rule_arn` itself) to a freshly-allocated free priority.
+        Called both right after creating the redirect rule and every time
+        ensure_host_redirect_rule finds it already existing but not at 1 — see R1's note
+        above on why this must be idempotent and repeatable, not just a one-shot swap at
+        creation time."""
+        rule_at_1 = next(
+            (r for r in existing_rules if r.get('Priority') == '1' and r['RuleArn'] != rule_arn), None,
+        )
+        priorities = [{'RuleArn': rule_arn, 'Priority': 1}]
+        if rule_at_1 is not None:
+            # An atomic priority swap: the rule currently at 1 moves to a priority
+            # get_next_priority guarantees free right now, so there is never a moment
+            # both rules claim the same priority nor a moment priority 1 is unclaimed.
+            displaced_priority = self.get_next_priority(listener_arn)
+            priorities.append({'RuleArn': rule_at_1['RuleArn'], 'Priority': displaced_priority})
+        self.client.set_rule_priorities(RulePriorities=priorities)
+        logger.info(f"Reseated host-redirect rule {rule_arn} to priority 1 on {listener_arn}")
 
     def verify_target_group_attached(self, target_group_arn, listener_arn, max_retries=None, delay=None):
         """Verify target group is attached via listener rule"""

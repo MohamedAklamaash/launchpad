@@ -62,6 +62,7 @@ class ApiConfig(AppConfig):
 
         from api.messaging.consumers.environment import EnvironmentEventConsumer
         from api.messaging.consumers.infrastructure import (
+            HostReadinessEventConsumer,
             InfraDeletedEventConsumer,
             InfraEventConsumer,
             InfraUpdatedEventConsumer,
@@ -123,10 +124,20 @@ class ApiConfig(AppConfig):
             except Exception:
                 logger.exception("EnvironmentEventConsumer crashed")
 
+        def start_host_readiness_consumer():
+            try:
+                if not _wait_for_db():
+                    return
+                logger.info("Initializing Application Service HostReadinessEventConsumer…")
+                HostReadinessEventConsumer().start()
+            except Exception:
+                logger.exception("HostReadinessEventConsumer crashed")
+
         threading.Thread(target=start_infra_consumer, name="AppInfraConsumer", daemon=True).start()
         threading.Thread(target=start_infra_updated_consumer, name="AppInfraUpdatedConsumer", daemon=True).start()
         threading.Thread(target=start_infra_deleted_consumer, name="AppInfraDeletedConsumer", daemon=True).start()
         threading.Thread(target=start_infra_user_removed_consumer, name="AppInfraUserRemovedConsumer", daemon=True).start()
         threading.Thread(target=start_auth_consumer, name="AppAuthConsumer", daemon=True).start()
         threading.Thread(target=start_environment_consumer, name="AppEnvConsumer", daemon=True).start()
+        threading.Thread(target=start_host_readiness_consumer, name="AppHostReadinessConsumer", daemon=True).start()
         logger.info("Application Service messaging threads scheduled.")

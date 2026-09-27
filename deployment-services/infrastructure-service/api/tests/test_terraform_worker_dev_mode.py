@@ -177,6 +177,48 @@ def test_destroy_refuses_mock_infra_in_prod(make_infra_env):
     assert env.status != "DESTROYED"
 
 
+# --- F1b part 3a: mock end-to-end for the ISSUED-cert -> https_listener_arn gate ---------
+
+def test_dev_provision_sets_https_listener_arn_when_cert_is_issued(make_infra_env):
+    """Mirrors the real provision()'s enable_https gate: _mock_provision must not set
+    https_listener_arn until a certificate is actually ISSUED, and must set it (without any
+    real terraform apply) once one is."""
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+
+    infra, env = make_infra_env(is_mock=True)
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, tls_status=InfrastructureCertificate.TLS_ISSUED,
+        cert_arn="arn:aws:acm:us-east-1:123456789012:certificate/mock",
+    )
+
+    with _force_mode(True), \
+            patch.object(TerraformWorker, "_exec_tf", side_effect=AssertionError("_exec_tf must not run in dev")), \
+            patch("api.messaging.producer.producer.infra_producer"):
+        TerraformWorker.provision(str(infra.id))
+
+    env.refresh_from_db()
+    assert env.https_listener_arn is not None
+    assert env.https_listener_arn.startswith("arn:aws:elasticloadbalancing:")
+
+    # host_readiness.https_ready_for reads this exact field back for ECS — see
+    # api/tests/test_host_readiness.py for that computation's own direct coverage
+    # (transaction.on_commit callbacks, including publish_host_readiness, do not fire
+    # inside this test's wrapping transaction, so publishing itself is asserted there).
+    from api.services.host_readiness import https_ready_for
+    assert https_ready_for(infra, env) is True
+
+
+def test_dev_provision_leaves_https_listener_arn_unset_without_a_cert(make_infra_env):
+    infra, env = make_infra_env(is_mock=True)
+    with _force_mode(True), \
+            patch.object(TerraformWorker, "_exec_tf", side_effect=AssertionError("_exec_tf must not run in dev")), \
+            patch("api.messaging.producer.producer.infra_producer"):
+        TerraformWorker.provision(str(infra.id))
+
+    env.refresh_from_db()
+    assert env.https_listener_arn is None
+
+
 def test_destroy_refuses_real_infra_in_dev(make_infra_env):
     infra, env = make_infra_env(is_mock=False)
     with _force_mode(True), \

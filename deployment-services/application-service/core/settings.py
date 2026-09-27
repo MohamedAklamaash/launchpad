@@ -293,3 +293,22 @@ LOGGING = {
 # max_cpu/max_memory quota still applies on top of this.
 EKS_MAX_APP_CPU = float(os.environ.get('EKS_MAX_APP_CPU', '64'))
 EKS_MAX_APP_MEMORY = float(os.environ.get('EKS_MAX_APP_MEMORY', '256'))
+
+# F1b part 3a: the platform DNS zone apex, mirrored from infrastructure-service's own
+# PLATFORM_BASE_DOMAIN (must be the same value — see infrastructure-service/core/
+# settings.py). Deliberately no 'launchpad.app' fallback the way that service's fail-open
+# default has: an app hostname built here is shown to a customer as a live URL, so an
+# unset/wrong value must produce no host URL at all rather than a hostname that never
+# resolves. See api/common/host_url.py.
+PLATFORM_BASE_DOMAIN = os.environ.get('PLATFORM_BASE_DOMAIN') or None
+
+# F1b part 3a security review (B1): EKS host mode is gated behind an explicit opt-in,
+# default OFF. Unlike ECS (where a per-app :443 host-header forward rule and one
+# infra-wide :80 wildcard redirect are the whole mechanism), EKS host mode depends on the
+# AWS Load Balancer Controller honoring a per-Ingress `listen-ports` annotation to scope a
+# host-only Ingress to HTTPS:443 and never attach its rule to the shared ALB's :80
+# listener (see api/k8s/deployer.py:EKSDeployer._host_ingress_manifest) — unverified
+# against a real EKS Auto Mode cluster. Flip this once the REAL-AWS-VALIDATION.md items
+# for EKS host mode are confirmed; until then every EKS app stays on path URLs and
+# `host_url_status` reports `eks_host_mode_disabled`.
+EKS_HOST_MODE_ENABLED = os.environ.get('EKS_HOST_MODE_ENABLED', 'False').lower() == 'true'
