@@ -37,8 +37,15 @@ class PlatformDnsZoneConfig:
 
 def load_platform_dns_config() -> PlatformDnsZoneConfig | None:
     """None if any required piece is missing — callers decide whether that's fatal
-    (the writer at startup, in prod) or fine (mock/dev never needs a real zone)."""
-    base_domain = _base_domain()
+    (the writer at startup, in prod) or fine (mock/dev never needs a real zone).
+
+    PLATFORM_BASE_DOMAIN is read directly from the environment, NOT via
+    settings.PLATFORM_BASE_DOMAIN — that setting falls back to 'launchpad.app' when the
+    env var is unset (see core/settings.py), which exists so services that never touch DNS
+    don't need it configured. The writer must never silently accept that fallback: an
+    operator who set the four PLATFORM_DNS_* vars but forgot PLATFORM_BASE_DOMAIN would
+    otherwise have the writer issue real Route53 calls against a made-up domain."""
+    base_domain = os.environ.get("PLATFORM_BASE_DOMAIN", "").strip().lower().rstrip(".")
     zone_id = os.environ.get("PLATFORM_DNS_ZONE_ID", "")
     account_id = os.environ.get("PLATFORM_DNS_ACCOUNT_ID", "")
     access_key_id = os.environ.get("PLATFORM_DNS_ACCESS_KEY_ID", "")
@@ -54,20 +61,15 @@ def load_platform_dns_config() -> PlatformDnsZoneConfig | None:
     )
 
 
-def _base_domain() -> str:
-    from django.conf import settings
-    return settings.PLATFORM_BASE_DOMAIN
-
-
 def build_real_route53_client(config: PlatformDnsZoneConfig):
     """Explicit keys only — never boto3's default credential chain, which would silently
     pick up an IMDS role or another env var pair meant for a different credential. The
-    writer process holds exactly one AWS identity and must use exactly that one."""
-    import boto3
+    writer process holds exactly one AWS identity and must use exactly that one.
 
-    # Belt-and-braces even though explicit keys are passed below: disables the EC2 instance
-    # metadata credential lookup boto3 would otherwise still probe for on a fallback path.
-    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+    AWS_EC2_METADATA_DISABLED is set at process start in
+    api.common.envs.application.ApplicationConfig.from_env(), not here — this function can
+    run long after other code in the process has already constructed a boto3 client."""
+    import boto3
 
     return boto3.client(
         "route53",
@@ -97,12 +99,30 @@ def assert_caller_identity(config: PlatformDnsZoneConfig) -> None:
             f"platform DNS credential resolved to account {account!r}, expected "
             f"{config.account_id!r}"
         )
-    if not arn.endswith(DNS_WRITER_IAM_ARN_SUFFIX):
+    # Exact match, not a suffix check: builds the one ARN this credential is allowed to be,
+    # from the account id it just proved it holds, rather than accepting anything that
+    # merely ends with the expected user name.
+    expected_arn = f"arn:aws:iam::{config.account_id}:{DNS_WRITER_IAM_ARN_SUFFIX}"
+    if arn != expected_arn:
         raise PlatformDnsMisconfigured(
             f"platform DNS credential ARN {arn!r} is not the dedicated writer user "
-            f"({DNS_WRITER_IAM_ARN_SUFFIX!r})"
+            f"({expected_arn!r})"
         )
     logger.info("platform DNS writer identity verified: %s", arn)
+
+
+def assert_zone_matches_base_domain(client, config: PlatformDnsZoneConfig) -> None:
+    """Startup check: PLATFORM_DNS_ZONE_ID must actually be the hosted zone for
+    PLATFORM_BASE_DOMAIN. Catches a copy-paste mismatch between the two — the writer would
+    otherwise validate names against one domain (naming.py, using
+    settings.PLATFORM_BASE_DOMAIN) while writing records into an unrelated zone."""
+    response = client.get_hosted_zone(Id=config.zone_id)
+    zone_name = response["HostedZone"]["Name"].rstrip(".").lower()
+    if zone_name != config.base_domain:
+        raise PlatformDnsMisconfigured(
+            f"PLATFORM_DNS_ZONE_ID {config.zone_id!r} is the hosted zone for "
+            f"{zone_name!r}, not PLATFORM_BASE_DOMAIN {config.base_domain!r}"
+        )
 
 
 class FakeRoute53Zone:
@@ -123,8 +143,13 @@ class FakeRoute53Zone:
         self.zone_id = zone_id
         self._records: dict[tuple[str, str], dict] = {}
 
-    def list_resource_record_sets(self, HostedZoneId=None):
-        record_sets = [
+    def get_hosted_zone(self, Id=None):
+        return {"HostedZone": {"Id": Id or self.zone_id, "Name": "mock.invalid."}}
+
+    def list_resource_record_sets(
+        self, HostedZoneId=None, StartRecordName=None, StartRecordType=None, MaxItems=None,
+    ):
+        all_sets = [
             {
                 "Name": name,
                 "Type": rtype,
@@ -133,7 +158,25 @@ class FakeRoute53Zone:
             }
             for (name, rtype), rec in sorted(self._records.items())
         ]
-        return {"ResourceRecordSets": record_sets, "IsTruncated": False}
+        start_index = 0
+        if StartRecordName is not None:
+            start_key = (StartRecordName, StartRecordType or "")
+            for i, rrs in enumerate(all_sets):
+                if (rrs["Name"], rrs["Type"]) >= start_key:
+                    start_index = i
+                    break
+            else:
+                start_index = len(all_sets)
+
+        max_items = int(MaxItems) if MaxItems is not None else len(all_sets) or 1
+        page = all_sets[start_index:start_index + max_items]
+        truncated = start_index + max_items < len(all_sets)
+        response = {"ResourceRecordSets": page, "IsTruncated": truncated}
+        if truncated:
+            next_rrs = all_sets[start_index + max_items]
+            response["NextRecordName"] = next_rrs["Name"]
+            response["NextRecordType"] = next_rrs["Type"]
+        return response
 
     def change_resource_record_sets(self, HostedZoneId=None, ChangeBatch=None):
         for change in ChangeBatch["Changes"]:

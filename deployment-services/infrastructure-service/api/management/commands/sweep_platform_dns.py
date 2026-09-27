@@ -70,7 +70,16 @@ class Command(BaseCommand):
                 self.stdout.write(f"[dry-run] would delete {rtype} {name}")
             return
 
+        deleted = 0
         for name, rtype in to_delete:
+            # Re-check the ledger immediately before deleting, not just at the snapshot
+            # taken above: the candidate set was built once, but a legitimate reconcile
+            # (this or another writer process) can insert a ledger row for this exact
+            # (name, type) at any point between that snapshot and this delete — deleting it
+            # now would race a live write.
+            if self._is_now_ledgered(name, rtype):
+                logger.info("sweep_platform_dns: %s %s is now in the ledger — skipping", rtype, name)
+                continue
             record = self._find_zone_record(client, zone_id, name, rtype)
             if record is None:
                 continue
@@ -81,19 +90,33 @@ class Command(BaseCommand):
                     "ResourceRecordSet": record,
                 }]},
             )
+            deleted += 1
             logger.warning("sweep_platform_dns deleted orphan %s %s", rtype, name)
 
-        self.stdout.write(self.style.SUCCESS(f"sweep_platform_dns deleted {len(to_delete)} orphan(s)"))
+        self.stdout.write(self.style.SUCCESS(f"sweep_platform_dns deleted {deleted} orphan(s)"))
+
+    @staticmethod
+    def _is_now_ledgered(name: str, rtype: str) -> bool:
+        from api.models.platform_dns_record import PlatformDnsRecord
+        return PlatformDnsRecord.objects.filter(record_name=name, record_type=rtype).exists()
 
     @staticmethod
     def _is_tenant_shaped(name: str) -> bool:
-        from api.services.platform_dns import naming
+        """Exact shape match against the three kinds this writer ever creates — edge,
+        wildcard, or an ACM validation leaf — not merely "two labels below the apex".
+        The apex condition alone would treat any two-label name as sweep-eligible,
+        including a shape nothing in this codebase ever writes; narrowing to the exact
+        kinds means a name this writer didn't create is never a delete candidate, however
+        it got into the zone."""
+        import re
+
         from django.conf import settings
-        try:
-            naming.assert_two_labels_below_apex(name, settings.PLATFORM_BASE_DOMAIN)
-        except naming.InvalidDnsRecordError:
-            return False
-        return True
+
+        base_domain = re.escape(settings.PLATFORM_BASE_DOMAIN)
+        pattern = re.compile(
+            rf"^(edge|\*|_[0-9a-f]{{8,64}})\.[0-9a-f]{{16}}\.{base_domain}$"
+        )
+        return bool(pattern.fullmatch(name))
 
     @staticmethod
     def _zone_record_names(client, zone_id) -> set:

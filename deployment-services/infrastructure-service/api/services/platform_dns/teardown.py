@@ -59,17 +59,19 @@ def request_and_await_dns_teardown(
 
 
 def has_live_dns_state(infrastructure_id) -> bool:
-    """True if anything still gates a hard delete of this infrastructure: a live ledger
-    row, or a cert row that ever started requesting a certificate. Deliberately never
-    consults Environment.status — see desired_state.py's module docstring."""
-    from api.models.infrastructure_certificate import InfrastructureCertificate
+    """True if a hard delete of this infrastructure must be refused: a live
+    PlatformDnsRecord ledger row. Deliberately never consults Environment.status — see
+    desired_state.py's module docstring.
 
+    Deliberately does NOT also check InfrastructureCertificate.tls_requested_at.
+    tls_requested_at is monotonic (set once, never cleared, by design — see that model's
+    docstring), so treating it as a delete-blocking condition would make any infrastructure
+    that ever requested a certificate permanently undeletable, even long after teardown
+    completed and its ledger rows are gone. tls_requested_at is a signal for *running*
+    teardown (part 2's job), not a reason to refuse one that already succeeded.
+    """
     infra_id = str(infrastructure_id)
-    if PlatformDnsRecord.objects.filter(infrastructure_id=infra_id).exists():
-        return True
-    return InfrastructureCertificate.objects.filter(
-        infrastructure_id=infra_id, tls_requested_at__isnull=False,
-    ).exists()
+    return PlatformDnsRecord.objects.filter(infrastructure_id=infra_id).exists()
 
 
 def delete_acm_certificate_after_listener_removed(infrastructure_id) -> None:

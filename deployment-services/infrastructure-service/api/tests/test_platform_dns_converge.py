@@ -140,23 +140,31 @@ def test_orphaned_ledger_row_is_deleted_when_no_longer_desired(make_infra, monke
         "route53", region_name="us-east-1",
         aws_access_key_id="AKIAFAKE", aws_secret_access_key="fake",
     )
+    live_record = {
+        "Name": f"edge.{infra.dns_label}.launchpad.app.",
+        "Type": "CNAME",
+        "TTL": 60,
+        "ResourceRecords": [{"Value": "stale-alb.us-east-1.elb.amazonaws.com"}],
+    }
     stubber = Stubber(client)
+    # R3: the delete path reads the live record first (DELETE requires exact live
+    # TTL/values) before issuing the actual delete.
+    stubber.add_response(
+        "list_resource_record_sets",
+        {"ResourceRecordSets": [live_record], "IsTruncated": False, "MaxItems": "1"},
+        {
+            "HostedZoneId": "ZONEID123",
+            "StartRecordName": f"edge.{infra.dns_label}.launchpad.app.",
+            "StartRecordType": "CNAME",
+            "MaxItems": "1",
+        },
+    )
     stubber.add_response(
         "change_resource_record_sets",
         {"ChangeInfo": {"Id": "/change/1", "Status": "PENDING", "SubmittedAt": "2024-01-01T00:00:00Z"}},
         {
             "HostedZoneId": "ZONEID123",
-            "ChangeBatch": {
-                "Changes": [{
-                    "Action": "DELETE",
-                    "ResourceRecordSet": {
-                        "Name": f"edge.{infra.dns_label}.launchpad.app.",
-                        "Type": "CNAME",
-                        "TTL": 60,
-                        "ResourceRecords": [{"Value": "stale-alb.us-east-1.elb.amazonaws.com"}],
-                    },
-                }],
-            },
+            "ChangeBatch": {"Changes": [{"Action": "DELETE", "ResourceRecordSet": live_record}]},
         },
     )
     stubber.activate()
@@ -168,6 +176,48 @@ def test_orphaned_ledger_row_is_deleted_when_no_longer_desired(make_infra, monke
     converge_platform_dns(str(infra.id), infra_is_mock=False, dev_mode=False)
 
     stubber.assert_no_pending_responses()
+    assert not PlatformDnsRecord.objects.filter(infrastructure_id=infra.id).exists()
+    stubber.deactivate()
+
+
+def test_delete_drops_stale_ledger_row_without_calling_route53_when_record_already_gone(make_infra, monkeypatch):
+    """The zone no longer has the record (deleted out of band, or a previous partial
+    reconcile already removed it) — the ledger row is simply stale and should be dropped
+    without issuing a DELETE Route53 would reject for not matching anything live."""
+    import boto3
+    from api.services.platform_dns.converge import converge_platform_dns
+
+    infra = make_infra()
+    PlatformDnsRecord.objects.create(
+        infrastructure_id=infra.id, kind="edge",
+        record_name=f"edge.{infra.dns_label}.launchpad.app", record_type="CNAME",
+        record_value="stale-alb.us-east-1.elb.amazonaws.com", ttl=60,
+    )
+
+    client = boto3.client(
+        "route53", region_name="us-east-1",
+        aws_access_key_id="AKIAFAKE", aws_secret_access_key="fake",
+    )
+    stubber = Stubber(client)
+    stubber.add_response(
+        "list_resource_record_sets",
+        {"ResourceRecordSets": [], "IsTruncated": False, "MaxItems": "1"},
+        {
+            "HostedZoneId": "ZONEID123",
+            "StartRecordName": f"edge.{infra.dns_label}.launchpad.app.",
+            "StartRecordType": "CNAME",
+            "MaxItems": "1",
+        },
+    )
+    stubber.activate()
+    monkeypatch.setattr(
+        "api.services.platform_dns.converge.get_route53_client",
+        lambda *, infra_is_mock, dev_mode: (client, "ZONEID123"),
+    )
+
+    converge_platform_dns(str(infra.id), infra_is_mock=False, dev_mode=False)
+
+    stubber.assert_no_pending_responses()  # change_resource_record_sets was never called
     assert not PlatformDnsRecord.objects.filter(infrastructure_id=infra.id).exists()
     stubber.deactivate()
 
@@ -192,6 +242,24 @@ def test_ledger_row_not_removed_if_route53_call_fails(make_infra, monkeypatch):
         aws_access_key_id="AKIAFAKE", aws_secret_access_key="fake",
     )
     stubber = Stubber(client)
+    stubber.add_response(
+        "list_resource_record_sets",
+        {
+            "ResourceRecordSets": [{
+                "Name": f"edge.{infra.dns_label}.launchpad.app.",
+                "Type": "CNAME", "TTL": 60,
+                "ResourceRecords": [{"Value": "stale-alb.us-east-1.elb.amazonaws.com"}],
+            }],
+            "IsTruncated": False,
+            "MaxItems": "1",
+        },
+        {
+            "HostedZoneId": "ZONEID123",
+            "StartRecordName": f"edge.{infra.dns_label}.launchpad.app.",
+            "StartRecordType": "CNAME",
+            "MaxItems": "1",
+        },
+    )
     stubber.add_client_error("change_resource_record_sets", service_error_code="Throttling")
     stubber.activate()
     monkeypatch.setattr(
@@ -204,3 +272,37 @@ def test_ledger_row_not_removed_if_route53_call_fails(make_infra, monkeypatch):
 
     assert PlatformDnsRecord.objects.filter(infrastructure_id=infra.id).exists()
     stubber.deactivate()
+
+
+# ---- R4: per-infra advisory lock ----
+
+def test_advisory_lock_is_noop_on_sqlite(make_infra):
+    """The test backend is sqlite — pg_advisory_xact_lock has no sqlite equivalent, and
+    _acquire_infra_lock must not attempt to run postgres-only SQL against it. If this
+    raises, converge_platform_dns itself (already exercised by every other test in this
+    file) would fail on every test run, so this mostly documents the guard explicitly."""
+    from api.services.platform_dns.converge import _acquire_infra_lock
+    from django.db import connection
+
+    assert connection.vendor != "postgresql"
+    _acquire_infra_lock("00000000-0000-0000-0000-000000000000")  # must not raise
+
+
+def test_advisory_lock_issues_pg_advisory_xact_lock_on_postgres(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from api.services.platform_dns.converge import _acquire_infra_lock
+
+    fake_cursor = MagicMock()
+    fake_cursor.__enter__ = MagicMock(return_value=fake_cursor)
+    fake_cursor.__exit__ = MagicMock(return_value=False)
+    fake_connection = MagicMock(vendor="postgresql")
+    fake_connection.cursor.return_value = fake_cursor
+
+    monkeypatch.setattr("api.services.platform_dns.converge.connection", fake_connection)
+
+    _acquire_infra_lock("infra-123")
+
+    fake_cursor.execute.assert_called_once_with(
+        "SELECT pg_advisory_xact_lock(hashtext(%s))", ["infra-123"],
+    )

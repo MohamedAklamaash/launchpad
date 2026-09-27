@@ -6,6 +6,7 @@ infrastructure to look at. A forged or replayed message therefore cannot make th
 anything beyond re-converging that one infrastructure's own current DB-derived state.
 """
 import logging
+import os
 
 from api.common.envs.application import app_config
 from django.conf import settings
@@ -16,6 +17,15 @@ logger = logging.getLogger(__name__)
 DNS_RECONCILE_EXCHANGE = "platform_dns.events"
 DNS_RECONCILE_ROUTING_KEY = "platform_dns.reconcile"
 DNS_RECONCILE_QUEUE = "infrastructure-service.platform-dns-writer"
+
+# A transient failure (Route53 throttling, a DB blip) is retried with a short backoff up to
+# this many times, tracked via the "attempt" field on the message itself — not RabbitMQ's
+# native redelivery, which carries no counter. Beyond this, the message goes to the DLQ
+# instead of looping forever: with a single consumer at prefetch_count=1, an endlessly
+# retried message for one infra would starve every other infra's reconcile behind it.
+MAX_RECONCILE_ATTEMPTS = int(os.environ.get("PLATFORM_DNS_MAX_RECONCILE_ATTEMPTS", "5"))
+DNS_RECONCILE_DLQ_QUEUE = "infrastructure-service.platform-dns-writer.dlq"
+DNS_RECONCILE_DLQ_ROUTING_KEY = "platform_dns.reconcile.dlq"
 
 # Coalescing window: Route53 is a shared ~5 req/s/account budget, and several DB changes
 # for one infra (e.g. a database create finishing alongside an environment update) can each
@@ -93,5 +103,55 @@ def request_dns_reconcile(infrastructure_id, *, coalesce: bool = True) -> None:
         producer.connect()
     except Exception:
         logger.warning("platform DNS reconcile producer connect failed for %s", infra_id, exc_info=True)
-    producer.publish(DNS_RECONCILE_ROUTING_KEY, {"infrastructure_id": infra_id})
+    producer.publish(DNS_RECONCILE_ROUTING_KEY, {"infrastructure_id": infra_id, "attempt": 0})
     logger.info("platform DNS reconcile requested for %s", infra_id)
+
+
+def republish_reconcile_with_attempt(infrastructure_id, attempt: int) -> None:
+    """Used only by run_dns_writer's own retry loop after a transient failure — never
+    coalesced (a retry must not be silently dropped by an unrelated debounce window) and
+    carries the incremented attempt count RabbitMQ's native redelivery has no field for."""
+    infra_id = str(infrastructure_id)
+    producer = _get_producer()
+    try:
+        producer.connect()
+    except Exception:
+        logger.warning("platform DNS reconcile retry publish connect failed for %s", infra_id, exc_info=True)
+    producer.publish(DNS_RECONCILE_ROUTING_KEY, {"infrastructure_id": infra_id, "attempt": attempt})
+    logger.warning("platform DNS reconcile for %s republished (attempt %d)", infra_id, attempt)
+
+
+def declare_dlq(rabbitmq_url: str) -> None:
+    """Declare and bind the DLQ queue once at writer startup. A topic exchange only routes
+    to queues that are already bound at publish time, so publish_to_dlq below would
+    silently drop messages if nothing had declared this queue first."""
+    import pika
+
+    parameters = pika.URLParameters(rabbitmq_url)
+    connection = pika.BlockingConnection(parameters)
+    try:
+        channel = connection.channel()
+        channel.exchange_declare(exchange=DNS_RECONCILE_EXCHANGE, exchange_type="topic", durable=True)
+        channel.queue_declare(queue=DNS_RECONCILE_DLQ_QUEUE, durable=True)
+        channel.queue_bind(
+            queue=DNS_RECONCILE_DLQ_QUEUE, exchange=DNS_RECONCILE_EXCHANGE,
+            routing_key=DNS_RECONCILE_DLQ_ROUTING_KEY,
+        )
+    finally:
+        connection.close()
+
+
+def publish_to_dlq(infrastructure_id, attempt: int, reason: str) -> None:
+    infra_id = str(infrastructure_id)
+    producer = _get_producer()
+    try:
+        producer.connect()
+    except Exception:
+        logger.warning("platform DNS DLQ publish connect failed for %s", infra_id, exc_info=True)
+    producer.publish(DNS_RECONCILE_DLQ_ROUTING_KEY, {
+        "infrastructure_id": infra_id, "attempt": attempt, "reason": reason,
+    })
+    logger.error(
+        "platform DNS reconcile for %s moved to DLQ after %d attempt(s): %s",
+        infra_id, attempt, reason,
+    )

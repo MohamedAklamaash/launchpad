@@ -11,14 +11,23 @@ denylists.
 """
 import re
 
-DNS_LABEL_RE = re.compile(r"^[0-9a-f]{16}$")
+DNS_LABEL_RE = re.compile(r"[0-9a-f]{16}")
 
 # ACM DNS validation record names are always a single opaque underscore-prefixed hex/hyphen
 # label — e.g. _a79865eb4cd1a6ab990a45779c92cf6f.{label}.{base}. — never something a caller
 # picks.
-VALIDATION_LEAF_RE = re.compile(r"^_[0-9a-f]{8,64}$")
+VALIDATION_LEAF_RE = re.compile(r"_[0-9a-f]{8,64}")
 
 VALIDATION_VALUE_SUFFIX = ".acm-validations.aws."
+
+# The observed real ACM DNS-validation CNAME value shape: an opaque 32-hex leaf, a random
+# alphanumeric second label, then the fixed acm-validations.aws apex. Not yet confirmed
+# against a real ACM certificate (F1b part 1 has no cert bootstrap) — see
+# plan/REAL-AWS-VALIDATION.md. Used as a tighter check than the bare suffix in
+# assert_valid_validation_value; every real value must also still pass the bare suffix
+# check, so a spec inaccuracy here fails safe (rejects a legitimate value) rather than
+# open (accepts a hostile one).
+VALIDATION_VALUE_RE = re.compile(r"_[0-9a-f]{32}\.[a-z0-9]+\.acm-validations\.aws\.")
 
 
 class InvalidDnsRecordError(ValueError):
@@ -44,7 +53,9 @@ def _labels_of(base_domain: str) -> int:
 
 
 def validate_dns_label(label: str) -> str:
-    if not label or not DNS_LABEL_RE.match(label):
+    # fullmatch, not match: match()+"$" lets a trailing "\n" slip through undetected
+    # (Python's $ matches immediately before a trailing newline), which fullmatch does not.
+    if not label or not DNS_LABEL_RE.fullmatch(label):
         raise InvalidDnsRecordError(f"{label!r} is not a valid dns_label")
     return label
 
@@ -77,7 +88,7 @@ def assert_owned_record_name(name: str, label: str, base_domain: str, *, kind: s
         if not name.endswith(suffix):
             raise InvalidDnsRecordError(f"validation record name {name!r} not under {suffix!r}")
         leaf = name[: -len(suffix)]
-        if not VALIDATION_LEAF_RE.match(leaf):
+        if not VALIDATION_LEAF_RE.fullmatch(leaf):
             raise InvalidDnsRecordError(f"validation record leaf {leaf!r} is not ACM-shaped")
     else:
         raise InvalidDnsRecordError(f"unknown record kind {kind!r}")
@@ -90,21 +101,23 @@ def elb_hostname_pattern(region: str) -> re.Pattern:
     """
     escaped_region = re.escape(region)
     return re.compile(
-        rf"^(dualstack\.)?[a-z0-9-]+\.{escaped_region}\.elb\.amazonaws\.com\.?$"
+        rf"(dualstack\.)?[a-z0-9-]+\.{escaped_region}\.elb\.amazonaws\.com\.?"
     )
 
 
 def assert_valid_edge_target(value: str, region: str) -> None:
-    if not elb_hostname_pattern(region).match(value):
+    # fullmatch: see validate_dns_label's comment on match()+"$" vs fullmatch.
+    if not elb_hostname_pattern(region).fullmatch(value):
         raise InvalidDnsRecordError(
             f"edge target {value!r} is not an ELB hostname in region {region!r}"
         )
 
 
 def assert_valid_validation_value(value: str) -> None:
-    if not value.endswith(VALIDATION_VALUE_SUFFIX):
+    if not VALIDATION_VALUE_RE.fullmatch(value):
         raise InvalidDnsRecordError(
-            f"ACM validation value {value!r} does not end in {VALIDATION_VALUE_SUFFIX!r}"
+            f"ACM validation value {value!r} does not match the expected shape "
+            f"(_<32 hex>.<alnum>{VALIDATION_VALUE_SUFFIX})"
         )
 
 

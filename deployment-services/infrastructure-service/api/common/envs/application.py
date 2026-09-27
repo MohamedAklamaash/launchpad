@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
-from shared.mode import normalize_mode
+from shared.mode import REAL_AWS_CREDENTIAL_ENV_VARS, normalize_mode
 from shared.process_role import (
     DNS_WRITER_ROLE,
     assert_no_platform_dns_credentials,
@@ -11,18 +11,19 @@ from shared.process_role import (
 
 load_dotenv()
 
-# These four are the platform's cross-account keys to the kingdom: JWT_SECRET and
-# INTERNAL_API_TOKEN authenticate every other service to this one, and the AWS keys
-# AssumeRole into every onboarded customer account. The dns_writer process is scoped to a
-# single Route53 zone in a dedicated account and must never hold any of them — if it did,
-# a leak of that narrow credential would carry the same blast radius as the platform's main
-# credential. Asserted absent below rather than merely unused, so a misconfigured
-# deployment fails loudly instead of silently over-provisioning the writer.
+# JWT_SECRET and INTERNAL_API_TOKEN authenticate every other service to this one; every
+# name in REAL_AWS_CREDENTIAL_ENV_VARS is a way boto3's default credential chain can pick
+# up the platform's cross-account AssumeRole identity (explicit keys, an assumed role via
+# AWS_ROLE_ARN/AWS_WEB_IDENTITY_TOKEN_FILE, a profile, or an ECS/EC2 container credential
+# endpoint) — checking only the two explicit key vars would leave the other five as an
+# unblocked path to the same blast radius. The dns_writer process is scoped to a single
+# Route53 zone in a dedicated account and must never hold any of them. Asserted absent
+# below rather than merely unused, so a misconfigured deployment fails loudly instead of
+# silently over-provisioning the writer.
 DNS_WRITER_FORBIDDEN_ENV_VARS = (
     "JWT_SECRET",
     "INTERNAL_API_TOKEN",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
+    *REAL_AWS_CREDENTIAL_ENV_VARS,
 )
 
 
@@ -63,6 +64,13 @@ class ApplicationConfig:
                     f"credentials must not be present in this process's environment: "
                     f"{', '.join(present)}"
                 )
+            # Set at process start, not lazily inside route53_client.build_real_route53_client:
+            # this is the earliest point every dns_writer entrypoint (run_dns_writer,
+            # sweep_platform_dns, and any future one) is guaranteed to pass through, since
+            # ApplicationConfig.from_env() runs at import time. Disables boto3's EC2
+            # instance-metadata credential lookup before any other code in this process gets
+            # a chance to construct a boto3 client without it.
+            os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
         else:
             assert_no_platform_dns_credentials("infrastructure-service")
 

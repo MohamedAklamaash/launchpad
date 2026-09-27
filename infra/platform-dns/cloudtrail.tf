@@ -68,6 +68,14 @@ data "aws_iam_policy_document" "cloudtrail_bucket" {
       variable = "s3:x-amz-acl"
       values   = ["bucket-owner-full-control"]
     }
+    # Without this, any CloudTrail trail in any AWS account that discovered this bucket's
+    # name could write to it (the principal is the whole cloudtrail.amazonaws.com service,
+    # not this specific trail). aws:SourceArn scopes the grant to this one trail.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:cloudtrail:us-east-1:${data.aws_caller_identity.current.account_id}:trail/launchpad-platform-dns-trail"]
+    }
   }
 }
 
@@ -77,6 +85,11 @@ resource "aws_s3_bucket_policy" "cloudtrail" {
 }
 
 resource "aws_cloudtrail" "platform_dns" {
+  # Pinned to the same us-east-1 alias as the EventBridge rule/target/SNS topic below —
+  # the trail's home region has no bearing on whether it captures Route53's global-service
+  # events (it would either way, per include_global_service_events), but pinning it here
+  # removes any doubt and keeps the whole alerting pipeline in one region to reason about.
+  provider                      = aws.us_east_1
   name                          = "launchpad-platform-dns-trail"
   s3_bucket_name                = aws_s3_bucket.cloudtrail.id
   include_global_service_events = true
@@ -128,6 +141,18 @@ data "aws_iam_policy_document" "dns_write_denied_sns" {
     }
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.dns_write_denied.arn]
+    # Scopes the grant to this specific rule, in this account — without it, an EventBridge
+    # rule in any account that discovered this topic's ARN could publish to it.
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_cloudwatch_event_rule.dns_write_denied.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
   }
 }
 

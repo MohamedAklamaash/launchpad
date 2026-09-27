@@ -11,10 +11,13 @@ class InfrastructureCertificate(models.Model):
     part 1 writes cert_arn, validation_name/value, or transitions tls_status.
 
     `tls_requested_at` is monotonic (set once, never cleared) like Infrastructure's own
-    `first_activated_at` pattern, for the same reason: it must be safe to gate destructive
-    decisions on it even after a reaper has rewritten Environment.status. Along with
-    PlatformDnsRecord, it is one of the two signals `delete_infrastructure` checks before
-    allowing a hard delete — never Environment.status, which is not monotonic.
+    `first_activated_at` pattern — safe to use as a signal that TLS teardown should run for
+    this infra, even after a reaper has rewritten Environment.status. It is deliberately
+    NOT one of the conditions `delete_infrastructure` checks before allowing a hard delete:
+    since it is never cleared, gating a delete on it would make any infrastructure that
+    ever requested a certificate permanently undeletable. Only a live PlatformDnsRecord
+    ledger row blocks a hard delete (see teardown.py:has_live_dns_state) — never
+    Environment.status, and never this field.
     """
 
     TLS_PENDING = "PENDING"

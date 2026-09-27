@@ -187,13 +187,25 @@ class InfrastructureService:
 
     @staticmethod
     def _assert_dns_teardown_complete(infra_id):
-        """Refuse a hard delete while any platform DNS state for this infra is still live.
-        A live PlatformDnsRecord ledger row means Route53 may still have a wildcard/edge/
-        validation record pointing at nothing once this row is gone; a set
-        tls_requested_at means a certificate flow may be mid-flight. Deliberately never
-        checks Environment.status — see api/services/platform_dns/desired_state.py."""
+        """Refuse a hard delete while any platform DNS state for this infra is still live —
+        a live PlatformDnsRecord ledger row means Route53 may still have a wildcard/edge/
+        validation record pointing at nothing once this row is gone. Deliberately never
+        checks Environment.status — see api/services/platform_dns/desired_state.py — and
+        deliberately does not also gate on InfrastructureCertificate.tls_requested_at,
+        which is monotonic and would otherwise make a delete refuse forever (see
+        teardown.has_live_dns_state's docstring).
+
+        This is the synchronous HTTP delete path — it cannot wait on the writer the way
+        TerraformWorker.destroy()'s request_and_await_dns_teardown does, so it republishes
+        a reconcile (best-effort) and refuses immediately rather than blocking the request.
+        """
         from api.services.platform_dns.teardown import has_live_dns_state
         if has_live_dns_state(infra_id):
+            from api.services.platform_dns.producer import request_dns_reconcile
+            try:
+                request_dns_reconcile(infra_id, coalesce=False)
+            except Exception:
+                logger.warning(f"platform DNS reconcile request failed for {infra_id} (non-fatal)", exc_info=True)
             raise ValueError(
                 "Cannot delete infrastructure: platform DNS records for it are still "
                 "live. Wait for DNS teardown to complete and try again."

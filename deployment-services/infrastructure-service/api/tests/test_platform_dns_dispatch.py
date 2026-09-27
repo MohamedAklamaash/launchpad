@@ -46,6 +46,61 @@ def test_malformed_body_raises_malformed_not_generic():
         process_reconcile_message(json.dumps({"wrong_key": "x"}).encode(), dev_mode=True)
 
 
+def test_non_uuid_infrastructure_id_is_malformed_not_a_django_validation_error(db):
+    """Django's UUIDField raises ValidationError (not caught anywhere else in the stack) on
+    a non-UUID string — without validating the shape up front, that would escape
+    parse_reconcile_message as an unclassified exception and be requeued forever instead of
+    discarded as the poison message it is."""
+    body = json.dumps({"infrastructure_id": "not-a-uuid"}).encode()
+    with pytest.raises(MalformedReconcileMessage):
+        process_reconcile_message(body, dev_mode=True)
+
+
+def test_permanent_botocore_error_is_classified_not_requeued_forever(make_infra, monkeypatch):
+    """InvalidChangeBatch/InvalidInput from Route53 itself will never succeed on retry —
+    must surface as PermanentReconcileError so the caller discards rather than requeues."""
+    from api.services.platform_dns.dispatch import PermanentReconcileError
+    from botocore.exceptions import ClientError
+
+    infra = make_infra(alb_dns="internal-abc.us-east-1.elb.amazonaws.com")
+    body = json.dumps({"infrastructure_id": str(infra.id)}).encode()
+
+    def _raise_invalid_change_batch(*args, **kwargs):
+        raise ClientError(
+            {"Error": {"Code": "InvalidChangeBatch", "Message": "conflicting change"}},
+            "ChangeResourceRecordSets",
+        )
+
+    monkeypatch.setattr(
+        "api.services.platform_dns.dispatch.converge_platform_dns", _raise_invalid_change_batch,
+    )
+
+    with pytest.raises(PermanentReconcileError):
+        process_reconcile_message(body, dev_mode=True)
+
+
+def test_transient_botocore_error_is_not_classified_as_permanent(make_infra, monkeypatch):
+    from api.services.platform_dns.dispatch import PermanentReconcileError
+    from botocore.exceptions import ClientError
+
+    infra = make_infra(alb_dns="internal-abc.us-east-1.elb.amazonaws.com")
+    body = json.dumps({"infrastructure_id": str(infra.id)}).encode()
+
+    def _raise_throttling(*args, **kwargs):
+        raise ClientError(
+            {"Error": {"Code": "Throttling", "Message": "slow down"}},
+            "ChangeResourceRecordSets",
+        )
+
+    monkeypatch.setattr(
+        "api.services.platform_dns.dispatch.converge_platform_dns", _raise_throttling,
+    )
+
+    with pytest.raises(ClientError) as exc_info:
+        process_reconcile_message(body, dev_mode=True)
+    assert not isinstance(exc_info.value, PermanentReconcileError)
+
+
 def test_hostile_alb_dns_raises_validation_error_not_requeued_forever(make_infra):
     """A customer-writable EKS Ingress status pointing at a claimable/wrong-region target
     must surface as InvalidDnsRecordError — the caller discards on this, never requeues."""

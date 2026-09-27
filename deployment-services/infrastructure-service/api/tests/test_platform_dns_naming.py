@@ -89,7 +89,7 @@ def test_edge_target_rejects_hostile_values(hostile_value):
 
 
 def test_validation_value_requires_acm_suffix():
-    naming.assert_valid_validation_value("abc123.acm-validations.aws.")
+    naming.assert_valid_validation_value("_a79865eb4cd1a6ab990a45779c92cf6f.xlfgrmvvlj.acm-validations.aws.")
     with pytest.raises(naming.InvalidDnsRecordError):
         naming.assert_valid_validation_value("abc123.acm-validations.aws")  # no trailing dot
     with pytest.raises(naming.InvalidDnsRecordError):

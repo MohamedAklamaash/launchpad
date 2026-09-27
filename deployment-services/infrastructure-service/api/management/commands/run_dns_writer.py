@@ -1,8 +1,16 @@
 import logging
+import time
 
 from django.core.management.base import BaseCommand, CommandError
 
 logger = logging.getLogger(__name__)
+
+# Backoff between retry attempts of a transient failure. Deliberately short and fixed
+# (not exponential) — this sleep runs on the single consumer thread (prefetch_count=1), so
+# a long or growing delay would stall every other infra's reconcile behind it. Bounded
+# attempt count (MAX_RECONCILE_ATTEMPTS) is what actually protects against a truly stuck
+# dependency; this just avoids hammering it in a tight loop.
+_RETRY_BACKOFF_SECONDS = 3
 
 
 class Command(BaseCommand):
@@ -14,20 +22,21 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from api.common.envs.application import app_config
-        from api.services.platform_dns.dispatch import (
-            MalformedReconcileMessage,
-            process_reconcile_message,
-        )
-        from api.services.platform_dns.naming import InvalidDnsRecordError
+        from api.services.platform_dns.dispatch import handle_delivery
         from api.services.platform_dns.producer import (
             DNS_RECONCILE_EXCHANGE,
             DNS_RECONCILE_QUEUE,
             DNS_RECONCILE_ROUTING_KEY,
+            MAX_RECONCILE_ATTEMPTS,
+            declare_dlq,
+            publish_to_dlq,
+            republish_reconcile_with_attempt,
         )
         from api.services.platform_dns.route53_client import (
-            MockRealMismatch,
             PlatformDnsMisconfigured,
             assert_caller_identity,
+            assert_zone_matches_base_domain,
+            build_real_route53_client,
             load_platform_dns_config,
         )
         from shared.mode import enforce_dev_mode_safety, is_dev_mode
@@ -46,13 +55,18 @@ class Command(BaseCommand):
             config = load_platform_dns_config()
             if config is None:
                 raise CommandError(
-                    "run_dns_writer refuses to start in production: PLATFORM_DNS_ZONE_ID/"
-                    "ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY must all be set."
+                    "run_dns_writer refuses to start in production: PLATFORM_BASE_DOMAIN "
+                    "(explicitly set — the settings default does not count) and "
+                    "PLATFORM_DNS_ZONE_ID/ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY must "
+                    "all be set."
                 )
             try:
                 assert_caller_identity(config)
+                assert_zone_matches_base_domain(build_real_route53_client(config), config)
             except PlatformDnsMisconfigured as exc:
                 raise CommandError(str(exc)) from exc
+
+        declare_dlq(app_config.rabbitmq_url)
 
         def on_message(channel, method, properties, body):
             from django.db import connection
@@ -61,24 +75,21 @@ class Command(BaseCommand):
             # first query of this callback.
             connection.close()
 
-            try:
-                process_reconcile_message(body, dev_mode=dev_mode)
+            outcome = handle_delivery(body, dev_mode=dev_mode, max_attempts=MAX_RECONCILE_ATTEMPTS)
+
+            if outcome.action == "ack":
                 channel.basic_ack(delivery_tag=method.delivery_tag)
-            except MalformedReconcileMessage:
-                logger.error("platform DNS reconcile message malformed — discarding: %r", body)
+            elif outcome.action == "discard":
                 channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-            except (InvalidDnsRecordError, MockRealMismatch, PlatformDnsMisconfigured):
-                # A data problem, not a transient one — e.g. a hostile/wrong-region alb_dns
-                # on an EKS infra, whose Ingress status is customer-writable. Requeuing
-                # would redeliver forever and, with prefetch_count=1, starve every other
-                # infra's reconcile behind it.
-                logger.exception(
-                    "platform DNS reconcile rejected on validation — discarding: %r", body,
-                )
-                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-            except Exception:
-                logger.exception("platform DNS reconcile failed — requeueing: %r", body)
-                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            elif outcome.action == "retry":
+                # Ack the delivery we have — the retry is a brand new message with an
+                # incremented attempt count, not RabbitMQ's native (uncounted) redelivery.
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                time.sleep(_RETRY_BACKOFF_SECONDS)
+                republish_reconcile_with_attempt(outcome.infra_id, outcome.next_attempt)
+            elif outcome.action == "dlq":
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                publish_to_dlq(outcome.infra_id, outcome.next_attempt, reason=outcome.reason)
 
         consumer = ResilientPikaConsumer(
             url=app_config.rabbitmq_url,

@@ -104,7 +104,7 @@ def test_validation_record_included_only_when_cert_row_fully_populated(make_infr
 
     InfrastructureCertificate.objects.filter(infrastructure=infra).update(
         validation_name=f"_a79865eb4cd1a6ab990a45779c92cf6f.{infra.dns_label}.launchpad.app",
-        validation_value="abc123.acm-validations.aws.",
+        validation_value="_a79865eb4cd1a6ab990a45779c92cf6f.xlfgrmvvlj.acm-validations.aws.",
     )
     kinds = {r.kind for r in compute_desired_state(str(infra.id))}
     assert kinds == {"edge", "wildcard", "validation"}
@@ -120,7 +120,7 @@ def test_rejects_validation_record_scoped_to_another_infras_label(make_infra):
     InfrastructureCertificate.objects.create(
         infrastructure=victim,
         validation_name=f"_a79865eb4cd1a6ab990a45779c92cf6f.{attacker.dns_label}.launchpad.app",
-        validation_value="abc123.acm-validations.aws.",
+        validation_value="_a79865eb4cd1a6ab990a45779c92cf6f.xlfgrmvvlj.acm-validations.aws.",
     )
     with pytest.raises(naming.InvalidDnsRecordError):
         compute_desired_state(str(victim.id))
