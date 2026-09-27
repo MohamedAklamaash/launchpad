@@ -1,6 +1,10 @@
 """diff_live_policy against a Stubber-fed IAM client: identical policy/trust policy,
-a live policy missing a grant, one with an extra grant, action-list-order insensitivity,
-and every documented error surface (role missing, policy not attached, AccessDenied)."""
+a live policy missing/gaining an Allow or a Deny, an Allow+NotAction statement reported
+as a whole-statement `grants_all_except` row, action-list-order and case insensitivity,
+a second attached/inline policy invisible to the row diff, a trust policy that trusts an
+extra principal or splits the right principal and the right ExternalId across two
+statements, and every documented error surface (role missing, policy not attached,
+AccessDenied)."""
 import copy
 import json
 
@@ -10,7 +14,7 @@ from api.cloud_providers.aws.iam_policy import policy_data
 from api.cloud_providers.aws.iam_policy.live_diff import diff_live_policy
 from botocore.stub import ANY, Stubber
 
-PLATFORM_PRINCIPAL_ARN = "arn:aws:iam::221082203366:user/aklamaash-terraform"
+PLATFORM_PRINCIPAL_ARN = "arn:aws:iam::210987654321:user/launchpad-platform"
 ACCOUNT_ID = "123456789012"
 
 
@@ -26,12 +30,17 @@ def iam_client():
     return boto3.client("iam", region_name="us-east-1", aws_access_key_id="x", aws_secret_access_key="x")
 
 
-def _attached_policies_response():
+def _attached_policies_response(extra_policies=()):
     return {
         "AttachedPolicies": [
-            {"PolicyName": "LaunchpadDeploymentPolicy", "PolicyArn": f"arn:aws:iam::{ACCOUNT_ID}:policy/LaunchpadDeploymentPolicy"}
+            {"PolicyName": "LaunchpadDeploymentPolicy", "PolicyArn": f"arn:aws:iam::{ACCOUNT_ID}:policy/LaunchpadDeploymentPolicy"},
+            *extra_policies,
         ]
     }
+
+
+def _inline_policies_response(names=()):
+    return {"PolicyNames": list(names)}
 
 
 def _get_policy_response():
@@ -75,8 +84,9 @@ def _expected_trust_doc(infra):
     }
 
 
-def _stub_full(stubber, *, policy_doc, trust_doc):
-    stubber.add_response("list_attached_role_policies", _attached_policies_response(), {"RoleName": ANY})
+def _stub_full(stubber, *, policy_doc, trust_doc, extra_attached=(), inline_names=()):
+    stubber.add_response("list_attached_role_policies", _attached_policies_response(extra_attached), {"RoleName": ANY})
+    stubber.add_response("list_role_policies", _inline_policies_response(inline_names), {"RoleName": ANY})
     stubber.add_response("get_policy", _get_policy_response(), {"PolicyArn": ANY})
     stubber.add_response("get_policy_version", _get_policy_version_response(policy_doc), {"PolicyArn": ANY, "VersionId": ANY})
     stubber.add_response("get_role", _role_response(trust_doc), {"RoleName": ANY})
@@ -93,12 +103,16 @@ def test_identical_policy_and_trust_policy_report_no_drift(iam_client):
 
     assert report.policy.available is True
     assert report.policy.identical is True
-    assert report.policy.missing_grants == []
-    assert report.policy.extra_grants == []
+    assert report.policy.missing_allows == []
+    assert report.policy.missing_denies == []
+    assert report.policy.extra_allows == []
+    assert report.policy.extra_denies == []
+    assert report.policy.other_policies is None
     assert report.trust_policy.available is True
     assert report.trust_policy.identical is True
     assert report.trust_policy.principal_matches is True
     assert report.trust_policy.external_id_matches is True
+    assert report.trust_policy.extra_statements == []
 
 
 def test_order_insensitive_action_list_and_statement_order(iam_client):
@@ -120,7 +134,7 @@ def test_order_insensitive_action_list_and_statement_order(iam_client):
 
 # ── managed policy drift ─────────────────────────────────────────────────────────
 
-def test_live_policy_missing_a_grant_is_reported(iam_client):
+def test_live_policy_missing_an_allow_is_reported(iam_client):
     infra = FakeInfra()
     policy_doc = copy.deepcopy(policy_data.document(infra.compute_type))
     removed = policy_doc["Statement"][0]["Action"].pop()
@@ -130,12 +144,12 @@ def test_live_policy_missing_a_grant_is_reported(iam_client):
         report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
 
     assert report.policy.identical is False
-    assert report.policy.extra_grants == []
-    assert len(report.policy.missing_grants) == 1
-    assert report.policy.missing_grants[0]["action"] == removed
+    assert report.policy.extra_allows == []
+    assert len(report.policy.missing_allows) == 1
+    assert report.policy.missing_allows[0]["action"] == removed
 
 
-def test_live_policy_with_an_extra_grant_is_reported(iam_client):
+def test_live_policy_with_an_extra_allow_is_reported(iam_client):
     infra = FakeInfra()
     policy_doc = copy.deepcopy(policy_data.document(infra.compute_type))
     policy_doc["Statement"].append({"Effect": "Allow", "Action": "sns:Publish", "Resource": "*"})
@@ -145,9 +159,50 @@ def test_live_policy_with_an_extra_grant_is_reported(iam_client):
         report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
 
     assert report.policy.identical is False
-    assert report.policy.missing_grants == []
-    assert len(report.policy.extra_grants) == 1
-    assert report.policy.extra_grants[0]["action"] == "sns:Publish"
+    assert report.policy.missing_allows == []
+    assert len(report.policy.extra_allows) == 1
+    assert report.policy.extra_allows[0]["action"] == "sns:Publish"
+
+
+def test_removed_deny_statement_is_a_missing_deny_not_a_missing_allow(iam_client):
+    """A customer-side edit that deletes an expected Deny (e.g. the EKS access-entry
+    backstop) must be classified as a widening risk, distinct from a missing Allow."""
+    infra = FakeInfra(compute_type="eks")
+    expected_json = policy_data.document_json("eks").replace(policy_data.ACCOUNT_ID_PLACEHOLDER, infra.code)
+    expected_doc = json.loads(expected_json)
+    deny_statements = [s for s in expected_doc["Statement"] if s.get("Effect") == "Deny"]
+    assert len(deny_statements) == 1
+    live_doc = copy.deepcopy(expected_doc)
+    live_doc["Statement"] = [s for s in live_doc["Statement"] if s.get("Effect") != "Deny"]
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(stubber, policy_doc=live_doc, trust_doc=_expected_trust_doc(infra))
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.policy.identical is False
+    assert report.policy.missing_allows == []
+    assert len(report.policy.missing_denies) == 1
+    assert report.policy.missing_denies[0]["effect"] == "Deny"
+    assert report.policy.missing_denies[0]["grants_all_except"] is True
+
+
+def test_allow_with_notaction_is_one_whole_statement_row(iam_client):
+    """Allow + NotAction grants an unbounded set of actions — it must not be exploded
+    per-action (which would understate it as a handful of narrow grants) and must not be
+    silently invisible either."""
+    infra = FakeInfra()
+    policy_doc = copy.deepcopy(policy_data.document(infra.compute_type))
+    policy_doc["Statement"].append({"Effect": "Allow", "NotAction": "s3:*", "Resource": "*"})
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(stubber, policy_doc=policy_doc, trust_doc=_expected_trust_doc(infra))
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.policy.identical is False
+    assert len(report.policy.extra_allows) == 1
+    row = report.policy.extra_allows[0]
+    assert row["grants_all_except"] is True
+    assert row["notaction"] == ["s3:*"]
 
 
 def test_action_case_is_ignored_for_identity_but_preserved_for_display(iam_client):
@@ -175,6 +230,40 @@ def test_eks_compute_type_substitutes_account_id_before_diffing(iam_client):
         report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
 
     assert report.policy.identical is True
+
+
+# ── other attached/inline policies (R1) ────────────────────────────────────────────
+
+def test_administrator_access_attachment_is_reported_and_breaks_identical(iam_client):
+    infra = FakeInfra()
+    with Stubber(iam_client) as stubber:
+        _stub_full(
+            stubber,
+            policy_doc=policy_data.document(infra.compute_type),
+            trust_doc=_expected_trust_doc(infra),
+            extra_attached=[{"PolicyName": "AdministratorAccess", "PolicyArn": "arn:aws:iam::aws:policy/AdministratorAccess"}],
+        )
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.policy.identical is False
+    assert report.policy.other_policies is not None
+    assert "arn:aws:iam::aws:policy/AdministratorAccess" in report.policy.other_policies["attached"]
+
+
+def test_inline_policy_is_reported_and_breaks_identical(iam_client):
+    infra = FakeInfra()
+    with Stubber(iam_client) as stubber:
+        _stub_full(
+            stubber,
+            policy_doc=policy_data.document(infra.compute_type),
+            trust_doc=_expected_trust_doc(infra),
+            inline_names=["backdoor-inline-policy"],
+        )
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.policy.identical is False
+    assert report.policy.other_policies is not None
+    assert "backdoor-inline-policy" in report.policy.other_policies["inline"]
 
 
 # ── trust policy drift ────────────────────────────────────────────────────────────
@@ -225,6 +314,69 @@ def test_trust_policy_wrong_principal_is_flagged(iam_client):
     assert report.trust_policy.identical is False
 
 
+def test_extra_assume_role_statement_is_flagged_and_breaks_identical(iam_client):
+    """B1: the correct, narrow statement is present, but a second, wider statement also
+    grants sts:AssumeRole — to anyone. Must not report identical."""
+    infra = FakeInfra()
+    trust_doc = _expected_trust_doc(infra)
+    trust_doc["Statement"].append({"Effect": "Allow", "Principal": "*", "Action": "sts:*"})
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(stubber, policy_doc=policy_data.document(infra.compute_type), trust_doc=trust_doc)
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.trust_policy.principal_matches is True
+    assert report.trust_policy.external_id_matches is True
+    assert len(report.trust_policy.extra_statements) == 1
+    assert report.trust_policy.extra_statements[0]["Principal"] == "*"
+    assert report.trust_policy.identical is False
+
+
+def test_federated_assume_role_with_web_identity_is_flagged_as_extra(iam_client):
+    """AssumeRoleWithWebIdentity/AssumeRoleWithSAML are a second, principal-different way
+    to obtain this role's credentials (e.g. GitHub OIDC) — a check narrowly scoped to the
+    literal sts:AssumeRole action alone must not treat this as irrelevant."""
+    infra = FakeInfra()
+    trust_doc = _expected_trust_doc(infra)
+    trust_doc["Statement"].append({
+        "Effect": "Allow",
+        "Principal": {"Federated": "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"},
+        "Action": "sts:AssumeRoleWithWebIdentity",
+    })
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(stubber, policy_doc=policy_data.document(infra.compute_type), trust_doc=trust_doc)
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert len(report.trust_policy.extra_statements) == 1
+    assert report.trust_policy.extra_statements[0]["Action"] == "sts:AssumeRoleWithWebIdentity"
+    assert report.trust_policy.identical is False
+
+
+def test_split_principal_and_external_id_across_two_statements_does_not_report_identical(iam_client):
+    """B1's exact bug: statement A has the right principal but no condition; statement B
+    has a different principal but the right ExternalId. The old implementation set
+    principal_matches from A and external_id_matches from B independently, reporting a
+    trust policy that in fact lets a second, uncontrolled principal assume the role."""
+    infra = FakeInfra()
+    statement_a = {"Effect": "Allow", "Principal": {"AWS": PLATFORM_PRINCIPAL_ARN}, "Action": "sts:AssumeRole"}
+    statement_b = {
+        "Effect": "Allow",
+        "Principal": {"AWS": "arn:aws:iam::999999999999:user/someone-else"},
+        "Action": "sts:AssumeRole",
+        "Condition": {"StringEquals": {"sts:ExternalId": str(infra.id)}},
+    }
+    trust_doc = {"Version": "2012-10-17", "Statement": [statement_a, statement_b]}
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(stubber, policy_doc=policy_data.document(infra.compute_type), trust_doc=trust_doc)
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.trust_policy.identical is False
+    assert len(report.trust_policy.extra_statements) == 1
+    assert report.trust_policy.extra_statements[0]["Principal"]["AWS"] == "arn:aws:iam::999999999999:user/someone-else"
+
+
 # ── error surfaces ────────────────────────────────────────────────────────────────
 
 def test_role_missing_is_reported_on_both_halves(iam_client):
@@ -244,6 +396,7 @@ def test_policy_not_attached_is_reported(iam_client):
     infra = FakeInfra()
     with Stubber(iam_client) as stubber:
         stubber.add_response("list_attached_role_policies", {"AttachedPolicies": []}, {"RoleName": ANY})
+        stubber.add_response("list_role_policies", {"PolicyNames": []}, {"RoleName": ANY})
         stubber.add_response("get_role", _role_response(_expected_trust_doc(infra)), {"RoleName": ANY})
         report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
 

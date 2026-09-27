@@ -104,11 +104,16 @@ Lower risk than F6, which carries actual secrets; this one carries claims.
    case-insensitive (IAM action names are), but the rendered diff shows each action in
    the casing the source document actually used, not a lowercased reconstruction.
 5. **The Launchpad platform principal has no existing Python source of truth** — it lives
-   only as `create_aws_role.sh` defaults (`LAUNCHPAD_PLATFORM_ACCOUNT_ID=221082203366`,
-   `LAUNCHPAD_PLATFORM_USER=aklamaash-terraform`). Added `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN`
-   to `core/settings.py` / `test_settings.py` / `env.example` with the matching default,
-   passed into `diff_live_policy` as a parameter so the ARN never becomes a second
-   hard-coded copy inside the Django-free `iam_policy` package.
+   only as `create_aws_role.sh` defaults (`LAUNCHPAD_PLATFORM_ACCOUNT_ID`,
+   `LAUNCHPAD_PLATFORM_USER`). Added `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN` to
+   `core/settings.py` / `test_settings.py` / `env.example`, passed into `diff_live_policy`
+   as a parameter so the ARN never becomes a second hard-coded copy inside the
+   Django-free `iam_policy` package. **Revised after the independent security review:**
+   the setting has no default outside `MODE=dev` — a real deployment that doesn't set it
+   fails to start (`ValueError` at import time), rather than silently trusting whatever
+   account id and IAM user name shipped as a hard-coded fallback. `MODE=dev` alone gets a
+   placeholder (`arn:aws:iam::000000000000:user/dev-placeholder`), since it never makes a
+   real AssumeRole or a real evidence-pack drift check.
 6. **Module derivation is split three ways, not one flat "instantiated" list.**
    `_compute_type_modules(compute_type)` and `_managed_database_modules()` each read
    `terraform_worker.py`'s own generator source (`inspect.getsource` + a regex over
@@ -128,14 +133,62 @@ Lower risk than F6, which carries actual secrets; this one carries claims.
    / `RATE_BUDGET_EVIDENCE_WINDOW_SECONDS`), tighter than `databases` (60/60) — an
    AssumeRole plus up to four read-only IAM calls, requested by an auditor pulling
    evidence rather than a polling dashboard.
-8. **Security pre-review, done inline rather than as a separate pass:** the two risks the
-   plan names are both closed by construction — the capability narrative and the rendered
-   policy are generated from `policy_data` at request time (never a second hand-authored
-   or persisted copy of the policy), and every AWS error surfaced to the pack or the log
-   carries only `Error.Code`, never `Error.Message` (which carries the assumed-role ARN —
-   the same leak class fixed for provisioning logs and terraform stderr). Covered by
-   `test_access_denied_is_reported_without_leaking_the_message` and the rendered-policy
-   equality tests.
+8. **Security pre-review was first done inline, then an independent review caught what
+   that missed — see "Independent security review" below.** The inline pass correctly
+   closed the two risks the plan named (generated-not-authored content, no
+   `Error.Message` leaks) but missed that the trust-policy check computed its three
+   verdict fields independently across statements rather than from one statement, which
+   let a split-across-two-statements trust policy report as fully matching. Lesson: an
+   inline self-review is not a substitute for an adversarial one on a feature whose job
+   is to make a security claim.
+
+## Independent security review (BLOCK, fixed)
+
+A second review returned BLOCK before merge. All findings fixed in place, same branch:
+
+- **B1 (trust-policy split-verdict bug).** `principal_matches`, `external_id_present`,
+  and `external_id_matches` were each set by scanning *all* Allow statements
+  independently, so a trust policy with statement A (right principal, no condition) and
+  statement B (wrong principal, right ExternalId) reported all three as true —
+  `identical: True` — despite actually trusting an uncontrolled second principal.
+  Fixed: `_diff_trust_policy` now requires exactly one narrowly-shaped statement (exact
+  action `sts:AssumeRole`, principal exactly the platform ARN, no `NotPrincipal`) to
+  serve as *the* trust statement; every other statement that also covers
+  `sts:AssumeRole` (via `sts:*`, `*`, `AssumeRole*`, `Principal: "*"`, `NotPrincipal`, or
+  simply a second narrow-shaped one) is collected into `extra_statements`, and
+  `identical` is false whenever any exist.
+- **R1 (second policy invisible).** The diff only ever read `LaunchpadDeploymentPolicy`;
+  an `AdministratorAccess` attachment or an inline policy on the same role was invisible
+  and `identical` could still read true. Fixed: `PolicyDiff.other_policies` now lists
+  every other attached policy ARN and every inline policy name (`ListRolePolicies`);
+  `identical` requires it to be `None`.
+- **R2 (deleted Deny reported as a missing grant).** A removed Deny (e.g. the EKS
+  access-entry backstop) and an added Allow are both widening changes, but a generic
+  "missing/extra grant" count didn't say so. Fixed: split into `missing_allows` /
+  `missing_denies` / `extra_allows` / `extra_denies`, and the rendered markdown calls
+  out that a missing Deny or an extra Allow both mean wider access than intended.
+- **R3 (limitations under-named the account-wide grants).** Only `iam:*` was named as
+  account-wide; `s3:*`, `secretsmanager:*`, `kms:*`, `ec2:*`, `rds:*`, and the rest of
+  the base statement are equally unscoped (`Resource: "*"`). Fixed: `_account_wide_actions`
+  derives the full list from the rendered policy document; the `iam:*` sentence stays
+  unconditional alongside it.
+- **R4 (Allow+NotAction exploded per-action).** A `NotAction`/`NotResource` statement
+  grants an unbounded set of actions; exploding it into per-action rows the way a normal
+  statement is exploded would have made it look like a handful of narrow grants. Fixed:
+  `_open_ended_row` reports it as one whole-statement row flagged `grants_all_except`.
+- **Recommended, all applied:** single-object `Statement` normalized via `_statements_of`
+  for the managed-policy path too (it already was for the trust-policy path); the view
+  raises dedicated `EvidencePackNotFound`/`EvidencePackForbidden` exceptions with fixed
+  messages instead of mapping builtin `LookupError`/`PermissionError` (the latter is a
+  builtin `OSError` subclass, so an unrelated bug could have echoed a real filesystem
+  error message to the client); a test pins the module-derivation regex against what
+  `_generate_config_ecs`/`_generate_config_eks` actually render, and the pack now says
+  "the current generator emits" rather than an unqualified claim; the
+  `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN` default (a specific AWS account id and personal IAM
+  user name) was removed — it now fails closed at startup outside `MODE=dev`; the
+  gateway route's `infra_id` is typed `UUID`; the frontend defers `revokeObjectURL` and
+  reads a blob error body's JSON to show the actual server message instead of a generic
+  toast.
 
 ## Out of scope
 

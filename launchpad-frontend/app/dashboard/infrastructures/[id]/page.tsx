@@ -61,6 +61,22 @@ const statusOf = (status: string) =>
 
 const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
+// A blob-response request (evidence pack) gets its error body back as a Blob too, so
+// the usual `err.response?.data?.error` read is undefined — read the blob's text and
+// parse it to recover the server's actual message (e.g. a 429's retry-later text).
+async function extractBlobErrorMessage(error: unknown): Promise<string> {
+  const data = (error as { response?: { data?: unknown } })?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text()) as { error?: string };
+      if (parsed.error) return parsed.error;
+    } catch {
+      // Not JSON (or empty) — fall through to the generic message below.
+    }
+  }
+  return 'Failed to download evidence pack';
+}
+
 export default function InfrastructureDetailPage() {
   const router = useRouter();
   const params = useParams();
@@ -252,9 +268,11 @@ export default function InfrastructureDetailPage() {
       document.body.appendChild(link);
       link.click();
       link.remove();
-      window.URL.revokeObjectURL(url);
-    } catch {
-      toast.error('Failed to download evidence pack');
+      // Revoking immediately can race the browser's download handoff in some
+      // browsers; defer it a tick past that.
+      setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    } catch (error: unknown) {
+      toast.error(await extractBlobErrorMessage(error));
     } finally {
       setDownloadingEvidence(false);
     }

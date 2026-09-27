@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -95,7 +96,7 @@ async def infrastructure_logs(infra_id: str, request: Request):
 
 
 @router.get("/{infra_id}/evidence-pack", summary="Compliance evidence pack for an infrastructure")
-async def infrastructure_evidence_pack(infra_id: str, request: Request):
+async def infrastructure_evidence_pack(infra_id: UUID, request: Request):
     """Owner only — invited users get 403. Streams a zip: rendered IAM policy, expected
     trust-policy shape, a live drift check against the customer's AWS account, and an
     honest limitations section."""

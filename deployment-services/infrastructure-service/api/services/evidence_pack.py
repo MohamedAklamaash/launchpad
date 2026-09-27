@@ -28,6 +28,19 @@ from shared.enums.orchestrator import ComputeType
 
 logger = logging.getLogger(__name__)
 
+
+class EvidencePackNotFound(Exception):
+    """Infrastructure not found, or infra_id is not a valid UUID. Carries a fixed
+    message — see `views/evidence_pack.py` — rather than being caught by class alone,
+    since builtin `LookupError`/`PermissionError` would also catch an unrelated
+    `KeyError`/`OSError` bug and echo ITS message (`PermissionError` is a builtin
+    `OSError` subclass, e.g. a real filesystem permission error) to the client."""
+
+
+class EvidencePackForbidden(Exception):
+    """Authenticated user is not this infrastructure's owner."""
+
+
 _MODULE_SOURCE_RE = re.compile(r'source\s*=\s*"\./modules/(\w+)"')
 
 # Why each never-instantiated module is excluded, keyed on the module directory name so
@@ -104,6 +117,36 @@ def _has_ce_action(document: dict) -> bool:
     return False
 
 
+def _account_wide_actions(document: dict) -> list[str]:
+    """Every Allow action granted with `Resource: "*"` — not just `iam:*` — across the
+    full rendered document for this compute_type. Generated from the policy so the
+    limitations section can't under-claim: `iam:*` is far from the only account-wide
+    grant (`s3:*`, `secretsmanager:*`, `kms:*`, `ec2:*`, `rds:*`, and the rest of the
+    base statement are too), and every capability note reads as scoped unless this line
+    says otherwise. NotAction/NotResource statements are excluded here — they are
+    already reported as a whole-statement `grants_all_except` row, not an action list."""
+    actions: list[str] = []
+    for statement in document.get("Statement", []):
+        if statement.get("Effect") != "Allow":
+            continue
+        if "NotAction" in statement or "NotResource" in statement:
+            continue
+        resource = statement.get("Resource")
+        resources = [resource] if isinstance(resource, str) else (resource or [])
+        if "*" not in resources:
+            continue
+        action = statement.get("Action")
+        actions.extend([action] if isinstance(action, str) else (action or []))
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for action in actions:
+        if action not in seen:
+            seen.add(action)
+            ordered.append(action)
+    return ordered
+
+
 def _capability_narrative_lines() -> list[str]:
     """Bulleted capability narrative rendered straight from policy.json's own notes —
     the same text `generate.py` renders into create_aws_role.sh, so this pack can never
@@ -162,6 +205,21 @@ def _live_drift(infra) -> dict:
     return {"note": None, **report.to_dict()}
 
 
+def _plural(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _other_policies_line(other: dict) -> str:
+    attached = other.get("attached", [])
+    inline = other.get("inline", [])
+    return (
+        f"  **This role also has {_plural(len(attached), 'other attached policy', 'other attached policies')} "
+        f"and {_plural(len(inline), 'inline policy', 'inline policies')}** that this pack does not read the "
+        "contents of — see `drift.json` for their names/ARNs. Any of them can independently widen this role's "
+        "access."
+    )
+
+
 def _drift_summary_markdown(drift: dict) -> str:
     if drift.get("note"):
         return drift["note"]
@@ -173,10 +231,30 @@ def _drift_summary_markdown(drift: dict) -> str:
     elif policy.get("identical"):
         lines.append("- Managed policy: identical to the expected document.")
     else:
+        missing_allows = policy.get("missing_allows", [])
+        missing_denies = policy.get("missing_denies", [])
+        extra_allows = policy.get("extra_allows", [])
+        extra_denies = policy.get("extra_denies", [])
         lines.append(
-            f"- Managed policy: {len(policy.get('missing_grants', []))} missing grant(s), "
-            f"{len(policy.get('extra_grants', []))} extra grant(s) — see `drift.json`."
+            f"- Managed policy: {_plural(len(missing_allows), 'missing allow', 'missing allows')}, "
+            f"{_plural(len(extra_allows), 'extra allow', 'extra allows')}, "
+            f"{_plural(len(missing_denies), 'missing deny', 'missing denies')}, "
+            f"{_plural(len(extra_denies), 'extra deny', 'extra denies')} — see `drift.json`."
         )
+        if missing_denies or extra_allows:
+            lines.append(
+                "  **A missing Deny or an extra Allow both mean this account grants wider "
+                "access than Launchpad's policy intends.** An extra Allow grants something "
+                "beyond what was expected; a missing Deny removes a backstop (for example "
+                "the EKS access-entry restriction) that was supposed to still apply."
+            )
+
+    # Rendered regardless of `available`: a policy_not_attached or GetPolicyVersion
+    # failure can still carry other_policies (ListRolePolicies/ListAttachedRolePolicies
+    # ran independently of the LaunchpadDeploymentPolicy read) and an AdministratorAccess
+    # attachment must never be buried inside an "unavailable" line an auditor skips past.
+    if policy.get("other_policies"):
+        lines.append(_other_policies_line(policy["other_policies"]))
 
     trust = drift.get("trust_policy", {})
     if not trust.get("available"):
@@ -185,6 +263,13 @@ def _drift_summary_markdown(drift: dict) -> str:
         lines.append("- Trust policy: matches the expected shape (correct ExternalId and principal).")
     else:
         lines.append("- Trust policy: does not match the expected shape — see `drift.json`.")
+        if trust.get("extra_statements"):
+            lines.append(
+                f"  **{_plural(len(trust['extra_statements']), 'additional statement', 'additional statements')} "
+                "on this role also grant (or could grant) role assumption** — this can let a "
+                "principal other than Launchpad assume the role, or widen who Launchpad's own "
+                "statement trusts."
+            )
     return "\n".join(lines)
 
 
@@ -214,6 +299,12 @@ def _limitations_lines(
 ) -> list[str]:
     lines = ["## Honest limitations", ""]
     lines.append(f"- {_IAM_STAR_LIMITATION_EKS}" if compute_type == ComputeType.EKS else f"- {_IAM_STAR_LIMITATION_BASE}")
+    account_wide = _account_wide_actions(policy_doc)
+    if account_wide:
+        lines.append(
+            "- These actions are granted account-wide (`Resource: \"*\"`), not scoped to "
+            "resources this infrastructure created: " + ", ".join(f"`{a}`" for a in account_wide) + "."
+        )
     if excluded:
         lines.append(f"- {_excluded_modules_line(excluded)}")
     lines.append(
@@ -269,6 +360,12 @@ def _render_evidence_markdown(infra, manifest: dict, drift: dict, limitations: l
         *limitations,
         "",
         "## Terraform modules applied",
+        "",
+        (
+            "The lists below are what the *current* provisioning worker emits; an "
+            "infrastructure provisioned by an older version of the generator may differ "
+            "from this."
+        ),
         "",
         "- Applied for compute_type `" + infra.compute_type + "`: "
         + ", ".join(f"`{m}`" for m in manifest["terraform_modules"]["applied_for_compute_type"]),
@@ -338,10 +435,10 @@ class EvidencePackService:
         try:
             uuid.UUID(str(infra_id))
         except ValueError:
-            raise LookupError("Infrastructure not found")
+            raise EvidencePackNotFound("Infrastructure not found")
         infra = self.infra_repo.get_by_id(user_id, infra_id)
         if not infra:
-            raise LookupError("Infrastructure not found")
+            raise EvidencePackNotFound("Infrastructure not found")
         if str(infra.user_id) != str(user_id):
-            raise PermissionError("Only the infrastructure owner can download the evidence pack")
+            raise EvidencePackForbidden("Only the infrastructure owner can download the evidence pack")
         return infra

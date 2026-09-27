@@ -1,6 +1,10 @@
 import logging
 
-from api.services.evidence_pack import EvidencePackService
+from api.services.evidence_pack import (
+    EvidencePackForbidden,
+    EvidencePackNotFound,
+    EvidencePackService,
+)
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -17,10 +21,17 @@ evidence_pack_service = EvidencePackService()
 
 
 def _error_response(e: Exception):
-    if isinstance(e, LookupError):
-        return Response({'error': str(e)}, status=status.HTTP_404_NOT_FOUND)
-    if isinstance(e, PermissionError):
-        return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
+    # Fixed messages, never str(e): dedicated exception types (not the builtin
+    # LookupError/PermissionError, which PermissionError shares with a real OSError)
+    # so an unrelated bug can never get caught here and echo its own message to the
+    # client under a 403/404 status.
+    if isinstance(e, EvidencePackNotFound):
+        return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+    if isinstance(e, EvidencePackForbidden):
+        return Response(
+            {'error': 'Only the infrastructure owner can download the evidence pack'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     logger.error("Unhandled evidence pack view error", exc_info=e)
     return Response({'error': 'Internal error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

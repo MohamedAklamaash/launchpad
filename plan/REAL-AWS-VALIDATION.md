@@ -57,18 +57,29 @@ DNS** account (`infra/platform-dns`).
       URL-encoded string defensively — confirm a real IAM response never reaches that
       fallback path in a way that changes the diff.
 - [ ] Live drift against a real account after a manual policy edit in the AWS console
-      (add a statement, remove an action from an existing one): confirm `missing_grants`
-      / `extra_grants` match what was actually changed, and that removing the whole
-      `LaunchpadDeploymentPolicy` attachment reports `policy_not_attached` rather than an
-      unhandled error.
+      (add a statement, remove an action from an existing one, delete the EKS Deny):
+      confirm `missing_allows` / `missing_denies` / `extra_allows` / `extra_denies` match
+      what was actually changed, and that removing the whole `LaunchpadDeploymentPolicy`
+      attachment reports `policy_not_attached` rather than an unhandled error.
+- [ ] Attach a second real managed policy (e.g. a narrow, harmless one) and add a real
+      inline policy to `LaunchpadDeploymentRole`; confirm `other_policies` lists both and
+      `identical` goes false, using the real `ListRolePolicies` response shape (mocks
+      only exercise the Stubber's model-conformant shape).
 - [ ] Trust policy shape on a real role created by `create_aws_role.sh`: confirm
       `Principal.AWS` is a plain ARN (not rewritten to an `AIDA...` unique id — AWS does
       this when the referenced IAM user is later deleted) and that the
       `LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1` escape-hatch shape (`Condition` entirely absent)
       round-trips through `_diff_trust_policy` as `external_id_present: false` rather than
       raising.
+- [ ] Add a second `sts:AssumeRole` statement to a real role's trust policy (e.g. via a
+      manual `UpdateAssumeRolePolicy` in the console) and confirm it surfaces in
+      `extra_statements` and flips `identical` to false against a real `GetRole` response.
 - [ ] `iam:SimulatePrincipalPolicy`-adjacent calls (`ListAttachedRolePolicies`,
-      `GetPolicy`, `GetPolicyVersion`, `GetRole`) against a role whose trust policy denies
-      the platform principal: confirm `AccessDenied` surfaces as `policy.reason` /
-      `trust_policy.reason` without leaking `Error.Message` (it carries the assumed-role
-      session ARN) into the pack or the access log.
+      `ListRolePolicies`, `GetPolicy`, `GetPolicyVersion`, `GetRole`) against a role whose
+      trust policy denies the platform principal: confirm `AccessDenied` surfaces as
+      `policy.reason` / `trust_policy.reason` without leaking `Error.Message` (it carries
+      the assumed-role session ARN) into the pack or the access log.
+- [ ] `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN` is set correctly in every real deployment env
+      (it now has no default outside `MODE=dev` and the service refuses to start without
+      it) — confirm the deploy pipeline sets it before this ships to an environment that
+      isn't dev.

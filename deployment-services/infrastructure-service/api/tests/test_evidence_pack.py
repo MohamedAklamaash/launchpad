@@ -3,6 +3,7 @@ modules absent from the applied list and present in the limitations text), rende
 policy equals the committed one per compute_type, mock-infra drift handling, the
 owner-only authz ladder, and the per-user rate budget."""
 import json
+import re
 import shutil
 import uuid
 import zipfile
@@ -12,13 +13,19 @@ from unittest.mock import MagicMock
 import pytest
 from api.cloud_providers.aws.iam_policy import policy_data
 from api.services.evidence_pack import (
+    _account_wide_actions,
+    _compute_type_modules,
+    _drift_summary_markdown,
     all_terraform_modules,
     build_evidence_pack,
     instantiated_terraform_modules,
 )
+from api.services.terraform_worker import TerraformWorker
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 EXPECTED_NEVER_INSTANTIATED = {"security", "secrets", "cloud_optimizer"}
+
+_RENDERED_MODULE_RE = re.compile(r'module\s+"(\w+)"\s*\{')
 
 
 # ── module derivation ─────────────────────────────────────────────────────────────
@@ -32,6 +39,85 @@ def test_never_instantiated_modules_absent_from_instantiated_list():
 def test_never_instantiated_modules_present_on_disk():
     excluded = all_terraform_modules() - instantiated_terraform_modules()
     assert excluded == EXPECTED_NEVER_INSTANTIATED
+
+
+def test_ecs_module_derivation_matches_what_the_generator_actually_renders(db):
+    """The regex-over-source derivation is fragile to conditional emission or helper
+    indirection — pin it against the real rendered output so a future change to
+    `_generate_config_ecs` that the regex can't see is caught here, not silently."""
+    rendered = TerraformWorker._generate_config_ecs({}, str(uuid.uuid4()), "bucket", "table", "us-east-1")
+    assert set(_RENDERED_MODULE_RE.findall(rendered)) == _compute_type_modules("ecs_fargate")
+
+
+def test_eks_module_derivation_matches_what_the_generator_actually_renders(db, settings):
+    settings.EKS_PUBLIC_ACCESS_CIDRS = ["203.0.113.0/24"]
+    rendered = TerraformWorker._generate_config_eks(
+        {}, str(uuid.uuid4()), "bucket", "table", "us-east-1", "123456789012"
+    )
+    assert set(_RENDERED_MODULE_RE.findall(rendered)) == _compute_type_modules("eks")
+
+
+# ── account-wide actions (R3) ────────────────────────────────────────────────────
+
+def test_account_wide_actions_list_more_than_just_iam_star():
+    """The limitations section must not read as though only iam:* is unscoped — every
+    Allow action with Resource "*" is account-wide, not just the IAM one."""
+    doc = policy_data.document("ecs_fargate")
+    actions = _account_wide_actions(doc)
+    assert "iam:*" in actions
+    assert "s3:*" in actions
+    assert "secretsmanager:*" in actions
+    assert len(actions) > 1
+
+
+# ── drift markdown rendering (past the mock-only branch) ────────────────────────────
+# build_evidence_pack's own tests all use is_mock=True, so _drift_summary_markdown's
+# non-mock wording (R2's "wider access", R1's other_policies line, extra_statements) has
+# no coverage there — exercise it directly against crafted drift dicts.
+
+def _identical_policy():
+    return {"available": True, "identical": True, "missing_allows": [], "missing_denies": [], "extra_allows": [], "extra_denies": [], "other_policies": None}
+
+
+def _identical_trust():
+    return {"available": True, "identical": True, "principal_matches": True, "external_id_present": True, "external_id_matches": True, "extra_statements": []}
+
+
+def test_missing_deny_or_extra_allow_reads_as_wider_access():
+    drift = {
+        "note": None,
+        "policy": {**_identical_policy(), "identical": False, "missing_denies": [{"effect": "Deny"}]},
+        "trust_policy": _identical_trust(),
+    }
+    assert "wider access" in _drift_summary_markdown(drift)
+
+
+def test_other_policies_renders_even_when_policy_unavailable():
+    """R1/bug-fix (b): an AdministratorAccess attachment found alongside a detached
+    LaunchpadDeploymentPolicy must not be buried inside an 'unavailable' line — it has to
+    surface in the prose an auditor actually reads."""
+    drift = {
+        "note": None,
+        "policy": {
+            "available": False,
+            "reason": "policy_not_attached",
+            "missing_allows": [], "missing_denies": [], "extra_allows": [], "extra_denies": [],
+            "other_policies": {"attached": ["arn:aws:iam::aws:policy/AdministratorAccess"], "inline": []},
+        },
+        "trust_policy": _identical_trust(),
+    }
+    summary = _drift_summary_markdown(drift)
+    assert "unavailable" in summary
+    assert "other attached polic" in summary
+
+
+def test_extra_trust_statements_are_called_out_in_the_summary():
+    drift = {
+        "note": None,
+        "policy": _identical_policy(),
+        "trust_policy": {**_identical_trust(), "identical": False, "extra_statements": [{"Principal": "*"}]},
+    }
+    assert "additional statement" in _drift_summary_markdown(drift)
 
 
 @pytest.fixture(autouse=True)
@@ -133,6 +219,8 @@ def test_limitations_list_excluded_modules_and_omit_instantiated_ones(make_infra
     assert set(modules["never_instantiated"]) == EXPECTED_NEVER_INSTANTIATED
     assert EXPECTED_NEVER_INSTANTIATED.isdisjoint(modules["applied_for_compute_type"])
     assert EXPECTED_NEVER_INSTANTIATED.isdisjoint(modules["applied_per_managed_database"])
+    assert "`s3:*`" in evidence
+    assert "`secretsmanager:*`" in evidence
 
 
 def test_ecs_infra_does_not_claim_eks_module_and_vice_versa(make_infra):
