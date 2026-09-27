@@ -23,10 +23,14 @@ from shared.mode import is_dev_mode
 def validate_config():
     if not app_config.django_secret or len(app_config.django_secret) < 50:
         raise ValueError("DJANGO_SECRET must be set and at least 50 characters")
-    if not app_config.jwt_secret or len(app_config.jwt_secret) < 32:
-        raise ValueError("JWT_SECRET must be set and at least 32 characters")
-    if not app_config.internal_api_token or len(app_config.internal_api_token) < 32:
-        raise ValueError("INTERNAL_API_TOKEN must be set and at least 32 characters")
+    # JWT_SECRET and INTERNAL_API_TOKEN are asserted ABSENT (not merely optional) for the
+    # dns_writer role in ApplicationConfig.from_env() — skip the length checks here rather
+    # than re-deriving that condition.
+    if not app_config.is_dns_writer:
+        if not app_config.jwt_secret or len(app_config.jwt_secret) < 32:
+            raise ValueError("JWT_SECRET must be set and at least 32 characters")
+        if not app_config.internal_api_token or len(app_config.internal_api_token) < 32:
+            raise ValueError("INTERNAL_API_TOKEN must be set and at least 32 characters")
 
 validate_config()
 
@@ -116,10 +120,20 @@ COST_ESTIMATE_VCPU_HOUR_USD = float(os.environ.get('COST_ESTIMATE_VCPU_HOUR_USD'
 COST_ESTIMATE_GB_HOUR_USD = float(os.environ.get('COST_ESTIMATE_GB_HOUR_USD', '0.004446'))
 COST_ESTIMATE_EKS_CONTROL_PLANE_HOUR_USD = float(os.environ.get('COST_ESTIMATE_EKS_CONTROL_PLANE_HOUR_USD', '0.10'))
 
+# Single settings source for the platform's DNS zone apex. App URLs are
+# {slug}.{dns_label}.{PLATFORM_BASE_DOMAIN}; the platform DNS writer (api/services/
+# platform_dns/) and the custom-domain reserved-suffix check both read this one value
+# rather than each defining their own. The 'launchpad.app' fallback exists only so
+# services that never touch DNS (tests, non-AWS deployments) don't need the var set; F1b
+# part 3 (custom domains) is expected to remove this default and fail closed instead, per
+# the F1b security pre-review — deferred there because that's also where the fail-open
+# default was originally flagged as a spoofing risk (evil.launchpad.app).
+PLATFORM_BASE_DOMAIN = os.environ.get('PLATFORM_BASE_DOMAIN', 'launchpad.app')
+
 # Apex domain custom-domain hostnames must not be able to spoof, e.g. `evil.launchpad.app`.
 # Matched against the normalized (IDNA-decoded, lowercased) hostname — see
 # api/models/custom_domain.py:normalize_hostname.
-RESERVED_DOMAIN_SUFFIX = os.environ.get('PLATFORM_BASE_DOMAIN', 'launchpad.app')
+RESERVED_DOMAIN_SUFFIX = PLATFORM_BASE_DOMAIN
 
 
 # Application definition

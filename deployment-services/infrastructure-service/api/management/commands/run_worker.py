@@ -16,6 +16,30 @@ os.environ['DB_CONN_MAX_AGE'] = '0'
 logger = logging.getLogger(__name__)
 
 
+def _has_live_dns_state(infra_id) -> bool:
+    """Defense in depth: TerraformWorker.destroy() already waits for the platform DNS
+    writer to confirm teardown before Environment.status can reach DESTROYED (see
+    request_and_await_dns_teardown), so this should normally find nothing. Checked again
+    here because this is the point of no return for the Infrastructure row itself — the
+    same ledger this service can independently confirm, never Environment.status."""
+    from api.services.platform_dns.teardown import has_live_dns_state
+    return has_live_dns_state(infra_id)
+
+
+def _refuse_hard_delete_for_live_dns(infra_id) -> bool:
+    """True means "refuse the hard delete". When refusing, also republishes a reconcile
+    request (coalesce=False) — without this, a blocked delete would just sit until some
+    unrelated trigger happens to re-poke the writer, rather than actually retrying."""
+    if not _has_live_dns_state(infra_id):
+        return False
+    from api.services.platform_dns.producer import request_dns_reconcile
+    try:
+        request_dns_reconcile(infra_id, coalesce=False)
+    except Exception:
+        logger.warning(f"platform DNS reconcile request failed for {infra_id} (non-fatal)", exc_info=True)
+    return True
+
+
 def _publish_infra_deleted(user_id, infra_id):
     """Propagate a destroy-driven row deletion to read-models (application-service)
     so they drop the infra; without this a reused (user, name) later collides."""
@@ -339,6 +363,13 @@ class Command(BaseCommand):
                 try:
                     env = Environment.objects.get(infrastructure_id=infra_id)
                     if env.status == 'DESTROYED':
+                        if _refuse_hard_delete_for_live_dns(infra_id):
+                            logger.error(
+                                f"Refusing to delete DB records for {infra_id}: platform "
+                                "DNS records are still live; leaving DESTROYED for the "
+                                "next teardown pass to clear them"
+                            )
+                            return
                         InfraQueue.clear_reap_count(infra_id)
                         NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
                         user_id = infra.user_id
@@ -350,6 +381,12 @@ class Command(BaseCommand):
                     else:
                         NotificationService.send_destroy_failure(str(infra.user_id), infra_id, infra.name, env.error_message or 'Unknown error')
                 except Environment.DoesNotExist:
+                    if _refuse_hard_delete_for_live_dns(infra_id):
+                        logger.error(
+                            f"Refusing to delete Infrastructure {infra_id}: platform DNS "
+                            "records are still live"
+                        )
+                        return
                     NotificationService.send_destroy_success(str(infra.user_id), infra_id, infra.name)
                     user_id = infra.user_id
                     with transaction.atomic():

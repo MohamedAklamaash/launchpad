@@ -82,7 +82,38 @@ data "aws_iam_policy_document" "dns_writer" {
       variable = "route53:ChangeResourceRecordSetsNormalizedRecordNames"
       values   = ["false"]
     }
+
+    # Every record the writer ever creates — edge, wildcard, ACM validation — is a CNAME.
+    # Restricting the record type is a second, independent backstop alongside the name
+    # pattern above: even a bug that got a name pattern wrong could not use this credential
+    # to create an NS (subdomain delegation), MX, or TXT record anywhere in the zone.
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "route53:ChangeResourceRecordSetsRecordTypes"
+      values   = ["CNAME"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "route53:ChangeResourceRecordSetsRecordTypes"
+      values   = ["false"]
+    }
   }
+}
+
+# CAA restricts which CAs may ever issue a certificate for this zone to Amazon's, so a
+# compromised or misconfigured third-party CA account cannot issue a certificate for a
+# Launchpad hostname even with DNS control. "issuewild" is required separately from
+# "issue" because every hostname under this zone is validated via a wildcard certificate.
+resource "aws_route53_record" "caa" {
+  zone_id = aws_route53_zone.platform.zone_id
+  name    = var.platform_base_domain
+  type    = "CAA"
+  ttl     = 3600
+  records = [
+    "0 issue \"amazon.com\"",
+    "0 issuewild \"amazon.com\"",
+  ]
 }
 
 resource "aws_iam_user_policy" "dns_writer" {

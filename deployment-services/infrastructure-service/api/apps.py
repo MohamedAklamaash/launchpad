@@ -73,6 +73,16 @@ class ApiConfig(AppConfig):
         from shared.mode import enforce_dev_mode_safety
         enforce_dev_mode_safety(app_config.mode, "infrastructure-service", logger)
 
+        if app_config.is_dns_writer:
+            # The dns_writer role starts no consumer threads here — its own management
+            # command (run_dns_writer) owns its single dedicated reconcile-queue consumer.
+            # Django calls AppConfig.ready() for every management command, not just
+            # runserver, so this must be checked before the runserver-only early return
+            # below or `manage.py run_dns_writer` would also spin up the auth/application
+            # consumers this role must never run.
+            logger.info("infrastructure-service booting as dns_writer — starting no consumer threads")
+            return
+
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 

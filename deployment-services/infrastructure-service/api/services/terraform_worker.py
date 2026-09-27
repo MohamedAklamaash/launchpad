@@ -30,6 +30,8 @@ from api.services.eks_bootstrap import (
 from api.services.eks_teardown import cleanup_eks_orphans
 from api.services.infrastructure import validate_aws_region, validate_vpc_cidr
 from api.services.log_redaction import clip_head, clip_tail, redact_provisioning_text
+from api.services.platform_dns.producer import request_dns_reconcile
+from api.services.platform_dns.teardown import request_and_await_dns_teardown
 from api.validators import validate_database_name
 from django.conf import settings
 from django.db import transaction
@@ -811,6 +813,16 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             return
 
         logger.error(f"Permanent failure, triggering destroy for {infra_id}")
+        # request_dns_reconcile only — NOT request_and_await_dns_teardown, which also sets
+        # the monotonic dns_teardown_requested_at marker. This infra never activated, so it
+        # has no DNS state to tear down (edge requires a successful apply that set
+        # alb_dns), and the Infrastructure row survives this branch (parked in ERROR, not
+        # deleted) — a later retry that re-provisions it from ERROR must still be able to
+        # get DNS, which a "torn down forever" marker would permanently block.
+        try:
+            request_dns_reconcile(infra_id, coalesce=False)
+        except Exception:
+            logger.warning(f"platform DNS reconcile request failed for {infra_id} (non-fatal)", exc_info=True)
         if compute_type == ComputeType.EKS:
             try:
                 reap_logs = cleanup_eks_orphans(Infrastructure.objects.get(id=infra_id), credentials=credentials)
@@ -944,6 +956,12 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 env.save()
 
                 infra = Infrastructure.objects.get(id=infra_id)
+
+                # alb_dns (and, once F1b part 2 exists, the cert row) just changed — ask
+                # the platform DNS writer to converge. Fires for both real and
+                # _mock_provision (mock_outputs is not None), on commit so the writer never
+                # reads a half-committed row.
+                transaction.on_commit(lambda: request_dns_reconcile(infra_id))
 
                 databases_payload = TerraformWorker._reconcile_databases(env, outputs)
 
@@ -1143,15 +1161,37 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 metadata = infra.metadata or {}
             except Infrastructure.DoesNotExist:
                 logger.warning(f"Infrastructure {infra_id} already deleted, skipping destroy")
+                # Belt-and-braces for a pre-existing ledger row from before this guard
+                # existed — desired state resolves to empty with no Infrastructure row to
+                # read, so this is a plain best-effort cleanup request, not a blocking wait.
+                try:
+                    request_dns_reconcile(infra_id, coalesce=False)
+                except Exception:
+                    logger.warning(f"platform DNS reconcile request failed for {infra_id} (non-fatal)", exc_info=True)
                 with transaction.atomic():
                     Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYED")
                 return
 
+            # Mock/real gate BEFORE the teardown call below, not after: mark_dns_teardown_
+            # requested() is monotonic and irreversible, so a mismatched infra (a mock
+            # destroyed outside dev mode, or vice versa) must be refused before it can set
+            # that marker — refusing afterward would leave the marker set on an infra whose
+            # destroy never actually happened.
             dev_mode = is_dev_mode(app_config.mode)
             if infra.is_mock and not dev_mode:
                 raise ValueError("Refusing to destroy a mock infrastructure outside dev mode")
             if dev_mode and not infra.is_mock:
                 raise ValueError("Refusing mock destroy against a real infrastructure")
+
+            # Writer-side deletes (wildcard -> edge) need no customer credentials, so they
+            # run before _pre_destroy_cleanup and before the AssumeRole call below — they
+            # must succeed even if the customer has already deleted the deployment role.
+            # This call raises (propagating to the outer except, which only logs — see
+            # below) if the writer does not confirm teardown within its timeout, leaving
+            # Environment.status at DESTROYING (set above) for the reaper to re-enqueue,
+            # per the F1b security pre-review.
+            request_and_await_dns_teardown(infra_id)
+
             if infra.is_mock:
                 logger.warning(
                     "MOCK destroy in dev mode (no terraform, no AWS)",

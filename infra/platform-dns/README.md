@@ -87,7 +87,7 @@ belongs behind its own process or internal endpoint.
 |---|---|
 | Read | `GetHostedZone`, `ListResourceRecordSets` on this zone only |
 | Poll | `GetChange` on `*` — the API takes an opaque change id and AWS publishes no ARN for it |
-| Write | `ChangeResourceRecordSets` on this zone, **only** for names two or more labels below the zone apex |
+| Write | `ChangeResourceRecordSets` on this zone, **only** for names two or more labels below the zone apex, **and only** `CNAME` records |
 
 Every record Launchpad writes lives at `<something>.<dns_label>.launchpad.aklamaash.me`:
 `edge.<label>....`, the wildcard `*.<label>....`, and the ACM validation CNAME. All are two
@@ -123,15 +123,35 @@ aws route53 change-resource-record-sets --hosted-zone-id "$ZONE" \
 # Must be DENIED — the zone apex
 aws route53 change-resource-record-sets --hosted-zone-id "$ZONE" \
   --change-batch '{"Changes":[{"Action":"UPSERT","ResourceRecordSet":{"Name":"launchpad.aklamaash.me","Type":"TXT","TTL":60,"ResourceRecords":[{"Value":"\"should-not-apply\""}]}}]}'
+
+# Must be DENIED — wrong record type at an otherwise-legal two-label name
+aws route53 change-resource-record-sets --hosted-zone-id "$ZONE" \
+  --change-batch '{"Changes":[{"Action":"UPSERT","ResourceRecordSet":{"Name":"ns.0123456789abcdef.launchpad.aklamaash.me","Type":"NS","TTL":60,"ResourceRecords":[{"Value":"ns1.example.com"}]}}]}'
 ```
 
-If the second succeeds, the condition is not doing what this file claims and the guard
-needs rethinking before any TLS work proceeds. Clean up the first record afterwards.
+If any of these succeed, the corresponding condition is not doing what this file claims and
+the guard needs rethinking before any TLS work proceeds. Clean up the first record
+afterwards.
 
-## Also required, not built here
+## Alerting on denied writes
 
-CloudTrail alerting on out-of-pattern change attempts. The policy denies them; nobody is
-told they happened. An attacker probing the boundary should be visible.
+Built (F1b part 1): a single-region CloudTrail trail (`include_global_service_events =
+true` — Route53 is global, so its calls are always recorded with `eventRegion =
+"us-east-1"` regardless of a trail's home region) feeds an EventBridge rule matching a
+denied `route53:ChangeResourceRecordSets` (`errorCode` prefixed `AccessDenied`), which
+publishes to the `dns_write_denied_topic_arn` output. Subscribe an email/Slack/PagerDuty
+endpoint to that topic out of band — deliberately not a terraform resource, the same
+reasoning as the access key below. Not yet verified against a real AWS account; see
+`plan/REAL-AWS-VALIDATION.md`.
+
+## CNAME-only and CAA
+
+The write statement also restricts `route53:ChangeResourceRecordSetsRecordTypes` to
+`CNAME` — every record this writer ever creates (edge, wildcard, ACM validation) is a
+CNAME, so this closes off NS (subdomain delegation), MX, and TXT as a second, independent
+backstop alongside the name-shape condition. A CAA record at the apex (`issue`/`issuewild`
+"amazon.com") restricts certificate issuance for this zone to Amazon's CA, so DNS control
+alone can't be used to get a certificate issued by some other CA.
 
 ## Teardown
 

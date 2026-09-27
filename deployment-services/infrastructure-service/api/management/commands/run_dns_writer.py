@@ -1,0 +1,107 @@
+import logging
+import time
+
+from django.core.management.base import BaseCommand, CommandError
+
+logger = logging.getLogger(__name__)
+
+# Backoff between retry attempts of a transient failure. Deliberately short and fixed
+# (not exponential) — this sleep runs on the single consumer thread (prefetch_count=1), so
+# a long or growing delay would stall every other infra's reconcile behind it. Bounded
+# attempt count (MAX_RECONCILE_ATTEMPTS) is what actually protects against a truly stuck
+# dependency; this just avoids hammering it in a tight loop.
+_RETRY_BACKOFF_SECONDS = 3
+
+
+class Command(BaseCommand):
+    help = (
+        "Run the platform DNS writer: the only process allowed to hold PLATFORM_DNS_* "
+        "credentials. Consumes reconcile intents off a dedicated RabbitMQ queue and "
+        "converges the platform Route53 zone to each infrastructure's DB-derived state."
+    )
+
+    def handle(self, *args, **options):
+        from api.common.envs.application import app_config
+        from api.services.platform_dns.dispatch import handle_delivery
+        from api.services.platform_dns.producer import (
+            DNS_RECONCILE_EXCHANGE,
+            DNS_RECONCILE_QUEUE,
+            DNS_RECONCILE_ROUTING_KEY,
+            MAX_RECONCILE_ATTEMPTS,
+            declare_dlq,
+            publish_to_dlq,
+            republish_reconcile_with_attempt,
+        )
+        from api.services.platform_dns.route53_client import (
+            PlatformDnsMisconfigured,
+            assert_caller_identity,
+            assert_zone_matches_base_domain,
+            build_real_route53_client,
+            load_platform_dns_config,
+        )
+        from shared.mode import enforce_dev_mode_safety, is_dev_mode
+        from shared.resilience import ResilientPikaConsumer
+
+        if not app_config.is_dns_writer:
+            raise CommandError(
+                "run_dns_writer refuses to start: LAUNCHPAD_PROCESS_ROLE must be "
+                "'dns_writer' (see api/common/envs/application.py)."
+            )
+
+        enforce_dev_mode_safety(app_config.mode, "infrastructure-service dns_writer", logger)
+        dev_mode = is_dev_mode(app_config.mode)
+
+        if not dev_mode:
+            config = load_platform_dns_config()
+            if config is None:
+                raise CommandError(
+                    "run_dns_writer refuses to start in production: PLATFORM_BASE_DOMAIN "
+                    "(explicitly set — the settings default does not count) and "
+                    "PLATFORM_DNS_ZONE_ID/ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY must "
+                    "all be set."
+                )
+            try:
+                assert_caller_identity(config)
+                assert_zone_matches_base_domain(build_real_route53_client(config), config)
+            except PlatformDnsMisconfigured as exc:
+                raise CommandError(str(exc)) from exc
+
+        declare_dlq(app_config.rabbitmq_url)
+
+        def on_message(channel, method, properties, body):
+            from django.db import connection
+            # Mirrors application_consumer.py: a long-idle consumer's connection can go
+            # stale between messages; close it so Django reconnects rather than failing the
+            # first query of this callback.
+            connection.close()
+
+            outcome = handle_delivery(body, dev_mode=dev_mode, max_attempts=MAX_RECONCILE_ATTEMPTS)
+
+            if outcome.action == "ack":
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+            elif outcome.action == "discard":
+                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            elif outcome.action == "retry":
+                # Ack the delivery we have — the retry is a brand new message with an
+                # incremented attempt count, not RabbitMQ's native (uncounted) redelivery.
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                time.sleep(_RETRY_BACKOFF_SECONDS)
+                republish_reconcile_with_attempt(outcome.infra_id, outcome.next_attempt)
+            elif outcome.action == "dlq":
+                channel.basic_ack(delivery_tag=method.delivery_tag)
+                publish_to_dlq(outcome.infra_id, outcome.next_attempt, reason=outcome.reason)
+
+        consumer = ResilientPikaConsumer(
+            url=app_config.rabbitmq_url,
+            exchange=DNS_RECONCILE_EXCHANGE,
+            queue=DNS_RECONCILE_QUEUE,
+            routing_key=DNS_RECONCILE_ROUTING_KEY,
+            name="platform-dns-writer",
+            prefetch_count=1,
+        )
+
+        self.stdout.write(self.style.SUCCESS(
+            f"platform DNS writer starting (dev_mode={dev_mode}) — consuming "
+            f"{DNS_RECONCILE_QUEUE}"
+        ))
+        consumer.start(on_message)

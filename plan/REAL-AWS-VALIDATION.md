@@ -24,6 +24,44 @@ DNS** account (`infra/platform-dns`).
 - [ ] Guard: a write at the apex is **denied**.
 - [ ] Guard: a single-label write (`x.launchpad.aklamaash.me`) is **denied**.
 
+## F1b part 1 — DNS writer
+
+- [ ] `route53:ChangeResourceRecordSetsRecordTypes` behaves as documented: an otherwise-legal
+      two-label CNAME write **succeeds**; the identical name with `Type=NS` is **denied**.
+      (README's verification snippet covers this; run it before trusting the condition.)
+- [ ] Wildcard UPSERT: `Name=\052.<label>.launchpad.aklamaash.me` (the `\052`-escaped wire
+      form, matching `*.*.{base}` in the IAM condition) **succeeds** — confirms
+      `route53:ChangeResourceRecordSetsNormalizedRecordNames` normalizes the escaped
+      wildcard label the way `naming.denormalize_for_route53` assumes, not e.g. leaving it
+      as literal `\052` text for the condition match.
+- [ ] `ns.<label>.launchpad.aklamaash.me` (two labels below the apex, type `NS`) is
+      **denied** — the record-type condition, not just the name-shape one, is what blocks
+      it; a real account is the only way to confirm both conditions combine with AND
+      semantics as IAM's default (all conditions on a statement must hold) rather than OR.
+- [ ] A `TXT` record at the zone apex is **denied** (name-shape condition) independent of
+      the record-type condition above.
+- [ ] CAA at the apex is visible externally: `dig CAA launchpad.aklamaash.me +short`
+      returns the `issue`/`issuewild "amazon.com"` records, and ACM in a customer account
+      can still issue a certificate for `*.<label>.launchpad.aklamaash.me` (CAA does not
+      accidentally block Amazon's own CA).
+- [ ] CloudTrail → EventBridge alert fires end-to-end: attempt a denied
+      `ChangeResourceRecordSets` (e.g. the apex TXT case above), confirm an event lands on
+      `aws_cloudtrail.platform_dns`, the `dns_write_denied` rule matches it, and a message
+      reaches a subscriber on `dns_write_denied_topic_arn`. Unverified: the exact
+      `errorCode` string CloudTrail records for this specific IAM-conditional denial
+      (assumed to be prefixed `AccessDenied`, matched with an EventBridge `prefix`
+      matcher) and the delivery latency (CloudTrail → EventBridge is typically well under
+      15 minutes but is not instantaneous — do not test with a short timeout).
+- [ ] `sts:GetCallerIdentity` from the writer's actual credential returns an `Arn` ending
+      in `user/launchpad-platform-dns-writer` and `Account` equal to the DNS account id —
+      confirms `assert_caller_identity`'s suffix/account check matches the real ARN shape
+      (assumed, not yet observed against a real STS response for an IAM user, as opposed
+      to an assumed role).
+- [ ] Route53 propagation/latency: confirm `request_and_await_dns_teardown`'s default
+      20s timeout is enough for a real `change_resource_record_sets` call to return
+      `ChangeInfo.Status` (it does not need to reach `INSYNC`, only for the API call
+      itself to complete) — mocks return instantly and cannot exercise this.
+
 ## F3 rollback
 
 - [ ] `ecr describe_images` on a tag the retention policy has actually expired returns
