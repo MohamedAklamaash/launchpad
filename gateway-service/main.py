@@ -23,6 +23,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Not CORS-safelisted by default, so the browser can't read them cross-origin
+    # otherwise: Retry-After (429 backoff) and X-Request-Id (runtime-logs correlation).
+    expose_headers=["Retry-After", "X-Request-Id"],
 )
 
 @app.get("/")

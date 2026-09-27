@@ -404,6 +404,35 @@ def test_cursor_and_minutes_combined_is_rejected(factory, make_stack):
     assert resp.status_code == 400
 
 
+@pytest.mark.django_db
+def test_next_cursor_round_trips_the_pinned_window_not_a_fresh_one(factory, make_stack, monkeypatch):
+    """The point of the cursor is to pin start/end to the first request's window — a
+    second page must never widen it by recomputing from "now"."""
+    calls = []
+    original = MockClient.filter_log_events
+
+    def spy(self, **kwargs):
+        calls.append(kwargs)
+        response = original(self, **kwargs)
+        response["nextToken"] = "tok-2"
+        return response
+
+    monkeypatch.setattr(MockClient, "filter_log_events", spy)
+    stack = make_stack()
+
+    first = _get(factory, stack.owner, str(stack.app.id))
+    assert first.status_code == 200
+    next_cursor = first.data["next_cursor"]
+    assert next_cursor
+
+    second = _get(factory, stack.owner, str(stack.app.id), cursor=next_cursor)
+
+    assert second.status_code == 200
+    assert calls[-1]["nextToken"] == "tok-2"
+    assert calls[-1]["startTime"] == calls[0]["startTime"]
+    assert calls[-1]["endTime"] == calls[0]["endTime"]
+
+
 # ── 6: no platform secret ever reaches a container's env ────────────────────
 
 def test_ecs_container_env_carries_no_platform_setting(monkeypatch):
@@ -555,6 +584,10 @@ def test_budget_exhausted_returns_429(factory, make_stack, fake_redis, settings,
     assert first.status_code == 200
     assert second.status_code == 429
     assert "Retry-After" in second
+
+    from api.models.runtime_log_access import RuntimeLogAccess
+
+    assert RuntimeLogAccess.objects.filter(user_id=stack.owner.id, status_code=429).exists()
 
 
 @pytest.mark.django_db
