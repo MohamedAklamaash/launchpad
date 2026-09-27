@@ -12,7 +12,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 | [F1](F1b-tls-activation.md) | TLS, custom domains | Phase 1 **done** (#68); decisions + zone terraform **done** (#75); DNS writer + activation **not started** | zone not yet applied (real AWS) |
 | [F2](F2-runtime-logs.md) | Logs | provisioning **done** (#70, #71); runtime **not started** | nothing technical |
 | [F3](F3-rollback.md) | Rollback | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
-| [F4](F4-cost-tagging.md) | Cost attribution | **not started** | nothing |
+| [F4](F4-cost-tagging.md) | Cost attribution | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F5](F5-evidence-pack.md) | Compliance pack | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F6](F6-exit-export.md) | Exit export | **not started** | F3, F5, F1b (teardown) |
 
@@ -76,8 +76,9 @@ to walk, not a specification to type in.
       customer on v1 is no longer flagged by the EKS-only v2. The bump still matters: if the
       pinned ref predates #72 the script has no `LAUNCHPAD_COMPUTE_TYPE` handling, so **EKS
       onboarding installs the v1 policy without the EKS grants** and the stale flag can never
-      clear. F4 bumps the policy to v3 (a base-statement change, so both compute types are
-      flagged) and requires the bump again.
+      clear. F4 bumped the policy to v3 (a base-statement change — the `ce:*` grant — so
+      `required_version_for` is now 3 for **both** compute types) and requires the bump
+      again in the same release this ships.
 - [ ] **Run `manage.py redact_stored_provisioning_text --dry-run`, then for real, before
       enabling the provisioning-logs endpoint.** Lossy by design, no reverse.
 - [ ] Dismiss the GitGuardian incidents on #65 and #73 — both flagged AWS's published

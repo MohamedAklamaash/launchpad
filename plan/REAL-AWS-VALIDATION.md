@@ -48,6 +48,40 @@ DNS** account (`infra/platform-dns`).
       real push after `Resume auto-deploy` — confirm the resumed deploy builds the latest
       push and not a stale `project_commit_hash`.
 
+## F4 cost tagging
+
+- [ ] Managed tags actually reach the Fargate **task**, not just the service: deploy an
+      app, describe the running task, confirm `launchpad:infra`/`launchpad:app` are
+      present (this is what `enableECSManagedTags`/`propagateTags='SERVICE'` claims to do
+      — mocks can't verify propagation, only that the flags were sent).
+- [ ] Cost Explorer actually groups by tag once activated: activate
+      `launchpad:app`/`launchpad:infra` via the real callback flow, wait the documented
+      ~24h lag, then `GetCostAndUsage` with `GroupBy=[{"Type":"TAG","Key":"launchpad:app"}]`
+      returns non-empty groups. Also check `GetCostAndUsage` **before** a tag is active
+      (or within 24h of first use): confirm whether AWS returns an empty result or raises
+      (a `ValidationException` would surface as an uncaught 500 today — `_actual_ecs_costs`
+      only maps `AccessDenied`/`AccessDeniedException`).
+- [ ] `UpdateCostAllocationTagsStatus` in a **standalone** account (Launchpad's call
+      should succeed) vs an **AWS Organizations member** account (should fail with the
+      payer-only error `cost_service._activate_cost_allocation_tags` maps to
+      `reason: "payer_account_required"` — confirm the actual error code AWS returns
+      matches `AccessDenied`/`AccessDeniedException` and isn't a third code this mapping
+      misses). Also check what happens when a key was first used <24h ago — AWS may
+      refuse activation with a distinct error the daily cache means Launchpad silently
+      retries the next day; confirm that's the actual behavior, not a permanent failure.
+- [ ] Confirm `InfraID`/`launchpad:infra` is genuinely absent from terraform-managed
+      shared resources (ALB, NAT gateway, VPC, ECS cluster) on a real applied account —
+      `cost_service._actual_ecs_costs`'s `shared` figure currently assumes this and
+      documents it as covering only the CodeBuild project. If wrong, the `shared` figure
+      needs to include those resources' spend, not just CodeBuild's.
+- [ ] `tag_existing_app_resources --dry-run` then for real against an infra with apps
+      deployed before this feature; confirm tags land, then confirm a task replacement
+      (`update_service` without `forceNewDeployment`) actually results in the *next*
+      naturally-scheduled task picking up the tag rather than requiring a manual force.
+- [ ] v2 → v3 policy refresh on a real customer account: `create_aws_role.sh` refresh
+      installs the `ce:*` statement, `policy_version` updates to 3 on the callback, and a
+      cost query that previously 422'd with `policy_refresh_required` now succeeds.
+
 ## F5 evidence pack
 
 - [ ] `GetPolicyVersion.PolicyVersion.Document` and `GetRole.Role.AssumeRolePolicyDocument`

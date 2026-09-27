@@ -74,11 +74,7 @@ export function CostsPanel({ infraId }: Props) {
     if (expanded) load();
   }, [expanded, load]);
 
-  const toggle = () => {
-    const next = !expanded;
-    setExpanded(next);
-    if (next && !data) load();
-  };
+  const toggle = () => setExpanded((prev) => !prev);
 
   return (
     <div className="rounded-xl panel">
@@ -140,6 +136,7 @@ export function CostsPanel({ infraId }: Props) {
                   </span>
                   <span className="font-mono text-muted-foreground shrink-0">{fmt(data.shared.amount_usd, data.currency)}</span>
                 </div>
+                {data.shared.note && <p className="text-[11px] text-muted-foreground/70">{data.shared.note}</p>}
               </div>
 
               <ActivationNote tagActivation={data.tag_activation} computeType={data.compute_type} />

@@ -185,7 +185,8 @@ def test_ecs_actuals_are_grouped_by_app_tag_and_marked_actual(factory, make_infr
 
     assert resp.status_code == 200
     assert resp.data["apps"] == [{"app": "my-app", "amount_usd": 12.34, "source": "actual"}]
-    assert resp.data["shared"] == {"amount_usd": 5.0, "source": "actual"}
+    assert resp.data["shared"]["amount_usd"] == 5.0
+    assert resp.data["shared"]["source"] == "actual"
     assert resp.data["tag_activation"]["activated"] is True
 
 
@@ -202,6 +203,25 @@ def test_cache_hit_never_calls_cost_explorer_again(factory, make_infra, make_app
     assert fake_ce.get_cost_and_usage.call_count == 1
     assert second.data["cached"] is True
     assert first.data["apps"] == second.data["apps"]
+
+
+def test_cache_rows_from_a_previous_day_are_pruned(factory, make_infra, make_app, fake_ce):
+    from api.models import CostReport
+
+    infra = make_infra(compute_type="ecs_fargate", is_mock=False)
+    make_app(infra, name="my-app")
+
+    stale = CostReport.objects.create(
+        infrastructure=infra,
+        window_start=timezone.now().date() - timedelta(days=100),
+        window_end=timezone.now().date() - timedelta(days=70),
+        computed_on=timezone.now().date() - timedelta(days=70),
+        payload={"apps": [], "shared": {"amount_usd": 0, "source": "actual"}},
+    )
+
+    _get_costs(factory, infra.user, str(infra.id))
+
+    assert not CostReport.objects.filter(id=stale.id).exists()
 
 
 def test_access_denied_maps_to_policy_refresh_required_422(factory, make_infra, make_app, monkeypatch):

@@ -2,6 +2,7 @@
 tag_existing_app_resources backfill command applies them to resources created before
 tagging existed."""
 import uuid
+from unittest.mock import patch
 
 import pytest
 from aws.alb import ALBClient
@@ -369,3 +370,97 @@ def test_backfill_skips_mock_infrastructures(schema_db, monkeypatch):
     )
 
     call_command("tag_existing_app_resources")
+
+
+# ── deploy call sites actually pass the tags (not just the wrappers accepting them) ──
+
+@pytest.fixture
+def deploy_fixtures(schema_db):
+    from api.mock.mock_session import MockSession
+    from api.models.application import Application
+    from api.models.environment import Environment
+    from api.models.infrastructure import Infrastructure
+    from api.models.user import User
+    from api.services.application_deployment_service import ApplicationDeploymentService
+
+    user = User.objects.create(id=uuid.uuid4(), email=f"u-{uuid.uuid4()}@example.com", user_name="t")
+    infra = Infrastructure.objects.create(
+        id=uuid.uuid4(), user=user, name=f"infra-{uuid.uuid4()}", cloud_provider="aws",
+        max_cpu=1024, max_memory=512,
+    )
+    env = Environment.objects.create(
+        id=uuid.uuid4(), infrastructure=infra,
+        ecr_repository_url="123456789012.dkr.ecr.us-east-1.amazonaws.com/launchpad-abc",
+        ecs_task_execution_role_arn="arn:aws:iam::123456789012:role/exec",
+        vpc_id="vpc-1", alb_security_group_id="sg-alb",
+        alb_arn="arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/alb/1",
+    )
+    app = Application.objects.create(
+        id=uuid.uuid4(), user=user, infrastructure=infra, name="my-app",
+        project_remote_url="https://github.com/x/y", project_branch="main",
+        project_commit_hash="", envs={}, port=8080,
+        alloted_cpu=256, alloted_memory=512, attached_database_ids=[],
+    )
+    session = MockSession(region="us-east-1", account_id="123456789012", infra_id=str(infra.id))
+    return ApplicationDeploymentService(), session, app, env
+
+
+def test_create_task_definition_call_site_passes_app_tags(deploy_fixtures):
+    service, session, app, env = deploy_fixtures
+    with patch("api.services.application_deployment_service.ECSClient") as ecs_cls:
+        service._create_task_definition(session, app, env, resolved_sha="a" * 40)
+
+    tags = ecs_cls.return_value.create_task_definition.call_args.kwargs["tags"]
+    assert tags == app_tags(app.infrastructure_id, "my-app")
+
+
+def test_create_target_group_call_site_passes_app_tags(deploy_fixtures):
+    service, session, app, env = deploy_fixtures
+    with patch("api.services.application_deployment_service.ALBClient") as alb_cls:
+        service._create_target_group(session, app, env)
+
+    tags = alb_cls.return_value.create_target_group.call_args.kwargs["tags"]
+    assert tags == app_tags(app.infrastructure_id, "my-app")
+
+
+class _FakeEC2:
+    def describe_subnets(self, **kwargs):
+        return {"Subnets": [{"SubnetId": "subnet-1"}]}
+
+    def authorize_security_group_ingress(self, **kwargs):
+        return {}
+
+
+class _SessionWithEC2:
+    def __init__(self, ec2):
+        self._ec2 = ec2
+
+    def client(self, name, **kwargs):
+        assert name == "ec2"
+        return self._ec2
+
+
+def test_create_ecs_service_call_site_passes_app_tags(deploy_fixtures, monkeypatch):
+    service, _session, app, env = deploy_fixtures
+    monkeypatch.setattr(
+        "api.services.application_deployment_service._shared_get_or_create_app_sg",
+        lambda ec2, infra_id, vpc_id: "sg-app",
+    )
+    fake_session = _SessionWithEC2(_FakeEC2())
+
+    with patch("api.services.application_deployment_service.ECSClient") as ecs_cls:
+        service._create_ecs_service(fake_session, app, env)
+
+    tags = ecs_cls.return_value.create_service.call_args.kwargs["tags"]
+    assert tags == app_tags(app.infrastructure_id, "my-app")
+
+
+def test_configure_alb_routing_call_site_passes_app_tags(deploy_fixtures):
+    service, session, app, env = deploy_fixtures
+    with patch("api.services.application_deployment_service.ALBClient") as alb_cls:
+        alb_cls.return_value.get_listener_arn.return_value = "listener-1"
+        alb_cls.return_value.get_next_priority.return_value = 1
+        service._configure_alb_routing(session, app, env)
+
+    tags = alb_cls.return_value.create_listener_rule.call_args.kwargs["tags"]
+    assert tags == app_tags(app.infrastructure_id, "my-app")

@@ -72,6 +72,12 @@ def get_infrastructure_costs(infra, window_start: date, window_end: date) -> dic
         infrastructure=infra, window_start=window_start, window_end=window_end,
         defaults={"payload": payload, "computed_on": today},
     )
+    # window_end is always "today", so the (infra, window) key changes every day this
+    # infra's costs are queried — without this, a polled infra accumulates one row per
+    # day forever. A row from a previous day can never be a cache hit again (the check
+    # above requires computed_on == today), so it's safe to drop; same-day rows for a
+    # different `months` selection stay cached.
+    CostReport.objects.filter(infrastructure=infra).exclude(computed_on=today).delete()
     return {**payload, "cached": False}
 
 
@@ -166,7 +172,17 @@ def _actual_ecs_costs(infra, window_start: date, window_end: date) -> dict:
     payload = _base_payload(infra, window_start, window_end)
     payload.update({
         "apps": apps,
-        "shared": {"amount_usd": round(shared_total, 2), "source": "actual"},
+        "shared": {
+            "amount_usd": round(shared_total, 2),
+            "source": "actual",
+            # Terraform's shared ALB/NAT gateway/VPC/cluster carry no launchpad:infra tag
+            # today (confirmed: infra/aws/providers.tf's default_tags is Environment/Owner/
+            # Project/ManagedBy only, no infra id) — the Filter below excludes them from
+            # this query entirely, so this figure covers only launchpad:infra-tagged
+            # resources without a launchpad:app value (currently: the CodeBuild project).
+            # It understates total shared spend until those modules are tagged too.
+            "note": "Covers the shared CodeBuild project only; ALB/NAT/VPC/cluster spend is not yet tagged for attribution",
+        },
         "tag_activation": _activate_cost_allocation_tags(ce),
     })
     return payload
