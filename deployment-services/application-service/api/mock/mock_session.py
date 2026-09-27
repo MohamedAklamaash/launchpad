@@ -244,6 +244,41 @@ class MockClient:
     def create_log_group(self, **kwargs):
         return {}
 
+    def list_tasks(self, **kwargs):
+        # Deterministic per (cluster, service, desiredStatus) so isolation tests can
+        # assert two different apps' task ids (and therefore log streams) never collide,
+        # and so RUNNING/STOPPED each return a stable, distinct id across calls.
+        cluster_name = str(kwargs.get("cluster", "cluster")).split("/")[-1]
+        service_name = kwargs.get("serviceName", "")
+        desired_status = kwargs.get("desiredStatus", "RUNNING")
+        if not service_name or service_name in self._deleted_services:
+            return {"taskArns": []}
+        task_id = hashlib.md5(f"{cluster_name}:{service_name}:{desired_status}".encode()).hexdigest()
+        return {"taskArns": [self._arn(f"task/{cluster_name}/{task_id}")]}
+
+    def filter_log_events(self, **kwargs):
+        streams = kwargs.get("logStreamNames") or []
+        start_time = kwargs.get("startTime", 0)
+        end_time = kwargs.get("endTime", 2**63 - 1)
+        limit = kwargs.get("limit", 10000)
+        events = []
+        for stream in streams:
+            base_ts = max(start_time, end_time - 2000)
+            for offset, message in enumerate((
+                f"[mock] {stream} started",
+                # A GitGuardian-safe fake credential (not AWS-shaped) to prove the posture:
+                # the customer's own application logs are shown back to them unredacted.
+                "DATABASE_URL=postgres://app:mock-fake-password@db.internal:5432/app connected",
+            )):
+                # Clamp into [start_time, end_time] rather than just adding the offset:
+                # a narrow or just-created-app window (endTime close to startTime) would
+                # otherwise silently drop the later lines instead of returning them at
+                # the boundary.
+                ts = min(end_time, base_ts + offset)
+                if start_time <= ts <= end_time:
+                    events.append({"logStreamName": stream, "timestamp": ts, "message": message, "ingestionTime": ts})
+        return {"events": events[:limit]}
+
     def describe_subnets(self, **kwargs):
         # Mirrors the terraform vpc module: two public subnets at cidrsubnet(vpc_cidr, 8, 0..1)
         # and two private at +2..3, tagged Type=public/private. CidrBlock is included because

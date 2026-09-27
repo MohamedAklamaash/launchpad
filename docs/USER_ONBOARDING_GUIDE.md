@@ -251,7 +251,10 @@ totalling ≤ 4 vCPU. Raise the limits in infrastructure settings, or delete unu
 
 ## Monitoring
 
-- **App logs** — CloudWatch log group `/ecs/<app-name>-task`.
+- **App logs** — CloudWatch log group `/ecs/<app-name>-task`. The dashboard's **Logs** tab
+  on an application also tails this (or, on Kubernetes, your pod logs) on demand, owner
+  only, nothing stored — see [RUNTIME_LOGS.md](./RUNTIME_LOGS.md) for exactly what that
+  does and does not do with your data.
 - **Build logs** — `/aws/codebuild/launchpad-build-<infra-id>`.
 - **Containers** — ECS → Clusters → your cluster → services/tasks.
 - **Cost** — everything runs in your account; use AWS Cost Explorer (filter ECS/ECR/ALB/

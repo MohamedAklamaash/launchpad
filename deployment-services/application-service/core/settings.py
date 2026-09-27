@@ -15,6 +15,7 @@ from pathlib import Path
 
 from api.common.envs.application import app_config
 from api.common.envs.database import db_config
+from shared.mode import is_dev_mode
 
 from core.allowed_hosts_config import get_allowed_hosts
 
@@ -27,6 +28,13 @@ def validate_config():
         raise ValueError("JWT_SECRET must be set and at least 32 characters")
     if not app_config.internal_api_token or len(app_config.internal_api_token) < 32:
         raise ValueError("INTERNAL_API_TOKEN must be set and at least 32 characters")
+    # Signs the runtime-logs pagination cursor (customer CloudWatch/k8s pagination
+    # tokens never travel to the client raw). A weak/default secret outside dev mode
+    # would let a forged cursor widen another app's log window.
+    if not is_dev_mode(app_config.mode):
+        cursor_secret = os.environ.get("RUNTIME_LOGS_CURSOR_SECRET", "")
+        if not cursor_secret or len(cursor_secret) < 32:
+            raise ValueError("RUNTIME_LOGS_CURSOR_SECRET must be set and at least 32 characters outside dev mode")
 
 validate_config()
 
@@ -43,6 +51,12 @@ JWT_SECRET = app_config.jwt_secret
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
+
+# Django's technical 500 page renders local variables from every frame — for the
+# runtime-logs endpoint that includes the customer's own application log content.
+# Outside dev mode that page must never be reachable.
+if DEBUG and not is_dev_mode(app_config.mode):
+    raise ValueError("DEBUG must not be enabled outside dev mode")
 
 ALLOWED_HOSTS = get_allowed_hosts()
 
@@ -118,6 +132,24 @@ INTERNAL_AUTH_EXEMPT_PREFIXES = [
 ]
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
+
+# Redis connection for shared.ratelimit.budget (per-user customer-call budgets), read at
+# import time by that module — must exist before it's imported anywhere.
+REDIS_HOST = app_config.redis_host
+REDIS_PORT = int(app_config.redis_port)
+REDIS_PASSWORD = app_config.redis_password
+REDIS_DB = int(app_config.redis_db)
+
+# Each request costs an AssumeRole plus a CloudWatch/k8s API call in the customer's own
+# account — billed to them, consuming their API throttle. No gateway exemption.
+RATE_BUDGET_RUNTIME_LOGS_LIMIT = int(os.environ.get('RATE_BUDGET_RUNTIME_LOGS_LIMIT', '30'))
+RATE_BUDGET_RUNTIME_LOGS_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_RUNTIME_LOGS_WINDOW_SECONDS', '60'))
+
+# Signs the runtime-logs pagination cursor; see validate_config() above for the
+# outside-dev-mode length requirement. The dev fallback only ever runs under MODE=dev.
+RUNTIME_LOGS_CURSOR_SECRET = os.environ.get('RUNTIME_LOGS_CURSOR_SECRET') or (
+    "dev-only-runtime-logs-cursor-secret-not-for-prod" if is_dev_mode(app_config.mode) else ""
+)
 
 # Public-facing gateway URL used when generating webhook URLs to hand to GitHub.
 # Normalized to scheme://host[:port] at load — a value with a trailing path/slash
@@ -246,6 +278,12 @@ LOGGING = {
             'level': 'INFO',
             'propagate': False,
         },
+        # These libraries log request/response detail (including CloudWatch/k8s API
+        # bodies) at INFO — pinned to WARNING so runtime-log content never lands in the
+        # platform's own log stream via a library logger the view code doesn't control.
+        'botocore': {'handlers': ['console', 'file'], 'level': 'WARNING', 'propagate': False},
+        'urllib3': {'handlers': ['console', 'file'], 'level': 'WARNING', 'propagate': False},
+        'kubernetes': {'handlers': ['console', 'file'], 'level': 'WARNING', 'propagate': False},
     },
 }
 

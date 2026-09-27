@@ -15,6 +15,7 @@ import {
 import { EditAppSheet } from '@/components/edit-app-sheet';
 import { EnvEditor } from '@/components/env-editor';
 import { DeploymentHistory } from '@/components/deployment-history';
+import { RuntimeLogsPanel } from '@/components/runtime-logs-panel';
 
 const POLLING_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
 
@@ -48,6 +49,7 @@ export default function ApplicationDetailPage() {
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const user = useAuthStore((s) => s.user);
   const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
+  const isOwner = user?.role === 'super_admin';
 
   const loadApp = useCallback(async () => {
     try {
@@ -422,6 +424,8 @@ export default function ApplicationDetailPage() {
         onRolledBack={() => loadApp()}
         onAccessChange={setHasRollbackAccess}
       />
+
+      {isOwner && <RuntimeLogsPanel appId={id} />}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

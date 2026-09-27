@@ -133,3 +133,34 @@ DNS** account (`infra/platform-dns`).
       (it now has no default outside `MODE=dev` and the service refuses to start without
       it) — confirm the deploy pipeline sets it before this ships to an environment that
       isn't dev.
+
+## F2 runtime logs
+
+- [ ] `filter_log_events` with `logStreamNames` against a real ECS log group: confirm the
+      request-response shape (mocks assume `events`/`nextToken` only; verify
+      `searchedLogStreams` and any other fields don't need handling) and confirm interleaved
+      ordering across streams matches what `_cap_events`'s timestamp sort assumes.
+- [ ] STOPPED-task log retention vs the 60-minute max window: a STOPPED task's CloudWatch
+      stream persists past the task's own ECS visibility window, but confirm no surprise
+      (e.g. log group deletion racing a still-STOPPED task) truncates it before that.
+- [ ] `list_tasks` STOPPED-task visibility window (documented as up to ~1 hour, but verify
+      empirically): confirms whether a very recently stopped task is still discoverable, and
+      how quickly it stops being returned — this is what the `app.created_at` clamp is a
+      backstop for, not a substitute for measuring the real window.
+- [ ] `FilterLogEvents` / `ListTasks` visibility in the customer's own CloudTrail — confirm
+      both actions are logged as issued by `LaunchpadDeploymentRole` and are attributable to
+      this feature (not indistinguishable from other role usage) if that ever matters to a
+      customer's audit.
+- [ ] EKS: confirm `read_namespaced_pod_log` and `list_namespaced_pod` through the assumed
+      `{cluster}-deploy` role are visible in the cluster's own Kubernetes/EKS audit logs (only
+      if the customer has audit logging enabled) — the docs statement claims this is possible
+      but unverified against a real cluster.
+- [ ] End-to-end timeout budget: with a real `AssumeRole` (network round trip, not the mock's
+      instant return) added on top of the dedicated `RUNTIME_LOGS_BOTO_CONFIG`
+      (connect=2s/read=4s, 2 retries) and up to two `list_tasks` calls plus one
+      `filter_log_events` call, confirm the total stays under the gateway's 10s proxy timeout
+      with real network latency, not just under the code's own 6s deadline check.
+- [ ] Confirm `ecs:*` / `logs:*` in the existing policy actually cover `ecs:ListTasks` and
+      `logs:FilterLogEvents` with no `NotAction`/condition carve-out narrowing them for this
+      use — checked against `policy.json`'s statement shape here, not against a real
+      `iam:SimulatePrincipalPolicy` call.

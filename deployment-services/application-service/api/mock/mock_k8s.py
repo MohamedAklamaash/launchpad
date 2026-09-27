@@ -135,6 +135,18 @@ class MockCoreV1Api(_MockApi):
         ]
         return k8s.V1PodList(items=pods)
 
+    def read_namespaced_pod_log(self, name, namespace, **kwargs):
+        for (kind, ns, obj_name) in self._state.objects:
+            if kind == "deployment" and ns == namespace and f"{obj_name}-mock-0" == name:
+                container = kwargs.get("container", "")
+                # A GitGuardian-safe fake credential (not AWS-shaped) to prove the posture:
+                # the customer's own application logs are shown back to them unredacted.
+                return (
+                    f"2026-01-01T00:00:00.000000000Z [mock] {namespace}/{name}/{container} started\n"
+                    "2026-01-01T00:00:01.000000000Z DATABASE_URL=postgres://app:mock-fake-password@db.internal:5432/app connected\n"
+                )
+        raise _not_found("Pod", name)
+
     def list_namespaced_event(self, namespace, **kwargs):
         return k8s.CoreV1EventList(
             items=[

@@ -18,6 +18,7 @@ from api.views.application import (
 from api.views.health import health_check, liveness_check, readiness_check
 from api.views.infrastructure_validation import infrastructure_validation
 from api.views.metrics import metrics_view
+from api.views.runtime_logs import runtime_logs
 
 urlpatterns = [
     path('applications/', ApplicationListCreateView.as_view(), name='application-list-create'),
@@ -38,4 +39,6 @@ urlpatterns = [
     path('liveness/', liveness_check, name='liveness'),
     path('readiness/', readiness_check, name='readiness'),
     path('metrics/', metrics_view, name='metrics'),
+    # F2: runtime log tailing — appended at the end to keep this file's diff additive.
+    path('applications/<uuid:app_id>/logs/', runtime_logs, name='application-runtime-logs'),
 ]

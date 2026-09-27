@@ -237,6 +237,26 @@ async def application_rotate_webhook_secret(app_id: str, request: Request):
     )
 
 
+class RuntimeLogEvent(BaseModel):
+    timestamp: str
+    message: str
+
+
+class RuntimeLogsResponse(BaseModel):
+    events: list[RuntimeLogEvent]
+    next_cursor: str | None = None
+    truncated: bool
+
+
+@router.get("/{app_id}/logs", summary="Tail an application's runtime logs",
+            response_model=RuntimeLogsResponse)
+async def application_logs(app_id: uuid.UUID, request: Request):
+    """Owner only. Query params: `container` (app|proxy), `minutes` (1-60), `cursor`,
+    `previous` (EKS only) — passed through untouched; app_id is typed as a UUID here so a
+    malformed id 404s at the gateway rather than reaching the upstream as a raw string."""
+    return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/logs/", request)
+
+
 # Mounted at the FastAPI app root (no /applications prefix) — GitHub URLs live under
 # a stable /api/v1/webhooks/github/ path so the auth middleware can prefix-exempt them.
 webhook_router = APIRouter(prefix="/webhooks", tags=["Webhooks"])

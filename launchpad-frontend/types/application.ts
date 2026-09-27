@@ -79,6 +79,26 @@ export interface ApplicationCreate {
   envs?: Record<string, string>;
 }
 
+export type RuntimeLogContainer = 'app' | 'proxy';
+
+export interface RuntimeLogEvent {
+  timestamp: string;
+  message: string;
+}
+
+export interface RuntimeLogsResponse {
+  events: RuntimeLogEvent[];
+  next_cursor: string | null;
+  truncated: boolean;
+}
+
+export interface RuntimeLogsQuery {
+  container?: RuntimeLogContainer;
+  minutes?: number;
+  cursor?: string;
+  previous?: boolean;
+}
+
 export interface ApplicationUpdate {
   name?: string;
   description?: string;
