@@ -49,6 +49,27 @@ release or every customer is flagged stale and cannot clear it. `ce:GetCostAndUs
 resource-level permissions — it is account-wide financial-data disclosure covering spend
 unrelated to Launchpad. Say so plainly in the policy diff and the docs; do not wildcard it.
 
+## Gaps found in review (now part of the design)
+
+- **Existing apps.** Tags are added only at create time, so every app running today would
+  stay untagged until redeployed — undermining the "worse by waiting" argument. Ship a
+  one-off `tag_existing_app_resources` management command (idempotent; `tag_resource` on
+  task definitions, services, target groups, listener rules, CodeBuild project) and call
+  `update_service(propagateTags='SERVICE', enableECSManagedTags=True)` on existing
+  services so tasks pick up tags at their next replacement.
+- **Activation is needed in every account, not just org members.** Cost Explorer only
+  groups by user-defined tags once they are activated, and a key becomes activatable ~24h
+  after first use. Launchpad activates its own keys with
+  `ce:UpdateCostAllocationTagsStatus`; in an org member account that call fails and the
+  UI says so (infra-level only until the payer activates).
+- **Cost Explorer charges the customer $0.01 per request.** Results are cached per
+  infrastructure per day; the endpoint never calls CE on a cache hit.
+- **Shared costs** (ALB, NAT gateway, EKS control plane, VPC) cannot be split per app. The
+  response reports them as an explicit `shared` line so per-app figures never silently sum
+  to less than the bill.
+- **Customers still on v2** get `AccessDenied` on `ce:`. That maps to the existing
+  `policy_refresh_required` 422 shape the dashboard already handles.
+
 ## Files
 
 - `application-service/aws/ecs.py` — tags on task definition and service; managed tags +
@@ -79,13 +100,14 @@ and the endpoint is a new read surface. Apply the lessons already paid for: owne
 the two-step authz from `database_service.py`, no rate-limit exemption (the gateway does
 not authenticate, so "owner-only" cannot justify one), and a bounded query window.
 
-## Open questions
+## Decisions
 
-1. **Tag activation for org member accounts.** Activating a cost allocation tag is a
-   *payer-account* setting that Launchpad's role cannot reach. Ship "infra-level only
-   unless the payer activates", or add a payer onboarding step?
-2. Is a labelled estimate acceptable for EKS, or should EKS simply show no per-app cost
-   until split cost allocation data is available?
+1. **Org member accounts:** infra-level only unless the payer activates; no payer
+   onboarding step. The UI states which case applies.
+2. **EKS:** show the labelled estimate. Hiding it gives EKS customers nothing; a labelled
+   estimate is honest and replaceable when split cost allocation data is adopted.
+3. **Grants in v3:** `ce:GetCostAndUsage`, `ce:UpdateCostAllocationTagsStatus`,
+   `ce:ListCostAllocationTags` — in their own statement, with the account-wide caveat.
 
 ## Out of scope
 

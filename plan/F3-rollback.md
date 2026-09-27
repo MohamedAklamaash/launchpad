@@ -51,6 +51,20 @@ config; the UI shows the diff before confirming.
 A tag-pointer field on `Application` was considered and rejected: without a snapshot, the
 image rolls back while today's env vars stay applied — silent drift.
 
+## Gaps found in review (now part of the design)
+
+- **The next push silently undoes a rollback.** The GitHub webhook
+  (`views/application.py` `application_github_webhook`) redeploys on every push to the
+  tracked branch. A rollback therefore sets `Application.auto_deploy_paused`; while set,
+  the webhook acknowledges pushes without deploying, and the UI shows the app as pinned
+  with a *Resume auto-deploy* action. A manual deploy clears it.
+- **EKS is not pinned to what was built.** `api/common/naming.image_tag()` picks the tag
+  from the *requested* `project_commit_hash[:12]` before the build (or a random uuid when
+  there is none), while ECS pins to the SHA the build actually resolved. If the EKS deploy
+  runs after CodeBuild completes, switch it to the `$APP_NAME-$RESOLVED_SHA` tag the
+  buildspec already pushes, so `Deployment.commit_sha` means the same thing on both
+  compute types. Record which it is on the `Deployment` row either way.
+
 ## Files
 
 - `application-service/api/models/deployment.py` — new, plus an additive migration.
@@ -79,12 +93,12 @@ confirm the snapshot genuinely holds no values. Also worth checking: who may tri
 rollback (owner vs invited ADMIN — same decision shape as the logs endpoint, where we
 settled on owner-only).
 
-## Open questions
+## Decisions
 
-1. The UI diff can only show **key-name** changes, not value changes, because values are
-   not snapshotted. Is that acceptable UX, or does it need a "3 values changed" count
-   derived from the content hash?
-2. Should rollback be allowed while a deploy is in flight, or rejected until it settles?
+1. **Diff UX:** key-name changes, plus a "values changed" indicator derived from the
+   content hash. No values are shown or stored.
+2. **In-flight deploys:** rollback is rejected (409) while a deploy is in flight.
+3. **Who may roll back:** owner-only, matching the logs endpoint.
 
 ## Out of scope
 
