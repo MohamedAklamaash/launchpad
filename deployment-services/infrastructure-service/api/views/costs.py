@@ -1,6 +1,10 @@
 import logging
 
-from api.services.cost_service import CostService
+from api.services.cost_service import (
+    CostAllocationTagsNotActivatedError,
+    CostExplorerTemporarilyUnavailableError,
+    CostService,
+)
 from api.services.policy_errors import PolicyRefreshRequiredError
 from django.conf import settings
 from django.http import HttpRequest
@@ -58,6 +62,10 @@ def _error_response(e: Exception):
             {'error': str(e), 'code': 'policy_refresh_required', 'denied_actions': e.denied_actions},
             status=422,
         )
+    if isinstance(e, CostAllocationTagsNotActivatedError):
+        return Response({'error': str(e), 'code': 'cost_tags_not_activated'}, status=422)
+    if isinstance(e, CostExplorerTemporarilyUnavailableError):
+        return Response({'error': str(e), 'code': 'cost_explorer_unavailable'}, status=503)
     if isinstance(e, LookupError):
         return Response({'error': str(e)}, status=status.HTTP_404_NOT_FOUND)
     if isinstance(e, PermissionError):
@@ -75,7 +83,10 @@ def _error_response(e: Exception):
         "grouped by app (source=actual); EKS infrastructures return a labelled estimate from pod "
         "resource requests (source=estimate). `shared` covers spend that cannot be split per app "
         "(ALB, NAT gateway, EKS control plane, VPC). Returns 422 with policy_refresh_required if "
-        "the customer's applied IAM policy predates the Cost Explorer grants (v3)."
+        "the customer's applied IAM policy predates the Cost Explorer grants (v3), 422 with "
+        "cost_tags_not_activated if Cost Explorer rejects the tagged query outright (the tags "
+        "likely aren't activated yet), or 503 with cost_explorer_unavailable on a transient "
+        "Cost Explorer condition (rate limit, data not yet available)."
     ),
     parameters=[
         OpenApiParameter("infra_id", OpenApiTypes.STR, OpenApiParameter.PATH),
@@ -90,6 +101,7 @@ def _error_response(e: Exception):
         403: CostsErrorSerializer,
         404: CostsErrorSerializer,
         422: CostsErrorSerializer,
+        503: CostsErrorSerializer,
     },
     methods=["GET"],
 )

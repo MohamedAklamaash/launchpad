@@ -35,6 +35,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from shared.aws.app_security_group import get_or_create_app_security_group
+from shared.aws.cost_tags import TAG_INFRA_KEY
 from shared.enums.orchestrator import ComputeType
 from shared.mode import is_dev_mode
 
@@ -435,10 +436,11 @@ provider "aws" {{
   
   default_tags {{
     tags = {{
-      Environment   = "{env_name}"
-      InfraID       = "{infra_id}"
-      ManagedBy     = "launchpad"
-      Owner         = "{vars.get('owner', 'unknown')}"
+      Environment        = "{env_name}"
+      InfraID            = "{infra_id}"
+      "{TAG_INFRA_KEY}"  = "{infra_id}"
+      ManagedBy          = "launchpad"
+      Owner              = "{vars.get('owner', 'unknown')}"
     }}
   }}
 }}
@@ -545,10 +547,11 @@ provider "aws" {{
 
   default_tags {{
     tags = {{
-      Environment   = "{env_name}"
-      InfraID       = "{infra_id}"
-      ManagedBy     = "launchpad"
-      Owner         = "{vars.get('owner', 'unknown')}"
+      Environment        = "{env_name}"
+      InfraID            = "{infra_id}"
+      "{TAG_INFRA_KEY}"  = "{infra_id}"
+      ManagedBy          = "launchpad"
+      Owner              = "{vars.get('owner', 'unknown')}"
     }}
   }}
 }}

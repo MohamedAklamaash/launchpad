@@ -162,6 +162,18 @@ class ECSClient:
                     existing_service = response['services'][0]
                     logger.info(f"Service {service_name} already exists, updating it")
 
+                    # update_service has no `tags` parameter — propagateTags='SERVICE' only
+                    # copies the SERVICE resource's *own* tags onto new tasks, so a service
+                    # that predates tagging (zero tags of its own) would propagate nothing
+                    # no matter how many times it redeploys. tag_resource is what actually
+                    # puts launchpad:infra/launchpad:app on the service; only then does
+                    # reasserting propagation below make the next task replacement inherit
+                    # them, making a redeploy genuinely self-healing.
+                    if tags:
+                        self.client.tag_resource(
+                            resourceArn=existing_service['serviceArn'], tags=as_lower_tags(tags),
+                        )
+
                     self.client.update_service(
                         cluster=cluster_arn,
                         service=service_name,
@@ -180,10 +192,6 @@ class ECSClient:
                             'maximumPercent': 200,
                             'minimumHealthyPercent': 100,
                         },
-                        # Tags are set once at create and never re-applied by update_service.
-                        # Reasserting managed tags + propagation on every redeploy means a
-                        # service created before tagging existed self-heals the next time it
-                        # deploys, without needing the backfill command run against it too.
                         enableECSManagedTags=True,
                         propagateTags='SERVICE',
                     )

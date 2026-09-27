@@ -172,6 +172,7 @@ def _ce_response(app_amount="12.34", shared_amount="5.00"):
 def fake_ce(monkeypatch):
     ce = MagicMock()
     ce.get_cost_and_usage.return_value = _ce_response()
+    ce.list_cost_allocation_tags.return_value = {"CostAllocationTags": []}
     ce.update_cost_allocation_tags_status.return_value = {}
     monkeypatch.setattr("api.services.cost_service._ce_client", lambda infra: ce)
     return ce
@@ -224,6 +225,32 @@ def test_cache_rows_from_a_previous_day_are_pruned(factory, make_infra, make_app
     assert not CostReport.objects.filter(id=stale.id).exists()
 
 
+def test_concurrent_cache_miss_race_does_not_500(factory, make_infra, make_app, fake_ce, monkeypatch):
+    """Two requests racing a cache miss must not both hit Cost Explorer's unique
+    constraint into a 500 — the loser serves the winner's row instead."""
+    from api.models import CostReport
+    from django.db import IntegrityError
+
+    infra = make_infra(compute_type="ecs_fargate", is_mock=False)
+    make_app(infra, name="my-app")
+
+    real_update_or_create = CostReport.objects.update_or_create
+
+    def _racing_update_or_create(*args, **kwargs):
+        # Simulate a concurrent request winning the race: the row is already written by
+        # the time this call's own write attempt runs.
+        real_update_or_create(*args, **kwargs)
+        raise IntegrityError("duplicate key value violates unique constraint")
+
+    monkeypatch.setattr(CostReport.objects, "update_or_create", _racing_update_or_create)
+
+    resp = _get_costs(factory, infra.user, str(infra.id))
+
+    assert resp.status_code == 200
+    assert resp.data["cached"] is True
+    assert fake_ce.get_cost_and_usage.call_count == 1
+
+
 def test_access_denied_maps_to_policy_refresh_required_422(factory, make_infra, make_app, monkeypatch):
     infra = make_infra(compute_type="ecs_fargate", is_mock=False)
     make_app(infra, name="my-app")
@@ -240,12 +267,48 @@ def test_access_denied_maps_to_policy_refresh_required_422(factory, make_infra, 
     assert resp.data["code"] == "policy_refresh_required"
 
 
+def test_validation_exception_maps_to_tags_not_activated_422(factory, make_infra, make_app, monkeypatch):
+    infra = make_infra(compute_type="ecs_fargate", is_mock=False)
+    make_app(infra, name="my-app")
+
+    ce = MagicMock()
+    ce.get_cost_and_usage.side_effect = ClientError(
+        {"Error": {"Code": "ValidationException", "Message": "tag key not found"}}, "GetCostAndUsage",
+    )
+    monkeypatch.setattr("api.services.cost_service._ce_client", lambda infra: ce)
+
+    resp = _get_costs(factory, infra.user, str(infra.id))
+
+    assert resp.status_code == 422
+    assert resp.data["code"] == "cost_tags_not_activated"
+    assert "tag key not found" not in resp.data["error"]  # never the raw AWS message
+
+
+def test_limit_exceeded_maps_to_503(factory, make_infra, make_app, monkeypatch):
+    infra = make_infra(compute_type="ecs_fargate", is_mock=False)
+    make_app(infra, name="my-app")
+
+    ce = MagicMock()
+    ce.get_cost_and_usage.side_effect = ClientError(
+        {"Error": {"Code": "LimitExceededException", "Message": "too many requests, account 123456789012"}},
+        "GetCostAndUsage",
+    )
+    monkeypatch.setattr("api.services.cost_service._ce_client", lambda infra: ce)
+
+    resp = _get_costs(factory, infra.user, str(infra.id))
+
+    assert resp.status_code == 503
+    assert resp.data["code"] == "cost_explorer_unavailable"
+    assert "123456789012" not in resp.data["error"]  # never the raw AWS message
+
+
 def test_activation_failure_in_org_member_account_is_reported_not_raised(factory, make_infra, make_app, monkeypatch):
     infra = make_infra(compute_type="ecs_fargate", is_mock=False)
     make_app(infra, name="my-app")
 
     ce = MagicMock()
     ce.get_cost_and_usage.return_value = _ce_response()
+    ce.list_cost_allocation_tags.return_value = {"CostAllocationTags": []}
     ce.update_cost_allocation_tags_status.side_effect = ClientError(
         {"Error": {"Code": "AccessDeniedException", "Message": "payer only"}}, "UpdateCostAllocationTagsStatus",
     )
@@ -256,6 +319,27 @@ def test_activation_failure_in_org_member_account_is_reported_not_raised(factory
     assert resp.status_code == 200
     assert resp.data["tag_activation"]["activated"] is False
     assert resp.data["tag_activation"]["reason"] == "payer_account_required"
+
+
+def test_already_active_tags_skip_the_activation_write(factory, make_infra, make_app, monkeypatch):
+    infra = make_infra(compute_type="ecs_fargate", is_mock=False)
+    make_app(infra, name="my-app")
+
+    ce = MagicMock()
+    ce.get_cost_and_usage.return_value = _ce_response()
+    ce.list_cost_allocation_tags.return_value = {
+        "CostAllocationTags": [
+            {"TagKey": "launchpad:infra", "Status": "Active"},
+            {"TagKey": "launchpad:app", "Status": "Active"},
+        ],
+    }
+    monkeypatch.setattr("api.services.cost_service._ce_client", lambda infra: ce)
+
+    resp = _get_costs(factory, infra.user, str(infra.id))
+
+    assert resp.status_code == 200
+    assert resp.data["tag_activation"]["activated"] is True
+    ce.update_cost_allocation_tags_status.assert_not_called()
 
 
 # ── window bounds ────────────────────────────────────────────────────────────────

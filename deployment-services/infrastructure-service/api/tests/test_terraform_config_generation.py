@@ -50,10 +50,11 @@ provider "aws" {
   
   default_tags {
     tags = {
-      Environment   = "infra-11111111-c6426b96"
-      InfraID       = "11111111-2222-3333-4444-555555555555"
-      ManagedBy     = "launchpad"
-      Owner         = "user-1"
+      Environment        = "infra-11111111-c6426b96"
+      InfraID            = "11111111-2222-3333-4444-555555555555"
+      "launchpad:infra"  = "11111111-2222-3333-4444-555555555555"
+      ManagedBy          = "launchpad"
+      Owner              = "user-1"
     }
   }
 }
@@ -129,6 +130,19 @@ def test_dispatcher_ignores_compute_type_smuggled_via_vars():
     assert config == GOLDEN_ECS
 
 
+@pytest.mark.django_db
+def test_default_tags_carry_launchpad_infra_with_the_full_infra_id():
+    """The provider's default_tags applies to every resource it creates, including
+    inside child modules (vpc/ecs/alb/ecr) — this is how cost_service.py's Cost Explorer
+    Filter={"Tags": {"Key": "launchpad:infra", ...}} sees terraform-managed shared
+    infrastructure at all, alongside the pre-existing InfraID tag other code already reads
+    (terraform_worker.py's own `tag:InfraID` filters, eks_teardown.py). Never a truncated
+    UUIDv7 prefix (CLAUDE.md) — must be the exact same full id as InfraID."""
+    config = TerraformWorker._generate_config_ecs(VARS, *ARGS)
+    assert f'"launchpad:infra"  = "{INFRA_ID}"' in config
+    assert f'InfraID            = "{INFRA_ID}"' in config
+
+
 def test_eks_config_shape(eks_cidrs):
     config = TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, ACCOUNT_ID)
     assert 'module "eks"' in config
@@ -144,6 +158,7 @@ def test_eks_config_shape(eks_cidrs):
     assert f'cluster_name         = "{naming.environment_name(INFRA_ID)}"' in config
     assert f'environment          = "{naming.environment_name(INFRA_ID)}"' in config
     assert 'cluster_version      = "1.31"' in config
+    assert f'"launchpad:infra"  = "{INFRA_ID}"' in config
     assert 'public_access_cidrs  = ["203.0.113.0/24", "198.51.100.7/32"]' in config
     assert f'arn:aws:iam::{ACCOUNT_ID}:role/LaunchpadDeploymentRole' in config
     assert 'output "cluster_name"' in config

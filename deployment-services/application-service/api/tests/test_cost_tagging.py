@@ -63,6 +63,7 @@ class _FakeECSClient:
         self.register_calls = []
         self.create_service_calls = []
         self.update_service_calls = []
+        self.tag_resource_calls = []
 
     def register_task_definition(self, **kwargs):
         self.register_calls.append(kwargs)
@@ -77,6 +78,10 @@ class _FakeECSClient:
 
     def update_service(self, **kwargs):
         self.update_service_calls.append(kwargs)
+        return {}
+
+    def tag_resource(self, **kwargs):
+        self.tag_resource_calls.append(kwargs)
         return {}
 
 
@@ -111,9 +116,31 @@ def test_create_service_sets_managed_tags_and_propagation_and_both_tag_keys():
     assert _tag_dict_lower(call["tags"]) == {"launchpad:infra": "infra-1", "launchpad:app": "my-app"}
 
 
-def test_redeploying_an_existing_service_reasserts_propagation():
-    """A service created before tagging existed self-heals on its next deploy without
-    needing the backfill command run against it too."""
+def test_redeploying_an_existing_service_tags_it_and_reasserts_propagation():
+    """update_service has no `tags` parameter, so propagateTags='SERVICE' alone would
+    propagate nothing from a service that predates tagging (it has no tags of its own).
+    A redeploy must tag_resource the service itself before reasserting propagation for
+    the claim "self-heals on redeploy" to actually be true."""
+    fake = _FakeECSClient(existing_service={"status": "ACTIVE", "serviceArn": "arn:aws:ecs:x:service/s"})
+    ecs = ECSClient(_FakeSession(fake))
+
+    ecs.create_service(
+        cluster_arn="cluster", service_name="my-app-service",
+        task_definition_arn="task-def", target_group_arn="tg",
+        subnet_ids=["subnet-1"], security_group_ids=["sg-1"],
+        container_name="my-app-task", tags=app_tags("infra-1", "my-app"),
+    )
+
+    tag_call = fake.tag_resource_calls[0]
+    assert tag_call["resourceArn"] == "arn:aws:ecs:x:service/s"
+    assert _tag_dict_lower(tag_call["tags"]) == {"launchpad:infra": "infra-1", "launchpad:app": "my-app"}
+
+    call = fake.update_service_calls[0]
+    assert call["enableECSManagedTags"] is True
+    assert call["propagateTags"] == "SERVICE"
+
+
+def test_redeploying_an_existing_service_without_tags_does_not_call_tag_resource():
     fake = _FakeECSClient(existing_service={"status": "ACTIVE", "serviceArn": "arn:aws:ecs:x:service/s"})
     ecs = ECSClient(_FakeSession(fake))
 
@@ -124,6 +151,7 @@ def test_redeploying_an_existing_service_reasserts_propagation():
         container_name="my-app-task",
     )
 
+    assert fake.tag_resource_calls == []
     call = fake.update_service_calls[0]
     assert call["enableECSManagedTags"] is True
     assert call["propagateTags"] == "SERVICE"
