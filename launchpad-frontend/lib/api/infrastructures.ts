@@ -54,6 +54,15 @@ export const infrastructureApi = {
     return data;
   },
 
+  // Owner only. Zip: rendered IAM policy, expected trust-policy shape, a live drift
+  // check against the customer's AWS account, and an honest limitations section.
+  downloadEvidencePack: async (id: string): Promise<Blob> => {
+    const { data } = await apiClient.get(`/api/infrastructures/${id}/evidence-pack`, {
+      responseType: 'blob',
+    });
+    return data;
+  },
+
   validate: async (id: string): Promise<{ can_delete: boolean; app_count: number }> => {
     const { data } = await apiClient.get(`/api/infrastructures/${id}/validation/`);
     return data;

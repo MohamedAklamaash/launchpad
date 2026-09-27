@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -92,6 +93,16 @@ class ProvisioningLogsResponse(BaseModel):
 async def infrastructure_logs(infra_id: str, request: Request):
     """Owner only — invited users get 403. Redacted terraform output plus the last failure reason."""
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/logs/", request)
+
+
+@router.get("/{infra_id}/evidence-pack", summary="Compliance evidence pack for an infrastructure")
+async def infrastructure_evidence_pack(infra_id: UUID, request: Request):
+    """Owner only — invited users get 403. Streams a zip: rendered IAM policy, expected
+    trust-policy shape, a live drift check against the customer's AWS account, and an
+    honest limitations section."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/evidence-pack/", request
+    )
 
 
 @router.delete("/{infra_id}", summary="Delete an infrastructure", status_code=204)

@@ -16,6 +16,7 @@ from pathlib import Path
 from api.common.envs.application import app_config
 from api.common.envs.database import DatabaseConfig
 from core.allowed_hosts_config import get_allowed_hosts
+from shared.mode import is_dev_mode
 
 
 # Validate critical configuration on startup
@@ -69,6 +70,31 @@ MAX_DATABASES_PER_INFRA = int(os.environ.get('MAX_DATABASES_PER_INFRA', '10'))
 # buckets, so a single user can't exhaust another feature's quota or vice versa.
 RATE_BUDGET_DATABASES_LIMIT = int(os.environ.get('RATE_BUDGET_DATABASES_LIMIT', '60'))
 RATE_BUDGET_DATABASES_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_DATABASES_WINDOW_SECONDS', '60'))
+
+# Per-user budget for the evidence-pack endpoint (F5) — an AssumeRole plus a handful of
+# read-only IAM calls in the customer's account, requested rarely (an auditor pulling
+# evidence, not a polling dashboard), so the default is much tighter than `databases`.
+RATE_BUDGET_EVIDENCE_LIMIT = int(os.environ.get('RATE_BUDGET_EVIDENCE_LIMIT', '10'))
+RATE_BUDGET_EVIDENCE_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_EVIDENCE_WINDOW_SECONDS', '300'))
+
+# The Launchpad platform's own IAM identity, as trusted by the customer's role's trust
+# policy (see app_scripts/create_aws_role.sh: LAUNCHPAD_PLATFORM_ACCOUNT_ID / _USER).
+# Only used to verify a customer's live trust policy names the right principal
+# (api/services/evidence_pack.py). No hard-coded default: this identifies which AWS
+# principal a real drift check trusts, so a wrong default would be a silent security
+# hole, not just a wrong answer. MODE=dev never makes a real AssumeRole (see
+# api/cloud_providers/aws/authenticate.py) or a real evidence-pack drift check, so it
+# alone gets a placeholder; every other deployment must set this explicitly.
+_platform_principal_arn = os.environ.get('LAUNCHPAD_PLATFORM_PRINCIPAL_ARN')
+if _platform_principal_arn:
+    LAUNCHPAD_PLATFORM_PRINCIPAL_ARN = _platform_principal_arn
+elif is_dev_mode(app_config.mode):
+    LAUNCHPAD_PLATFORM_PRINCIPAL_ARN = "arn:aws:iam::000000000000:user/dev-placeholder"
+else:
+    raise ValueError(
+        "LAUNCHPAD_PLATFORM_PRINCIPAL_ARN must be set outside MODE=dev — it names the AWS "
+        "principal the evidence-pack live drift check trusts, and has no safe default."
+    )
 
 # Apex domain custom-domain hostnames must not be able to spoof, e.g. `evil.launchpad.app`.
 # Matched against the normalized (IDNA-decoded, lowercased) hostname — see

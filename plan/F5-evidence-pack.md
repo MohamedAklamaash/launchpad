@@ -1,6 +1,6 @@
 # F5 — Compliance evidence pack
 
-**Status:** generator half done (#67, #72), pack not started
+**Status:** done (mock-verified; see REAL-AWS-VALIDATION)
 **Depends on:** nothing · **Blocked by:** nothing
 
 The hard part is already built. What remains is small and self-contained.
@@ -88,6 +88,107 @@ Lower risk than F6, which carries actual secrets; this one carries claims.
 1. **Markdown + JSON.** Browser print covers PDF; revisit only if a buyer asks.
 2. **Owner-only.** It carries no secrets, but it describes the whole account's capability
    surface; consistent with the other owner-only surfaces.
+3. **`diff_live_policy(iam, infra, *, platform_principal_arn)` takes an IAM client, not a
+   Session.** A Session can't be stubbed directly — `botocore.stub.Stubber` wraps a
+   client — and taking the client keeps `live_diff.py` symmetric with `iam_precheck.py`,
+   which also builds its own `iam`/`sts` clients from `authenticate_infrastructure`'s
+   credentials rather than passing a Session around. `infra` is duck-typed (`.id`,
+   `.code`, `.compute_type`) so this module, like `policy_data.py`, never imports Django.
+   It is deliberately not re-exported from `iam_policy/__init__.py` — `generate.py` never
+   needs it, and it's the one module in the package that takes a live AWS client.
+4. **Drift is diffed at grant-row granularity (one row per `(Effect, action, resource
+   scope)`), not whole-statement equality.** A live policy missing one action out of a
+   multi-action `Allow` statement reports that one action as missing, not the entire
+   statement as both missing and extra. `Sid` is ignored; Action/Resource lists are
+   order-insensitive by construction (each row is a set member); grant identity is
+   case-insensitive (IAM action names are), but the rendered diff shows each action in
+   the casing the source document actually used, not a lowercased reconstruction.
+5. **The Launchpad platform principal has no existing Python source of truth** — it lives
+   only as `create_aws_role.sh` defaults (`LAUNCHPAD_PLATFORM_ACCOUNT_ID`,
+   `LAUNCHPAD_PLATFORM_USER`). Added `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN` to
+   `core/settings.py` / `test_settings.py` / `env.example`, passed into `diff_live_policy`
+   as a parameter so the ARN never becomes a second hard-coded copy inside the
+   Django-free `iam_policy` package. **Revised after the independent security review:**
+   the setting has no default outside `MODE=dev` — a real deployment that doesn't set it
+   fails to start (`ValueError` at import time), rather than silently trusting whatever
+   account id and IAM user name shipped as a hard-coded fallback. `MODE=dev` alone gets a
+   placeholder (`arn:aws:iam::000000000000:user/dev-placeholder`), since it never makes a
+   real AssumeRole or a real evidence-pack drift check.
+6. **Module derivation is split three ways, not one flat "instantiated" list.**
+   `_compute_type_modules(compute_type)` and `_managed_database_modules()` each read
+   `terraform_worker.py`'s own generator source (`inspect.getsource` + a regex over
+   `source = "./modules/X"`) for exactly the function that applies to them —
+   `_generate_config_ecs`/`_generate_config_eks` for the compute-type modules,
+   `_db_module_blocks` for the managed-database ones — rather than invoking
+   `_generate_config` (which needs `EKS_PUBLIC_ACCESS_CIDRS` non-empty and a live DB
+   query) or unioning everything into one list. A flat union would have an ECS
+   infrastructure's pack claim it applies `eks`, and every infrastructure's pack claim
+   `rds`/`docdb`/`elasticache` whether or not a database exists — exactly the
+   over-claiming the plan warns about. `instantiated_terraform_modules()` (the union of
+   all three) still exists, but only to compute what's excluded; `all_terraform_modules()`
+   lists `infra/aws/modules/` on disk the same way. All four numbers are read from the
+   codebase, not hard-coded, so they survive the concurrent v3 policy branch (and any
+   future module) without a code change here.
+7. **Evidence bucket defaults: 10 requests / 300s per user** (`RATE_BUDGET_EVIDENCE_LIMIT`
+   / `RATE_BUDGET_EVIDENCE_WINDOW_SECONDS`), tighter than `databases` (60/60) — an
+   AssumeRole plus up to four read-only IAM calls, requested by an auditor pulling
+   evidence rather than a polling dashboard.
+8. **Security pre-review was first done inline, then an independent review caught what
+   that missed — see "Independent security review" below.** The inline pass correctly
+   closed the two risks the plan named (generated-not-authored content, no
+   `Error.Message` leaks) but missed that the trust-policy check computed its three
+   verdict fields independently across statements rather than from one statement, which
+   let a split-across-two-statements trust policy report as fully matching. Lesson: an
+   inline self-review is not a substitute for an adversarial one on a feature whose job
+   is to make a security claim.
+
+## Independent security review (BLOCK, fixed)
+
+A second review returned BLOCK before merge. All findings fixed in place, same branch:
+
+- **B1 (trust-policy split-verdict bug).** `principal_matches`, `external_id_present`,
+  and `external_id_matches` were each set by scanning *all* Allow statements
+  independently, so a trust policy with statement A (right principal, no condition) and
+  statement B (wrong principal, right ExternalId) reported all three as true —
+  `identical: True` — despite actually trusting an uncontrolled second principal.
+  Fixed: `_diff_trust_policy` now requires exactly one narrowly-shaped statement (exact
+  action `sts:AssumeRole`, principal exactly the platform ARN, no `NotPrincipal`) to
+  serve as *the* trust statement; every other statement that also covers
+  `sts:AssumeRole` (via `sts:*`, `*`, `AssumeRole*`, `Principal: "*"`, `NotPrincipal`, or
+  simply a second narrow-shaped one) is collected into `extra_statements`, and
+  `identical` is false whenever any exist.
+- **R1 (second policy invisible).** The diff only ever read `LaunchpadDeploymentPolicy`;
+  an `AdministratorAccess` attachment or an inline policy on the same role was invisible
+  and `identical` could still read true. Fixed: `PolicyDiff.other_policies` now lists
+  every other attached policy ARN and every inline policy name (`ListRolePolicies`);
+  `identical` requires it to be `None`.
+- **R2 (deleted Deny reported as a missing grant).** A removed Deny (e.g. the EKS
+  access-entry backstop) and an added Allow are both widening changes, but a generic
+  "missing/extra grant" count didn't say so. Fixed: split into `missing_allows` /
+  `missing_denies` / `extra_allows` / `extra_denies`, and the rendered markdown calls
+  out that a missing Deny or an extra Allow both mean wider access than intended.
+- **R3 (limitations under-named the account-wide grants).** Only `iam:*` was named as
+  account-wide; `s3:*`, `secretsmanager:*`, `kms:*`, `ec2:*`, `rds:*`, and the rest of
+  the base statement are equally unscoped (`Resource: "*"`). Fixed: `_account_wide_actions`
+  derives the full list from the rendered policy document; the `iam:*` sentence stays
+  unconditional alongside it.
+- **R4 (Allow+NotAction exploded per-action).** A `NotAction`/`NotResource` statement
+  grants an unbounded set of actions; exploding it into per-action rows the way a normal
+  statement is exploded would have made it look like a handful of narrow grants. Fixed:
+  `_open_ended_row` reports it as one whole-statement row flagged `grants_all_except`.
+- **Recommended, all applied:** single-object `Statement` normalized via `_statements_of`
+  for the managed-policy path too (it already was for the trust-policy path); the view
+  raises dedicated `EvidencePackNotFound`/`EvidencePackForbidden` exceptions with fixed
+  messages instead of mapping builtin `LookupError`/`PermissionError` (the latter is a
+  builtin `OSError` subclass, so an unrelated bug could have echoed a real filesystem
+  error message to the client); a test pins the module-derivation regex against what
+  `_generate_config_ecs`/`_generate_config_eks` actually render, and the pack now says
+  "the current generator emits" rather than an unqualified claim; the
+  `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN` default (a specific AWS account id and personal IAM
+  user name) was removed — it now fails closed at startup outside `MODE=dev`; the
+  gateway route's `infra_id` is typed `UUID`; the frontend defers `revokeObjectURL` and
+  reads a blob error body's JSON to show the actual server message instead of a generic
+  toast.
 
 ## Out of scope
 

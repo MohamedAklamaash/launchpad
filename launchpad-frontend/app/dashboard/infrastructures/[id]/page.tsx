@@ -25,7 +25,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download } from 'lucide-react';
 import { Infrastructure, InvitedUserSummary } from '@/types/infrastructure';
 import { ApplicationSummary } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
@@ -61,6 +61,22 @@ const statusOf = (status: string) =>
 
 const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
+// A blob-response request (evidence pack) gets its error body back as a Blob too, so
+// the usual `err.response?.data?.error` read is undefined — read the blob's text and
+// parse it to recover the server's actual message (e.g. a 429's retry-later text).
+async function extractBlobErrorMessage(error: unknown): Promise<string> {
+  const data = (error as { response?: { data?: unknown } })?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text()) as { error?: string };
+      if (parsed.error) return parsed.error;
+    } catch {
+      // Not JSON (or empty) — fall through to the generic message below.
+    }
+  }
+  return 'Failed to download evidence pack';
+}
+
 export default function InfrastructureDetailPage() {
   const router = useRouter();
   const params = useParams();
@@ -80,6 +96,7 @@ export default function InfrastructureDetailPage() {
   const [reprovisioning, setReprovisioning] = useState(false);
   const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
   const [provisioningError, setProvisioningError] = useState<string | null>(null);
+  const [downloadingEvidence, setDownloadingEvidence] = useState(false);
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -237,6 +254,27 @@ export default function InfrastructureDetailPage() {
     } finally {
       setDeleting(false);
       setDeleteOpen(false);
+    }
+  };
+
+  const handleDownloadEvidencePack = async () => {
+    setDownloadingEvidence(true);
+    try {
+      const blob = await infrastructureApi.downloadEvidencePack(id);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `evidence-pack-${id}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Revoking immediately can race the browser's download handoff in some
+      // browsers; defer it a tick past that.
+      setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+    } catch (error: unknown) {
+      toast.error(await extractBlobErrorMessage(error));
+    } finally {
+      setDownloadingEvidence(false);
     }
   };
 
@@ -497,6 +535,23 @@ export default function InfrastructureDetailPage() {
                   </div>
                   <Button variant={policyState.kind === 'stale' ? 'default' : 'outline'} size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
                     <ShieldCheck className="w-3.5 h-3.5" /> Refresh
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {isOwner && (
+              <div className="space-y-2">
+                <p className="eyebrow px-1">Compliance</p>
+                <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-foreground">Evidence Pack</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      What Launchpad can do in your account, what it actually has, and where they differ.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={handleDownloadEvidencePack} disabled={downloadingEvidence} className="gap-1.5 shrink-0">
+                    <Download className="w-3.5 h-3.5" /> {downloadingEvidence ? 'Preparing…' : 'Download'}
                   </Button>
                 </div>
               </div>
