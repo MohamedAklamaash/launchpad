@@ -67,6 +67,18 @@ Requirements, all of them:
 F3's `Deployment` snapshot helps here: it already stores shape-not-values, so the export
 can reuse it rather than re-reading live env values.
 
+## Gaps found in review (now part of the design)
+
+- **DNS and TLS.** Once F1b ships, an exiting customer's `edge.` / wildcard records and
+  ACM validation CNAME live in the platform zone. Exit must run F1b's H2 teardown for that
+  infrastructure — otherwise a dangling `edge.` is a takeover target and a retained
+  validation CNAME keeps authorising a *former* customer's account to issue certificates
+  for a Launchpad hostname. The export README warns that platform hostnames stop resolving
+  and points at custom domains as the migration path.
+- **The GitHub webhook.** It keeps pointing at Launchpad after exit, so pushes hit a dead
+  end and CodeBuild is no longer driven. The README lists every app's webhook and tells the
+  customer to remove it and seed their own CI from the bundled buildspec.
+
 ## Files
 
 `infrastructure-service/api/services/exit_export.py` · owner-only endpoint with
@@ -85,12 +97,13 @@ the temp file is gone after both the success and failure paths.
 archive spanning every application's configuration. H6 exists because the first draft of
 this feature would have shipped secrets.
 
-## Open questions
+## Decisions
 
-1. Does "redacted by default" need an opt-in un-redacted mode for a genuinely departing
-   customer, and if so what gates it?
-2. Should the export be rate-limited or throttled per infrastructure, given it is expensive
-   and an obvious exfiltration target?
+1. **No un-redacted mode.** The values already live in the customer's own account (task
+   definitions, k8s objects); the export points at where, rather than copying them out.
+2. **Throttled:** the F0 per-user budget, plus one export per infrastructure per hour.
+3. **Re-authentication:** the JWT must have been issued within the last 10 minutes
+   (`iat`); otherwise 401 with a code the dashboard turns into a re-login prompt.
 
 ## Out of scope
 

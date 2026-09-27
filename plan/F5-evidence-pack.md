@@ -45,9 +45,13 @@ Contents:
 
 1. The rendered policy for this infrastructure's `compute_type`, plus its version.
 2. The trust-policy shape, showing the ExternalId condition.
-3. **A live drift diff**: `iam:GetRolePolicy` against the customer's actual attached policy,
-   expected vs actual. No new IAM needed — `iam:*` is already granted and the assumed-role
-   session already exists.
+3. **A live drift diff** of the customer's actual policy, expected vs actual. The policy is
+   a **managed** policy (`create_aws_role.sh` runs `create-policy` / `create-policy-version`
+   then `attach-role-policy`), so `iam:GetRolePolicy` — inline policies only — would return
+   `NoSuchEntity`. Read it with `ListAttachedRolePolicies` → `GetPolicy` →
+   `GetPolicyVersion(DefaultVersionId)`. Also diff the **trust policy** (`GetRole`) against
+   the expected shape — ExternalId condition present and equal to the infrastructure id.
+   No new IAM needed — `iam:*` is already granted.
 4. A capability narrative: what each grant is for.
 5. **Honest limitations**, in the pack itself, not an appendix: the `iam:*` caveat above,
    the three uninstantiated modules, and that `ce:GetCostAndUsage` (once F4 adds it) is
@@ -79,11 +83,11 @@ second place the policy is written down — it must be generated, never authored
 
 Lower risk than F6, which carries actual secrets; this one carries claims.
 
-## Open questions
+## Decisions
 
-1. Is Markdown + JSON sufficient, or is PDF a buyer requirement?
-2. Owner-only, or may an invited ADMIN download it? It contains no secrets but does
-   describe the whole account's capability surface.
+1. **Markdown + JSON.** Browser print covers PDF; revisit only if a buyer asks.
+2. **Owner-only.** It carries no secrets, but it describes the whole account's capability
+   surface; consistent with the other owner-only surfaces.
 
 ## Out of scope
 

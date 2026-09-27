@@ -68,6 +68,13 @@ would ship a feature that displays nothing. Decide this in the pre-review.
 
 The gateway `proxy_request` timeout is 10s, which rules out streaming/SSE through it.
 
+## Decisions (default; the pre-review may overturn them)
+
+1. **Redaction posture:** the customer's own logs are shown unredacted to the owner — the
+   allowlist redactor would display nothing. Hardening goes into the *boundaries* instead:
+   never stored, never logged, never in an error body.
+2. **Invited ADMINs:** refused. Owner-only, like provisioning logs.
+
 ## Files
 
 `infrastructure-service` or `application-service` runtime-logs service (whichever owns the

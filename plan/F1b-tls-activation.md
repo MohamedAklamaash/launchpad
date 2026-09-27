@@ -3,29 +3,43 @@
 **Status:** Phase 1 plumbing done (#68), activation not started
 **Depends on:** #68 · **Blocked by:** three decisions and one owner action — see below
 
-## Blocked on, before any code
+## Decisions (settled by #75)
 
-These are not research questions. Nothing in this feature can be designed until they are
-answered.
+1. **Platform DNS zone:** a dedicated AWS account, applied from `infra/platform-dns/`. The
+   writer is an IAM user with no `sts:AssumeRole`, scoped to one zone.
+2. **URL shape:** two-label, `{slug}.{dns_label}.{PLATFORM_BASE_DOMAIN}`, so each
+   infrastructure's wildcard certificate covers only its own hostnames.
+3. **Domain:** `launchpad.aklamaash.me`, a delegated subdomain — the root zone and its mail
+   are not in the platform zone at all.
 
-1. **Which AWS account holds the platform DNS zone, and where do its credentials live?**
-   H1 constrains the answer: it must be a **separate IAM principal with no
-   `sts:AssumeRole`**, scoped to `ChangeResourceRecordSets` / `GetChange` /
-   `ListResourceRecordSets` on one hosted zone, with a `Deny` unless the record name
-   matches the per-infra label pattern. Putting Route53 write on the existing AssumeRole
-   user would mean one key compromise yields both every customer account *and* authority
-   to mint valid certs for any platform hostname. The writer should also live outside the
-   provisioning worker's address space — that process already holds `JWT_SECRET`,
-   `INTERNAL_API_TOKEN`, DB credentials and the platform AWS keys.
-2. **URL shape.** Accept two-label `{slug}.{dns_label}.launchpad.app`? Single-label
-   requires accepting a cert valid for *every* tenant's hostname sitting in *every*
-   tenant's account.
-3. **Is the platform domain literally `launchpad.app`?** Everything parameterises on
-   `PLATFORM_BASE_DOMAIN` either way.
+**Owner action, still pending:** apply the terraform and add the `launchpad` NS record to
+`aklamaash.me` — see `REAL-AWS-VALIDATION.md`.
 
-**Owner action, start now regardless:** create the public hosted zone and delegate NS.
-That is wall-clock, not work, and `dig NS <domain>` must resolve publicly before anything
-here can be tested.
+## What the shipped IAM guard does *not* do — and so the writer must
+
+H1 asked for a `Deny` unless the record name matches **the per-infra label pattern**. IAM
+cannot express that: the policy (#75) permits any name two or more labels below the apex,
+which covers every tenant alike. It protects the apex and single-label records; it does
+**not** stop the credential writing tenant A's `edge.` record on behalf of tenant B.
+
+**Cross-tenant isolation is therefore the DNS writer's job, and it is the centre of this
+feature:**
+
+- **Own process.** The writer runs as its own process (a dedicated RabbitMQ consumer /
+  management command in infrastructure-service) and is the *only* process given
+  `PLATFORM_DNS_*` credentials. The provisioning worker and the web process never hold them.
+- **Names are derived, never accepted.** Requests carry `(infrastructure_id, kind, value)`
+  with `kind ∈ {edge, acm_validation}`. The writer loads the infrastructure, reads its
+  `dns_label` itself, and builds the record name. A caller cannot supply a name.
+- **Every built name is asserted** to end in `.{dns_label}.{PLATFORM_BASE_DOMAIN}` before
+  any Route53 call; ACM validation names are accepted only if they are exactly what ACM
+  returned for that infrastructure's own certificate request.
+- **Fail closed in production** when the zone is unconfigured; an in-memory fake zone when
+  `LAUNCHPAD_MOCK` is set or the infrastructure `is_mock`.
+- **Alerting on denied writes** — CloudTrail → EventBridge rule on
+  `ChangeResourceRecordSets` with `errorCode = AccessDenied` in the DNS account. The #75
+  README calls this required and it was owned by nothing; it is a terraform addition to
+  `infra/platform-dns` in this feature.
 
 ## Verified on main at `9c8743d`
 
