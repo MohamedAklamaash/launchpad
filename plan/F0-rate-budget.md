@@ -80,12 +80,10 @@ Not required — it narrows access, adds no data path.
 
 ## Known risks, not fixed here
 
-- **Gateway per-IP window is now the only outer bound on GET database status polling**
-  again, at whatever `MAX_USER_REQUESTS`/`RATE_LIMIT_WINDOW_SECONDS` the gateway is
-  configured with (default 10 req / 300s per IP across all of `/api`, not just
-  databases). The exemption existed because a dashboard polling database status can
-  exceed that. Whoever operates the gateway needs a realistic value here, or the
-  frontend's poll interval needs to stay well under it.
+- **The gateway's per-IP default was below ordinary dashboard traffic** (10 req / 300s
+  across all of `/api`, while the app page polls every 3s and database status every 5s);
+  the databases exemption was masking that. The default is now 600 / 300s. It is the outer
+  bound only — calls that cost the customer money are bounded per user downstream.
 - **One `databases` bucket covers both cheap GETs and the AssumeRole-plus-IAM-simulate
   POST.** 60 creates/min into a customer account is generous for what should be a rare
   operation; a tighter write-only bucket is a reasonable follow-up once usage data
