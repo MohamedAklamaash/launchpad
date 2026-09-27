@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { ComputeType, Infrastructure, InfrastructureCreate, InfrastructureCreateResponse, ProvisioningLogs } from '@/types/infrastructure';
+import { ComputeType, Infrastructure, InfrastructureCosts, InfrastructureCreate, InfrastructureCreateResponse, ProvisioningLogs } from '@/types/infrastructure';
 
 export interface AwsRegion {
   value: string;
@@ -60,6 +60,11 @@ export const infrastructureApi = {
     const { data } = await apiClient.get(`/api/infrastructures/${id}/evidence-pack`, {
       responseType: 'blob',
     });
+    return data;
+  },
+
+  getCosts: async (id: string, months: number = 1): Promise<InfrastructureCosts> => {
+    const { data } = await apiClient.get(`/api/infrastructures/${id}/costs`, { params: { months } });
     return data;
   },
 
