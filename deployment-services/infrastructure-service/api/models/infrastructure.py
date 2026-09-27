@@ -81,6 +81,10 @@ class Infrastructure(models.Model):
     # delete_infrastructure treats it (together with a live PlatformDnsRecord row or a set
     # InfrastructureCertificate.tls_requested_at) as a reason to refuse a hard delete.
     dns_teardown_requested_at = models.DateTimeField(null=True, blank=True)
+    # Set once, by the owner-only "Complete exit" action (F6) — distinct from
+    # dns_teardown_requested_at, which a plain hard delete can also set. Monotonic: never
+    # cleared, and the view refuses a second exit once this is set.
+    exited_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

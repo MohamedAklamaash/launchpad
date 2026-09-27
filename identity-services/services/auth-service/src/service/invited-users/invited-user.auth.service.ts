@@ -69,7 +69,15 @@ export class InvitedUserAuthService extends BaseService {
             await tokenRecord.destroy({ transaction });
             const newTokenRecord = await this.createRefreshToken(user.id, transaction);
 
-            return this.buildAuthResponse(user, newTokenRecord.token_id);
+            // Copied unchanged from the refresh token being redeemed, never reset to
+            // `now` — a refresh proves possession of a refresh token, not a fresh
+            // interactive login. A refresh token minted before this field existed has no
+            // auth_time and gets stamped fresh exactly once, on its first refresh after
+            // this change ships; every refresh after that carries the real original value
+            // forward. That one-time grace window is bounded by the existing refresh-token
+            // trust boundary (still requires a valid, unexpired, single-use refresh
+            // token) — not a new bypass, just an unavoidable migration edge.
+            return this.buildAuthResponse(user, newTokenRecord.token_id, payload.auth_time);
         });
     }
 

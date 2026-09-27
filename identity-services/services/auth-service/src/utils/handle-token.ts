@@ -14,6 +14,15 @@ const REFRESH_OPTIONS: SignOptions = {
 export interface RefreshTokenPayload {
     sub: string; // userid
     tokenId: string;
+    // Unix seconds of the interactive login (password/OTP/GitHub OAuth) that started this
+    // session. Set once when the refresh token is first minted and copied unchanged on
+    // every rotation in InvitedUserAuthService.refresh — never refreshed to "now". This is
+    // what a caller who needs proof-of-recent-login (F6 exit export's reauth gate) must
+    // check instead of a token's own `iat`, which a stolen refresh token can mint fresh on
+    // every call and would otherwise defeat the whole point of a "recently authenticated"
+    // check. Optional in the type only for a narrow-scope token that isn't a session at
+    // all (see AccessTokenPayload.auth_time) — every real login/refresh call site sets it.
+    auth_time?: number;
 }
 
 export interface AccessTokenPayload {
@@ -23,6 +32,12 @@ export interface AccessTokenPayload {
     role: string;
     roles?: Record<string, string>;
     scope?: string;
+    // See RefreshTokenPayload.auth_time — carried onto every access token minted from a
+    // given login, refreshed or not. Left unset only by PasswordService's short-lived,
+    // narrow-scope `password_reset` token, which is not a session and must never satisfy
+    // a proof-of-recent-login check even if presented as one — an absent auth_time reads
+    // as stale, not exempt, everywhere that checks it.
+    auth_time?: number;
 }
 
 export const signAccessToken = (payload: AccessTokenPayload, expiresIn?: string): string => {

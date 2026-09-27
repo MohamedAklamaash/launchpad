@@ -69,6 +69,8 @@ class InfrastructureResponse:
     # can be ahead of what this compute_type has ever needed.
     required_policy_version: int | None = None
     policy_refresh_required: bool = False
+    # Set once the owner completes the exit flow (F6). Never cleared.
+    exited_at: datetime | None = None
 
     def to_dict(self):
         data = asdict(self)
@@ -76,6 +78,7 @@ class InfrastructureResponse:
         data['user_id'] = str(self.user_id)
         data['created_at'] = self.created_at.isoformat()
         data['updated_at'] = self.updated_at.isoformat()
+        data['exited_at'] = self.exited_at.isoformat() if self.exited_at else None
         data['invited_users'] = self.invited_users
         data['metadata'] = _redact_metadata(self.metadata)
         data['max_cpu'] = self.max_cpu

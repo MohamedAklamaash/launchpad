@@ -36,6 +36,7 @@ class InfraResponseSerializer(serializers.Serializer):
     current_policy_version = serializers.IntegerField(help_text="Policy version Launchpad currently ships")
     required_policy_version = serializers.IntegerField(help_text="Lowest policy version this infra's compute_type must be at")
     policy_refresh_required = serializers.BooleanField(help_text="True when the customer should re-run the Refresh policy script")
+    exited_at = serializers.DateTimeField(allow_null=True, help_text="Set once the owner completes the exit flow (F6); never cleared")
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
 
@@ -188,6 +189,14 @@ def infrastructure_reprovision(request: HttpRequest, infra_id):
     # so without this an invited (view-only) user could force a real Terraform re-run.
     if str(infra['user_id']) != str(request.user.id):
         return Response({'error': 'Only the infrastructure owner can reprovision it'}, status=status.HTTP_403_FORBIDDEN)
+    # F6: an exited infrastructure has told its owner Launchpad is done touching its
+    # account. Re-running Terraform against it after that would contradict the whole
+    # point of exit.
+    if infra.get('exited_at'):
+        return Response(
+            {'error': 'This infrastructure has exited and can no longer be reprovisioned'},
+            status=status.HTTP_409_CONFLICT,
+        )
     # Reprovision re-runs Terraform, which needs assumed-role credentials. An un-onboarded infra has
     # none, so provisioning would only ever fail into ERROR — reject with an actionable message.
     if not infra.get('is_cloud_authenticated'):

@@ -333,7 +333,12 @@ class InfrastructureService:
         # Check permissions (only SUPER_ADMIN/owner can update)
         if not InfrastructurePermissions.can_update_infrastructure(infra, user_id):
             raise PermissionError("Only the infrastructure owner can update it")
-        
+
+        # F6: an exited infrastructure is done being managed by Launchpad — config changes
+        # here have nothing left to apply against.
+        if infra.exited_at is not None:
+            raise ValueError("This infrastructure has exited and can no longer be updated.")
+
         if 'compute_type' in update_data:
             raise ValueError("compute_type is immutable after creation.")
 

@@ -202,3 +202,45 @@ DNS** account (`infra/platform-dns`).
       `logs:FilterLogEvents` with no `NotAction`/condition carve-out narrowing them for this
       use — checked against `policy.json`'s statement shape here, not against a real
       `iam:SimulatePrincipalPolicy` call.
+
+## F6 exit export
+
+- [ ] `terraform init` (with a real backend, not `-backend=false`) against the bundled
+      `terraform/main.tf` + `terraform/backend.hcl` for an infrastructure whose Terraform
+      apply actually ran: confirm it picks up the real remote state with zero drift on a
+      subsequent `terraform plan` for everything except the (deliberately blanked)
+      `db_app_sg_id` on a managed-database infra — mocks and the sandbox `-backend=false`
+      validate in `test_exit_export_terraform.py` only prove the HCL is syntactically valid
+      and the module graph resolves, never that it matches a real state file.
+- [ ] `db_app_sg_id = ""` on the generated database module block(s): confirm the customer
+      can actually find and fill in the right security group id from
+      `app_security_group_name()`'s deterministic naming via a real
+      `describe-security-groups` call, and that `terraform apply` with that value filled in
+      does not attempt to replace the existing RDS/ElastiCache/DocDB resource (i.e. the
+      only diff is the previously-blank attribute, not a forced replacement).
+- [ ] Real ECS/EKS ARNs: confirm `Application.task_definition_arn` /`service_arn`/
+      `target_group_arn`/`listener_rule_arn` and `Environment.cluster_arn`/`alb_arn`/
+      `ecr_repository_url` are all still valid, resolvable ARNs at export time for a
+      long-lived infrastructure (not stale from an earlier, since-replaced resource) —
+      this feature trusts these DB columns rather than a live `describe_*` call, by design
+      (H6: strictly read-only), so their staleness is a real, not just theoretical, risk
+      this checklist should catch before relying on the README for anything but pointers.
+- [ ] CodeBuild project/role ARNs (`launchpad-build-{infra_id}` /
+      `launchpad-codebuild-role-{infra_id}`) are computed from the same deterministic
+      naming `application_deployment_service.py._trigger_build` uses, never fetched —
+      confirm they resolve to the real project/role in a real account for an infra that
+      has actually deployed at least once.
+- [ ] EKS namespace/object names in the README (from `Application.runtime_refs`) still
+      match what's live in the cluster — confirm no manual `kubectl` cleanup or a partial
+      failed deploy has left `runtime_refs` pointing at objects that no longer exist.
+- [ ] Real `request_and_await_dns_teardown` timing for "Complete exit": confirm the
+      `EXIT_COMPLETE_DNS_TEARDOWN_TIMEOUT_SECONDS` (default 7s, chosen to fit under the
+      gateway's fixed 10s proxy timeout) is actually enough for the platform DNS writer to
+      converge a real Route53 change end to end for a typical infra, not just the
+      in-memory ledger check mocks exercise instantly — F1b's own checklist item on
+      `request_and_await_dns_teardown`'s 20s default is the closest existing data point,
+      and this feature calls it with a shorter budget than that default.
+- [ ] The same-origin `APPLICATION_SERVICE_URL` call from infrastructure-service to
+      application-service's `export-inventory` endpoint under real network latency
+      (not two Django dev servers on localhost): confirm the whole request — internal
+      hop plus archive assembly — comfortably stays under the gateway's 10s proxy timeout.

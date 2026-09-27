@@ -3,6 +3,7 @@ from api.views.capabilities import list_capabilities
 from api.views.costs import infrastructure_costs
 from api.views.database import database_detail, database_list_create
 from api.views.evidence_pack import evidence_pack
+from api.views.exit_export import exit_export, infrastructure_complete_exit
 from api.views.health import health, liveness, readiness
 from api.views.infrastructure import (
     infrastructure_detail,
@@ -35,6 +36,8 @@ urlpatterns = [
     path('infrastructures/<str:infra_id>/reissue-token/', infrastructure_reissue_token, name='infrastructure-reissue-token'),
     path('infrastructures/<str:infra_id>/logs/', provisioning_logs, name='provisioning-logs'),
     path('infrastructures/<str:infra_id>/evidence-pack/', evidence_pack, name='evidence-pack'),
+    path('infrastructures/<str:infra_id>/exit-export/', exit_export, name='exit-export'),
+    path('infrastructures/<str:infra_id>/exit/', infrastructure_complete_exit, name='infrastructure-complete-exit'),
     path('infrastructures/onboarding/callback/', infrastructure_onboarding_callback, name='infrastructure-onboarding-callback'),
     path('infrastructures/<str:infra_id>/users/<str:user_id>/', infrastructure_remove_user, name='infrastructure-remove-user'),
     path('healthz/', health, name='health'),

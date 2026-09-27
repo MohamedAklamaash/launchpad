@@ -36,6 +36,8 @@ export interface Infrastructure {
   policy_refresh_required?: boolean;
   invited_users?: InvitedUserSummary[];
   metadata?: { aws_region?: string; [key: string]: string | undefined };
+  /** Set once the owner completes the exit flow (F6). Never cleared. */
+  exited_at?: string | null;
   created_at: string;
   updated_at: string;
   environment?: Environment;

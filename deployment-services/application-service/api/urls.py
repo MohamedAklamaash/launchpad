@@ -15,6 +15,7 @@ from api.views.application import (
     application_github_webhook,
     application_rotate_webhook_secret,
 )
+from api.views.exit_inventory import export_inventory
 from api.views.health import health_check, liveness_check, readiness_check
 from api.views.infrastructure_validation import infrastructure_validation
 from api.views.metrics import metrics_view
@@ -35,6 +36,9 @@ urlpatterns = [
     path('applications/<uuid:app_id>/webhook-secret/', application_rotate_webhook_secret, name='application-webhook-secret'),
     path('webhooks/github/<uuid:app_id>/', application_github_webhook, name='application-github-webhook'),
     path('infrastructures/<uuid:infra_id>/validation/', infrastructure_validation, name='infrastructure-validation'),
+    # Internal-only: no gateway route exists for this path. Called same-origin by
+    # infrastructure-service's exit-export endpoint (F6).
+    path('infrastructures/<uuid:infra_id>/export-inventory/', export_inventory, name='infrastructure-export-inventory'),
     path('healthz/', health_check, name='health'),
     path('liveness/', liveness_check, name='liveness'),
     path('readiness/', readiness_check, name='readiness'),

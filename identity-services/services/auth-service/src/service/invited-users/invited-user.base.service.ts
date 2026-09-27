@@ -32,13 +32,21 @@ export abstract class BaseService {
             profile_url?: string;
         },
         refreshTokenId: string,
+        // The session's original interactive-login time, unix seconds. Omitted (or
+        // undefined) means "this call IS the interactive login" — every call site that
+        // authenticates the user directly (password, OTP, GitHub OAuth) leaves this unset
+        // and gets `now`. InvitedUserAuthService.refresh is the one caller that must pass
+        // the value read off the incoming refresh token, never a fresh timestamp.
+        authTime?: number,
     ): AuthResponse {
+        const auth_time = authTime ?? Math.floor(Date.now() / 1000);
         const tokenClaims = {
             sub: user.id,
             email: user.email,
             user_name: user.user_name,
             role: user.role,
             roles: user.roles,
+            auth_time,
         };
         return {
             user: {
@@ -54,9 +62,9 @@ export abstract class BaseService {
                 profile_url: user.profile_url,
             } as UserData,
             accessToken: signAccessToken(tokenClaims),
-            refreshToken: signRefreshToken({ sub: user.id, tokenId: refreshTokenId }),
+            refreshToken: signRefreshToken({ sub: user.id, tokenId: refreshTokenId, auth_time }),
             access_token: signAccessToken(tokenClaims),
-            refresh_token: signRefreshToken({ sub: user.id, tokenId: refreshTokenId }),
+            refresh_token: signRefreshToken({ sub: user.id, tokenId: refreshTokenId, auth_time }),
         };
     }
 
