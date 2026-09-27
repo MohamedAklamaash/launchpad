@@ -71,6 +71,20 @@ class DeploymentQueue:
             raise
 
     @staticmethod
+    def enqueue_rollback(app_id: str, infrastructure_id: str, deployment_id: str):
+        try:
+            job = {
+                "app_id": str(app_id), "action": "rollback",
+                "deployment_id": str(deployment_id), "infrastructure_id": str(infrastructure_id),
+                "retry_count": 0,
+            }
+            DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
+            logger.info(f"Enqueued rollback for application {app_id} to deployment {deployment_id}")
+        except Exception as e:
+            logger.error(f"Failed to enqueue rollback: {e}")
+            raise
+
+    @staticmethod
     def enqueue_cleanup(app_id: str, infrastructure_id: str, service_arn: str | None = None,
                         listener_rule_arn: str | None = None, target_group_arn: str | None = None,
                         task_definition_arn: str | None = None, runtime: str | None = None,

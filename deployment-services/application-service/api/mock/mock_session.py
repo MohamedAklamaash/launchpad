@@ -218,6 +218,13 @@ class MockClient:
     def attach_role_policy(self, **kwargs):
         return {}
 
+    def describe_images(self, **kwargs):
+        # Mock images never expire — every tag rollback might target is "found". Tests for
+        # the expired-tag rejection exercise ECRClient.image_exists directly against a fake
+        # client that raises ImageNotFoundException, the way real ECR would.
+        image_ids = kwargs.get("imageIds") or []
+        return {"imageDetails": [{"imageTags": [i.get("imageTag")] } for i in image_ids if i.get("imageTag")]}
+
     def put_lifecycle_policy(self, **kwargs):
         return {
             "repositoryName": kwargs.get("repositoryName", "repo"),

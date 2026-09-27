@@ -18,6 +18,7 @@ export interface Application {
   infrastructure_id: string;
   status: ApplicationStatus;
   is_sleeping: boolean;
+  auto_deploy_paused: boolean;
   cpu: number;
   memory: number;
   storage: number;
@@ -33,6 +34,33 @@ export interface Application {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type DeploymentTriggeredBy = 'DEPLOY' | 'ROLLBACK';
+
+export interface Deployment {
+  id: string;
+  image_tag: string;
+  commit_sha: string | null;
+  compute_type: string;
+  status: 'SUCCEEDED' | 'FAILED';
+  triggered_by: DeploymentTriggeredBy;
+  created_at: string;
+}
+
+export interface RollbackPreview {
+  deployment_id: string;
+  image_tag: string;
+  commit_sha: string | null;
+  compute_type: string;
+  cpu: number;
+  memory: number;
+  port: number;
+  deployed_at: string;
+  added_keys: string[];
+  removed_keys: string[];
+  /** Derived from a content hash — no env values are ever returned. */
+  values_changed: boolean;
 }
 
 export interface ApplicationCreate {

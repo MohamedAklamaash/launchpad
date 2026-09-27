@@ -93,6 +93,39 @@ class Command(BaseCommand):
                 _unclaim(app_id)
                 _close_db()
 
+        def run_rollback(app_id, job):
+            from api.models.deployment import Deployment
+
+            lock = DeploymentLock()
+            if not lock.acquire(app_id, worker_id):
+                logger.warning(f"App {app_id} already locked, leaving in processing queue for retry")
+                _unclaim(app_id)
+                return
+            try:
+                app = ApplicationRepository().get_by_id(app_id)
+                if not app:
+                    logger.error(f"Application {app_id} not found")
+                    DeploymentQueue.ack_job(job)
+                    return
+                try:
+                    target = Deployment.objects.get(
+                        id=job.get('deployment_id'), application_id=app_id, status='SUCCEEDED',
+                    )
+                except Deployment.DoesNotExist:
+                    logger.error(f"Rollback target {job.get('deployment_id')} not found for app {app_id}")
+                    DeploymentQueue.ack_job(job)
+                    return
+                url = ApplicationDeploymentService().rollback_application(app, target)
+                logger.info(f"Rolled back {app_id} to deployment {target.id} at {url}")
+                DeploymentQueue.ack_job(job)
+            except Exception:
+                logger.exception(f"Rollback failed for {app_id}")
+                DeploymentQueue.nack_job(job)
+            finally:
+                lock.release(app_id, worker_id)
+                _unclaim(app_id)
+                _close_db()
+
         def run_cleanup(job):
             from aws.session import create_boto3_session
 
@@ -156,6 +189,8 @@ class Command(BaseCommand):
                 try:
                     if job.get('action') == 'deploy':
                         run_deploy(job['app_id'], job)
+                    elif job.get('action') == 'rollback':
+                        run_rollback(job['app_id'], job)
                 except Exception:
                     logger.exception(f"Unhandled error in drain loop for {infra_id}")
                     DeploymentQueue.nack_job(job)

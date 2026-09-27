@@ -1,6 +1,8 @@
 import json
 import logging
 
+from botocore.exceptions import ClientError
+
 logger = logging.getLogger(__name__)
 
 # How many per-commit images to retain per repository. Rollback only needs to reach a
@@ -15,6 +17,18 @@ class ECRClient:
 
     def get_image_uri(self, repository_url, tag):
         return f"{repository_url}:{tag}"
+
+    def image_exists(self, repository_name, tag) -> bool:
+        """Rollback pins to a tag that may have aged out of the retention policy. Checking
+        first turns a would-be ECS/EKS pull failure at task placement (opaque, minutes
+        later) into an immediate, readable rejection."""
+        try:
+            self.client.describe_images(repositoryName=repository_name, imageIds=[{"imageTag": tag}])
+            return True
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ImageNotFoundException":
+                return False
+            raise
 
     @staticmethod
     def _lifecycle_policy():

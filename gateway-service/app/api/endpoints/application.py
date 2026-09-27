@@ -43,6 +43,7 @@ class AppDetailResponse(BaseModel):
     deployment_url: str | None = None
     build_id: str | None = None
     error_message: str | None = None
+    auto_deploy_paused: bool = False
     created_at: str
     updated_at: str
 
@@ -152,6 +153,70 @@ async def application_sleep(app_id: str, request: Request):
 async def application_wake(app_id: str, request: Request):
     """No request body required. Restores ECS desired count."""
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/wake/", request)
+
+
+class DeploymentListItem(BaseModel):
+    id: str
+    image_tag: str
+    commit_sha: str | None = None
+    compute_type: str
+    status: str
+    triggered_by: str
+    created_at: str
+
+
+class RollbackPreviewResponse(BaseModel):
+    deployment_id: str
+    image_tag: str
+    commit_sha: str | None = None
+    compute_type: str
+    cpu: float
+    memory: float
+    port: int
+    deployed_at: str
+    added_keys: list[str] = []
+    removed_keys: list[str] = []
+    values_changed: bool
+
+
+class RollbackQueuedResponse(BaseModel):
+    message: str
+    application_id: str
+    deployment_id: str
+    status: str = Field(example="QUEUED")
+
+
+@router.get("/{app_id}/deployments", summary="List deployment history for an application",
+            response_model=list[DeploymentListItem])
+async def application_deployments(app_id: str, request: Request):
+    """Owner only. Newest first; only successful deploys/rollbacks are addressable."""
+    return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/", request)
+
+
+@router.get("/{app_id}/deployments/{deployment_id}/preview", summary="Preview a rollback's config diff",
+            response_model=RollbackPreviewResponse)
+async def application_rollback_preview(app_id: str, deployment_id: str, request: Request):
+    """Owner only. Key-name changes and a values-changed indicator — never the values themselves."""
+    return await proxy_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/{deployment_id}/preview/", request,
+    )
+
+
+@router.post("/{app_id}/deployments/{deployment_id}/rollback", summary="Roll back to a previous deployment",
+             response_model=RollbackQueuedResponse, status_code=202)
+async def application_rollback(app_id: str, deployment_id: str, request: Request):
+    """Owner only. No request body. Skips CodeBuild; pauses auto-deploy until resumed."""
+    return await proxy_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/{deployment_id}/rollback/", request,
+    )
+
+
+@router.post("/{app_id}/resume-auto-deploy", summary="Resume auto-deploy on push")
+async def application_resume_auto_deploy(app_id: str, request: Request):
+    """Owner only. No request body. Clears the pin a rollback set."""
+    return await proxy_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/resume-auto-deploy/", request,
+    )
 
 
 class WebhookSecretResponse(BaseModel):

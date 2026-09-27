@@ -39,6 +39,7 @@ class AppDetailSerializer(serializers.Serializer):
     infrastructure_id = serializers.UUIDField()
     status = serializers.ChoiceField(choices=["CREATED","BUILDING","DEPLOYING","ACTIVE","SLEEPING","FAILED"])
     is_sleeping = serializers.BooleanField()
+    auto_deploy_paused = serializers.BooleanField()
     cpu = serializers.FloatField()
     memory = serializers.FloatField()
     storage = serializers.FloatField()
@@ -186,6 +187,7 @@ class ApplicationDetailDeleteView(APIView):
             "id": str(app.id), "name": app.name, "description": app.description,
             "infrastructure_id": str(app.infrastructure_id),
             "status": app.status, "is_sleeping": app.is_sleeping,
+            "auto_deploy_paused": app.auto_deploy_paused,
             "cpu": app.alloted_cpu, "memory": app.alloted_memory, "storage": app.alloted_storage,
             "port": app.port, "url": app.project_remote_url, "branch": app.project_branch,
             "dockerfile_path": app.dockerfile_path, "build_context": app.build_context or "", "envs": app.envs,
@@ -273,6 +275,10 @@ class ApplicationDeployView(APIView):
             infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
             if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            # A manual deploy is an explicit override of whatever a prior rollback pinned.
+            if app.auto_deploy_paused:
+                app.auto_deploy_paused = False
+                app.save(update_fields=['auto_deploy_paused'])
             DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
@@ -308,6 +314,11 @@ class ApplicationRetryDeployView(APIView):
             infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
             if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+            # A manual (re)deploy is an explicit override of whatever a prior rollback pinned.
+            if app.auto_deploy_paused:
+                app.auto_deploy_paused = False
+                app.save(update_fields=['auto_deploy_paused'])
 
             # Snapshot deployment handles before nulling them out
             service_arn = app.service_arn
@@ -408,6 +419,157 @@ class ApplicationWakeView(APIView):
         except Exception as e:
             logger.exception("Failed to wake application")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ── Deployment history / rollback (owner-only) ───────────────────────────────
+
+class DeploymentListItemSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    image_tag = serializers.CharField()
+    commit_sha = serializers.CharField(allow_null=True)
+    compute_type = serializers.CharField()
+    status = serializers.CharField()
+    triggered_by = serializers.CharField()
+    created_at = serializers.DateTimeField()
+
+
+class RollbackPreviewSerializer(serializers.Serializer):
+    deployment_id = serializers.UUIDField()
+    image_tag = serializers.CharField()
+    commit_sha = serializers.CharField(allow_null=True)
+    compute_type = serializers.CharField()
+    cpu = serializers.FloatField()
+    memory = serializers.FloatField()
+    port = serializers.IntegerField()
+    deployed_at = serializers.DateTimeField()
+    added_keys = serializers.ListField(child=serializers.CharField())
+    removed_keys = serializers.ListField(child=serializers.CharField())
+    values_changed = serializers.BooleanField(help_text="Derived from a content hash — no env values are ever returned")
+
+
+class RollbackQueuedSerializer(serializers.Serializer):
+    message = serializers.CharField()
+    application_id = serializers.UUIDField()
+    deployment_id = serializers.UUIDField()
+    status = serializers.CharField(help_text="Always 'QUEUED'")
+
+
+def _rollback_error_response(e: Exception):
+    if isinstance(e, LookupError):
+        return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
+    if isinstance(e, PermissionError):
+        return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+    from api.services.application_service import DeploymentInProgressError
+    if isinstance(e, DeploymentInProgressError):
+        return Response({"error": str(e)}, status=status.HTTP_409_CONFLICT)
+    if isinstance(e, ValueError):
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    logger.exception("Unhandled rollback view error")
+    return Response({"error": "Internal error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ApplicationDeploymentsView(APIView):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        from api.services.rollback_service import RollbackService
+        self.service = RollbackService()
+
+    @extend_schema(
+        summary="List deployment history for an application",
+        description="Owner only — invited users get 403. Newest first; only successful deploys/rollbacks are addressable.",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        responses={200: DeploymentListItemSerializer(many=True), 403: ErrorSerializer, 404: ErrorSerializer},
+    )
+    def get(self, request, pk=None):
+        try:
+            deployments = self.service.list_deployments(request.user.id, pk)
+        except Exception as e:
+            return _rollback_error_response(e)
+        return Response([{
+            "id": str(d.id), "image_tag": d.image_tag, "commit_sha": d.commit_sha,
+            "compute_type": d.compute_type, "status": d.status, "triggered_by": d.triggered_by,
+            "created_at": d.created_at,
+        } for d in deployments])
+
+
+class ApplicationRollbackPreviewView(APIView):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        from api.services.rollback_service import RollbackService
+        self.service = RollbackService()
+
+    @extend_schema(
+        summary="Preview a rollback's config diff",
+        description="Owner only. Key-name changes and a values-changed indicator derived from a content hash — never the values themselves.",
+        parameters=[
+            OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID"),
+            OpenApiParameter("deployment_id", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Deployment UUID to preview rolling back to"),
+        ],
+        responses={200: RollbackPreviewSerializer, 403: ErrorSerializer, 404: ErrorSerializer},
+    )
+    def get(self, request, pk=None, deployment_id=None):
+        try:
+            preview = self.service.get_rollback_preview(request.user.id, pk, deployment_id)
+        except Exception as e:
+            return _rollback_error_response(e)
+        return Response(preview)
+
+
+class ApplicationRollbackView(APIView):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        from api.services.rollback_service import RollbackService
+        self.service = RollbackService()
+
+    @extend_schema(
+        summary="Roll back to a previous deployment",
+        description=(
+            "Owner only. No request body. Skips CodeBuild — pins to the image already in ECR "
+            "and restores the CPU/memory/port that shipped with it. Env values are always "
+            "re-read from the application's current config, never from the snapshot. Also "
+            "pauses auto-deploy on push until a manual deploy or the resume endpoint clears it."
+        ),
+        parameters=[
+            OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID"),
+            OpenApiParameter("deployment_id", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Deployment UUID to roll back to"),
+        ],
+        request=None,
+        responses={202: RollbackQueuedSerializer, 403: ErrorSerializer, 404: ErrorSerializer, 409: ErrorSerializer, 400: ErrorSerializer},
+    )
+    def post(self, request, pk=None, deployment_id=None):
+        try:
+            target = self.service.trigger_rollback(request.user.id, pk, deployment_id)
+        except Exception as e:
+            return _rollback_error_response(e)
+        return Response({
+            "message": "Rollback queued", "application_id": str(pk),
+            "deployment_id": str(target.id), "status": "QUEUED",
+        }, status=status.HTTP_202_ACCEPTED)
+
+
+class ApplicationResumeAutoDeployView(APIView):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        from api.services.rollback_service import RollbackService
+        self.service = RollbackService()
+
+    @extend_schema(
+        summary="Resume auto-deploy on push",
+        description="Owner only. No request body. Clears the pin a rollback set so the GitHub webhook deploys again.",
+        parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
+        request=None,
+        responses={200: AppDetailSerializer, 403: ErrorSerializer, 404: ErrorSerializer},
+    )
+    def post(self, request, pk=None):
+        try:
+            self.service.resume_auto_deploy(request.user.id, pk)
+        except Exception as e:
+            return _rollback_error_response(e)
+        return Response({"message": "Auto-deploy resumed", "application_id": str(pk)})
 
 
 # ── GitHub webhook (unauthenticated; HMAC-verified) ──────────────────────────
@@ -519,6 +681,16 @@ def application_github_webhook(request, app_id: str):
     else:
         # Not fatal — the build falls back to checking out the tracked branch.
         logger.warning(f"GitHub webhook for app {app_id}: no usable 'after' SHA in payload")
+
+    # A rollback pins the app to a known-good deploy; the next push must not silently undo
+    # it. The commit pointer above still advances, so resuming (or a manual deploy, which
+    # clears the pin) redeploys the latest push rather than the pre-rollback commit.
+    if app.auto_deploy_paused:
+        logger.info(f"GitHub webhook for app {app_id}: auto-deploy paused by a rollback; acknowledging without deploying")
+        return Response(
+            {"status": "ignored", "reason": "auto-deploy paused", "application_id": str(app_id)},
+            status=status.HTTP_200_OK,
+        )
 
     try:
         DeploymentQueue.enqueue_deployment(str(app_id), str(app.infrastructure_id))
