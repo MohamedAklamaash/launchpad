@@ -22,6 +22,12 @@ class Environment(models.Model):
     target_group_arn = models.CharField(max_length=512, null=True, blank=True)
     ecr_repository_url = models.CharField(max_length=512, null=True, blank=True)
     ecs_task_execution_role_arn = models.CharField(max_length=512, null=True, blank=True)
+    # Set once terraform applies the conditional 443 listener (modules/alb, enable_https).
+    # Null on every environment that has never had a certificate ISSUED. Read by
+    # application-service to decide whether a per-app host-header 443 rule can be created,
+    # and used as one leg of the "host URL is safe to publish" gate alongside
+    # InfrastructureCertificate.tls_status == ISSUED and the DNS ledger's synced_at.
+    https_listener_arn = models.CharField(max_length=512, null=True, blank=True)
     
     status = models.CharField(
         max_length=50,

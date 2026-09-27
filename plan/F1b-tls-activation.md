@@ -1,11 +1,193 @@
 # F1b — TLS activation and custom domains
 
 **Status:** Phase 1 plumbing done (#68); decisions + zone terraform done (#75); **part 1
-(platform DNS writer + ledger + teardown) done, mock-verified**; parts 2 (cert bootstrap,
-ACM policy grants, 443 listener, nginx host mode, EKS ingress, host URLs) and 3 (custom
-domains) not started.
+(platform DNS writer + ledger + teardown) done, mock-verified**; **part 2 (cert bootstrap,
+ACM policy grants, 443 listener, nginx host mode groundwork, EKS group-name fix) done,
+mock-verified — see Part 2 below for what shipped vs. what's scaffolded-but-not-wired**;
+part 3 (custom domains, full host-routing runtime wiring, host URL publish) not started.
 **Depends on:** #68, #75 · **Blocked by:** the owner action below (zone not yet applied to
-real AWS, so part 1 is mock-verified only) and parts 2–3 not yet built.
+real AWS, so parts 1–2 are mock-verified only) and part 3 not yet built.
+
+## Part 2 — what shipped (mock-verified)
+
+Scope: pre-review §2 (cert bootstrap), §3 steps (2)–(4) (teardown), §5 (ALB/nginx/EKS), §6
+test 6 (golden tests).
+
+- **Policy v4.** `policy.json` gains `acm:RequestCertificate` (conditioned on
+  `aws:RequestTag/ManagedBy=launchpad`), `acm:DescribeCertificate`/`ListCertificates`/
+  `ListTagsForCertificate` (explicit actions, not `Describe*`/`List*` wildcards — `grants()`
+  only models the `service:*` wildcard shape, and least-privilege explicit actions are
+  cheap here), `acm:AddTagsToCertificate`, and `acm:DeleteCertificate` (conditioned on
+  `aws:ResourceTag/ManagedBy=launchpad`). No new `elasticloadbalancing:*` actions —
+  the existing account-wide wildcard already covers the 443 listener and host-header
+  rules. `required_version_for` is now 4 for both compute types.
+  **Release action:** bump `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF` in the frontend's deploy
+  environment in the same release (it is not a repo file — see plan/README.md's Standing
+  release actions).
+- **Cert bootstrap** (`api/services/cert_bootstrap.py`), called from
+  `TerraformWorker._save_outputs` after a successful apply (inside the dispatched
+  provisioning job's DB lock, so the bounded ACM poll runs under the 60s
+  `LockHeartbeat`, never on its own thread). Gate order: `policy_version < 4` →
+  `tls_status=POLICY_STALE` (new `InfrastructureCertificate` choice), no ACM call at all;
+  already `ISSUED`/`PENDING` → no-op; `FAILED` → best-effort `DeleteCertificate` then
+  re-request. Domain is always `*.{dns_label}.{base}`, never the bare two-label name.
+  `tls_requested_at` is written immediately before `RequestCertificate` and moves forward
+  on every attempt (first request or a post-timeout retry) — never cleared, matching the
+  model's documented monotonic invariant. Reuse checks `list_certificates` +
+  `list_tags_for_certificate` for an existing `ManagedBy=launchpad`-tagged cert for the
+  exact domain before requesting; `IdempotencyToken=sha256(infra_id)[:32]` is the backstop.
+  A bounded `DescribeCertificate` poll (~2min) waits for the DNS `ResourceRecord`, asserts
+  `DomainName` and record shape against `api.services.platform_dns.naming`'s own
+  validators (the same allow-list the DNS writer enforces), persists the row, and requests
+  a DNS reconcile. Never raises out of the caller — a certificate problem is reflected in
+  `tls_status`, not a failed provision.
+- **ISSUED re-check** (`run_worker.py:check_pending_certificates`), on its own ~30s timer
+  in the worker's main loop (fleet-rate-limited by a short Redis lock, mirroring the
+  reaper) — never inside a dispatched job's lock, and never in `run_dns_writer` (which
+  holds no customer credentials; this is a customer-account `DescribeCertificate` call).
+  `ISSUED` → stamps the row and calls `InfraQueue.enqueue_provision` so the next apply
+  renders the 443 listener; `FAILED`/`VALIDATION_TIMED_OUT`/`REVOKED` → `tls_status=FAILED`;
+  past `ISSUED_CHECK_TIMEOUT` (~30min) → `tls_status=FAILED` without ever touching
+  `Environment.status` — the environment stays `ACTIVE` on its path URL.
+- **Mock ACM** (`cert_bootstrap.FakeAcmClient`), process-local like part 1's
+  `FakeRoute53Zone`, gated by the same `infra_is_mock`/`dev_mode` mismatch check as
+  `route53_client.get_route53_client`. Emits validation records that pass the real
+  writer's `naming.py` validators unchanged, and "issues" after
+  `ISSUE_AFTER_DESCRIBE_CALLS` (2) `describe_certificate` calls so the full
+  request → poll → ISSUED → re-provision loop runs end-to-end in dev mode.
+- **Teardown steps (2)–(4).** `delete_acm_certificate_after_listener_removed` (the part-1
+  hook) is implemented: best-effort `acm:DeleteCertificate` using the customer's
+  already-authenticated credentials, called from `TerraformWorker.destroy()` right after
+  the `terraform destroy` call (both success and failure branches — best-effort either
+  way; a listener terraform failed to remove just makes `DeleteCertificate` fail with
+  `ResourceInUse`, caught and logged, and the reaper retries the whole destroy). **The
+  two-phase teardown split part 1 flagged as "part 2's job" was not built** — re-reading
+  the pre-review, (4)'s "validation CNAME deleted unconditionally, never gated on (3)"
+  does not require (4) to run *after* (3), only that it never depends on (3) succeeding.
+  Today's single-phase teardown (`dns_teardown_requested_at` set → desired state `[]`)
+  already deletes the validation CNAME immediately, in the same reconcile as
+  wildcard+edge, at step (1) — before `_pre_destroy_cleanup`/`AssumeRole` even run. That is
+  a strict superset of the requirement with a *shorter* window for a torn-down customer to
+  keep renewing a validation record than a real two-phase split would leave. No new
+  `desired_state.py` signal was needed.
+- **443 listener** (`infra/aws/modules/alb/main.tf`): `aws_lb_listener.https`, `count =
+  var.enable_https ? 1 : 0`, `ssl_policy = "ELBSecurityPolicy-TLS13-1-2-2021-06"`, default
+  action a fixed `404` response (never a forward — every real app is reached only via its
+  own host-header rule). `terraform_worker.py`'s `_generate_config_ecs` emits the extra
+  `enable_https`/`certificate_arn` module args and the `https_listener_arn` output *only*
+  when `tf_vars` carries them (set in `provision()` only when an `InfrastructureCertificate`
+  row is `ISSUED`) — with them absent, the generated HCL is byte-identical to before this
+  feature (golden-tested). `certificate_arn` is validated at the interpolation sink
+  (`_validate_certificate_arn`, bound to the infra's own region+account) exactly like the
+  EKS `account_id`/`cluster_version` sinks. Reconcile-apply (`is_update`, keyed on
+  `first_activated_at`) was not touched — the re-provision the ISSUED re-check triggers
+  goes through the existing path unchanged.
+- **EKS group name.** `eks_bootstrap.py`'s `_ingress_group_name` uses `infra.dns_label`
+  (falling back to the old `str(infra.id)[:8]` only when no label exists) instead of a
+  UUIDv7 prefix — CLAUDE.md bans truncated-UUIDv7 namespace keys since the leading 48 bits
+  are a millisecond timestamp, forceable from the row's own `created_at`. **Migration
+  behavior:** `_ensure_ingress_class` only *creates* the `IngressClassParams` object
+  (`_get_or_create` swallows a 409 and never updates it), so an already-bootstrapped
+  cluster's group name is unaffected regardless of what this function computes on a later
+  call — no ALB recreation, no edge cutover, no downtime. Only a cluster bootstrapping for
+  the first time after this ships gets the new label-based group.
+
+### Security review fixes (post-push, same branch)
+
+An independent review of the first part 2 push (`33cfb37`) returned BLOCK. All findings
+addressed on the branch before it was force-pushed:
+
+- **B1 (resurrection via background ISSUED transition).** `run_worker.py`'s TLS re-check
+  ran outside any lock and, on ISSUED, called `enqueue_provision` with no check that the
+  infrastructure hadn't since started tearing down — a certificate issuing after teardown
+  timed out, or after a failed destroy parked the environment in ERROR, could resurrect it
+  via a fresh terraform apply. Fixed with a shared `_cert_recheck_eligible(infra, env)`
+  gate (`dns_teardown_requested_at is None` and `env.status == 'ACTIVE'`) applied to every
+  action the re-check tick can take, plus a defense-in-depth check inside `provision()`
+  itself that no-ops (logged) when the teardown marker is set or status is
+  DESTROYING/DESTROYED.
+- **R1 (orphaned cert on any failure between RequestCertificate and the poll succeeding).**
+  `cert_arn` is now persisted immediately after `RequestCertificate`, before the
+  DescribeCertificate poll — a timeout/AccessDenied/crash during the poll leaves a row the
+  periodic re-check can still find and eventually time out, instead of a null-ARN row it
+  silently ignores forever. A `CertificateShapeError` specifically (ACM handing back a
+  wrong `DomainName` or a malformed validation record — not transient, never fixable by
+  retrying the same cert) now deletes the certificate and marks `FAILED` immediately.
+- **R2 (constant IdempotencyToken).** `sha256(infra_id)` handed a post-timeout retry the
+  just-deleted certificate's ARN back within ACM's ~1h dedup window. Now
+  `sha256(f"{infra_id}:{tls_requested_at.isoformat()}")`, unique per attempt since
+  `tls_requested_at` advances (monotonically) on every attempt.
+- **R3 (unconditioned `acm:AddTagsToCertificate`).** Could tag any certificate in the
+  account `ManagedBy=launchpad` and then delete it under `DeleteCertificate`'s own
+  condition. Now conditioned on `aws:RequestTag/ManagedBy=launchpad` +
+  `ForAllValues:StringEquals aws:TagKeys=["ManagedBy"]`; the policy note is rewritten to
+  say plainly that this cannot be restricted to only Launchpad's own certificates (IAM has
+  no usable condition key for that here) and is defense-in-depth, not a hard boundary,
+  given the account-wide `iam:*` grant already in the base policy. `acm:ValidationMethod`/
+  `acm:DomainNames` conditions on `RequestCertificate` were considered and NOT added —
+  AWS's IAM reference does not document ACM-specific condition keys, and a nonexistent key
+  in a condition evaluates false, which would deny the grant outright; tracked as a
+  REAL-AWS-VALIDATION item instead of guessing. v4 was unreleased, so its hashes were
+  re-bound via `generate.py --write` rather than bumped to v5.
+- **R4 (POLICY_STALE never recovers).** Neither policy-refresh callback re-enqueued
+  provisioning. `cert_bootstrap.maybe_reenqueue_after_policy_refresh(infra_id)` re-reads
+  current state and enqueues once `policy_version >= MIN_POLICY_VERSION_FOR_TLS` and the
+  environment is ACTIVE (and not torn down); wired into both `views/script_api_key.py`'s
+  and `views/infrastructure.py`'s policy-version-write paths.
+- **Recommended, all applied:** `delete_acm_certificate_after_listener_removed` now
+  retries `ResourceInUseException` with backoff (~6×10s) before giving up and logging the
+  orphaned ARN at ERROR (the misleading "the reaper will re-drive this" comment was wrong
+  — a failed destroy parks the environment in ERROR, which the reaper does not re-enqueue
+  — and is corrected), and goes through the same `cert_bootstrap._acm_client` mock/dev
+  gate as every other ACM call instead of a raw `boto3.client`. The re-check also sweeps
+  ISSUED-but-`https_listener_arn`-still-null rows to recover a lost `enqueue_provision`
+  call (e.g. a Redis dedup key already held), under the same B1 gate. The re-check now
+  calls a new `assume_role_credentials_only` (authenticate.py) rather than
+  `authenticate_infrastructure` — the latter writes `is_cloud_authenticated`/`metadata` on
+  every call, which a transient failure in this background poll must not flip on the
+  customer-facing row — and the tick has its own time budget
+  (`CERT_RECHECK_TIME_BUDGET_SECONDS`, default 20s) so a long queue of PENDING rows can't
+  block the worker loop indefinitely. Certificate reuse now skips non-`AMAZON_ISSUED`
+  certificates and follows `NextToken` pagination. Host-mode nginx (unwired, see below) was
+  redesigned from a single path-matched server block to two server blocks dispatched by
+  Host header — the app's own hostname gets the real serving block (no redirect location
+  at all, so a real app route starting with the app's own name, e.g. `/api/users` on app
+  "api", can never be misrouted), and every other Host gets a redirect-only block that
+  never proxies to the backend; `app_hostname` is validated against a strict hostname
+  shape before being interpolated into the config (it is a config-injection sink, not just
+  a cosmetic value), `app_name` is `re.escape`d in the regex location, and the redirect's
+  capture group excludes `\r`/`\n` to close a response-splitting angle.
+
+### Scaffolded but not wired into the live deploy path (honest deferral, not an oversight)
+
+The following are real, tested code — not stubs — but are not yet called from
+`application_deployment_service.py`'s deploy flow, because doing so needs a cross-service
+contract (`dns_label`, `PLATFORM_BASE_DOMAIN`, TLS/listener readiness) that
+application-service's `Environment` model does not yet mirror, and a decision on how a
+per-app "routing mode" is chosen and persisted per deploy. Building that contract and
+wiring these together is part 3's job alongside custom domains:
+
+- `container_config.generate_nginx_config(..., host_mode=True, app_hostname=...)` and
+  `inject_routing_envs(..., host_mode=True)` — host-mode nginx config (dedicated
+  `/_lp_health`, no rewrite/301/`X-Forwarded-Prefix`/`ROOT_PATH`, `X-Forwarded-Proto` from
+  `$http_x_forwarded_proto`, and a redirect from the old path URL to the host URL) is
+  fully implemented and tested; path mode (the default) is untouched and golden-tested
+  byte-identical.
+- `aws/alb.py`'s `create_host_forward_rule` (443, host-header → forward),
+  `create_host_redirect_rule` (:80, host-header → redirect-only, never forward), and
+  `modify_target_group` (existing-TG health-check-path cutover) — implemented and tested,
+  not yet called from the deploy flow.
+- k8s readiness probe path lockstep and per-app EKS `Ingress` host rules
+  (`rules[].host` exact match, `certificateARNs`/`listenPorts` on `IngressClassParams`) —
+  not started; `eks_bootstrap.py`'s scope in part 2 was the group-name fix only.
+- Host URL publish gating (API + dashboard, gated on Route53 INSYNC + `tls_status=ISSUED`
+  + `Environment.https_listener_arn` set) — `Environment.https_listener_arn` and
+  `InfrastructureCertificate.tls_status` are the building blocks; no endpoint or dashboard
+  change surfaces them yet. `PlatformDnsRecord.synced_at` (new field, part of the INSYNC
+  signal) is defined but not yet populated — `converge.py`'s `change_resource_record_sets`
+  call doesn't poll `get_change`/stamp it. This is the clearest remaining gap against the
+  pre-review's line 19 ("host URL only after Route53 INSYNC + cert ISSUED + 443 applied")
+  and should be the first thing part 3 picks up.
 
 ## Part 1 — what shipped (mock-verified)
 

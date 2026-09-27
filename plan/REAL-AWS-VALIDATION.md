@@ -244,3 +244,89 @@ DNS** account (`infra/platform-dns`).
       application-service's `export-inventory` endpoint under real network latency
       (not two Django dev servers on localhost): confirm the whole request — internal
       hop plus archive assembly — comfortably stays under the gateway's 10s proxy timeout.
+
+## F1b part 2 — TLS activation
+
+- [ ] **ACM issuance time.** `RequestCertificate` → `DomainValidationOptions[].ResourceRecord`
+      appearing is assumed near-instant (the ~2min bound in `cert_bootstrap._poll_for_resource_record`
+      is generous); confirm the real latency and that it never exceeds the bound under
+      normal conditions — a bound that's routinely hit would silently strand every first
+      provision in `tls_status=PENDING` for no real reason.
+- [ ] **Validation record shape.** `naming.VALIDATION_LEAF_RE`/`VALIDATION_VALUE_RE`
+      (`_<hex>.{domain}.` / `_<32 hex>.<alnum>.acm-validations.aws.`) are inferred from
+      published ACM documentation, not observed against a real `DescribeCertificate`
+      response — confirm the exact `Name`/`Value` shapes for a real DNS-validated wildcard
+      cert, including whether the leaf is always exactly 32 hex characters or can vary.
+- [ ] **`acm:RequestCertificate` with `aws:RequestTag` condition.** Confirm ACM actually
+      enforces `aws:RequestTag/ManagedBy=launchpad` on `RequestCertificate` (some AWS
+      services only support `aws:RequestTag` on resource-creating calls that accept `Tags`
+      inline, which `RequestCertificate` does) and that `acm:DeleteCertificate`'s
+      `aws:ResourceTag` condition evaluates against tags set via that same call, not only
+      via a separate `AddTagsToCertificate`.
+- [ ] **Certificate reuse.** `list_certificates` + `list_tags_for_certificate` filtering by
+      `DomainName` + `ManagedBy=launchpad` tag — confirm `ListCertificates` supports enough
+      certificates per account for this scan to stay cheap, and that a `PENDING_VALIDATION`
+      certificate whose validation never completed is still returned (not filtered out by
+      some default ACM behavior).
+- [ ] **certificateARNs in EKS Auto Mode.** `IngressClassParams.spec` accepting a
+      `certificateARNs` list and `listenPorts` — confirmed against AWS's EKS Auto Mode ALB
+      documentation, not yet exercised against a real cluster from this codebase (the EKS
+      per-app Ingress host-rule wiring itself is scaffolded, not connected to the deploy
+      path — see plan/F1b-tls-activation.md's Deferred section). Confirm a patch to an
+      existing `IngressClassParams` object (adding `certificateARNs` after first bootstrap,
+      once TLS is issued) takes effect without recreating the ALB.
+- [ ] **TLS1.3 policy on ALB.** `ELBSecurityPolicy-TLS13-1-2-2021-06` is assumed to exist
+      and be selectable via `aws_lb_listener.ssl_policy` in every region Launchpad supports —
+      confirm against a real `elbv2:CreateListener`/apply in more than one region.
+- [ ] **`modify_target_group` health-path cutover without downtime.** Confirm ALB applies a
+      `HealthCheckPath` change to a target group with already-healthy targets without a
+      health-check gap that would flip targets to unhealthy mid-cutover (the intended
+      sequence: nginx redeploys with the new location *before* `modify_target_group` runs,
+      but the two are not one atomic operation).
+- [ ] **Host rule priorities and limits.** Confirm the per-listener rule limit (AWS default
+      quota is commonly cited as 100 rules per listener, adjustable) is enough headroom for
+      `create_host_forward_rule`/`create_host_redirect_rule` alongside the existing
+      per-app path rules on the same ALB, and that `get_next_priority`'s gap-filling scan
+      stays cheap at that rule count.
+- [ ] **SNI cap.** ALB's per-listener SNI certificate limit (commonly cited as 25,
+      `add_listener_certificates`) is relevant once custom domains (F1b part 3) attach
+      additional SNI certs to the same 443 listener the wildcard cert already serves —
+      confirm the real limit and that `describe_listener_certificates` reflects the
+      wildcard cert set at `CreateListener`/`aws_lb_listener.certificate_arn` alongside any
+      later `add_listener_certificates` additions, not as a separate, uncounted slot.
+- [ ] **ACM condition keys for RequestCertificate.** Security review R3 asked for
+      `acm:ValidationMethod`/`acm:DomainNames` conditions scoping `RequestCertificate` to
+      DNS validation and the platform base domain. Deliberately NOT added to policy.json:
+      AWS's published IAM reference for ACM does not document any ACM-specific condition
+      keys (only the global `aws:*` ones), and adding a condition key that never appears in
+      the request context evaluates to false — for an Allow statement that means the
+      action is denied outright, which would break cert bootstrap entirely rather than
+      narrow it. Confirm against the current AWS IAM JSON policy reference for `acm:*`
+      (or an actual `iam:SimulatePrincipalPolicy` call) whether such keys exist before
+      ever adding them; do not guess.
+- [ ] **RequestCertificate tag-on-create vs. AddTagsToCertificate.** `cert_bootstrap.py`
+      passes `Tags` directly on `RequestCertificate`. AWS documents this as requiring
+      `acm:AddTagsToCertificate` permission in addition to `acm:RequestCertificate` (tagging
+      on create is implemented as an implicit `AddTagsToCertificate` call) — the policy
+      already grants both, so this should work, but has not been confirmed against a real
+      `RequestCertificate` call with `Tags` and *only* the v4 grant set (no broader
+      `acm:*`). If it turns out tag-on-create is NOT covered by a conditioned
+      `AddTagsToCertificate` grant the way it is by an unconditioned one, certificates
+      would come back untagged and reuse/delete would silently never find them.
+- [ ] **ALB overwrites the client's own X-Forwarded-Proto on :80.** The :80 listener's
+      host-header redirect rule (`create_host_redirect_rule`) assumes a client hitting the
+      app's own hostname over plain HTTP should always be redirected to HTTPS — true for
+      an external client, but the ALB itself sets `X-Forwarded-Proto` on every request it
+      forwards (overwriting anything the original client sent), so nginx's
+      `$http_x_forwarded_proto` in host mode is trustworthy specifically because it always
+      reflects the ALB's own view (http on :80, https on :443), never a value a client
+      could spoof by setting the header directly *if* the ALB is the only path in —
+      confirm no other ingress path (e.g. a customer VPC route hairpinning traffic
+      directly to a target's IP, bypassing the ALB) exists in any supported topology.
+- [ ] **EKS in-cluster spoofing of X-Forwarded-Proto to the sidecar.** On EKS, the AWS
+      Load Balancer Controller sets `X-Forwarded-Proto` the same way as ECS's ALB, but the
+      request path from the controller-managed ALB to the pod runs over the cluster's own
+      network (not necessarily as tightly closed as an ECS task's loopback-only nginx
+      sidecar setup) — confirm no other in-cluster caller (another pod, a NetworkPolicy
+      gap) can reach the app's nginx sidecar directly and spoof `X-Forwarded-Proto` without
+      going through the ALB at all, which would let it claim an HTTP request is HTTPS.

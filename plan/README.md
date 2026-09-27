@@ -9,7 +9,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 |---|---|---|---|
 | — | Phase 0 prework | **done**; the rate-limit carve-out is replaced by F0 | — |
 | [F0](F0-rate-budget.md) | Per-user budget for customer-account calls + two unowned bugs | **done** (mock-verified) | nothing |
-| [F1](F1b-tls-activation.md) | TLS, custom domains | Phase 1 **done** (#68); decisions + zone terraform **done** (#75); part 1 (DNS writer) **done** (mock-verified); parts 2–3 (cert bootstrap, custom domains) **not started** | zone not yet applied (real AWS) |
+| [F1](F1b-tls-activation.md) | TLS, custom domains | Phase 1 **done** (#68); decisions + zone terraform **done** (#75); parts 1–2 (DNS writer; cert bootstrap, ACM policy v4, 443 listener, EKS group-name fix — host-routing runtime wiring scaffolded, not connected) **done** (mock-verified); part 3 (custom domains, host URL publish) **not started** | zone not yet applied (real AWS) |
 | [F2](F2-runtime-logs.md) | Logs | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing technical |
 | [F3](F3-rollback.md) | Rollback | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F4](F4-cost-tagging.md) | Cost attribution | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
@@ -79,7 +79,12 @@ to walk, not a specification to type in.
       onboarding installs the v1 policy without the EKS grants** and the stale flag can never
       clear. F4 bumped the policy to v3 (a base-statement change — the `ce:*` grant — so
       `required_version_for` is now 3 for **both** compute types) and requires the bump
-      again in the same release this ships.
+      again in the same release this ships. F1b part 2 bumped it again to v4 (the `acm:*`
+      grants — another base-statement change, so `required_version_for` is now 4 for both
+      compute types) and requires the same bump in the release that ships it: until the
+      pinned ref moves, cert bootstrap's `policy_version >= 4` gate skips TLS
+      (`tls_status=POLICY_STALE`) for every customer who re-runs the onboarding/refresh
+      script against the old ref.
 - [ ] **Run `manage.py redact_stored_provisioning_text --dry-run`, then for real, before
       enabling the provisioning-logs endpoint.** Lossy by design, no reverse.
 - [ ] Dismiss the GitGuardian incidents on #65 and #73 — both flagged AWS's published

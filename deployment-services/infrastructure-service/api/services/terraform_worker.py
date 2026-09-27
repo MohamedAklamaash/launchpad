@@ -21,6 +21,8 @@ from api.mock.aws_fixtures import (
 from api.models.database import Database
 from api.models.environment import Environment
 from api.models.infrastructure import Infrastructure
+from api.models.infrastructure_certificate import InfrastructureCertificate
+from api.services.cert_bootstrap import ensure_certificate
 from api.services.eks_bootstrap import (
     EksBootstrapError,
     EksBootstrapTimeout,
@@ -31,7 +33,10 @@ from api.services.eks_teardown import cleanup_eks_orphans
 from api.services.infrastructure import validate_aws_region, validate_vpc_cidr
 from api.services.log_redaction import clip_head, clip_tail, redact_provisioning_text
 from api.services.platform_dns.producer import request_dns_reconcile
-from api.services.platform_dns.teardown import request_and_await_dns_teardown
+from api.services.platform_dns.teardown import (
+    delete_acm_certificate_after_listener_removed,
+    request_and_await_dns_teardown,
+)
 from api.validators import validate_database_name
 from django.conf import settings
 from django.db import transaction
@@ -403,14 +408,46 @@ output "{mod}_secret_arn" {{ value = module.{mod}.secret_arn }}
                          compute_type: str, account_id: str) -> str:
         if compute_type == ComputeType.EKS:
             return TerraformWorker._generate_config_eks(vars, infra_id, bucket, table, region, account_id)
-        return TerraformWorker._generate_config_ecs(vars, infra_id, bucket, table, region)
+        return TerraformWorker._generate_config_ecs(vars, infra_id, bucket, table, region, account_id)
 
     @staticmethod
-    def _generate_config_ecs(vars: dict, infra_id: str, bucket: str, table: str, region: str) -> str:
-        """Generate Terraform config with unique resource names"""
+    def _validate_certificate_arn(cert_arn: str, region: str, account_id: str | None) -> None:
+        """certificate_arn is a new f-string interpolation sink (modules/alb's 443
+        listener) — validated here exactly like the EKS account_id/cluster_version sinks
+        above, bound to the infra's own region+account so a hostile or cross-account ARN
+        can never be planted in generated HCL."""
+        if not account_id or not re.fullmatch(r"\d{12}", str(account_id)):
+            raise ValueError(f"certificate_arn requires a 12-digit account_id, got {account_id!r}")
+        pattern = rf"arn:aws:acm:{re.escape(region)}:{re.escape(str(account_id))}:certificate/[0-9a-fA-F-]{{36}}"
+        if not re.fullmatch(pattern, str(cert_arn)):
+            raise ValueError(
+                f"certificate_arn {cert_arn!r} is not a valid ACM certificate ARN for "
+                f"region {region!r} account {account_id!r}"
+            )
+
+    @staticmethod
+    def _generate_config_ecs(vars: dict, infra_id: str, bucket: str, table: str, region: str,
+                             account_id: str | None = None) -> str:
+        """Generate Terraform config with unique resource names.
+
+        `enable_https`/`certificate_arn` in `vars` are the only F1b part 2 addition to this
+        builder's inputs, and both default to unset — the module "alb" block and output
+        list are byte-identical to the pre-TLS generator when they are absent (pinned by
+        test_ecs_config_is_string_identical_to_golden). Never sourced from anywhere but the
+        caller (provision(), reading InfrastructureCertificate.tls_status == ISSUED) —
+        never from customer-controllable `vars`.
+        """
         env_name = naming.environment_name(infra_id)
         db_blocks = TerraformWorker._db_module_blocks(infra_id, env_name, vars.get("db_app_sg_id", ""))
         db_secret_arns = TerraformWorker._db_secret_arn_refs(infra_id)
+
+        alb_extra_vars = ""
+        https_output = ""
+        certificate_arn = vars.get("certificate_arn")
+        if vars.get("enable_https") and certificate_arn:
+            TerraformWorker._validate_certificate_arn(certificate_arn, region, account_id)
+            alb_extra_vars = f'\n  enable_https           = true\n  certificate_arn        = "{certificate_arn}"'
+            https_output = '\noutput "https_listener_arn" { value = module.alb.https_listener_arn }'
 
         return f"""
 terraform {{
@@ -473,7 +510,7 @@ module "alb" {{
   environment            = "{env_name}"
   vpc_id                 = module.vpc.vpc_id
   public_subnet_ids      = module.vpc.public_subnet_ids
-  alb_security_group_id  = module.vpc.alb_security_group_id
+  alb_security_group_id  = module.vpc.alb_security_group_id{alb_extra_vars}
   
   depends_on = [module.vpc]
 }}
@@ -490,7 +527,7 @@ output "alb_dns" {{ value = module.alb.alb_dns }}
 output "target_group_arn" {{ value = module.alb.target_group_arn }}
 output "ecr_repository_url" {{ value = module.ecr.repository_url }}
 output "ecs_task_execution_role_arn" {{ value = module.iam.ecs_task_execution_role_arn }}
-output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}
+output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}{https_output}
 {db_blocks}"""
 
     @staticmethod
@@ -655,6 +692,32 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             if dev_mode and not infra.is_mock:
                 raise ValueError("Refusing mock provisioning against a real infrastructure")
 
+            # Defense in depth (B1): dns_teardown_requested_at and exited_at (F6) are both
+            # monotonic and one-way — once set they never clear (see
+            # Infrastructure.mark_dns_teardown_requested and the exit_export "never
+            # cleared" field docs) — and DESTROYING/DESTROYED mean a destroy is in flight
+            # or already finished. exited_at is checked belt-and-suspenders: complete_exit
+            # always sets dns_teardown_requested_at first, so this should already be
+            # implied, but an exited infra is exactly the case this guard exists for. The
+            # primary guard against a background trigger (the TLS ISSUED re-check)
+            # resurrecting a torn-down infra lives at that trigger (run_worker.py's
+            # _cert_recheck_eligible); this is the backstop for any other caller that
+            # might enqueue a provision here.
+            env_status = Environment.objects.filter(
+                infrastructure_id=infra_id,
+            ).values_list('status', flat=True).first()
+            if (
+                infra.dns_teardown_requested_at is not None
+                or infra.exited_at is not None
+                or env_status in ('DESTROYING', 'DESTROYED')
+            ):
+                logger.warning(
+                    f"Refusing to provision {infra_id}: dns_teardown_requested_at="
+                    f"{infra.dns_teardown_requested_at!r}, exited_at={infra.exited_at!r}, "
+                    f"environment status={env_status!r}"
+                )
+                return
+
             if infra.is_mock:
                 # ACTIVE no longer short-circuits: a DB create/delete on an already-active
                 # mock infra legitimately re-enqueues provision() to reconcile the new
@@ -715,6 +778,17 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 "cluster_version": metadata.get("cluster_version", DEFAULT_EKS_CLUSTER_VERSION),
                 "db_app_sg_id": db_app_sg_id,
             }
+
+            # F1b part 2: the 443 listener is applied only once ACM has actually ISSUED a
+            # certificate — never speculatively. ECS-only; EKS applies TLS via the Ingress
+            # class patch (eks_bootstrap.py), not this terraform config.
+            if compute_type == ComputeType.ECS_FARGATE:
+                issued_cert = InfrastructureCertificate.objects.filter(
+                    infrastructure_id=infra_id, tls_status=InfrastructureCertificate.TLS_ISSUED,
+                ).first()
+                if issued_cert is not None and issued_cert.cert_arn:
+                    tf_vars["enable_https"] = True
+                    tf_vars["certificate_arn"] = issued_cert.cert_arn
 
             logger.info(f"Running terraform apply for {infra_id}")
             result = TerraformWorker._exec_tf(
@@ -948,6 +1022,10 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                     env.target_group_arn = outputs.get("target_group_arn", {}).get("value")
                     env.ecr_repository_url = outputs.get("ecr_repository_url", {}).get("value")
                     env.ecs_task_execution_role_arn = outputs.get("ecs_task_execution_role_arn", {}).get("value")
+                    # Only present in the output list when tf_vars carried enable_https=true
+                    # (see _generate_config_ecs) — absent (None) on every plan that hasn't
+                    # applied the 443 listener yet, including every pre-F1b-part-2 apply.
+                    env.https_listener_arn = outputs.get("https_listener_arn", {}).get("value")
                 env.status = "ACTIVE"
                 env.error_message = None
                 if env.first_activated_at is None:
@@ -962,6 +1040,19 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 # _mock_provision (mock_outputs is not None), on commit so the writer never
                 # reads a half-committed row.
                 transaction.on_commit(lambda: request_dns_reconcile(infra_id))
+
+                # TLS bootstrap runs after the DNS reconcile is queued, on the same
+                # dispatched job's lock (see run_worker.py's LockHeartbeat) — a bounded
+                # ACM poll here is safe under the 60s heartbeat. Idempotent no-op once
+                # ISSUED or while a request is already PENDING; never raises, never fails
+                # this provision. infra_is_mock/dev_mode are read once here rather than
+                # re-derived inside ensure_certificate, mirroring how the real/mock branch
+                # was already decided by the caller (provision()/_mock_provision).
+                _dev_mode = is_dev_mode(app_config.mode)
+                transaction.on_commit(lambda: ensure_certificate(
+                    infra, credentials=credentials, region=region,
+                    infra_is_mock=infra.is_mock, dev_mode=_dev_mode,
+                ))
 
                 databases_payload = TerraformWorker._reconcile_databases(env, outputs)
 
@@ -1236,6 +1327,21 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 ["terraform", "destroy", "-auto-approve", "-no-color", "-input=false"],
                 tf_vars, credentials, str(infra_id), region, account_id, infra.compute_type,
                 ensure_backend=False  # bucket already exists from provision
+            )
+
+            # Best-effort regardless of the destroy outcome, with its own internal
+            # ResourceInUse retry/backoff (see the hook) — a listener terraform failed to
+            # remove is not automatically retried by anything else: a failed destroy parks
+            # the environment in ERROR, which the periodic reaper does not re-drive (it
+            # only re-enqueues PROVISIONING/UPDATING/DESTROYING), so this call's own retry
+            # loop is the only chance this certificate gets deleted before the row is
+            # cascade-deleted along with Infrastructure. A final failure is logged at ERROR
+            # with the ARN — see delete_acm_certificate_after_listener_removed. The
+            # validation CNAME's removal already happened above via
+            # request_and_await_dns_teardown and does not depend on this call at all.
+            delete_acm_certificate_after_listener_removed(
+                infra_id, credentials=credentials, region=region,
+                infra_is_mock=infra.is_mock, dev_mode=dev_mode,
             )
 
             destroy_logs = (pre_destroy_logs + "\n" if pre_destroy_logs else "") + result.get("logs", "")

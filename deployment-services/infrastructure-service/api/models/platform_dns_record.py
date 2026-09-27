@@ -43,6 +43,13 @@ class PlatformDnsRecord(models.Model):
     record_type = models.CharField(max_length=10, default="CNAME")
     record_value = models.CharField(max_length=512)
     ttl = models.IntegerField()
+    # Set once a Route53 GetChange poll on this row's most recent ChangeBatch confirms
+    # INSYNC (see converge.py). Null while a change is still PENDING propagation, and
+    # cleared back to null whenever the row is upserted with a new value. Part 2's host-URL
+    # publish gate requires every live record for an infra to have a non-null synced_at, in
+    # addition to InfrastructureCertificate.tls_status == ISSUED and the 443 listener being
+    # applied — see api/services/host_readiness.py.
+    synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -1,9 +1,10 @@
 {
-  "version": 3,
+  "version": 4,
   "version_hashes": {
     "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
     "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de",
-    "3": "e310fd84891a43b61b8eb9d8c66c33d720b16b787617373ef6e75e9fca047d58"
+    "3": "e310fd84891a43b61b8eb9d8c66c33d720b16b787617373ef6e75e9fca047d58",
+    "4": "89e56ce04e59320bd516b48e95fd73661c464bb011b730da9d3c14995d96a2e5"
   },
   "document_hashes": {
     "1": {
@@ -16,6 +17,10 @@
     "3": {
       "eks": "b22a00a90cfca6cf1bfc615e628739341351a87cdd416cb4254b7fb30e73570a",
       "ecs_fargate": "03b61b3d2d566c4544565a397b27e7ec0c7288622025b7baa45323519c6da9c7"
+    },
+    "4": {
+      "ecs_fargate": "8ffdadbc9893b1ef98bc173047e6ec5a3fbf871c6c3656b6586ceaaffca8e878",
+      "eks": "41d2c2e334654b93d80e83fe2b6eafe6695aab778bd14f7517905fadef56dd02"
     }
   },
   "notes": [
@@ -42,7 +47,26 @@
     "eks Deny (only granted when LAUNCHPAD_COMPUTE_TYPE=eks): blocks EKS access-entry",
     "  and access-policy management, and DescribeCluster, outside resources named",
     "  infra-*, as a defense-in-depth backstop; the iam:* grant above means this is",
-    "  not a hard containment boundary"
+    "  not a hard containment boundary",
+    "acm:RequestCertificate (v4, TLS activation): only when the request is tagged",
+    "  aws:RequestTag/ManagedBy=launchpad, so a certificate this account did not ask",
+    "  Launchpad to manage can never be requested under this grant",
+    "acm:DescribeCertificate/ListCertificates/ListTagsForCertificate: read certificate",
+    "  state and validation records to poll issuance and to find an existing tagged",
+    "  certificate for reuse",
+    "acm:AddTagsToCertificate: only when the call's own tags are exactly",
+    "  ManagedBy=launchpad (aws:RequestTag + aws:TagKeys), so this grant can never be used",
+    "  to attach an unrelated tag value or an extra tag key. It CANNOT be restricted to",
+    "  only certificates Launchpad itself created — aws:RequestTag governs the tags being",
+    "  set, not which existing resource is targeted, and ACM has no aws:ResourceTag-style",
+    "  condition usable here without already having the tag. In practice this is",
+    "  defense-in-depth, not a hard boundary: the iam:* grant above already lets this role",
+    "  do far more than tag a certificate, so a compromised role could reach the same",
+    "  outcome other ways regardless of this condition",
+    "acm:DeleteCertificate: only when aws:ResourceTag/ManagedBy=launchpad — this account",
+    "  cannot delete a certificate it did not let Launchpad tag as its own. No new",
+    "  elasticloadbalancing actions were needed: elasticloadbalancing:* above already",
+    "  covers the 443 listener and per-app host-header rules"
   ],
   "statements": [
     {
@@ -80,6 +104,50 @@
         "ce:ListCostAllocationTags"
       ],
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:RequestCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListCertificates",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:AddTagsToCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/ManagedBy": "launchpad"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "ManagedBy"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "acm:DeleteCertificate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/ManagedBy": "launchpad"
+        }
+      }
     }
   ],
   "compute_type_statements": {

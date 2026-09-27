@@ -25,7 +25,7 @@ class ALBClient:
         self.healthy_threshold = int(os.environ.get('ALB_HEALTHY_THRESHOLD', '2'))
         self.unhealthy_threshold = int(os.environ.get('ALB_UNHEALTHY_THRESHOLD', '3'))
     
-    def create_target_group(self, name, vpc_id, port=80, tags=None):
+    def create_target_group(self, name, vpc_id, port=80, tags=None, health_check_path='/'):
         try:
             response = self.client.create_target_group(
                 Name=name,
@@ -34,7 +34,7 @@ class ALBClient:
                 VpcId=vpc_id,
                 TargetType='ip',
                 HealthCheckEnabled=True,
-                HealthCheckPath='/',
+                HealthCheckPath=health_check_path,
                 HealthCheckIntervalSeconds=self.health_check_interval,
                 HealthCheckTimeoutSeconds=self.health_check_timeout,
                 HealthyThresholdCount=self.healthy_threshold,
@@ -52,42 +52,86 @@ class ALBClient:
                 logger.warning(f"Existing TG {name} is in VPC {tg['VpcId']}, not {vpc_id} — creating with unique name")
                 import time
                 unique_name = f"{name[:24]}-{int(time.time()) % 10000}"
-                return self.create_target_group(unique_name, vpc_id, port, tags=tags)
+                return self.create_target_group(unique_name, vpc_id, port, tags=tags, health_check_path=health_check_path)
             return tg['TargetGroupArn']
 
-    def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority, tags=None):
-        import time
-        # Lock per listener to prevent priority races under concurrent deploys
+    def modify_target_group(self, target_group_arn, health_check_path):
+        """Update an already-created target group's health check path in place — used
+        when an app's routing mode changes (path -> host) after its target group already
+        exists, so the ALB health check moves in lockstep with the nginx sidecar's own
+        health location (container_config.HOST_MODE_HEALTH_CHECK_PATH) rather than
+        continuing to probe a path the new config no longer serves a canned response at.
+        """
+        self.client.modify_target_group(
+            TargetGroupArn=target_group_arn,
+            HealthCheckPath=health_check_path,
+        )
+        logger.info(f"Updated health check path for {target_group_arn} to {health_check_path}")
+
+    def _create_rule_with_retry(self, listener_arn, conditions, actions, tags=None):
+        """Shared priority-assignment + PriorityInUseException retry, per listener lock.
+        Used by every rule-creation method below so a path rule, a host-forward rule, and
+        a host-redirect rule racing on the same listener never collide on priority."""
         with _get_listener_lock(listener_arn):
             priority = self.get_next_priority(listener_arn)
             try:
                 response = self.client.create_rule(
-                    ListenerArn=listener_arn,
-                    Conditions=[{'Field': 'path-pattern', 'Values': [path_pattern]}],
-                    Actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
-                    Priority=priority,
-                    **({'Tags': as_key_value_tags(tags)} if tags else {}),
+                    ListenerArn=listener_arn, Conditions=conditions, Actions=actions,
+                    Priority=priority, **({'Tags': as_key_value_tags(tags)} if tags else {}),
                 )
-                rule_arn = response['Rules'][0]['RuleArn']
                 logger.info(f"Created listener rule with priority {priority}")
             except self.client.exceptions.PriorityInUseException:
-                # Retry with a fresh priority inside the same lock
                 priority = self.get_next_priority(listener_arn)
                 response = self.client.create_rule(
-                    ListenerArn=listener_arn,
-                    Conditions=[{'Field': 'path-pattern', 'Values': [path_pattern]}],
-                    Actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
-                    Priority=priority,
-                    **({'Tags': as_key_value_tags(tags)} if tags else {}),
+                    ListenerArn=listener_arn, Conditions=conditions, Actions=actions,
+                    Priority=priority, **({'Tags': as_key_value_tags(tags)} if tags else {}),
                 )
-                rule_arn = response['Rules'][0]['RuleArn']
                 logger.info(f"Created listener rule with priority {priority} (retry)")
+        return response['Rules'][0]['RuleArn']
+
+    def create_listener_rule(self, listener_arn, target_group_arn, path_pattern, priority, tags=None):
+        import time
+        rule_arn = self._create_rule_with_retry(
+            listener_arn,
+            conditions=[{'Field': 'path-pattern', 'Values': [path_pattern]}],
+            actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
+            tags=tags,
+        )
 
         propagation_delay = int(os.environ.get('ALB_RULE_PROPAGATION_DELAY', '5'))
         logger.info(f"Waiting {propagation_delay} seconds for listener rule to propagate...")
         time.sleep(propagation_delay)
         return rule_arn
-    
+
+    def create_host_forward_rule(self, listener_arn, target_group_arn, hostname, tags=None):
+        """F1b part 2: the 443 counterpart to create_listener_rule's path-pattern rule —
+        an exact host-header match forwarding straight to the app's target group. Never a
+        path-pattern condition: on 443 the whole path space belongs to whichever app's
+        Host matched, unlike the shared :80 listener's /{app_name}/ prefix scheme."""
+        return self._create_rule_with_retry(
+            listener_arn,
+            conditions=[{'Field': 'host-header', 'Values': [hostname]}],
+            actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
+            tags=tags,
+        )
+
+    def create_host_redirect_rule(self, listener_arn, hostname, tags=None):
+        """The :80 counterpart: a host-header match for this app's own hostname redirects
+        to https, and never forwards — per the pre-review, a plaintext request to an app's
+        dedicated hostname must never reach the backend over HTTP."""
+        return self._create_rule_with_retry(
+            listener_arn,
+            conditions=[{'Field': 'host-header', 'Values': [hostname]}],
+            actions=[{
+                'Type': 'redirect',
+                'RedirectConfig': {
+                    'Protocol': 'HTTPS', 'Port': '443', 'StatusCode': 'HTTP_301',
+                    'Host': '#{host}', 'Path': '/#{path}', 'Query': '#{query}',
+                },
+            }],
+            tags=tags,
+        )
+
     def verify_target_group_attached(self, target_group_arn, listener_arn, max_retries=None, delay=None):
         """Verify target group is attached via listener rule"""
         if max_retries is None:

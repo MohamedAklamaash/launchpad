@@ -23,10 +23,17 @@ class InfrastructureCertificate(models.Model):
     TLS_PENDING = "PENDING"
     TLS_ISSUED = "ISSUED"
     TLS_FAILED = "FAILED"
+    # Cert bootstrap was skipped because Infrastructure.policy_version is below the
+    # version that added the acm:* grants (see iam_policy.required_version_for) — an
+    # actionable, non-failure state distinct from FAILED (an attempted, timed-out
+    # issuance). Cleared by the policy-refresh callback re-enqueuing provision once the
+    # customer applies the newer policy.
+    TLS_POLICY_STALE = "POLICY_STALE"
     TLS_STATUS_CHOICES = [
         (TLS_PENDING, "Pending"),
         (TLS_ISSUED, "Issued"),
         (TLS_FAILED, "Failed"),
+        (TLS_POLICY_STALE, "Policy stale"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid7_pk, editable=False)
