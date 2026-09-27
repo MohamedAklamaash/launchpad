@@ -279,13 +279,19 @@ class ApplicationService:
             # itself, so this doesn't go through the Redis job queue above. Always
             # attempted, even if the app never had a target group (a custom domain can't
             # exist without one, but this must never depend on that invariant holding).
+            # infrastructure-service is notified unconditionally (security review
+            # RECOMMENDED) — not only when a route existed here — because a still-PENDING
+            # domain (claimed but never verified, so never attached in this service at
+            # all) also needs its ACM certificate cleaned up there, and this notification
+            # is the only signal that ever reaches infrastructure-service that the
+            # application is gone.
             try:
                 from api.services.custom_domain_routing import (
                     detach_custom_domains_for_application,
                     notify_infrastructure_service_of_deleted_application,
                 )
-                if detach_custom_domains_for_application(app_id):
-                    notify_infrastructure_service_of_deleted_application(infrastructure_id, app_id)
+                detach_custom_domains_for_application(app_id)
+                notify_infrastructure_service_of_deleted_application(infrastructure_id, app_id)
             except Exception:
                 logger.warning(
                     "custom-domain cleanup failed for deleted application %s (non-fatal)",

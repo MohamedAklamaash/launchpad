@@ -514,3 +514,22 @@ DNS** account (`infra/platform-dns`).
       never races a listener deletion that's already removed the SNI attachment out from
       under it (should be idempotent per `remove_listener_certificate`'s design, but
       unconfirmed against real API latency/ordering).
+- [ ] **Authoritative-answer AA/CNAME hardening against a real provider.** Confirm at
+      least one major DNS provider's authoritative servers set the `AA` bit on ordinary
+      TXT answers the way `custom_domain_dns._extract_txt_values` requires (some
+      providers' edge/anycast setups have been known to omit it in edge cases) — a
+      provider that never sets `AA` would make every domain hosted there permanently
+      unverifiable, which only a real query against it can rule out.
+- [ ] **Non-global-IP filter against a real anycast/CDN-fronted nameserver.** Confirm a
+      real customer's nameservers never resolve (even transiently, e.g. during a
+      provider-side migration) to an address `ipaddress.*.is_global` rejects — a false
+      positive here would look identical to "no authoritative nameserver IP found" and
+      block verification/re-validation for a legitimately-configured domain.
+- [ ] **`DISABLING` retry cadence under real AWS latency.** `sweep_stuck_disabling` runs
+      on the same ~5min tick as the other two sweeps — confirm this is fast enough that a
+      domain doesn't sit `DISABLING` (certificate not yet deleted, but already detached)
+      for an operationally awkward length of time after a transient AWS API error, and
+      that ACM's real `ResourceInUseException` timing (how soon after
+      `RemoveListenerCertificates` a `DeleteCertificate` stops being rejected) matches the
+      assumption that a bare retry on the next tick is enough, rather than needing a
+      short explicit delay between detach and delete.

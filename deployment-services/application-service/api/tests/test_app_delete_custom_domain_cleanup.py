@@ -95,7 +95,12 @@ def test_delete_application_detaches_custom_domains_and_notifies_when_present(ow
 
 
 @pytest.mark.django_db
-def test_delete_application_skips_notify_when_no_custom_domains(owner, app, _stub_queue):
+def test_delete_application_notifies_even_with_no_local_custom_domain_routes(owner, app, infra, _stub_queue):
+    """Security review RECOMMENDED: notify unconditionally, not only when a route
+    existed here — a still-PENDING domain (claimed but never verified, so never attached
+    in this service at all) also needs its certificate cleaned up on the
+    infrastructure-service side, and this notification is the only signal that ever
+    reaches it that the application is gone."""
     from api.services.application_service import ApplicationService
 
     with patch("api.services.custom_domain_routing.detach_custom_domains_for_application",
@@ -104,7 +109,7 @@ def test_delete_application_skips_notify_when_no_custom_domains(owner, app, _stu
         ApplicationService().delete_application(owner.id, app.id)
 
     detach.assert_called_once_with(app.id)
-    notify.assert_not_called()
+    notify.assert_called_once_with(str(infra.id), app.id)
 
 
 @pytest.mark.django_db

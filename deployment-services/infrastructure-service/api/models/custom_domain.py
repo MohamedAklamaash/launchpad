@@ -1,6 +1,4 @@
 import hmac
-import ipaddress
-import re
 import secrets
 from datetime import timedelta
 
@@ -9,6 +7,20 @@ from django.conf import settings
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 from shared.utils.uuid import uuid7_pk
+from shared.validators.hostname import InvalidHostnameError, validate_hostname_syntax
+
+__all__ = [
+    "MAX_CONSECUTIVE_VERIFICATION_FAILURES",
+    "PENDING_CLAIM_TTL",
+    "CustomDomain",
+    "HostnameAlreadyValidatedError",
+    "IllegalStatusTransitionError",
+    "InvalidHostnameError",
+    "ReservedSuffixError",
+    "normalize_hostname",
+    "reject_reserved_suffix",
+    "validate_hostname_syntax",
+]
 
 # Unvalidated claims aren't real ownership evidence — letting one sit forever would let a
 # single PENDING row squat a hostname indefinitely against every future claimant.
@@ -19,18 +31,9 @@ PENDING_CLAIM_TTL = timedelta(hours=72)
 # must not disable a working custom domain.
 MAX_CONSECUTIVE_VERIFICATION_FAILURES = 3
 
-_LDH_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
-_MAX_HOSTNAME_LENGTH = 253
-_MAX_LABEL_LENGTH = 63
-
 
 class ReservedSuffixError(ValueError):
     """Hostname is, or falls under, the platform's own reserved apex domain."""
-
-
-class InvalidHostnameError(ValueError):
-    """Hostname fails basic DNS syntax before it may reach ALB conditions, ACM, or a
-    resolver."""
 
 
 class HostnameAlreadyValidatedError(ValueError):
@@ -67,35 +70,6 @@ def normalize_hostname(raw: str) -> str:
             raise InvalidHostnameError(f"{raw!r} contains an invalid label {label!r}: {exc}") from exc
         normalized_labels.append(ascii_label.lower())
     return ".".join(normalized_labels)
-
-
-def validate_hostname_syntax(hostname: str) -> None:
-    """Enforce plain DNS hostname syntax on an already-`normalize_hostname`d (ASCII/
-    punycode, lowercased) value, before it can reach an ALB host-header condition, ACM's
-    `DomainName`, or a DNS query. Apex/root domains are allowed through here (>=2 labels
-    only) — rejecting apex is a documented product decision (see F1b's "Out of scope"),
-    not a syntax rule, and is enforced separately if ever needed.
-    """
-    if len(hostname) > _MAX_HOSTNAME_LENGTH:
-        raise InvalidHostnameError(f"{hostname!r} exceeds {_MAX_HOSTNAME_LENGTH} characters.")
-    if "*" in hostname:
-        raise InvalidHostnameError(f"{hostname!r} contains a wildcard, which is not a claimable hostname.")
-
-    labels = hostname.split(".")
-    if len(labels) < 2:
-        raise InvalidHostnameError(f"{hostname!r} must have at least two labels.")
-    for label in labels:
-        if len(label) > _MAX_LABEL_LENGTH:
-            raise InvalidHostnameError(f"label {label!r} in {hostname!r} exceeds {_MAX_LABEL_LENGTH} characters.")
-        if not _LDH_LABEL_RE.match(label):
-            raise InvalidHostnameError(f"label {label!r} in {hostname!r} is not a valid LDH label.")
-
-    try:
-        ipaddress.ip_address(hostname)
-    except ValueError:
-        pass
-    else:
-        raise InvalidHostnameError(f"{hostname!r} is an IP address literal, not a hostname.")
 
 
 def reject_reserved_suffix(normalized_hostname: str) -> None:
@@ -142,6 +116,15 @@ class CustomDomain(models.Model):
     status = models.CharField(max_length=20, choices=[
         ('PENDING', 'Pending'),
         ('VALIDATED', 'Validated'),
+        # An intermediate, retryable checkpoint on the way to DISABLED (security review
+        # R2): teardown moves a row here in its own committed transaction BEFORE
+        # attempting the ALB detach or the ACM certificate delete — both slow, fallible
+        # network calls that must never run with a DB lock held (R1) and must survive a
+        # crash or a failed attempt without leaving the row looking VALIDATED/PENDING
+        # (silently still "live" with a stale route) or looking DISABLED (falsely
+        # implying nothing is attached, and excluded from the periodic sweep's retries).
+        # See CustomDomainService._teardown and mark_disabling()/mark_disabled().
+        ('DISABLING', 'Disabling'),
         ('DISABLED', 'Disabled'),
     ], default='PENDING')
     cert_arn = models.CharField(max_length=512, null=True, blank=True)
@@ -247,17 +230,49 @@ class CustomDomain(models.Model):
         self.last_verified_at = locked.last_verified_at
         self.verification_failure_count = locked.verification_failure_count
 
-    def mark_verification_failed(self) -> None:
+    def mark_disabling(self) -> None:
+        """PENDING or VALIDATED -> DISABLING. Idempotent: already DISABLING or DISABLED
+        is a no-op, not an error — teardown may be retried (an owner-triggered delete
+        racing the periodic sweep, or a retry after a previous attempt's AWS call
+        failed) and must not fail just because a previous attempt already got this far.
+        A fast, immediately-committed checkpoint — see the status field's docstring for
+        why the slow network calls that follow must run with no lock held at all."""
         with transaction.atomic():
             locked = CustomDomain.objects.select_for_update().get(pk=self.pk)
-            if locked.status != 'VALIDATED':
+            if locked.status in ('DISABLING', 'DISABLED'):
+                self.status = locked.status
+                return
+            if locked.status not in ('PENDING', 'VALIDATED'):
                 raise IllegalStatusTransitionError(
-                    f"Cannot disable a CustomDomain in status {locked.status!r}; only a "
-                    "VALIDATED domain can fail re-validation."
+                    f"Cannot disable a CustomDomain in status {locked.status!r}."
                 )
-            locked.status = 'DISABLED'
+            locked.status = 'DISABLING'
             locked.save(update_fields=['status'])
         self.status = locked.status
+
+    def mark_disabled(self) -> None:
+        """DISABLING -> DISABLED, clearing cert_arn — only once the caller has confirmed
+        the certificate is actually gone (or already was); keeping the ARN around past
+        that point would be a dangling reference. Idempotent: already DISABLED is a
+        no-op. Illegal from any status other than DISABLING — the transition must go
+        through mark_disabling() first, never straight from PENDING/VALIDATED, or a
+        crash between "detach confirmed" and "cert delete confirmed" would have no
+        record that detach still needs redoing on retry."""
+        with transaction.atomic():
+            locked = CustomDomain.objects.select_for_update().get(pk=self.pk)
+            if locked.status == 'DISABLED':
+                self.status = locked.status
+                self.cert_arn = locked.cert_arn
+                return
+            if locked.status != 'DISABLING':
+                raise IllegalStatusTransitionError(
+                    f"Cannot mark DISABLED from status {locked.status!r}; must be DISABLING."
+                )
+            locked.status = 'DISABLED'
+            locked.cert_arn = None
+            locked.save(update_fields=['status', 'cert_arn'])
+        self.status = locked.status
+        self.cert_arn = locked.cert_arn
 
     def record_verification_failure(self) -> bool:
         """Increment the consecutive-failure counter under a row lock; returns True once

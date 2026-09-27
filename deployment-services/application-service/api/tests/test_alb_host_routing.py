@@ -252,3 +252,56 @@ def test_create_target_group_defaults_health_check_path_to_root():
     client.create_target_group("tg", "vpc-1")
 
     assert session.elbv2.last_create["HealthCheckPath"] == "/"
+
+
+# ── R5: host-redirect rules always outrank path rules on priority ──────────────────────
+
+def test_custom_domain_redirect_outranks_every_path_rule_created_before_it(monkeypatch):
+    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
+    client, elbv2 = _client()
+
+    for i in range(5):
+        client.create_listener_rule("listener-arn", "tg-arn", [f"/app{i}", f"/app{i}/*"], priority=1)
+
+    redirect_arn = client.create_host_redirect_rule("listener-arn", "custom.example.com")
+
+    redirect_priority = next(r["priority"] for r in elbv2.rules if r["arn"] == redirect_arn)
+    path_priorities = [r["priority"] for r in elbv2.rules if r["arn"] != redirect_arn]
+    assert path_priorities  # sanity: the path rules actually got created
+    assert all(redirect_priority < p for p in path_priorities)
+
+
+def test_path_rule_created_after_a_custom_domain_redirect_still_cannot_outrank_it(monkeypatch):
+    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
+    client, elbv2 = _client()
+
+    redirect_arn = client.create_host_redirect_rule("listener-arn", "custom.example.com")
+    client.create_listener_rule("listener-arn", "tg-arn", ["/app", "/app/*"], priority=1)
+
+    redirect_priority = next(r["priority"] for r in elbv2.rules if r["arn"] == redirect_arn)
+    path_priorities = [r["priority"] for r in elbv2.rules if r["arn"] != redirect_arn]
+    assert all(redirect_priority < p for p in path_priorities)
+
+
+def test_path_rules_always_floor_at_the_reserved_path_rule_priority(monkeypatch):
+    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
+    from aws.alb import _PATH_RULE_PRIORITY_FLOOR
+
+    client, elbv2 = _client()
+
+    client.create_listener_rule("listener-arn", "tg-arn", ["/app", "/app/*"], priority=1)
+
+    assert elbv2.rules[0]["priority"] >= _PATH_RULE_PRIORITY_FLOOR
+
+
+def test_wildcard_and_custom_domain_redirects_share_the_low_band_below_path_rules(monkeypatch):
+    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
+    client, elbv2 = _client()
+
+    client.ensure_host_redirect_rule("listener-arn", "abc123", "launchpad.app")
+    client.create_listener_rule("listener-arn", "tg-arn", ["/app", "/app/*"], priority=1)
+    custom_redirect_arn = client.create_host_redirect_rule("listener-arn", "custom.example.com")
+
+    custom_priority = next(r["priority"] for r in elbv2.rules if r["arn"] == custom_redirect_arn)
+    path_priority = next(r["priority"] for r in elbv2.rules if r["conditions"][0]["Field"] == "path-pattern")
+    assert custom_priority < path_priority

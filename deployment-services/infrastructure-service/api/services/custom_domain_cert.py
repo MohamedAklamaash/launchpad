@@ -16,12 +16,8 @@ import hashlib
 import logging
 import time
 
-from api.services.cert_bootstrap import (
-    CERT_TAG_KEY,
-    CERT_TAG_VALUE,
-    _acm_client,
-    _best_effort_delete,
-)
+from api.services.cert_bootstrap import CERT_TAG_KEY, CERT_TAG_VALUE, _acm_client
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
@@ -113,10 +109,27 @@ def certificate_status(cert_arn: str, *, credentials: dict, region: str, infra_i
     return _describe(client, cert_arn).get("Status", "")
 
 
-def delete_certificate(cert_arn: str, *, credentials: dict, region: str, infra_is_mock: bool, dev_mode: bool) -> None:
-    """Best-effort — mirrors cert_bootstrap._best_effort_delete. A certificate ACM refuses
-    to delete (still attached to a listener) must never raise out of a teardown path;
-    callers detach the SNI attachment first (application-service) and treat a delete
-    failure here as "retry on the next sweep", not as a reason to abort teardown."""
+def delete_certificate(cert_arn: str, *, credentials: dict, region: str, infra_is_mock: bool, dev_mode: bool) -> bool:
+    """Returns True once the certificate is confirmed gone — either just deleted, or
+    already not found (idempotent success, e.g. a retry after a previous attempt's
+    DeleteCertificate actually succeeded but the caller crashed before recording it).
+    Returns False for anything else, most importantly `ResourceInUseException` — ACM
+    refuses to delete a certificate still attached to a listener, which for this module
+    means the caller's detach step hasn't actually completed despite reporting success:
+    a real condition the caller (CustomDomainService._teardown) must retry, never a
+    silent no-op it can treat as done (security review R2 — a cert_bootstrap-style
+    best-effort delete that always returns success-shaped None here would leave the row
+    marked DISABLED while the certificate is still live in the customer's account)."""
     client = _acm_client(infra_is_mock=infra_is_mock, dev_mode=dev_mode, credentials=credentials, region=region)
-    _best_effort_delete(client, cert_arn)
+    try:
+        client.delete_certificate(CertificateArn=cert_arn)
+        return True
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code == "ResourceNotFoundException":
+            return True
+        logger.warning("ACM DeleteCertificate failed for %s (code=%s), will retry", cert_arn, code, exc_info=True)
+        return False
+    except Exception:
+        logger.warning("ACM DeleteCertificate failed for %s, will retry", cert_arn, exc_info=True)
+        return False

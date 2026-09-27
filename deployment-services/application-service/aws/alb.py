@@ -24,6 +24,18 @@ class SniCertificateCapExceeded(RuntimeError):
 _priority_locks: dict = {}
 _priority_locks_lock = threading.Lock()
 
+# Security review R5: every host-header-conditioned :80 redirect (the one platform
+# wildcard from ensure_host_redirect_rule, plus one per claimed custom domain from
+# create_host_redirect_rule) must always outrank every :80 path rule (no host
+# condition — create_listener_rule) on priority number, or a path rule with a
+# matching path could win the match on a custom domain's Host and forward it to a
+# backend in plaintext instead of redirecting to HTTPS. Reserving a low band for host
+# redirects and flooring path rules above it makes this true for every rule created
+# from this fix forward without needing to reprioritize on every call — see
+# create_listener_rule/create_host_redirect_rule below.
+_HOST_REDIRECT_PRIORITY_FLOOR = 1
+_PATH_RULE_PRIORITY_FLOOR = 1000
+
 
 def _get_listener_lock(listener_arn: str) -> threading.Lock:
     with _priority_locks_lock:
@@ -82,12 +94,15 @@ class ALBClient:
         )
         logger.info(f"Updated health check path for {target_group_arn} to {health_check_path}")
 
-    def _create_rule_with_retry(self, listener_arn, conditions, actions, tags=None):
+    def _create_rule_with_retry(self, listener_arn, conditions, actions, tags=None, floor=1):
         """Shared priority-assignment + PriorityInUseException retry, per listener lock.
         Used by every rule-creation method below so a path rule, a host-forward rule, and
-        a host-redirect rule racing on the same listener never collide on priority."""
+        a host-redirect rule racing on the same listener never collide on priority.
+        `floor` reserves the low end of the priority space for host-redirect rules (see
+        _HOST_REDIRECT_PRIORITY_FLOOR/_PATH_RULE_PRIORITY_FLOOR above) — callers pass it
+        through unchanged on the retry path too."""
         with _get_listener_lock(listener_arn):
-            priority = self.get_next_priority(listener_arn)
+            priority = self.get_next_priority(listener_arn, floor=floor)
             try:
                 response = self.client.create_rule(
                     ListenerArn=listener_arn, Conditions=conditions, Actions=actions,
@@ -95,7 +110,7 @@ class ALBClient:
                 )
                 logger.info(f"Created listener rule with priority {priority}")
             except self.client.exceptions.PriorityInUseException:
-                priority = self.get_next_priority(listener_arn)
+                priority = self.get_next_priority(listener_arn, floor=floor)
                 response = self.client.create_rule(
                     ListenerArn=listener_arn, Conditions=conditions, Actions=actions,
                     Priority=priority, **({'Tags': as_key_value_tags(tags)} if tags else {}),
@@ -108,7 +123,14 @@ class ALBClient:
         of exact/prefix patterns — see the R1 note on `_configure_alb_routing`'s caller:
         a bare `/{slug}*` glob matches any OTHER slug sharing that prefix (`/a*` matches
         `/ab/x`), so the deploy flow now always passes `[f"/{slug}", f"/{slug}/*"]`
-        instead. ALB OR-matches multiple Values on one path-pattern condition."""
+        instead. ALB OR-matches multiple Values on one path-pattern condition.
+
+        Floored at _PATH_RULE_PRIORITY_FLOOR (R5): a path rule carries no host condition,
+        so it matches ANY Host on that path — including a claimed custom domain's. A path
+        rule allowed to land below a host-redirect rule's priority would win that match
+        first and forward a plaintext :80 request straight to a backend instead of
+        redirecting to HTTPS, exactly the violation host-redirect rules exist to prevent.
+        """
         import time
         patterns = path_pattern if isinstance(path_pattern, list) else [path_pattern]
         rule_arn = self._create_rule_with_retry(
@@ -116,6 +138,7 @@ class ALBClient:
             conditions=[{'Field': 'path-pattern', 'Values': patterns}],
             actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
             tags=tags,
+            floor=_PATH_RULE_PRIORITY_FLOOR,
         )
 
         propagation_delay = int(os.environ.get('ALB_RULE_PROPAGATION_DELAY', '5'))
@@ -138,7 +161,13 @@ class ALBClient:
     def create_host_redirect_rule(self, listener_arn, hostname, tags=None):
         """The :80 counterpart: a host-header match for this app's own hostname redirects
         to https, and never forwards — per the pre-review, a plaintext request to an app's
-        dedicated hostname must never reach the backend over HTTP."""
+        dedicated hostname must never reach the backend over HTTP. Used both for a
+        claimed custom domain (one rule per domain) and, via ensure_host_redirect_rule
+        below, the one per-infra platform wildcard.
+
+        Floored at _HOST_REDIRECT_PRIORITY_FLOOR, always below _PATH_RULE_PRIORITY_FLOOR
+        (R5) — see create_listener_rule's docstring for why a path rule must never be
+        allowed to outrank this."""
         return self._create_rule_with_retry(
             listener_arn,
             conditions=[{'Field': 'host-header', 'Values': [hostname]}],
@@ -150,6 +179,7 @@ class ALBClient:
                 },
             }],
             tags=tags,
+            floor=_HOST_REDIRECT_PRIORITY_FLOOR,
         )
 
     def ensure_host_redirect_rule(self, listener_arn, dns_label, base_domain, tags=None):
@@ -270,12 +300,15 @@ class ALBClient:
                 return listener['ListenerArn']
         return None
     
-    def get_next_priority(self, listener_arn):
+    def get_next_priority(self, listener_arn, floor=1):
+        """First free priority at or above `floor` — see _HOST_REDIRECT_PRIORITY_FLOOR/
+        _PATH_RULE_PRIORITY_FLOOR for why callers pin a floor rather than always
+        starting from 1 (R5)."""
         response = self.client.describe_rules(ListenerArn=listener_arn)
         priorities = [int(rule['Priority']) for rule in response['Rules'] if rule['Priority'] != 'default']
-        # Find first gap starting from 1 to avoid races with sequential max+1
+        # Find first gap starting from floor to avoid races with sequential max+1
         used = set(priorities)
-        priority = 1
+        priority = floor
         while priority in used:
             priority += 1
         return priority

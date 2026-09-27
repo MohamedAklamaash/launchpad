@@ -11,13 +11,22 @@ platform hostnames — see api/k8s/deployer.py) and are refused by infrastructur
 claim time, so this module never needs an EKS branch.
 """
 import logging
+import re
 
 from aws.tags import app_tags
 from django.conf import settings
+from django.db import IntegrityError
+from shared.validators.hostname import validate_hostname_syntax
 
 from api.common.naming import app_slug
 
 logger = logging.getLogger(__name__)
+
+# arn:aws:acm:{region}:{account_id}:certificate/{id} — a coarse shape check, not a
+# guarantee the certificate exists; the account-id segment is cross-checked against the
+# calling infrastructure's own AWS account below (security review RECOMMENDED: this
+# endpoint must not simply trust whatever ARN infrastructure-service hands it).
+_CERT_ARN_RE = re.compile(r"^arn:aws:acm:[a-z0-9-]+:(\d{12}):certificate/[A-Za-z0-9-]+$")
 
 
 class CustomDomainAttachError(Exception):
@@ -31,7 +40,8 @@ class CustomDomainNotFound(CustomDomainAttachError):
 
 
 class CustomDomainNotReady(CustomDomainAttachError):
-    """The infra's ALB/listeners aren't provisioned yet — nothing to attach to."""
+    """The infra's ALB/listeners aren't provisioned yet, or the application has never
+    deployed (no target group) — nothing to attach to."""
 
 
 class CustomDomainConflict(CustomDomainAttachError):
@@ -43,6 +53,23 @@ class CustomDomainConflict(CustomDomainAttachError):
 class SniCapReached(CustomDomainAttachError):
     """The listener already carries as many SNI certificates as this platform will place
     on it (see settings.MAX_SNI_CERTIFICATES_PER_LISTENER)."""
+
+
+def _validate_hostname(hostname: str) -> None:
+    try:
+        validate_hostname_syntax(hostname)
+    except Exception as exc:
+        raise CustomDomainAttachError(f"invalid hostname: {exc}") from exc
+
+
+def _validate_cert_arn(cert_arn: str, infra) -> None:
+    match = _CERT_ARN_RE.match(cert_arn or "")
+    if not match:
+        raise CustomDomainAttachError("cert_arn is not a well-formed ACM certificate ARN")
+    # Mock certificates don't carry the real account id (see cert_bootstrap.FakeAcmClient
+    # — always "000000000000"), so the cross-check only applies to real infrastructures.
+    if not infra.is_mock and infra.code and match.group(1) != infra.code:
+        raise CustomDomainAttachError("cert_arn does not belong to this infrastructure's AWS account")
 
 
 def _resolve_https_listener(infra):
@@ -63,24 +90,40 @@ def _resolve_https_listener(infra):
 
 
 def attach_custom_domain(*, infrastructure_id, application_id, hostname: str, cert_arn: str) -> dict:
-    """Idempotent: a hostname already attached to the same (infrastructure, application)
-    returns its existing rule ARNs without touching AWS again. Raises without attaching
-    anything, or having already attached the certificate but not the rules, is not a state
-    this function leaves behind on any exception path — see the ordering below."""
+    """Idempotent: a hostname already fully attached to the same (infrastructure,
+    application) returns its existing rule ARNs without touching AWS again.
+
+    Reservation-first (security review RECOMMENDED): the CustomDomainRoute row is created
+    — with placeholder rule ARNs — BEFORE any AWS call, not after. This closes the window
+    a purely-in-memory attempt would otherwise leave: a concurrent attach for the exact
+    same hostname now collides on the row's unique hostname constraint immediately,
+    rather than both callers independently reaching AWS and racing there instead. Any
+    failure past this point compensates by removing whatever was actually attached (the
+    SNI certificate, then any rule) before deleting the reservation — see the `except`
+    block below.
+    """
     from aws.alb import SniCertificateCapExceeded
 
     from api.models.application import Application
     from api.models.custom_domain_route import CustomDomainRoute
     from api.models.infrastructure import Infrastructure
 
+    _validate_hostname(hostname)
+
     existing = CustomDomainRoute.objects.filter(hostname=hostname).first()
     if existing is not None:
         if str(existing.infrastructure_id) != str(infrastructure_id) or str(existing.application_id) != str(application_id):
             raise CustomDomainConflict(f"{hostname!r} is already routed to a different application")
-        return {
-            "host_forward_rule_arn": existing.host_forward_rule_arn,
-            "host_redirect_rule_arn": existing.host_redirect_rule_arn,
-        }
+        if existing.host_forward_rule_arn:
+            return {
+                "host_forward_rule_arn": existing.host_forward_rule_arn,
+                "host_redirect_rule_arn": existing.host_redirect_rule_arn,
+            }
+        # A reservation left behind by a crashed previous attempt for this exact
+        # (infra, app, hostname) — safe to resume rather than error.
+        route = existing
+    else:
+        route = None
 
     try:
         infra = Infrastructure.objects.get(id=infrastructure_id)
@@ -91,40 +134,77 @@ def attach_custom_domain(*, infrastructure_id, application_id, hostname: str, ce
     except Application.DoesNotExist as exc:
         raise CustomDomainNotFound("Application not found under this infrastructure") from exc
 
-    alb, https_listener_arn, http_listener_arn = _resolve_https_listener(infra)
+    if not application.target_group_arn:
+        raise CustomDomainNotReady("Application has never deployed — no target group to route to yet")
 
-    if not alb.has_listener_certificate(https_listener_arn, cert_arn):
-        if alb.count_listener_certificates(https_listener_arn) >= settings.MAX_SNI_CERTIFICATES_PER_LISTENER:
-            raise SniCapReached(f"SNI certificate cap reached on listener {https_listener_arn}")
+    _validate_cert_arn(cert_arn, infra)
+
+    if route is None:
         try:
-            alb.add_listener_certificate(https_listener_arn, cert_arn)
-        except SniCertificateCapExceeded as exc:
-            raise SniCapReached(str(exc)) from exc
+            route = CustomDomainRoute.objects.create(
+                infrastructure_id=infrastructure_id, application_id=application_id, hostname=hostname,
+                cert_arn=cert_arn, host_forward_rule_arn="", host_redirect_rule_arn=None,
+            )
+        except IntegrityError:
+            raise CustomDomainConflict(f"{hostname!r} is already being attached") from None
 
-    tags = app_tags(infrastructure_id, app_slug(application.name))
-    host_forward_rule_arn = alb.create_host_forward_rule(
-        https_listener_arn, application.target_group_arn, hostname, tags=tags,
-    )
-    host_redirect_rule_arn = alb.create_host_redirect_rule(http_listener_arn, hostname, tags=tags)
+    cert_newly_attached = False
+    host_forward_rule_arn = None
+    try:
+        alb, https_listener_arn, http_listener_arn = _resolve_https_listener(infra)
 
-    route = CustomDomainRoute.objects.create(
-        infrastructure_id=infrastructure_id, application_id=application_id, hostname=hostname,
-        cert_arn=cert_arn, host_forward_rule_arn=host_forward_rule_arn,
-        host_redirect_rule_arn=host_redirect_rule_arn,
-    )
-    return {"host_forward_rule_arn": route.host_forward_rule_arn, "host_redirect_rule_arn": route.host_redirect_rule_arn}
+        if not alb.has_listener_certificate(https_listener_arn, cert_arn):
+            if alb.count_listener_certificates(https_listener_arn) >= settings.MAX_SNI_CERTIFICATES_PER_LISTENER:
+                raise SniCapReached(f"SNI certificate cap reached on listener {https_listener_arn}")
+            try:
+                alb.add_listener_certificate(https_listener_arn, cert_arn)
+                cert_newly_attached = True
+            except SniCertificateCapExceeded as exc:
+                raise SniCapReached(str(exc)) from exc
+
+        tags = app_tags(infrastructure_id, app_slug(application.name))
+        host_forward_rule_arn = alb.create_host_forward_rule(
+            https_listener_arn, application.target_group_arn, hostname, tags=tags,
+        )
+        host_redirect_rule_arn = alb.create_host_redirect_rule(http_listener_arn, hostname, tags=tags)
+    except Exception:
+        logger.warning("attach failed for %s, compensating (removing reservation and any partial AWS state)",
+                        hostname, exc_info=True)
+        if cert_newly_attached:
+            try:
+                alb.remove_listener_certificate(https_listener_arn, cert_arn)
+            except Exception:
+                logger.warning("compensating cert detach failed for %s (non-fatal)", hostname, exc_info=True)
+        if host_forward_rule_arn:
+            try:
+                alb.delete_rule(host_forward_rule_arn)
+            except Exception:
+                logger.warning("compensating rule delete failed for %s (non-fatal)", hostname, exc_info=True)
+        route.delete()
+        raise
+
+    route.cert_arn = cert_arn
+    route.host_forward_rule_arn = host_forward_rule_arn
+    route.host_redirect_rule_arn = host_redirect_rule_arn
+    route.save(update_fields=['cert_arn', 'host_forward_rule_arn', 'host_redirect_rule_arn'])
+    return {"host_forward_rule_arn": host_forward_rule_arn, "host_redirect_rule_arn": host_redirect_rule_arn}
 
 
-def _detach_route(route) -> None:
-    """Best-effort on the AWS side, but the local row is always removed — a route this
-    service can no longer account for must not linger and be reused by a later idempotent
-    attach that assumes the ARNs it holds are still live."""
+def _detach_route(route) -> bool:
+    """Returns True only once the ALB side is confirmed clean (or there was never
+    anything to detach from) — the row is deleted only then. A route left behind after a
+    failed AWS call must still be findable on the next retry (security review R2), not
+    silently gone while its rule/certificate may still be live."""
     from api.models.infrastructure import Infrastructure
 
     try:
         infra = Infrastructure.objects.get(id=route.infrastructure_id)
         environment = infra.environments.first()
-        if environment is not None and environment.alb_arn:
+    except Infrastructure.DoesNotExist:
+        infra, environment = None, None
+
+    if infra is not None and environment is not None and environment.alb_arn:
+        try:
             from aws.alb import ALBClient
             from aws.session import create_boto3_session
 
@@ -132,49 +212,55 @@ def _detach_route(route) -> None:
             https_listener_arn = alb.get_listener_arn(environment.alb_arn, port=443)
             if https_listener_arn:
                 alb.remove_listener_certificate(https_listener_arn, route.cert_arn)
-            alb.delete_rule(route.host_forward_rule_arn)
+            if route.host_forward_rule_arn:
+                alb.delete_rule(route.host_forward_rule_arn)
             if route.host_redirect_rule_arn:
                 alb.delete_rule(route.host_redirect_rule_arn)
-    except Exception:
-        logger.warning("best-effort ALB detach failed for custom domain %s (row still removed)",
-                        route.hostname, exc_info=True)
-    finally:
-        route.delete()
+        except Exception:
+            logger.warning("ALB detach failed for custom domain %s (will retry)", route.hostname, exc_info=True)
+            return False
+
+    route.delete()
+    return True
 
 
-def detach_custom_domain(hostname: str) -> bool:
-    """Idempotent: no route for this hostname is success (nothing to do), not an error —
-    called both from infrastructure-service's disable path and from a retried request."""
+def detach_custom_domain(infrastructure_id, hostname: str) -> bool:
+    """Idempotent: no route for this (infrastructure_id, hostname) is success (nothing
+    to do), not an error. Scoped by both fields, not hostname alone (security review R2)
+    — a hostname freed by a DISABLED row can be reclaimed by a different infrastructure,
+    and a stale/retried detach call for the OLD owner must never touch the NEW owner's
+    current attachment of the same hostname."""
     from api.models.custom_domain_route import CustomDomainRoute
 
-    route = CustomDomainRoute.objects.filter(hostname=hostname).first()
+    route = CustomDomainRoute.objects.filter(infrastructure_id=infrastructure_id, hostname=hostname).first()
     if route is None:
-        return False
-    _detach_route(route)
-    return True
+        return True
+    return _detach_route(route)
 
 
 def detach_custom_domains_for_application(application_id) -> list[str]:
     """Called from the app-delete cleanup path (run_worker.py). No round trip to
     infrastructure-service is needed to discover what to detach — see CustomDomainRoute's
-    docstring. Returns the detached hostnames, for the caller's best-effort notification
-    of infrastructure-service (see notify_infrastructure_service_of_deleted_application)."""
+    docstring. Returns only the hostnames actually confirmed detached — a failed detach
+    leaves its route row in place for a future retry and is not reported here."""
     from api.models.custom_domain_route import CustomDomainRoute
 
-    hostnames = []
+    detached = []
     for route in list(CustomDomainRoute.objects.filter(application_id=application_id)):
-        hostnames.append(route.hostname)
-        _detach_route(route)
-    return hostnames
+        hostname = route.hostname
+        if _detach_route(route):
+            detached.append(hostname)
+    return detached
 
 
 def notify_infrastructure_service_of_deleted_application(infrastructure_id, application_id) -> None:
     """Best-effort: app deletion must never fail or roll back because
     infrastructure-service (a different service, a different database) couldn't be
-    reached. An orphaned VALIDATED CustomDomain row whose rules are already gone is also
-    caught by the periodic re-validation job there eventually (nothing will route to it,
-    and its listener certificate is gone), or the owner can just delete it manually — this
-    call only makes that cleanup immediate in the common case."""
+    reached. Called unconditionally on app delete (security review RECOMMENDED) — not
+    only when a CustomDomainRoute existed here, since a still-PENDING domain (never
+    attached, so no route in this service at all) also needs its certificate cleaned up
+    on the infrastructure-service side, and this is the only signal that ever reaches it
+    that the application is gone."""
     from shared.resilience.http_client import ResilientHttpClient
 
     client = ResilientHttpClient(

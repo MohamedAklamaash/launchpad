@@ -195,7 +195,7 @@ def test_verify_cross_tenant_returns_404(factory, make_infra, make_user):
     assert response.status_code == 404
 
 
-def test_delete_pending_returns_disabled_row_gone(factory, make_infra):
+def test_delete_pending_returns_disabled(factory, make_infra):
     infra = make_infra()
     claim_response = _claim(factory, infra)
     domain_id = claim_response.data["id"]
@@ -203,12 +203,16 @@ def test_delete_pending_returns_disabled_row_gone(factory, make_infra):
     request = factory.delete(f"/api/v1/infrastructures/{infra.id}/custom-domains/{domain_id}/")
     force_authenticate(request, user=SimpleNamespace(id=infra.user_id))
 
-    response = custom_domain_detail(request, str(infra.id), str(domain_id))
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True):
+        response = custom_domain_detail(request, str(infra.id), str(domain_id))
 
     assert response.status_code == 200
+    assert response.data["status"] == "DISABLED"
 
     from api.models.custom_domain import CustomDomain
-    assert not CustomDomain.objects.filter(id=domain_id).exists()
+    domain = CustomDomain.objects.get(id=domain_id)
+    assert domain.status == "DISABLED"
+    assert domain.cert_arn is None
 
 
 def test_delete_nonexistent_domain_returns_404(factory, make_infra):

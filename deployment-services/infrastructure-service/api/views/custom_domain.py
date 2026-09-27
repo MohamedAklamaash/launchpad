@@ -35,7 +35,7 @@ class CustomDomainResponseSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     application_id = serializers.UUIDField(allow_null=True)
     hostname = serializers.CharField()
-    status = serializers.ChoiceField(choices=['PENDING', 'VALIDATED', 'DISABLED'])
+    status = serializers.ChoiceField(choices=['PENDING', 'VALIDATED', 'DISABLING', 'DISABLED'])
     expires_at = serializers.DateTimeField()
     last_verified_at = serializers.DateTimeField(allow_null=True)
     created_at = serializers.DateTimeField()

@@ -69,6 +69,8 @@ def test_normalize_hostname_rejects_empty_label():
     ".".join(["a"] * 130),  # total too long
     "1.2.3.4",
     "[::1].example.com",
+    "0x7f.1",  # all-numeric TLD — legacy dotted-decimal/hex IP shorthand some clients honor
+    "evil.example.123",
 ])
 def test_validate_hostname_syntax_rejects(raw):
     from api.models.custom_domain import (
@@ -97,6 +99,7 @@ def test_validate_hostname_syntax_rejects_ipv4_literal():
     "a-b.example.com",
     "xn--nxasmq6b.example.com",
     "a.b.c.example.co",
+    "3.example.com",  # a non-final numeric label is fine — only the TLD is checked
 ])
 def test_validate_hostname_syntax_accepts(raw):
     from api.models.custom_domain import normalize_hostname, validate_hostname_syntax
@@ -264,22 +267,59 @@ def test_mark_validated_resets_failure_count(make_infra):
     assert domain.verification_failure_count == 0
 
 
-def test_mark_verification_failed_transitions_validated_to_disabled(make_infra):
+def test_mark_disabling_transitions_validated_to_disabling(make_infra):
     domain = reserve("app.example.com", make_infra())
     domain.mark_validated()
 
-    domain.mark_verification_failed()
+    domain.mark_disabling()
 
+    assert domain.status == "DISABLING"
+
+
+def test_mark_disabling_transitions_pending_to_disabling(make_infra):
+    domain = reserve("app.example.com", make_infra())
+
+    domain.mark_disabling()
+
+    assert domain.status == "DISABLING"
+
+
+def test_mark_disabling_is_idempotent_on_already_disabling_or_disabled(make_infra):
+    domain = reserve("app.example.com", make_infra())
+    domain.mark_validated()
+    domain.mark_disabling()
+
+    domain.mark_disabling()  # already DISABLING — must not raise
+    assert domain.status == "DISABLING"
+
+    domain.mark_disabled()
+    domain.mark_disabling()  # already DISABLED — must not raise
     assert domain.status == "DISABLED"
 
 
-def test_mark_verification_failed_rejects_non_validated_row(make_infra):
+def test_mark_disabled_requires_disabling_first(make_infra):
     from api.models.custom_domain import IllegalStatusTransitionError
 
     domain = reserve("app.example.com", make_infra())
+    domain.mark_validated()
 
     with pytest.raises(IllegalStatusTransitionError):
-        domain.mark_verification_failed()
+        domain.mark_disabled()
+
+
+def test_mark_disabled_clears_cert_arn_and_is_idempotent(make_infra):
+    domain = reserve("app.example.com", make_infra())
+    domain.cert_arn = "arn:aws:acm:us-east-1:123456789012:certificate/abc"
+    domain.save(update_fields=["cert_arn"])
+    domain.mark_disabling()
+
+    domain.mark_disabled()
+
+    assert domain.status == "DISABLED"
+    assert domain.cert_arn is None
+
+    domain.mark_disabled()  # already DISABLED — must not raise
+    assert domain.status == "DISABLED"
 
 
 def test_record_verification_failure_disables_after_three_consecutive(make_infra):

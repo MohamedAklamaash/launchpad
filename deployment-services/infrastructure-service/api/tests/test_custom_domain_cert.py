@@ -75,20 +75,46 @@ def test_certificate_status_progresses_to_issued_after_enough_describes():
     assert statuses[-1] == "ISSUED"
 
 
-def test_delete_certificate_removes_it():
+def test_delete_certificate_removes_it_and_returns_true():
     arn = custom_domain_cert.request_certificate(
         "app.example.com", "domain-1", timezone.now(), **_mock_kwargs(),
     )
 
-    custom_domain_cert.delete_certificate(arn, **_mock_kwargs())
+    assert custom_domain_cert.delete_certificate(arn, **_mock_kwargs()) is True
 
     client = cert_bootstrap._shared_fake_acm()
     assert arn not in client._certs
 
 
-def test_delete_certificate_is_best_effort_on_unknown_arn():
-    # Must not raise even though this ARN was never issued.
-    custom_domain_cert.delete_certificate("arn:aws:acm:mock:000:certificate/does-not-exist", **_mock_kwargs())
+def test_delete_certificate_on_unknown_arn_is_idempotent_success():
+    # Not found (already gone) counts as success — never raises, never reported as a
+    # failure needing a retry.
+    assert custom_domain_cert.delete_certificate(
+        "arn:aws:acm:mock:000:certificate/does-not-exist", **_mock_kwargs(),
+    ) is True
+
+
+def test_delete_certificate_returns_false_on_resource_in_use_not_silently_true():
+    """ResourceInUseException means the caller's detach step hasn't actually completed —
+    security review R2: a best-effort delete that reports success here would let the row
+    be marked DISABLED while the certificate is still live in the customer's account."""
+    class InUseClient(cert_bootstrap.FakeAcmClient):
+        def delete_certificate(self, CertificateArn):
+            from botocore.exceptions import ClientError
+            raise ClientError(
+                {"Error": {"Code": "ResourceInUseException", "Message": "still attached"}}, "DeleteCertificate",
+            )
+
+    with patch.object(custom_domain_cert, "_acm_client", return_value=InUseClient()):
+        result = custom_domain_cert.delete_certificate("arn:aws:acm:mock:000:certificate/x", **_mock_kwargs())
+
+    assert result is False
+
+
+def test_delete_certificate_returns_false_on_unexpected_error():
+    with patch.object(custom_domain_cert, "_acm_client", side_effect=RuntimeError("boom")), \
+         pytest.raises(RuntimeError):
+        custom_domain_cert.delete_certificate("arn:x", **_mock_kwargs())
 
 
 def test_extract_validation_record_raises_on_domain_mismatch():

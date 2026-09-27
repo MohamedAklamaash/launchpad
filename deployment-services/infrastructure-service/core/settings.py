@@ -187,7 +187,16 @@ RESERVED_DOMAIN_SUFFIX = PLATFORM_BASE_DOMAIN
 
 # A root domain PLATFORM_BASE_DOMAIN is delegated from, if any (e.g. PLATFORM_BASE_DOMAIN=
 # "eu.launchpad.app" delegated from "launchpad.app") — a custom hostname equal to or under
-# this is rejected too, alongside PLATFORM_BASE_DOMAIN itself. Unset skips this extra check.
+# this is rejected too, alongside PLATFORM_BASE_DOMAIN itself.
+#
+# Deliberately optional, not required outside MODE=dev like PLATFORM_BASE_DOMAIN above:
+# in this platform's actual DNS topology (see infra/platform-dns/README.md and
+# docs/PLATFORM_DNS_ISOLATION.md), PLATFORM_BASE_DOMAIN *is* the platform's own zone apex,
+# applied directly to a dedicated DNS account — it is not itself a sub-zone delegated from
+# some larger domain this platform also controls. Forcing an operator to set this to a
+# meaningless value in that (the normal) case would be worse than leaving it unset. Set it
+# only if a future deployment's PLATFORM_BASE_DOMAIN ever becomes a delegated sub-zone of a
+# larger root this platform still owns and must also keep customers off of.
 PLATFORM_ROOT_DOMAIN = os.environ.get('PLATFORM_ROOT_DOMAIN') or None
 
 

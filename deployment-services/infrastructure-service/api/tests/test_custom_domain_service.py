@@ -229,21 +229,28 @@ def test_verify_conflict_detaches_on_lost_race(make_infra):
          pytest.raises(CustomDomainConflictError):
         service.verify_domain(infra.user.id, infra.id, domain.id)
 
-    detach.assert_called_once_with(domain.hostname)
+    detach.assert_called_once_with(infra.id, domain.hostname)
     domain.refresh_from_db()
     assert domain.status == "PENDING"
 
 
-def test_delete_pending_domain_deletes_row_and_cert(make_infra):
+def test_delete_pending_domain_disables_and_clears_cert(make_infra):
+    """R1/R2: PENDING teardown must detach too (a crash between application-service's
+    attach succeeding and mark_validated() committing can leave a PENDING row with a
+    live route) and converges on DISABLED like every other teardown, not a hard delete
+    — kept for audit history, and its hostname is already free to reclaim (the partial
+    unique index only restricts VALIDATED rows)."""
     infra = make_infra()
     service = CustomDomainService()
     domain, _token, _record = _claim(service, infra.user, infra)
     cert_arn = domain.cert_arn
 
-    service.delete_domain(infra.user.id, infra.id, domain.id)
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True) as detach:
+        result = service.delete_domain(infra.user.id, infra.id, domain.id)
 
-    from api.models.custom_domain import CustomDomain
-    assert not CustomDomain.objects.filter(id=domain.id).exists()
+    detach.assert_called_once_with(infra.id, domain.hostname)
+    assert result.status == "DISABLED"
+    assert result.cert_arn is None
     client = cert_bootstrap._shared_fake_acm()
     assert cert_arn not in client._certs
 
@@ -256,11 +263,11 @@ def test_delete_validated_domain_detaches_and_disables(make_infra):
     with patch("api.services.custom_domain_service.CustomDomainService._attach", return_value={}):
         service.verify_domain(infra.user.id, infra.id, domain.id)
 
-    with patch("api.services.custom_domain_service.CustomDomainService._detach") as detach:
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True) as detach:
         result = service.delete_domain(infra.user.id, infra.id, domain.id)
 
     assert result.status == "DISABLED"
-    detach.assert_called_once_with(domain.hostname)
+    detach.assert_called_once_with(infra.id, domain.hostname)
 
 
 def test_delete_is_idempotent_on_already_disabled(make_infra):
@@ -270,7 +277,7 @@ def test_delete_is_idempotent_on_already_disabled(make_infra):
     _publish_txt(domain, token)
     with patch("api.services.custom_domain_service.CustomDomainService._attach", return_value={}):
         service.verify_domain(infra.user.id, infra.id, domain.id)
-    with patch("api.services.custom_domain_service.CustomDomainService._detach"):
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True):
         service.delete_domain(infra.user.id, infra.id, domain.id)
 
     # Second delete on an already-DISABLED row must not raise or re-attempt AWS calls.
@@ -284,16 +291,18 @@ def test_teardown_for_infrastructure_continues_past_a_failure(make_infra):
     with patch("shared.resilience.http_client.ResilientHttpClient.get", return_value=_ok_app_lookup(infra.id)):
         d2, _t2, _r2 = service.claim_domain(infra.user.id, infra.id, uuid.uuid4(), "second.example.com")
 
-    with patch("api.services.custom_domain_service.custom_domain_cert.delete_certificate",
-               side_effect=[RuntimeError("boom"), None]):
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True), \
+         patch("api.services.custom_domain_service.custom_domain_cert.delete_certificate",
+               side_effect=[RuntimeError("boom"), True]):
         service.teardown_for_infrastructure(infra)
 
     from api.models.custom_domain import CustomDomain
-    # One domain's teardown raised and was swallowed (order between d1/d2 is not
-    # guaranteed); the other's still completed — teardown must not abort the whole sweep.
-    remaining = set(CustomDomain.objects.filter(id__in=[d1.id, d2.id]).values_list("id", flat=True))
-    assert len(remaining) == 1
-    assert remaining <= {d1.id, d2.id}
+    # One domain's cert-delete raised and was swallowed (order between d1/d2 is not
+    # guaranteed) — it stays DISABLING for the next sweep to retry, never hard-deleted;
+    # the other one's teardown still completed. A single failure must not abort the
+    # whole sweep, and neither row is ever silently dropped.
+    statuses = sorted(CustomDomain.objects.filter(id__in=[d1.id, d2.id]).values_list("status", flat=True))
+    assert statuses == ["DISABLED", "DISABLING"]
 
 
 def test_disable_for_application_only_touches_matching_domains(make_infra):
@@ -305,15 +314,16 @@ def test_disable_for_application_only_touches_matching_domains(make_infra):
     with patch("shared.resilience.http_client.ResilientHttpClient.get", return_value=_ok_app_lookup(infra.id)):
         other_domain = service.claim_domain(infra.user.id, infra.id, other_app_id, "other.example.com")[0]
 
-    service.disable_for_application(infra.id, app_id)
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True):
+        service.disable_for_application(infra.id, app_id)
 
-    from api.models.custom_domain import CustomDomain
-    assert not CustomDomain.objects.filter(id=domain.id).exists()  # PENDING -> hard deleted
+    domain.refresh_from_db()
+    assert domain.status == "DISABLED"
     other_domain.refresh_from_db()
     assert other_domain.status == "PENDING"
 
 
-def test_sweep_expired_claims_deletes_expired_pending_and_cert(make_infra):
+def test_sweep_expired_claims_disables_and_clears_cert(make_infra):
     from datetime import timedelta
 
     from django.utils import timezone
@@ -325,10 +335,12 @@ def test_sweep_expired_claims_deletes_expired_pending_and_cert(make_infra):
     domain.expires_at = timezone.now() - timedelta(seconds=1)
     domain.save(update_fields=["expires_at"])
 
-    service.sweep_expired_claims()
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True):
+        service.sweep_expired_claims()
 
-    from api.models.custom_domain import CustomDomain
-    assert not CustomDomain.objects.filter(id=domain.id).exists()
+    domain.refresh_from_db()
+    assert domain.status == "DISABLED"
+    assert domain.cert_arn is None
     assert cert_arn not in cert_bootstrap._shared_fake_acm()._certs
 
 
@@ -356,12 +368,43 @@ def test_sweep_expired_claims_continues_past_a_failure(make_infra):
     from api.models.custom_domain import CustomDomain
     CustomDomain.objects.filter(id__in=[d1.id, d2.id]).update(expires_at=timezone.now() - timedelta(seconds=1))
 
-    with patch("api.services.custom_domain_service.custom_domain_cert.delete_certificate",
-               side_effect=[RuntimeError("boom"), None]):
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True), \
+         patch("api.services.custom_domain_service.custom_domain_cert.delete_certificate",
+               side_effect=[RuntimeError("boom"), True]):
         service.sweep_expired_claims()
 
-    remaining = set(CustomDomain.objects.filter(id__in=[d1.id, d2.id]).values_list("id", flat=True))
-    assert len(remaining) == 1
+    statuses = sorted(CustomDomain.objects.filter(id__in=[d1.id, d2.id]).values_list("status", flat=True))
+    assert statuses == ["DISABLED", "DISABLING"]
+
+
+def test_sweep_stuck_disabling_retries_and_completes(make_infra):
+    """A previous attempt got as far as DISABLING (detach or cert-delete failed, or the
+    process crashed) — the periodic sweep must pick it back up and finish it."""
+    infra = make_infra()
+    service = CustomDomainService()
+    domain, _token, _record = _claim(service, infra.user, infra)
+    cert_arn = domain.cert_arn
+    domain.mark_disabling()
+
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True):
+        service.sweep_stuck_disabling()
+
+    domain.refresh_from_db()
+    assert domain.status == "DISABLED"
+    assert cert_arn not in cert_bootstrap._shared_fake_acm()._certs
+
+
+def test_sweep_stuck_disabling_leaves_a_failed_retry_in_disabling(make_infra):
+    infra = make_infra()
+    service = CustomDomainService()
+    domain, _token, _record = _claim(service, infra.user, infra)
+    domain.mark_disabling()
+
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=False):
+        service.sweep_stuck_disabling()
+
+    domain.refresh_from_db()
+    assert domain.status == "DISABLING"
 
 
 def test_revalidate_resets_failure_count_on_success(make_infra):
@@ -390,13 +433,13 @@ def test_revalidate_disables_after_three_consecutive_failures(make_infra):
         service.verify_domain(infra.user.id, infra.id, domain.id)
     custom_domain_dns._shared_fake_resolver().clear_txt(domain.hostname)
 
-    with patch("api.services.custom_domain_service.CustomDomainService._detach") as detach:
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True) as detach:
         for _ in range(3):
             service.revalidate_validated_domains()
 
     domain.refresh_from_db()
     assert domain.status == "DISABLED"
-    detach.assert_called_once_with(domain.hostname)
+    detach.assert_called_once_with(infra.id, domain.hostname)
 
 
 def test_revalidate_does_not_disable_after_one_or_two_failures(make_infra):
@@ -414,3 +457,89 @@ def test_revalidate_does_not_disable_after_one_or_two_failures(make_infra):
     domain.refresh_from_db()
     assert domain.status == "VALIDATED"
     assert domain.verification_failure_count == 2
+
+
+# ── R4: claim/verify refused once the infra is tearing down or has exited ──────────────
+
+@pytest.mark.parametrize("field", ["dns_teardown_requested_at", "exited_at"])
+def test_claim_refused_once_infra_is_tearing_down_or_exited(make_infra, field):
+    from django.utils import timezone
+
+    infra = make_infra()
+    setattr(infra, field, timezone.now())
+    infra.save(update_fields=[field])
+    service = CustomDomainService()
+
+    with pytest.raises(ValueError, match="torn down|exited"):
+        _claim(service, infra.user, infra)
+
+
+@pytest.mark.parametrize("field", ["dns_teardown_requested_at", "exited_at"])
+def test_verify_refused_once_infra_is_tearing_down_or_exited(make_infra, field):
+    from django.utils import timezone
+
+    infra = make_infra()
+    service = CustomDomainService()
+    domain, token, _record = _claim(service, infra.user, infra)
+    _publish_txt(domain, token)
+
+    setattr(infra, field, timezone.now())
+    infra.save(update_fields=[field])
+
+    with pytest.raises(ValueError, match="torn down|exited"):
+        service.verify_domain(infra.user.id, infra.id, domain.id)
+
+    domain.refresh_from_db()
+    assert domain.status == "PENDING"
+
+
+def test_claim_refused_checks_the_authoritative_locked_row_not_a_stale_read(make_infra):
+    """The fast pre-check runs on the unlocked `infra` object for an early exit; the
+    authoritative check inside the lock must still catch a marker set concurrently
+    between that pre-check and the lock being acquired."""
+    from api.models.infrastructure import Infrastructure
+    from django.utils import timezone
+
+    infra = make_infra()
+    service = CustomDomainService()
+
+    real_get = Infrastructure.objects.select_for_update
+
+    def _mark_exited_then_lock(*args, **kwargs):
+        Infrastructure.objects.filter(id=infra.id).update(exited_at=timezone.now())
+        return real_get(*args, **kwargs)
+
+    with patch.object(Infrastructure.objects, "select_for_update", side_effect=_mark_exited_then_lock), \
+         pytest.raises(ValueError, match="exited"):
+        _claim(service, infra.user, infra)
+
+
+# ── R1: the authoritative DNS lookup runs before any row lock is taken ─────────────────
+
+def test_verify_runs_dns_lookup_before_taking_any_lock(make_infra):
+    from api.models.infrastructure import Infrastructure
+
+    infra = make_infra()
+    service = CustomDomainService()
+    domain, token, _record = _claim(service, infra.user, infra)
+    _publish_txt(domain, token)
+
+    call_order = []
+    real_verify = custom_domain_dns.verify_ownership_token
+    real_select_for_update = Infrastructure.objects.select_for_update
+
+    def _tracking_verify(*args, **kwargs):
+        call_order.append("dns_lookup")
+        return real_verify(*args, **kwargs)
+
+    def _tracking_lock(*args, **kwargs):
+        call_order.append("infra_row_lock")
+        return real_select_for_update(*args, **kwargs)
+
+    with patch("api.services.custom_domain_service.custom_domain_dns.verify_ownership_token",
+               side_effect=_tracking_verify), \
+         patch.object(Infrastructure.objects, "select_for_update", side_effect=_tracking_lock), \
+         patch("api.services.custom_domain_service.CustomDomainService._attach", return_value={}):
+        service.verify_domain(infra.user.id, infra.id, domain.id)
+
+    assert call_order.index("dns_lookup") < call_order.index("infra_row_lock")
