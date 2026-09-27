@@ -384,3 +384,24 @@ def test_run_worker_no_refusal_when_ledger_empty(make_infra):
 
     assert refused is False
     republish.assert_not_called()
+
+
+# ---- RECOMMENDED: mock/real gate runs before the irreversible teardown marker is set ----
+
+def test_mock_real_mismatch_refused_before_teardown_marker_is_set(make_infra, monkeypatch):
+    """A mock infra destroyed outside dev mode must be refused before
+    dns_teardown_requested_at (monotonic, never cleared) gets set — setting it on an infra
+    whose destroy never actually happened would be a one-way trip."""
+    from api.models.infrastructure import Infrastructure
+    from api.services.terraform_worker import TerraformWorker
+
+    infra = make_infra()
+    Infrastructure.objects.filter(id=infra.id).update(is_mock=True)
+    monkeypatch.setenv("MODE", "prod")
+
+    with patch("api.services.terraform_worker.request_and_await_dns_teardown") as teardown:
+        TerraformWorker.destroy(str(infra.id))
+
+    teardown.assert_not_called()
+    infra.refresh_from_db()
+    assert infra.dns_teardown_requested_at is None

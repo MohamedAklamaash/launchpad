@@ -1172,6 +1172,17 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                     Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYED")
                 return
 
+            # Mock/real gate BEFORE the teardown call below, not after: mark_dns_teardown_
+            # requested() is monotonic and irreversible, so a mismatched infra (a mock
+            # destroyed outside dev mode, or vice versa) must be refused before it can set
+            # that marker — refusing afterward would leave the marker set on an infra whose
+            # destroy never actually happened.
+            dev_mode = is_dev_mode(app_config.mode)
+            if infra.is_mock and not dev_mode:
+                raise ValueError("Refusing to destroy a mock infrastructure outside dev mode")
+            if dev_mode and not infra.is_mock:
+                raise ValueError("Refusing mock destroy against a real infrastructure")
+
             # Writer-side deletes (wildcard -> edge) need no customer credentials, so they
             # run before _pre_destroy_cleanup and before the AssumeRole call below — they
             # must succeed even if the customer has already deleted the deployment role.
@@ -1181,11 +1192,6 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             # per the F1b security pre-review.
             request_and_await_dns_teardown(infra_id)
 
-            dev_mode = is_dev_mode(app_config.mode)
-            if infra.is_mock and not dev_mode:
-                raise ValueError("Refusing to destroy a mock infrastructure outside dev mode")
-            if dev_mode and not infra.is_mock:
-                raise ValueError("Refusing mock destroy against a real infrastructure")
             if infra.is_mock:
                 logger.warning(
                     "MOCK destroy in dev mode (no terraform, no AWS)",
