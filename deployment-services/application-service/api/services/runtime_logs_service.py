@@ -85,14 +85,23 @@ class RuntimeLogsService:
 
         app = self._get_authorized_app(user_id, app_id)
         infra = app.infrastructure
+        is_eks = infra.compute_type == ComputeType.EKS
+
+        # Validated before create_boto3_session: for a real (non-mock) infra that call
+        # performs the AssumeRole immediately (RefreshableCredentials fetches its first
+        # token eagerly), so a param combination that's going to 400 anyway must not
+        # spend one.
+        if is_eks and cursor:
+            raise ValueError("cursor is not supported for Kubernetes applications")
+        if not is_eks and previous:
+            raise ValueError("previous is only supported for Kubernetes applications")
+
         env = self._deployed_environment(app, infra)
 
         deadline = time.monotonic() + CALL_DEADLINE_SECONDS
         session = create_boto3_session(infra)
 
-        if infra.compute_type == ComputeType.EKS:
-            if cursor:
-                raise ValueError("cursor is not supported for Kubernetes applications")
+        if is_eks:
             return self._tail_eks(session, app, env, infra, container, minutes, previous, deadline)
         return self._tail_ecs(session, app, env, infra, container, minutes, cursor, user_id, deadline)
 

@@ -405,6 +405,37 @@ def test_cursor_and_minutes_combined_is_rejected(factory, make_stack):
 
 
 @pytest.mark.django_db
+def test_eks_cursor_rejected_before_any_aws_session_is_created(factory, make_stack, monkeypatch):
+    """Validated ahead of create_boto3_session: for a real infra that call performs the
+    AssumeRole immediately, so a request that's going to 400 anyway must not spend one."""
+    monkeypatch.setattr(
+        "api.services.runtime_logs_service.create_boto3_session",
+        MagicMock(side_effect=AssertionError("must not be called")),
+    )
+    stack = make_stack(compute_type="eks")
+
+    resp = _get(factory, stack.owner, str(stack.app.id), cursor="whatever")
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+def test_ecs_previous_rejected_before_any_aws_session_is_created(factory, make_stack, monkeypatch):
+    """previous (EKS-only: "previous container instance") on an ECS app is a request
+    that can never be satisfied — reject it like any other invalid param, before the
+    session (and, on a real infra, the AssumeRole) is created."""
+    monkeypatch.setattr(
+        "api.services.runtime_logs_service.create_boto3_session",
+        MagicMock(side_effect=AssertionError("must not be called")),
+    )
+    stack = make_stack(compute_type="ecs_fargate")
+
+    resp = _get(factory, stack.owner, str(stack.app.id), previous="true")
+
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
 def test_next_cursor_round_trips_the_pinned_window_not_a_fresh_one(factory, make_stack, monkeypatch):
     """The point of the cursor is to pin start/end to the first request's window — a
     second page must never widen it by recomputing from "now"."""
