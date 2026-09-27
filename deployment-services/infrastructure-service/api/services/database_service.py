@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from api.cloud_providers.aws.iam_precheck import (
     PolicyRefreshRequired,
@@ -28,11 +29,22 @@ class PolicyRefreshRequiredError(ValueError):
         self.denied_actions = denied_actions or []
 
 
+def _require_valid_uuid(value, not_found_message):
+    # A malformed id reaching filter(id=...)/get(id=...) on a UUIDField raises
+    # django.core.exceptions.ValidationError — not a ValueError — and would escape
+    # the view's error mapping as a 500.
+    try:
+        uuid.UUID(str(value))
+    except ValueError:
+        raise LookupError(not_found_message)
+
+
 class DatabaseService:
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
 
     def _get_environment_or_raise(self, user_id, infra_id):
+        _require_valid_uuid(infra_id, "Infrastructure not found")
         # Owner-OR-invited resolution closes the cross-tenant IDOR path: an infra_id must
         # resolve through the same predicate infrastructure-service uses everywhere else,
         # never a bare Environment/Database lookup by id. Invited members may still view
@@ -56,6 +68,7 @@ class DatabaseService:
 
     def get_database(self, user_id, infra_id, database_id):
         env, _ = self._get_environment_or_raise(user_id, infra_id)
+        _require_valid_uuid(database_id, "Database not found")
         try:
             return Database.objects.get(id=database_id, environment=env)
         except Database.DoesNotExist:
@@ -135,6 +148,7 @@ class DatabaseService:
     def delete_database(self, user_id, infra_id, database_id, confirm_name: str):
         env, infra = self._get_environment_or_raise(user_id, infra_id)
         self._require_owner(user_id, infra)
+        _require_valid_uuid(database_id, "Database not found")
         try:
             db = Database.objects.get(id=database_id, environment=env)
         except Database.DoesNotExist:

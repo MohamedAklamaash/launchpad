@@ -8,7 +8,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 | | Feature | Status | Blocked by |
 |---|---|---|---|
 | — | Phase 0 prework | **done**; the rate-limit carve-out is replaced by F0 | — |
-| [F0](F0-rate-budget.md) | Per-user budget for customer-account calls + two unowned bugs | **not started** | nothing |
+| [F0](F0-rate-budget.md) | Per-user budget for customer-account calls + two unowned bugs | **done** (mock-verified) | nothing |
 | [F1](F1b-tls-activation.md) | TLS, custom domains | Phase 1 **done** (#68); decisions + zone terraform **done** (#75); DNS writer + activation **not started** | zone not yet applied (real AWS) |
 | [F2](F2-runtime-logs.md) | Logs | provisioning **done** (#70, #71); runtime **not started** | nothing technical |
 | [F3](F3-rollback.md) | Rollback | prerequisites **done** (#69); rollback **not started** | nothing |
@@ -85,10 +85,12 @@ to walk, not a specification to type in.
 
 ## Known issues on `main`
 
-The per-user budget, the `databases` exemptions and the malformed-UUID 500 are now owned by
-[F0](F0-rate-budget.md). Phase 0's rate-limit carve-out cannot be built as specified — the
-gateway does not verify JWTs, `EXEMPT_PATHS` is exact-match, and exempt means *zero* limit
-on endpoints that AssumeRole into a customer account — so F0 replaces it.
+The per-user budget, the `databases` exemptions and the malformed-UUID 500 were owned by
+[F0](F0-rate-budget.md), now done: a per-user Redis budget on the databases endpoints, the
+gateway exemptions removed, and the malformed-UUID path returns 404. Phase 0's rate-limit
+carve-out could not be built as specified — the gateway does not verify JWTs, `EXEMPT_PATHS`
+is exact-match, and exempt meant *zero* limit on endpoints that AssumeRole into a customer
+account — so F0 replaced it instead.
 
 - `Application.envs` is stored in plaintext. F3 and F6 are designed around that (H7, H6)
   rather than fixing it; encrypting it at rest is not scheduled by any feature.
