@@ -20,6 +20,7 @@ from api.services.runtime_logs_service import (
     NotDeployedError,
     RuntimeLogsService,
     UpstreamError,
+    UpstreamUnavailableError,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,25 @@ def runtime_logs(request: HttpRequest, app_id):
         )
         return _no_store(Response(body, status=response_status, headers=headers), request_id)
 
+    # Budgeted before params are even parsed: an unauthenticated-but-JWT-holding client
+    # spamming malformed query strings would otherwise get unlimited free 400s — each one
+    # still writes an audit row, so that path alone could grow the audit table without
+    # bound if it weren't rate-limited like every other outcome on this endpoint.
+    try:
+        retry_after = customer_call_budget(
+            request.user.id, RATE_LIMIT_BUCKET,
+            limit=settings.RATE_BUDGET_RUNTIME_LOGS_LIMIT,
+            window=settings.RATE_BUDGET_RUNTIME_LOGS_WINDOW_SECONDS,
+        )
+    except HttpError as e:
+        return _respond(e.status_code, {"error": e.message})
+    if retry_after is not None:
+        return _respond(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            {"error": "Too many requests for this operation, try again later"},
+            headers={"Retry-After": str(retry_after)},
+        )
+
     allowed_params = set(RuntimeLogsQuerySerializer().fields)
     unknown = set(request.query_params) - allowed_params
     if unknown:
@@ -121,21 +141,6 @@ def runtime_logs(request: HttpRequest, app_id):
     params = query.validated_data
     container = params.get("container", "app")
     cursor = params.get("cursor")
-
-    try:
-        retry_after = customer_call_budget(
-            request.user.id, RATE_LIMIT_BUCKET,
-            limit=settings.RATE_BUDGET_RUNTIME_LOGS_LIMIT,
-            window=settings.RATE_BUDGET_RUNTIME_LOGS_WINDOW_SECONDS,
-        )
-    except HttpError as e:
-        return _respond(e.status_code, {"error": e.message}, container=container, cursor_present=bool(cursor))
-    if retry_after is not None:
-        return _respond(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            {"error": "Too many requests for this operation, try again later"},
-            headers={"Retry-After": str(retry_after)}, container=container, cursor_present=bool(cursor),
-        )
 
     try:
         result = runtime_logs_service.get_logs(
@@ -153,6 +158,9 @@ def runtime_logs(request: HttpRequest, app_id):
                          container=container, cursor_present=bool(cursor))
     except NotDeployedError:
         return _respond(status.HTTP_409_CONFLICT, {"error": "Application is not deployed"},
+                         container=container, cursor_present=bool(cursor))
+    except UpstreamUnavailableError:
+        return _respond(status.HTTP_503_SERVICE_UNAVAILABLE, {"error": "Service temporarily unavailable"},
                          container=container, cursor_present=bool(cursor))
     except UpstreamError as e:
         logger.warning("runtime_logs upstream error", extra={"request_id": request_id, "aws_error_code": e.code})

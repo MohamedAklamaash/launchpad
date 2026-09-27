@@ -14,9 +14,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from aws.session import create_boto3_session
+from aws.session import create_boto3_session, gate_mismatch
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 from kubernetes.client.rest import ApiException
 from shared.enums.orchestrator import ComputeType
 from shared.enums.user_role import UserRole
@@ -42,16 +42,39 @@ CALL_DEADLINE_SECONDS = 6.0
 TRUNCATION_MARKER = "...[truncated]"
 CONTAINERS = ("app", "proxy")
 
-# Short, non-adaptive timeouts distinct from aws.session.BOTO3_CONFIG: this endpoint sits
-# behind the gateway's 10s proxy timeout and each call is on the request's critical path,
-# so it cannot afford that client's 60s read timeout / adaptive retries.
-RUNTIME_LOGS_BOTO_CONFIG = Config(
-    connect_timeout=2, read_timeout=4, retries={"max_attempts": 2, "mode": "standard"},
-)
+# Short, non-adaptive timeouts distinct from aws.session.BOTO3_CONFIG (60s read, adaptive
+# retries): this endpoint sits behind the gateway's 10s proxy timeout and every AWS call on
+# it — the initial AssumeRole included — is on the request's critical path.
+BUDGET_CONNECT_TIMEOUT = 2
+BUDGET_MAX_READ_TIMEOUT = 4.0
+BUDGET_MIN_READ_TIMEOUT = 1.0
+
+
+def _budget_config(deadline: float) -> Config:
+    """A Config sized to whatever's left of the request deadline, not a fixed one — used
+    for every AWS client built on this path (STS AssumeRole, EKS describe_cluster, ECS,
+    CloudWatch Logs) so a call made late in the request can't still claim the full 4s read
+    timeout. Below one read-timeout's worth of budget, retries are dropped entirely rather
+    than shrunk further, since a second short-timeout attempt is unlikely to land."""
+    remaining = deadline - time.monotonic()
+    read_timeout = max(BUDGET_MIN_READ_TIMEOUT, min(BUDGET_MAX_READ_TIMEOUT, remaining))
+    max_attempts = 1 if remaining < BUDGET_MAX_READ_TIMEOUT else 2
+    return Config(
+        connect_timeout=BUDGET_CONNECT_TIMEOUT, read_timeout=read_timeout,
+        retries={"max_attempts": max_attempts, "mode": "standard"},
+    )
 
 
 class NotDeployedError(Exception):
     """The application has no active deployment to read logs from."""
+
+
+class UpstreamUnavailableError(Exception):
+    """The mock/real gate (aws.session.create_boto3_session, api.k8s.deployer.k8s_apis)
+    would refuse this call — a platform configuration mismatch between this infra's
+    is_mock flag and MODE, never something the client can fix. Checked here, ahead of
+    time, rather than caught as the generic ValueError those functions raise, so it
+    can't be confused with an actual bad request and mapped to 400."""
 
 
 class UpstreamError(Exception):
@@ -96,10 +119,21 @@ class RuntimeLogsService:
         if not is_eks and previous:
             raise ValueError("previous is only supported for Kubernetes applications")
 
+        # api.k8s.deployer.k8s_apis applies the identical is_mock/MODE gate, so this one
+        # check covers both the ECS and EKS paths ahead of create_boto3_session/k8s_apis
+        # raising the bare ValueError they'd otherwise raise for it.
+        if gate_mismatch(infra):
+            raise UpstreamUnavailableError("AWS/Kubernetes access is misconfigured for this infrastructure")
+        if not bool(getattr(infra, "is_mock", False)) and not infra.code:
+            raise NotDeployedError("Infrastructure not authenticated with AWS")
+
         env = self._deployed_environment(app, infra)
 
         deadline = time.monotonic() + CALL_DEADLINE_SECONDS
-        session = create_boto3_session(infra)
+        # The initial AssumeRole is on the same deadline as everything after it — for a
+        # real infra it runs synchronously here (RefreshableCredentials fetches its first
+        # token eagerly), so it must not fall back to aws.session's much longer defaults.
+        session = create_boto3_session(infra, config=_budget_config(deadline))
 
         if is_eks:
             return self._tail_eks(session, app, env, infra, container, minutes, previous, deadline)
@@ -150,7 +184,7 @@ class RuntimeLogsService:
             start_ms = max(start_ms, int(app.created_at.timestamp() * 1000))
             aws_token = None
 
-        ecs = session.client("ecs", config=RUNTIME_LOGS_BOTO_CONFIG)
+        ecs = session.client("ecs", config=_budget_config(deadline))
         task_ids = self._ecs_task_ids(ecs, env.cluster_arn, service_name, deadline)
         stream_prefix, container_name = _ecs_stream_parts(family, container)
         streams = [f"{stream_prefix}/{container_name}/{task_id}" for task_id in task_ids][:100]
@@ -163,7 +197,7 @@ class RuntimeLogsService:
             )
 
         self._check_deadline(deadline)
-        logs_client = session.client("logs", config=RUNTIME_LOGS_BOTO_CONFIG)
+        logs_client = session.client("logs", config=_budget_config(deadline))
         kwargs = {
             "logGroupName": log_group, "logStreamNames": streams,
             "startTime": start_ms, "endTime": end_ms, "limit": MAX_EVENTS_PER_PAGE,
@@ -174,6 +208,8 @@ class RuntimeLogsService:
             response = logs_client.filter_log_events(**kwargs)
         except logs_client.exceptions.ResourceNotFoundException:
             response = {"events": []}
+        except (ConnectTimeoutError, ReadTimeoutError) as e:
+            raise UpstreamError("Timed out contacting the customer's account", code="Timeout") from e
         except ClientError as e:
             raise UpstreamError("Upstream call failed", code=_aws_error_code(e)) from e
 
@@ -193,15 +229,45 @@ class RuntimeLogsService:
         )
 
     def _ecs_task_ids(self, ecs, cluster_arn, service_name, deadline) -> list:
-        task_arns = []
-        for desired_status in ("RUNNING", "STOPPED"):
+        """All RUNNING tasks first, then whatever STOPPED tasks fit in the remaining
+        budget — newest first (by describe_tasks' stoppedAt), not list_tasks' arbitrary
+        order, so a slot always goes to the most recently stopped task rather than
+        whichever one the API happened to return first."""
+        self._check_deadline(deadline)
+        task_arns = self._list_tasks(ecs, cluster_arn, service_name, "RUNNING")
+
+        remaining = MAX_ECS_TASKS - len(task_arns)
+        if remaining > 0:
             self._check_deadline(deadline)
-            try:
-                response = ecs.list_tasks(cluster=cluster_arn, serviceName=service_name, desiredStatus=desired_status)
-            except ClientError as e:
-                raise UpstreamError("Upstream call failed", code=_aws_error_code(e)) from e
-            task_arns.extend(response.get("taskArns", []))
+            stopped_arns = self._list_tasks(ecs, cluster_arn, service_name, "STOPPED")
+            if stopped_arns:
+                self._check_deadline(deadline)
+                task_arns = task_arns + self._newest_stopped(ecs, cluster_arn, stopped_arns[:MAX_ECS_TASKS], remaining)
+
         return [arn.rsplit("/", 1)[-1] for arn in task_arns][:MAX_ECS_TASKS]
+
+    def _list_tasks(self, ecs, cluster_arn, service_name, desired_status) -> list:
+        try:
+            response = ecs.list_tasks(cluster=cluster_arn, serviceName=service_name, desiredStatus=desired_status)
+        except (ConnectTimeoutError, ReadTimeoutError) as e:
+            raise UpstreamError("Timed out contacting the customer's account", code="Timeout") from e
+        except ClientError as e:
+            raise UpstreamError("Upstream call failed", code=_aws_error_code(e)) from e
+        return response.get("taskArns", [])
+
+    def _newest_stopped(self, ecs, cluster_arn, stopped_arns, limit) -> list:
+        try:
+            response = ecs.describe_tasks(cluster=cluster_arn, tasks=stopped_arns)
+        except (ConnectTimeoutError, ReadTimeoutError) as e:
+            raise UpstreamError("Timed out contacting the customer's account", code="Timeout") from e
+        except ClientError as e:
+            raise UpstreamError("Upstream call failed", code=_aws_error_code(e)) from e
+        tasks = sorted(
+            response.get("tasks", []),
+            key=lambda t: t.get("stoppedAt") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        return [t["taskArn"] for t in tasks[:limit] if t.get("taskArn")]
 
     # ── EKS ──────────────────────────────────────────────────────────────────
 
@@ -216,10 +282,14 @@ class RuntimeLogsService:
         events: list = []
         total_bytes = 0
         truncated = False
-        with k8s_apis(session, infra, cluster_name_from_arn(env.cluster_arn)) as apis:
+        with k8s_apis(
+            session, infra, cluster_name_from_arn(env.cluster_arn), config=_budget_config(deadline),
+        ) as apis:
             self._check_deadline(deadline)
             try:
-                pods = apis.core.list_namespaced_pod(namespace, label_selector=f"app={slug}").items
+                pods = apis.core.list_namespaced_pod(
+                    namespace, label_selector=f"app={slug}", _request_timeout=(2, 4),
+                ).items
             except ApiException as e:
                 raise UpstreamError("Upstream call failed", code=f"k8s-{e.status}") from e
             pods = pods[:MAX_EKS_PODS]
@@ -283,7 +353,29 @@ def _ecs_stream_parts(family: str, container: str) -> tuple:
     return "nginx", f"{family}-nginx"
 
 
+# ANSI cursor/color escapes, then C0/C1 control chars (tab and newline excepted — the
+# frontend renders whitespace-pre-wrap) and the Unicode bidi embedding/override/isolate
+# characters used in "Trojan Source"-style spoofing (rendering a log line so it reads
+# differently than its byte order, e.g. to hide or disguise part of the text). This is a
+# rendering-safety measure, not the redaction posture: the content itself stays unredacted.
+# Built from codepoints rather than literal characters so the source file itself never
+# contains an invisible/control character.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_UNSAFE_CODEPOINTS = (
+    list(range(0x09)) + list(range(0x0B, 0x20)) + [0x7F]  # C0 controls + DEL
+    + list(range(0x202A, 0x202F))  # LRE, RLE, PDF, LRO, RLO
+    + list(range(0x2066, 0x206A))  # LRI, RLI, FSI, PDI
+)
+_UNSAFE_CHAR_RE = re.compile("[" + "".join(chr(c) for c in _UNSAFE_CODEPOINTS) + "]")
+
+
+def _sanitize_message(message: str) -> str:
+    message = _ANSI_ESCAPE_RE.sub("", message)
+    return _UNSAFE_CHAR_RE.sub("�", message)
+
+
 def _truncate_message(message: str) -> tuple:
+    message = _sanitize_message(message)
     raw = message.encode("utf-8", "replace")
     if len(raw) <= MAX_MESSAGE_BYTES:
         return message, False

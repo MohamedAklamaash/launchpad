@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ScrollText, RefreshCw, ChevronDown, Lock } from 'lucide-react';
 import { applicationApi } from '@/lib/api/applications';
 import { RuntimeLogContainer, RuntimeLogEvent } from '@/types/application';
+import { ComputeType } from '@/types/infrastructure';
 
 const WINDOW_OPTIONS = [15, 30, 60];
 const AUTO_REFRESH_INTERVAL_MS = 10_000;
@@ -13,6 +14,9 @@ const AUTO_REFRESH_MAX_DURATION_MS = 10 * 60 * 1000;
 
 interface Props {
   appId: string;
+  /** "Previous instance" only applies to Kubernetes; hidden when this is 'ecs_fargate' or
+   * not yet known (avoids briefly showing a control the backend would 400 on). */
+  computeType?: ComputeType;
 }
 
 interface LogError {
@@ -50,7 +54,7 @@ function describeError(e: unknown): LogError {
   }
 }
 
-export function RuntimeLogsPanel({ appId }: Props) {
+export function RuntimeLogsPanel({ appId, computeType }: Props) {
   const [container, setContainer] = useState<RuntimeLogContainer>('app');
   const [minutes, setMinutes] = useState(15);
   const [previous, setPrevious] = useState(false);
@@ -188,15 +192,17 @@ export function RuntimeLogsPanel({ appId }: Props) {
               </SelectContent>
             </Select>
 
-            <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80 select-none cursor-pointer">
-              <input
-                type="checkbox"
-                checked={previous}
-                onChange={(e) => handlePreviousChange(e.target.checked)}
-                className="accent-brand"
-              />
-              Previous instance (EKS)
-            </label>
+            {computeType === 'eks' && (
+              <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={previous}
+                  onChange={(e) => handlePreviousChange(e.target.checked)}
+                  className="accent-brand"
+                />
+                Previous instance
+              </label>
+            )}
 
             <div className="ml-auto flex items-center gap-2">
               <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80 select-none cursor-pointer">

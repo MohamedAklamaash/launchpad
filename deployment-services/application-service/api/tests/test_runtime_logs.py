@@ -3,6 +3,7 @@ THIS app's own ECS service/EKS namespace, never a request parameter, and clamped
 app's own created_at), strict query params, the signed cursor, bounded output, the
 metadata-only audit trail, the per-user budget, and the no-store/unredacted posture."""
 import logging
+import time
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -657,10 +658,184 @@ def test_seeded_secret_returned_unredacted_with_no_store_headers(factory, make_s
 
 @pytest.mark.django_db
 def test_real_infra_in_dev_mode_is_refused(factory, make_stack):
+    """A mock/real mismatch is a platform misconfiguration, not something the client did
+    wrong — 503 with a generic body, not a 400."""
     stack = make_stack()
     stack.infra.is_mock = False
     stack.infra.save(update_fields=["is_mock"])
 
     resp = _get(factory, stack.owner, str(stack.app.id))
 
-    assert resp.status_code == 400
+    assert resp.status_code == 503
+    assert resp.data == {"error": "Service temporarily unavailable"}
+
+
+@pytest.mark.django_db
+def test_infrastructure_not_authenticated_gets_409(factory, make_stack, monkeypatch):
+    """Distinct from the mock/real mismatch above: a real, non-mock infra that never
+    finished onboarding (no AWS account code yet) has nothing to tail — same class of
+    outcome as NotDeployedError, not a platform misconfiguration."""
+    import aws.session as aws_session_mod
+
+    monkeypatch.setattr(aws_session_mod, "app_config", SimpleNamespace(mode="prod"))
+    stack = make_stack()
+    stack.infra.is_mock = False
+    stack.infra.code = ""
+    stack.infra.save(update_fields=["is_mock", "code"])
+
+    resp = _get(factory, stack.owner, str(stack.app.id))
+
+    assert resp.status_code == 409
+
+
+# ── R1: end-to-end deadline enforcement ──────────────────────────────────────
+
+@pytest.mark.django_db
+def test_slow_filter_log_events_maps_to_502_timeout_under_8s(factory, make_stack, monkeypatch):
+    from botocore.exceptions import ReadTimeoutError
+
+    def slow_filter_log_events(self, **kwargs):
+        raise ReadTimeoutError(endpoint_url="https://logs.us-west-2.amazonaws.com/")
+
+    monkeypatch.setattr(MockClient, "filter_log_events", slow_filter_log_events)
+    stack = make_stack()
+
+    started = time.monotonic()
+    resp = _get(factory, stack.owner, str(stack.app.id))
+    elapsed = time.monotonic() - started
+
+    assert resp.status_code == 502
+    assert resp.data["code"] == "Timeout"
+    assert elapsed < 8
+
+
+@pytest.mark.django_db
+def test_slow_list_tasks_maps_to_502_timeout(factory, make_stack, monkeypatch):
+    from botocore.exceptions import ConnectTimeoutError
+
+    def slow_list_tasks(self, **kwargs):
+        raise ConnectTimeoutError(endpoint_url="https://ecs.us-west-2.amazonaws.com/")
+
+    monkeypatch.setattr(MockClient, "list_tasks", slow_list_tasks)
+    stack = make_stack()
+
+    resp = _get(factory, stack.owner, str(stack.app.id))
+
+    assert resp.status_code == 502
+    assert resp.data["code"] == "Timeout"
+
+
+def test_budget_config_shrinks_as_deadline_approaches():
+    from api.services.runtime_logs_service import (
+        BUDGET_MAX_READ_TIMEOUT,
+        BUDGET_MIN_READ_TIMEOUT,
+        _budget_config,
+    )
+
+    plenty_of_time = time.monotonic() + 6.0
+    config = _budget_config(plenty_of_time)
+    assert config.read_timeout == BUDGET_MAX_READ_TIMEOUT
+    assert config.retries["max_attempts"] == 2
+
+    almost_out_of_time = time.monotonic() + 0.5
+    config = _budget_config(almost_out_of_time)
+    assert BUDGET_MIN_READ_TIMEOUT <= config.read_timeout < BUDGET_MAX_READ_TIMEOUT
+    assert config.retries["max_attempts"] == 1
+
+    already_past = time.monotonic() - 1.0
+    config = _budget_config(already_past)
+    assert config.read_timeout == BUDGET_MIN_READ_TIMEOUT
+    assert config.retries["max_attempts"] == 1
+
+
+def test_running_tasks_come_first_then_newest_stopped(monkeypatch):
+    """RUNNING tasks always win a slot; STOPPED tasks fill the rest newest-first (by
+    describe_tasks' stoppedAt), not list_tasks' arbitrary order."""
+    from api.services.runtime_logs_service import RuntimeLogsService
+
+    def list_tasks(self, **kwargs):
+        if kwargs.get("desiredStatus") == "RUNNING":
+            return {"taskArns": ["arn:aws:ecs:x:1:task/cl/running-1"]}
+        return {
+            "taskArns": [
+                "arn:aws:ecs:x:1:task/cl/stopped-oldest",
+                "arn:aws:ecs:x:1:task/cl/stopped-newest",
+            ]
+        }
+
+    def describe_tasks(self, **kwargs):
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        ages = {"stopped-oldest": 100, "stopped-newest": 1}
+        return {
+            "tasks": [
+                {"taskArn": arn, "stoppedAt": now - timedelta(seconds=ages[arn.rsplit("/", 1)[-1]])}
+                for arn in kwargs.get("tasks", [])
+            ]
+        }
+
+    monkeypatch.setattr(MockClient, "list_tasks", list_tasks)
+    monkeypatch.setattr(MockClient, "describe_tasks", describe_tasks)
+    from api.mock.mock_session import MockSession
+
+    ecs = MockSession(region=REGION, account_id=ACCOUNT_ID).client("ecs")
+    task_ids = RuntimeLogsService()._ecs_task_ids(ecs, "arn:aws:ecs:x:1:cluster/cl", "svc", time.monotonic() + 6.0)
+
+    assert task_ids == ["running-1", "stopped-newest", "stopped-oldest"]
+
+
+# ── R2: control characters and ANSI escapes stripped ─────────────────────────
+
+def test_ansi_and_control_chars_are_stripped():
+    from api.services.runtime_logs_service import _truncate_message
+
+    esc = chr(0x1B)
+    rlo = chr(0x202E)  # RIGHT-TO-LEFT OVERRIDE
+    pdf = chr(0x202C)  # POP DIRECTIONAL FORMATTING
+    bell = chr(0x07)
+    replacement_char = chr(0xFFFD)
+
+    message, _truncated = _truncate_message(f"{esc}[31mERROR{esc}[0m {rlo}evil{pdf}{bell}")
+
+    assert esc not in message
+    assert rlo not in message
+    assert pdf not in message
+    assert bell not in message
+    assert replacement_char in message
+    assert "ERROR" in message
+    assert "evil" in message
+
+
+# ── cursor: no SECRET_KEY_FALLBACKS acceptance ───────────────────────────────
+
+def test_cursor_does_not_accept_secret_key_fallbacks(settings):
+    from django.core import signing
+
+    settings.SECRET_KEY_FALLBACKS = ["a-fallback-secret-that-is-not-the-cursor-secret"]
+    forged = signing.dumps(
+        {"a": "app-1", "u": "user-1", "c": "app", "s": 0, "e": 1000, "t": "tok"},
+        key=settings.SECRET_KEY_FALLBACKS[0], salt=cursor_mod.CURSOR_SALT,
+    )
+
+    with pytest.raises(ValueError):
+        decode_cursor(forged, app_id="app-1", user_id="user-1", container="app")
+
+
+# ── budget checked ahead of param validation ─────────────────────────────────
+
+@pytest.mark.django_db
+def test_budget_is_checked_before_param_validation(factory, make_stack, fake_redis, settings, monkeypatch):
+    """A flood of malformed requests must not bypass the budget just because they'd 400
+    anyway — otherwise that path alone could grow the audit table without bound."""
+    from shared.ratelimit.budget import customer_call_budget
+
+    monkeypatch.setattr("api.views.runtime_logs.customer_call_budget", customer_call_budget)
+    settings.RATE_BUDGET_RUNTIME_LOGS_LIMIT = 1
+    stack = make_stack()
+
+    first = _get(factory, stack.owner, str(stack.app.id), container="not-a-real-container")
+    assert first.status_code == 400
+
+    second = _get(factory, stack.owner, str(stack.app.id))
+    assert second.status_code == 429

@@ -45,7 +45,19 @@ _MAX_REFRESH_ENTRIES = 500
 _REFRESH_RATE_LIMIT_SECONDS = 60
 
 
-def create_boto3_session(infrastructure):
+def gate_mismatch(infrastructure) -> bool:
+    """True when create_boto3_session would refuse this infrastructure — its is_mock flag
+    disagrees with MODE. Exposed so a caller that wants a typed error ahead of time
+    (rather than catching create_boto3_session's bare ValueError, indistinguishable from
+    any other) can check this first."""
+    return _is_mock_infrastructure(infrastructure) != is_dev_mode(app_config.mode)
+
+
+def create_boto3_session(infrastructure, config=None):
+    """config, when given, overrides the STS client's Config for the initial AssumeRole
+    (and any later transparent re-assume) — used by the runtime-logs path to bound that
+    call inside its own request deadline instead of this module's much longer defaults.
+    Every other caller omits it and keeps today's behavior."""
     dev_mode = is_dev_mode(app_config.mode)
     if _is_mock_infrastructure(infrastructure) and not dev_mode:
         raise ValueError("Refusing real AWS session against a mock infrastructure")
@@ -60,7 +72,7 @@ def create_boto3_session(infrastructure):
     # Refreshable credentials: every client built from this session transparently re-assumes
     # the role as the STS token nears expiry, so a long deploy (30-min build + ECS/ALB calls)
     # can't die on a 1-hour token mid-flight.
-    return _build_real_session(infrastructure)
+    return _build_real_session(infrastructure, config=config)
 
 
 def get_boto3_config():
@@ -93,7 +105,7 @@ def _refresh_credentials(infrastructure):
     logger.info(f"Refreshed credentials for infrastructure {infra_id}")
 
 
-def _assume_role_raw(infrastructure) -> dict:
+def _assume_role_raw(infrastructure, config=None) -> dict:
     """Assume LaunchpadDeploymentRole and return a botocore refresh dict
     (access_key/secret_key/token/expiry_time); credentials are never persisted.
     No rate-limiting — callers that need it wrap this; RefreshableCredentials
@@ -103,7 +115,7 @@ def _assume_role_raw(infrastructure) -> dict:
         "sts",
         aws_access_key_id=app_config.aws_access_key_id,
         aws_secret_access_key=app_config.aws_secret_access_key,
-        config=Config(connect_timeout=5, read_timeout=10, retries={'max_attempts': 2}),
+        config=config or Config(connect_timeout=5, read_timeout=10, retries={'max_attempts': 2}),
     )
     response = sts_client.assume_role(
         RoleArn=f"arn:aws:iam::{target_account_id}:role/LaunchpadDeploymentRole",
@@ -121,13 +133,13 @@ def _assume_role_raw(infrastructure) -> dict:
     }
 
 
-def _build_real_session(infrastructure):
+def _build_real_session(infrastructure, config=None):
     """Real boto3 session backed by auto-refreshing STS credentials (re-assumes near expiry)."""
     metadata = infrastructure.metadata or {}
     region = metadata.get("aws_region", "us-west-2")
 
     def _refresh():
-        return _assume_role_raw(infrastructure)
+        return _assume_role_raw(infrastructure, config=config)
 
     creds = RefreshableCredentials.create_from_metadata(
         metadata=_refresh(), refresh_using=_refresh, method="sts-assume-role",

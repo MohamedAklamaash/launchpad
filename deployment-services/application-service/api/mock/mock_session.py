@@ -256,6 +256,20 @@ class MockClient:
         task_id = hashlib.md5(f"{cluster_name}:{service_name}:{desired_status}".encode()).hexdigest()
         return {"taskArns": [self._arn(f"task/{cluster_name}/{task_id}")]}
 
+    def describe_tasks(self, **kwargs):
+        from datetime import datetime, timedelta, timezone
+
+        arns = kwargs.get("tasks", [])
+        now = datetime.now(timezone.utc)
+        # Later arns get an earlier stoppedAt, so a caller sorting by stoppedAt descending
+        # sees a deterministic, non-input-order result — proving the sort actually runs.
+        return {
+            "tasks": [
+                {"taskArn": arn, "stoppedAt": now - timedelta(seconds=index)}
+                for index, arn in enumerate(arns)
+            ]
+        }
+
     def filter_log_events(self, **kwargs):
         streams = kwargs.get("logStreamNames") or []
         start_time = kwargs.get("startTime", 0)

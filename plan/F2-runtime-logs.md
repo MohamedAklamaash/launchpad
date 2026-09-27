@@ -95,19 +95,35 @@ The gateway `proxy_request` timeout is 10s, which rules out streaming/SSE throug
    from a request parameter, and further clamped so no ECS window can begin before the
    `Application` row's own `created_at` (the backstop for a deleted-then-recreated app of
    the same name, whose STOPPED task can still appear in `list_tasks` for up to ~1h).
-5. **Cursor:** a signed cursor (`django.core.signing`, `RUNTIME_LOGS_CURSOR_SECRET`) over
+5. **Cursor:** a signed — not encrypted — cursor (`django.core.signing`,
+   `RUNTIME_LOGS_CURSOR_SECRET`, `fallback_keys=[]` so `settings.SECRET_KEY_FALLBACKS`, a
+   different secret domain entirely, is never a second valid signing key) over
    `{app_id, user_id, container, start, end, aws_token}`, 15-minute max age, ≤4KB — never a
    raw CloudWatch `nextToken`. Bound to the app/user/container that requested it, so a
    cursor can't be replayed across apps, users, or containers, or used to widen the window
-   past what the original request was authorized for. EKS has no cursor in v1 (pods/logs
-   are read fresh each call, capped at 5 pods / 500 lines / 512KiB each).
+   past what the original request was authorized for. The payload is base64/JSON and
+   readable by anyone holding the cursor — that's fine, since it discloses nothing beyond
+   what the request that produced it already gave that same client. EKS has no cursor in
+   v1 (pods/logs are read fresh each call, capped at 5 pods / 500 lines / 512KiB each).
 6. **Rate limit: dedicated `runtime_logs` F0 bucket**, fail-closed on Redis down (503), no
    gateway exemption — each call cost an AssumeRole (or `{cluster}-deploy` chain) plus a
-   CloudWatch/k8s call in the customer's own account.
-7. **Timeouts:** a dedicated `Config(connect_timeout=2, read_timeout=4, max_attempts=2)`
-   distinct from `aws.session.BOTO3_CONFIG`, plus a `time.monotonic()` deadline (~6s) checked
-   before every additional AWS/k8s call in the same request — bounding total latency under
-   the gateway's 10s proxy timeout even with the (2+4)×2 calls the ECS path can make.
+   CloudWatch/k8s call in the customer's own account. Checked before query-param
+   validation, not after: a flood of malformed requests still writes an audit row per
+   attempt, so it has to be budgeted too, or that alone could grow the audit table without
+   bound.
+7. **Timeouts, enforced end-to-end, not just at the CloudWatch/ECS client.** A
+   `_budget_config(deadline)` sized to whatever's actually left of the request's ~6s
+   deadline — not a fixed `Config(connect_timeout=2, read_timeout=4, max_attempts=2)` — is
+   threaded through every AWS/k8s client on this path: the initial `AssumeRole`
+   (`create_boto3_session`'s new `config=` param; that call is synchronous and would
+   otherwise inherit `aws.session.BOTO3_CONFIG`'s 60s read timeout / adaptive retries), the
+   EKS `describe_cluster` and `{cluster}-deploy` `AssumeRole` (`k8s_apis`/`EKSClient`/
+   `assume_deploy_role`'s new `config=` param, default `None` so every other caller is
+   unaffected), and `list_namespaced_pod` (added the `_request_timeout=(2,4)` that
+   `read_namespaced_pod_log` already had). Below one read-timeout's worth of budget,
+   retries are dropped to 1 rather than shrunk further. `ConnectTimeoutError`/
+   `ReadTimeoutError` are now caught alongside `ClientError` and map to `502 code=Timeout`,
+   not an uncaught exception falling through to a generic 500.
 8. **Audit: both a DB row (`RuntimeLogAccess`) and a structured `audit.runtime_logs` log
    line**, written for every outcome including denials, metadata only — never log content,
    the cursor value, or a stream/pod name.
@@ -134,6 +150,37 @@ The gateway `proxy_request` timeout is 10s, which rules out streaming/SSE throug
     is opaque and short-lived). This is a constraint on any future parameter, not a gap: a
     free-text search parameter would need to move off the query string before it could be
     added.
+13. **Control characters and terminal escapes are stripped server-side, not just
+    byte-capped.** ANSI cursor/color escapes and the C0/DEL control range are removed;
+    tab and newline are kept (the frontend renders `whitespace-pre-wrap`). The Unicode
+    bidi embedding/override/isolate characters (U+202A–U+202E, U+2066–U+2069) used in
+    "Trojan Source"-style spoofing — making a line *read* differently than its byte order,
+    e.g. hiding or disguising part of it — are replaced with U+FFFD. This is a
+    rendering-safety measure, distinct from the redaction posture: the content itself
+    still reaches the owner unredacted, just not in a form that can lie about its own
+    order in the browser.
+14. **A platform misconfiguration is never a 400.** `create_boto3_session` and `k8s_apis`
+    each raise a bare `ValueError` for two cases that have nothing to do with what the
+    client sent: the infra's `is_mock` flag disagreeing with `MODE` (a deploy
+    misconfiguration — now checked ahead of time via `aws.session.gate_mismatch` and
+    mapped to `503`), and a real infra that never finished AWS onboarding (`infra.code`
+    empty — mapped to the same `409` as "not deployed", since there's equally nothing to
+    tail). Neither is a request the client can fix by changing a parameter.
+15. **RUNNING tasks always win a log-stream slot; STOPPED tasks fill the rest
+    newest-first.** `list_tasks`' STOPPED ordering isn't documented as recency-sorted, so
+    `_ecs_task_ids` now runs a `describe_tasks` on the STOPPED set and sorts by
+    `stoppedAt` before taking however many slots remain under `MAX_ECS_TASKS` — one more
+    AWS call, spent only when RUNNING didn't already fill every slot.
+16. **The frontend gates the runtime-logs panel on per-infra ownership, not the JWT's
+    global role.** `isOwner` used to read `user.role === 'super_admin'` — the same
+    approximation the pre-existing `canEdit` still uses — which is wrong in both
+    directions: an infra owner isn't necessarily a platform super_admin, and a platform
+    super_admin viewing someone else's infra isn't its owner. The app detail page now
+    fetches the infrastructure (`infrastructureApi.get(app.infrastructure_id)`) and
+    compares `infra.user_id` to the signed-in user; the backend's own `SUPER_ADMIN`-only
+    check is authoritative regardless, so this only decides whether to show the panel at
+    all. The same fetch's `compute_type` now also hides the "Previous instance" (EKS-only)
+    checkbox on ECS applications, where the backend rejects it with 400.
 
 ## Files
 
@@ -144,7 +191,7 @@ The gateway `proxy_request` timeout is 10s, which rules out streaming/SSE throug
 - `deployment-services/application-service/api/services/runtime_logs_audit.py` — DB row +
   structured log line.
 - `deployment-services/application-service/api/models/runtime_log_access.py` +
-  `api/migrations/0029_runtime_log_access.py` — the audit table.
+  `api/migrations/0031_runtime_log_access.py` — the audit table.
 - `deployment-services/application-service/api/views/runtime_logs.py` — the endpoint
   (strict params, budget, error mapping, no-store headers).
 - `deployment-services/application-service/api/common/naming.py` — `ecs_log_group` helper
@@ -154,17 +201,26 @@ The gateway `proxy_request` timeout is 10s, which rules out streaming/SSE throug
   `test_settings.py` — Redis settings, the runtime-logs budget/cursor-secret settings, the
   DEBUG guard, logger pins.
 - `deployment-services/application-service/api/mock/mock_session.py`,
-  `api/mock/mock_k8s.py` — `list_tasks`/`filter_log_events`/`read_namespaced_pod_log` mocks,
-  a seeded (GitGuardian-safe, non-AWS-shaped) fake secret line.
+  `api/mock/mock_k8s.py` — `list_tasks`/`describe_tasks`/`filter_log_events`/
+  `read_namespaced_pod_log` mocks, a seeded (GitGuardian-safe, non-AWS-shaped) fake secret
+  line.
+- `deployment-services/application-service/aws/session.py` — `create_boto3_session`/
+  `_assume_role_raw`/`_build_real_session` take an optional `config=` (default `None`,
+  every other caller unaffected) and a new `gate_mismatch(infrastructure)` helper.
+- `deployment-services/application-service/aws/eks.py` — `assume_deploy_role`/`EKSClient`
+  take the same optional `config=`.
+- `deployment-services/application-service/api/k8s/deployer.py` — `k8s_apis` takes the
+  same optional `config=` and threads it into `EKSClient`/`assume_deploy_role`.
 - `gateway-service/app/api/endpoints/application.py` — one appended route, `app_id` typed
   as `uuid.UUID`.
-- `gateway-service/main.py` — dropped `details: str(exc)` from the global 500 handler.
+- `gateway-service/main.py` — dropped `details: str(exc)` from the global 500 handler;
+  `expose_headers=["Retry-After", "X-Request-Id"]` on CORS.
 - `launchpad-frontend/components/runtime-logs-panel.tsx` (new) — the log panel: container
   toggle, window select, cursor-based "load more", opt-in ≤1/10s auto-refresh that stops on
   a hidden tab or after 10 minutes, plain-text rendering (no `dangerouslySetInnerHTML`), no
-  persistence.
-- `launchpad-frontend/app/dashboard/applications/[id]/page.tsx` — one import, one `isOwner`
-  const, one JSX insertion point.
+  persistence; `computeType` prop hides the EKS-only "Previous instance" control on ECS.
+- `launchpad-frontend/app/dashboard/applications/[id]/page.tsx` — one import, one infra
+  fetch effect, `isOwner` keyed on `infra.user_id`, one JSX insertion point.
 - `launchpad-frontend/lib/api/applications.ts`, `launchpad-frontend/types/application.ts` —
   the `logs()` client call and its request/response types.
 - `docs/RUNTIME_LOGS.md` (new) + a link from `docs/USER_ONBOARDING_GUIDE.md` — the
