@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff, Github, Copy, Globe, PackageX } from 'lucide-react';
+import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff, Github, Copy, Globe, PackageX, Pin, PlayCircle } from 'lucide-react';
 import { Application } from '@/types/application';
 import { applicationApi } from '@/lib/api/applications';
 import { useAuthStore } from '@/lib/store/auth';
@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog';
 import { EditAppSheet } from '@/components/edit-app-sheet';
 import { EnvEditor } from '@/components/env-editor';
+import { DeploymentHistory } from '@/components/deployment-history';
 
 const POLLING_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
 
@@ -43,6 +44,7 @@ export default function ApplicationDetailPage() {
   const [editingEnvs, setEditingEnvs] = useState(false);
   const [envRows, setEnvRows] = useState<[string, string][]>([]);
   const [savingEnvs, setSavingEnvs] = useState(false);
+  const [hasRollbackAccess, setHasRollbackAccess] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const user = useAuthStore((s) => s.user);
   const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
@@ -176,6 +178,12 @@ export default function ApplicationDetailPage() {
               <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
               <span className={`font-mono text-[10px] uppercase tracking-[0.12em] ${st.label}`}>{displayStatus}</span>
             </span>
+            {app.auto_deploy_paused && (
+              <span className="flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5">
+                <Pin className="w-2.5 h-2.5 text-warning" />
+                <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-warning">Pinned</span>
+              </span>
+            )}
           </div>
           {app.description && <p className="text-sm text-muted-foreground mt-1.5">{app.description}</p>}
         </div>
@@ -227,6 +235,12 @@ export default function ApplicationDetailPage() {
         {app.status === 'FAILED' && (
           <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Retry queued')} disabled={actionLoading} className="gap-1.5">
             <RefreshCw className="w-3.5 h-3.5" /> Retry
+          </Button>
+        )}
+        {app.auto_deploy_paused && canEdit && hasRollbackAccess && (
+          <Button variant="outline" size="sm" className="gap-1.5"
+            onClick={() => action(() => applicationApi.resumeAutoDeploy(id), 'Auto-deploy resumed')} disabled={actionLoading}>
+            <PlayCircle className="w-3.5 h-3.5" /> Resume auto-deploy
           </Button>
         )}
         <Button variant="destructive" size="sm" className="gap-1.5 ml-auto"
@@ -400,6 +414,14 @@ export default function ApplicationDetailPage() {
           )}
         </div>
       )}
+
+      <DeploymentHistory
+        appId={id}
+        appStatus={app.status}
+        canRollback={!!canEdit}
+        onRolledBack={() => loadApp()}
+        onAccessChange={setHasRollbackAccess}
+      />
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

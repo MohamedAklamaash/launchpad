@@ -1,6 +1,8 @@
 import json
 import logging
 
+from botocore.exceptions import ClientError
+
 logger = logging.getLogger(__name__)
 
 # How many per-commit images to retain per repository. Rollback only needs to reach a
@@ -15,6 +17,39 @@ class ECRClient:
 
     def get_image_uri(self, repository_url, tag):
         return f"{repository_url}:{tag}"
+
+    def get_image_ref(self, repository_url, tag, digest=None) -> str:
+        """Pin by content digest when one is known — the repository is tag-MUTABLE, so a
+        tag alone can point at different bytes than it did when a Deployment row was
+        written. Falls back to the tag for rows recorded before digests were tracked."""
+        if digest:
+            return f"{repository_url}@{digest}"
+        return self.get_image_uri(repository_url, tag)
+
+    def get_image_digest(self, repository_name, tag) -> str | None:
+        """Best-effort: a failure here just means the Deployment row falls back to
+        pinning by tag, which is what every row recorded before this existed already does."""
+        try:
+            response = self.client.describe_images(repositoryName=repository_name, imageIds=[{"imageTag": tag}])
+            details = response.get("imageDetails") or []
+            return details[0].get("imageDigest") if details else None
+        except ClientError as e:
+            logger.warning(f"Could not resolve image digest for {repository_name}:{tag}: {e}")
+            return None
+
+    def image_exists(self, repository_name, tag, digest=None) -> bool:
+        """Rollback pins to a tag or digest that may have aged out of the retention policy
+        (digests age out via the untagged-image rule once nothing else references them).
+        Checking first turns a would-be ECS/EKS pull failure at task placement (opaque,
+        minutes later) into an immediate, readable rejection."""
+        image_id = {"imageDigest": digest} if digest else {"imageTag": tag}
+        try:
+            self.client.describe_images(repositoryName=repository_name, imageIds=[image_id])
+            return True
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "ImageNotFoundException":
+                return False
+            raise
 
     @staticmethod
     def _lifecycle_policy():

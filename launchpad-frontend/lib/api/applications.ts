@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { Application, ApplicationCreate, ApplicationUpdate } from '@/types/application';
+import { Application, ApplicationCreate, ApplicationUpdate, Deployment, RollbackPreview } from '@/types/application';
 
 export const applicationApi = {
   list: async (infrastructureId: string): Promise<Application[]> => {
@@ -41,5 +41,23 @@ export const applicationApi = {
   rotateWebhookSecret: async (id: string): Promise<{ webhook_url: string; secret: string; instructions: string }> => {
     const { data } = await apiClient.post(`/api/applications/${id}/webhook-secret`);
     return data;
+  },
+
+  listDeployments: async (id: string): Promise<Deployment[]> => {
+    const { data } = await apiClient.get(`/api/applications/${id}/deployments`);
+    return data;
+  },
+
+  getRollbackPreview: async (id: string, deploymentId: string): Promise<RollbackPreview> => {
+    const { data } = await apiClient.get(`/api/applications/${id}/deployments/${deploymentId}/preview`);
+    return data;
+  },
+
+  rollback: async (id: string, deploymentId: string): Promise<void> => {
+    await apiClient.post(`/api/applications/${id}/deployments/${deploymentId}/rollback`);
+  },
+
+  resumeAutoDeploy: async (id: string): Promise<void> => {
+    await apiClient.post(`/api/applications/${id}/resume-auto-deploy`);
   },
 };

@@ -26,6 +26,11 @@ class Application(models.Model):
     # Per-app HMAC secret for verifying GitHub push webhooks; null until owner generates one.
     github_webhook_secret = models.CharField(max_length=64, null=True, blank=True)
 
+    # Set by a rollback so the next push doesn't silently undo it. The webhook acknowledges
+    # pushes without deploying while this is set; a manual deploy or the resume endpoint
+    # clears it.
+    auto_deploy_paused = models.BooleanField(default=False)
+
     class Meta:
         unique_together = [('infrastructure', 'name')]  # k8s object names derive from name alone
         indexes = [

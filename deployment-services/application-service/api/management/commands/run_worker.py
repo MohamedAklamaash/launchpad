@@ -21,15 +21,71 @@ def _close_db():
         conn.close()
 
 
+def execute_deploy_job(app_id, job):
+    """The database/AWS-touching part of a deploy job, pulled out of the worker's nested
+    closures so it can be exercised directly in tests without running the whole command
+    loop."""
+    from api.repositories.application import ApplicationRepository
+    from api.services.application_deployment_service import ApplicationDeploymentService
+    from api.services.deployment_queue import DeploymentQueue
+
+    app = ApplicationRepository().get_by_id(app_id)
+    if not app:
+        logger.error(f"Application {app_id} not found")
+        DeploymentQueue.ack_job(job)
+        return
+
+    # A rollback pins the app to a known-good deploy by setting auto_deploy_paused, but the
+    # webhook checks that flag before enqueueing — a job already queued (or racing the
+    # enqueue) when the pin lands would otherwise still run and silently undo the rollback.
+    # Re-checking the freshly-read row here, for webhook-sourced jobs only, closes that race.
+    if job.get('source') == 'webhook' and app.auto_deploy_paused:
+        logger.info(f"Skipping webhook-triggered deploy for {app_id}: auto-deploy is paused")
+        DeploymentQueue.ack_job(job)
+        return
+
+    url = ApplicationDeploymentService().deploy_application(app)
+    logger.info(f"Deployed {app_id} at {url}")
+    DeploymentQueue.ack_job(job)
+
+
+def execute_rollback_job(app_id, job):
+    """The database/AWS-touching part of a rollback job. See `execute_deploy_job`."""
+    from api.models.deployment import Deployment
+    from api.repositories.application import ApplicationRepository
+    from api.services.application_deployment_service import ApplicationDeploymentService
+    from api.services.deployment_queue import DeploymentQueue
+
+    app = ApplicationRepository().get_by_id(app_id)
+    if not app:
+        logger.error(f"Application {app_id} not found")
+        DeploymentQueue.ack_job(job)
+        return
+
+    try:
+        # Only a resolved-SHA row is a real rollback target — see RollbackService._get_target.
+        # The API already filters on this, but the worker re-reads the row itself and must
+        # not trust that a job sitting in Redis still points at something addressable.
+        target = Deployment.objects.get(
+            id=job.get('deployment_id'), application_id=app_id, status=Deployment.STATUS_SUCCEEDED,
+            tag_source=Deployment.TAG_SOURCE_RESOLVED_SHA,
+        )
+    except Deployment.DoesNotExist:
+        logger.error(f"Rollback target {job.get('deployment_id')} not found for app {app_id}")
+        DeploymentQueue.ack_job(job)
+        return
+
+    url = ApplicationDeploymentService().rollback_application(app, target)
+    logger.info(f"Rolled back {app_id} to deployment {target.id} at {url}")
+    DeploymentQueue.ack_job(job)
+
+
 class Command(BaseCommand):
     help = 'Run the deployment worker'
 
     def handle(self, *args, **options):
         from api.repositories.application import ApplicationRepository
         from api.services.application_cleanup_service import ApplicationCleanupService
-        from api.services.application_deployment_service import (
-            ApplicationDeploymentService,
-        )
         from api.services.deployment_lock import DeploymentLock
         from api.services.deployment_queue import DeploymentQueue
 
@@ -77,16 +133,32 @@ class Command(BaseCommand):
                 _unclaim(app_id)
                 return
             try:
-                app = ApplicationRepository().get_by_id(app_id)
-                if not app:
-                    logger.error(f"Application {app_id} not found")
-                    DeploymentQueue.ack_job(job)
-                    return
-                url = ApplicationDeploymentService().deploy_application(app)
-                logger.info(f"Deployed {app_id} at {url}")
-                DeploymentQueue.ack_job(job)
+                execute_deploy_job(app_id, job)
             except Exception:
                 logger.exception(f"Deployment failed for {app_id}")
+                DeploymentQueue.nack_job(job)
+            finally:
+                lock.release(app_id, worker_id)
+                _unclaim(app_id)
+                _close_db()
+
+        def run_rollback(app_id, job):
+            lock = DeploymentLock()
+            if not lock.acquire(app_id, worker_id):
+                logger.warning(f"App {app_id} already locked, leaving in processing queue for retry")
+                _unclaim(app_id)
+                return
+            try:
+                execute_rollback_job(app_id, job)
+            except ValueError:
+                # Deterministic — e.g. the target's image tag has since expired from ECR.
+                # Retrying the identical job fails the same way every time, so ack it rather
+                # than burn through MAX_RETRIES into the DLQ. The failure is still visible on
+                # the Application row (status FAILED, error_message set) and in deploy history.
+                logger.exception(f"Rollback for {app_id} failed deterministically; acking without retry")
+                DeploymentQueue.ack_job(job)
+            except Exception:
+                logger.exception(f"Rollback failed for {app_id}")
                 DeploymentQueue.nack_job(job)
             finally:
                 lock.release(app_id, worker_id)
@@ -156,6 +228,8 @@ class Command(BaseCommand):
                 try:
                     if job.get('action') == 'deploy':
                         run_deploy(job['app_id'], job)
+                    elif job.get('action') == 'rollback':
+                        run_rollback(job['app_id'], job)
                 except Exception:
                     logger.exception(f"Unhandled error in drain loop for {infra_id}")
                     DeploymentQueue.nack_job(job)

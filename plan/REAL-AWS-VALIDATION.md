@@ -23,3 +23,27 @@ DNS** account (`infra/platform-dns`).
 - [ ] Guard: a write two labels below the apex **succeeds**.
 - [ ] Guard: a write at the apex is **denied**.
 - [ ] Guard: a single-label write (`x.launchpad.aklamaash.me`) is **denied**.
+
+## F3 rollback
+
+- [ ] `ecr describe_images` on a tag the retention policy has actually expired returns
+      `ImageNotFoundException` with the shape `ECRClient.image_exists` expects — mocks
+      always answer "found", so this is unverified against real ECR.
+- [ ] EKS: the `$APP_NAME-$RESOLVED_SHA` tag the buildspec pushes actually exists in ECR by
+      the time `_deploy_to_eks` reads it (real CodeBuild push latency vs. the mock's
+      instant, synchronous push).
+- [ ] Rollback on a real ECS service: `update_service` + `forceNewDeployment` actually
+      drains old tasks and starts new ones on the restored task definition; the
+      `deploymentCircuitBreaker` rolls back automatically if the pinned image can no
+      longer boot (e.g. a since-changed execution role).
+- [ ] Rollback on a real EKS cluster: `patch_namespaced_deployment` triggers a real rolling
+      update and `_wait_for_rollout` observes real `availableReplicas`, not the mock's
+      always-ready state.
+- [ ] End-to-end request latency of a rollback (task-definition register + service update +
+      wait-for-stable + wait-for-target-healthy, or the EKS rollout wait) run synchronously
+      on the deployment worker — confirm it comfortably finishes within
+      `DEPLOYMENT_LOCK_TIMEOUT`/the lock heartbeat window under real AWS latencies, not just
+      the mock's instant responses.
+- [ ] A real GitHub webhook redelivery while `auto_deploy_paused` is set, followed by a
+      real push after `Resume auto-deploy` — confirm the resumed deploy builds the latest
+      push and not a stale `project_commit_hash`.

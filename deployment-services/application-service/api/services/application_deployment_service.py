@@ -42,27 +42,34 @@ class ApplicationDeploymentService:
     def deploy_application(self, application: Application):
         created_resources = []
         session = None
-        
+        # Bound up front so the except block below can tell "a build was attempted" from
+        # "failed before we even knew what we'd be building" — only the former is worth a
+        # Deployment history row.
+        image_tag = None
+        resolved_sha = None
+
         try:
             # Step 1: Validate Infrastructure
             environment = self._validate_infrastructure(application)
-            
+
             # Step 2: Assume AWS Role
             session = self._create_aws_session(application.infrastructure)
-            
+
             # Step 3: Trigger Build
             image_tag = _image_tag(application)
             build_id = self._trigger_build(session, application, environment, image_tag)
             application.build_id = build_id
             application.status = 'BUILDING'
             application.save()
-            
+
             # Step 4: Wait for Build Completion
             resolved_sha = self._wait_for_build(session, build_id)
 
             if _is_eks(application):
+                pinned_tag = self._pinned_image_tag(application, resolved_sha)
                 return self._deploy_to_eks(
-                    session, application, environment, image_tag, created_resources
+                    session, application, environment, pinned_tag, created_resources,
+                    resolved_sha=resolved_sha,
                 )
 
 
@@ -114,13 +121,18 @@ class ApplicationDeploymentService:
             application.status = 'ACTIVE'
             application.error_message = None
             application.save()
-            
+
+            self._record_deployment(
+                application, image_tag=self._pinned_image_tag(application, resolved_sha),
+                resolved_sha=resolved_sha, status='SUCCEEDED', triggered_by='DEPLOY',
+                session=session, environment=environment,
+            )
             logger.info(f"Application {application.name} deployed successfully at {deployment_url}")
             return deployment_url
-            
+
         except Exception as e:
             logger.exception(f"Deployment failed for application {application.name}")
-            
+
             if session and created_resources:
                 logger.info(f"Cleaning up {len(created_resources)} resources")
                 for resource_type, resource_id in reversed(created_resources):
@@ -129,13 +141,23 @@ class ApplicationDeploymentService:
                         logger.info(f"Cleaned up {resource_type}: {resource_id}")
                     except Exception as cleanup_error:
                         logger.error(f"Failed to cleanup {resource_type} {resource_id}: {cleanup_error}")
-            
+
             application.status = 'FAILED'
             # Served back over the API and rendered in the dashboard, so the exception
             # cannot go in raw: a boto3 AccessDenied names the platform's own IAM user,
             # and a Kubernetes ApiException carries the whole HTTP response.
             application.error_message = sanitize_deploy_error(e)
             application.save()
+
+            if image_tag:
+                # The build may have already resolved a SHA even though a later step (ECS/EKS
+                # resource creation) is what actually failed — record the tag it will pin to,
+                # not the pre-build placeholder, so tag_source and image_tag stay consistent.
+                failed_tag = self._pinned_image_tag(application, resolved_sha) if resolved_sha else image_tag
+                self._record_deployment(
+                    application, image_tag=failed_tag, resolved_sha=resolved_sha,
+                    status='FAILED', triggered_by='DEPLOY',
+                )
             raise
     
     def _cleanup_resource(self, session, resource_type, resource_id, application, environment):
@@ -165,7 +187,7 @@ class ApplicationDeploymentService:
                 raise
     
     def _deploy_to_eks(self, session, application: Application, environment: Environment,
-                       image_tag: str, created_resources: list):
+                       image_tag: str, created_resources: list, resolved_sha: str | None = None):
         ecr = ECRClient(session)
         image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
 
@@ -180,8 +202,68 @@ class ApplicationDeploymentService:
         application.error_message = None
         application.save()
 
+        self._record_deployment(
+            application, image_tag=image_tag, resolved_sha=resolved_sha,
+            status='SUCCEEDED', triggered_by='DEPLOY',
+            session=session, environment=environment,
+        )
         logger.info(f"Application {application.name} deployed to EKS at {deployment_url}")
         return deployment_url
+
+    def _pinned_image_tag(self, application: Application, resolved_sha: str | None) -> str:
+        """Pin to the immutable per-commit tag the buildspec exports; fall back to the
+        moving -latest tag only for a CodeBuild project that predates the two-tag buildspec.
+        Used for both compute types so `Deployment.commit_sha` means the same thing on
+        either — before this, EKS pinned to the *requested* commit (chosen pre-build) while
+        ECS pinned to what the build actually resolved, and rollback needs the two to agree.
+        """
+        slug = _slug(application.name)
+        return f"{slug}-{resolved_sha}" if resolved_sha else f"{slug}-latest"
+
+    def _record_deployment(self, application: Application, image_tag: str, resolved_sha: str | None,
+                           status: str, triggered_by: str, tag_source: str | None = None,
+                           rolled_back_from=None, image_digest: str | None = None,
+                           session=None, environment: Environment | None = None):
+        """Append-only deploy history. Snapshot the env's shape, never its values.
+        Best-effort — a history row must never be the reason a deploy or rollback that
+        actually succeeded gets reported as failed.
+
+        `image_digest`: pass it explicitly when it's already known (a rollback just copies
+        its target's digest). Otherwise, given `session`+`environment`, it is looked up —
+        the ECR repository is tag-MUTABLE, so a tag alone is not a stable pointer to what
+        was actually deployed."""
+        from api.models.deployment import Deployment
+        from api.services.deployment_snapshot import snapshot_env
+
+        try:
+            if image_digest is None and session is not None and environment is not None:
+                ecr = ECRClient(session)
+                repo_name = ECRClient.repository_name_from_url(environment.ecr_repository_url)
+                image_digest = ecr.get_image_digest(repo_name, image_tag)
+
+            keys, values_hash = snapshot_env(application.id, application.envs or {})
+            Deployment.objects.create(
+                application=application,
+                image_tag=image_tag,
+                image_digest=image_digest,
+                commit_sha=resolved_sha,
+                tag_source=tag_source or (Deployment.TAG_SOURCE_RESOLVED_SHA if resolved_sha else Deployment.TAG_SOURCE_LATEST),
+                compute_type=application.infrastructure.compute_type,
+                env_keys=keys,
+                env_values_hash=values_hash,
+                attached_database_ids=application.attached_database_ids or [],
+                cpu=application.alloted_cpu,
+                memory=application.alloted_memory,
+                port=application.port,
+                status=status,
+                triggered_by=triggered_by,
+                rolled_back_from=rolled_back_from,
+            )
+        except Exception:
+            logger.exception(
+                f"Failed to record deployment history for application {application.name} "
+                "— the deploy itself is unaffected"
+            )
 
     def _validate_infrastructure(self, application: Application):
         environment = Environment.objects.filter(
@@ -330,7 +412,8 @@ class ApplicationDeploymentService:
         return plain_env, secrets
 
     def _create_task_definition(self, session, application: Application, environment: Environment,
-                                resolved_sha: str | None = None):
+                                resolved_sha: str | None = None, image_tag: str | None = None,
+                                image_digest: str | None = None):
         ecs = ECSClient(session)
         ecr = ECRClient(session)
         logs = session.client('logs')
@@ -345,13 +428,15 @@ class ApplicationDeploymentService:
         # Pin the task definition to the immutable per-commit tag. `-latest` moves on every
         # rebuild, so a task definition referencing it does not describe a fixed image and
         # cannot be rolled back to. Falling back to `-latest` keeps deploys working against
-        # a CodeBuild project that predates the two-tag buildspec.
-        image_tag = (
-            f"{_slug(application.name)}-{resolved_sha}" if resolved_sha
-            else f"{_slug(application.name)}-latest"
-        )
-        image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
-        logger.info(f"Task definition for {application.name} pinned to image tag {image_tag}")
+        # a CodeBuild project that predates the two-tag buildspec. A rollback passes the
+        # exact tag from its target Deployment row instead of recomputing one — the app may
+        # have been renamed since, and slug-from-current-name would no longer resolve to the
+        # image that was actually pushed. When a digest is also known, `get_image_ref` pins
+        # to it instead — the tag alone is not a stable pointer, since the ECR repository is
+        # tag-MUTABLE and a later build of the same commit could have repointed it.
+        image_tag = image_tag or self._pinned_image_tag(application, resolved_sha)
+        image_uri = ecr.get_image_ref(environment.ecr_repository_url, image_tag, image_digest)
+        logger.info(f"Task definition for {application.name} pinned to {image_uri}")
 
         # Now that every build pushes a second, per-commit tag, the repository grows
         # without bound in the customer's account unless retention is set.
@@ -559,3 +644,127 @@ class ApplicationDeploymentService:
                     ecs = ECSClient(session)
                 else:
                     raise
+
+    # ── Rollback ─────────────────────────────────────────────────────────────
+    #
+    # Skips CodeBuild entirely: pin to an image already in ECR and restore the CPU/memory
+    # /port/image that shipped with it. Env values are always re-read from the application's
+    # current envs, never from the snapshot — rolling back code must not roll back a
+    # rotated credential. No Application field is written until every AWS call below has
+    # already succeeded, so a failure partway through never leaves the row half restored.
+
+    def rollback_application(self, application: Application, target) -> str:
+        created_resources = []
+        session = None
+        environment = None
+        try:
+            environment = self._validate_infrastructure(application)
+            session = self._create_aws_session(application.infrastructure)
+
+            ecr = ECRClient(session)
+            repo_name = ECRClient.repository_name_from_url(environment.ecr_repository_url)
+            if not ecr.image_exists(repo_name, target.image_tag, digest=target.image_digest):
+                raise ValueError(
+                    f"Image '{target.image_tag}' is no longer available in the container "
+                    "registry — it was likely expired by the ECR retention policy. Choose "
+                    "a more recent deployment to roll back to."
+                )
+
+            if _is_eks(application):
+                deployment_url = self._rollback_eks(session, application, environment, target, created_resources)
+            else:
+                deployment_url = self._rollback_ecs(session, application, environment, target)
+
+        except Exception as e:
+            logger.exception(f"Rollback failed for application {application.name}")
+            if session and created_resources:
+                for resource_type, resource_id in reversed(created_resources):
+                    try:
+                        self._cleanup_resource(session, resource_type, resource_id, application, environment)
+                    except Exception as cleanup_error:
+                        logger.error(f"Failed to cleanup {resource_type} {resource_id} during rollback unwind: {cleanup_error}")
+            application.status = 'FAILED'
+            application.error_message = sanitize_deploy_error(e)
+            application.save(update_fields=['status', 'error_message'])
+            self._record_deployment(
+                application, image_tag=target.image_tag, resolved_sha=target.commit_sha,
+                status='FAILED', triggered_by='ROLLBACK', tag_source=target.tag_source,
+                rolled_back_from=target, image_digest=target.image_digest,
+            )
+            raise
+
+        self._record_deployment(
+            application, image_tag=target.image_tag, resolved_sha=target.commit_sha,
+            status='SUCCEEDED', triggered_by='ROLLBACK', tag_source=target.tag_source,
+            rolled_back_from=target, image_digest=target.image_digest,
+        )
+        logger.info(f"Application {application.name} rolled back to deployment {target.id}")
+        return deployment_url
+
+    def _rollback_ecs(self, session, application: Application, environment: Environment, target) -> str:
+        ecs = ECSClient(session)
+
+        # Build the new task definition against the SNAPSHOT's cpu/memory/port, not the
+        # application's current ones — a rollback restores the resource shape that shipped
+        # with the image, not whatever is configured today. Nothing is persisted yet: if
+        # anything below raises, `application` still reflects its pre-rollback state.
+        original = (application.alloted_cpu, application.alloted_memory, application.port)
+        application.alloted_cpu, application.alloted_memory, application.port = target.cpu, target.memory, target.port
+        try:
+            task_def_arn = self._create_task_definition(
+                session, application, environment,
+                image_tag=target.image_tag, image_digest=target.image_digest,
+            )
+            service_name = f"{_slug(application.name)}-service"
+            ecs.client.update_service(
+                cluster=environment.cluster_arn,
+                service=service_name,
+                taskDefinition=task_def_arn,
+                forceNewDeployment=True,
+            )
+        except Exception:
+            application.alloted_cpu, application.alloted_memory, application.port = original
+            raise
+
+        # Everything above succeeded — commit the restored config in one write.
+        application.task_definition_arn = task_def_arn
+        application.status = 'DEPLOYING'
+        application.error_message = None
+        application.save(update_fields=[
+            'alloted_cpu', 'alloted_memory', 'port', 'task_definition_arn', 'status', 'error_message',
+        ])
+
+        self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+        alb = ALBClient(session)
+        self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
+
+        deployment_url = self._generate_deployment_url(application, environment)
+        application.deployment_url = deployment_url
+        application.status = 'ACTIVE'
+        application.save(update_fields=['deployment_url', 'status'])
+        return deployment_url
+
+    def _rollback_eks(self, session, application: Application, environment: Environment, target, created_resources: list) -> str:
+        ecr = ECRClient(session)
+        image_uri = ecr.get_image_ref(environment.ecr_repository_url, target.image_tag, target.image_digest)
+
+        # EKSDeployer reads cpu/memory/port/envs straight off `application`, so the snapshot
+        # values have to be in place before it builds the manifest. `deploy()` patches the
+        # existing Deployment/Service/Ingress in one call each (409 on create -> patch), so
+        # this is "patch image + env" — nothing pre-existing is torn down first.
+        original = (application.alloted_cpu, application.alloted_memory, application.port)
+        application.alloted_cpu, application.alloted_memory, application.port = target.cpu, target.memory, target.port
+        try:
+            EKSDeployer(session, application, environment).deploy(image_uri, created_resources)
+        except Exception:
+            application.alloted_cpu, application.alloted_memory, application.port = original
+            raise
+
+        deployment_url = self._generate_deployment_url(application, environment)
+        application.deployment_url = deployment_url
+        application.status = 'ACTIVE'
+        application.error_message = None
+        application.save(update_fields=[
+            'alloted_cpu', 'alloted_memory', 'port', 'deployment_url', 'status', 'error_message',
+        ])
+        return deployment_url
