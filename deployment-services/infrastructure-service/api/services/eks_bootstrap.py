@@ -72,6 +72,75 @@ def bootstrap_eks_environment(infra, *, credentials: dict, region: str, cluster_
         raise EksBootstrapError(str(e), logs="\n".join(lines)) from e
 
 
+def apply_eks_tls(infra, *, credentials: dict, region: str, cluster_name: str, cert_arn: str,
+                   infra_is_mock: bool, dev_mode: bool) -> bool:
+    """F1b part 3a: the EKS counterpart to the ECS 443 listener — patch the cluster's shared
+    IngressClassParams (created once by _ensure_ingress_class, which never updates it) with
+    this infra's ACM certificate, once TLS is ISSUED. Called from run_worker.py's TLS
+    re-check tick, the same trigger that re-enqueues an ECS provision to apply its 443
+    listener.
+
+    Deliberately does NOT set `spec.listenPorts` here (B1 security review, second round):
+    the AWS Load Balancer Controller documents IngressClassParams fields as overriding the
+    equivalent annotation on every Ingress that uses the class, so a class-level
+    `listenPorts` covering both 80 and 443 would silently widen every Ingress's own
+    per-Ingress `alb.ingress.kubernetes.io/listen-ports` annotation back onto both ports —
+    including the host-only Ingress `api/k8s/deployer.py:_host_ingress_manifest` scopes to
+    HTTPS:443 specifically to keep a host rule off :80. Listen ports are scoped entirely at
+    the Ingress level instead: exactly one source of truth per Ingress, never a class-level
+    value pulling a different direction.
+
+    Also patches the bootstrap Ingress's own `listen-ports` annotation to add `HTTPS: 443`
+    (it is `HTTP: 80` only at `_ensure_bootstrap_ingress` time, since no certificate exists
+    yet there and an ALB HTTPS listener cannot be created without one). This call is the
+    first point where a certificate is actually known to exist, so it is the right place —
+    and the earliest possible one — for something to declare `:443` on the group ahead of
+    any app-specific Ingress. Without this, `EKSDeployer._verify_eks_https_listener` would
+    permanently refuse host mode for every EKS infra: it requires a `:443` listener to
+    already exist before granting host mode, and the only other thing that would declare
+    one is the per-app host Ingress that check itself gates — a deadlock. The class patch
+    runs first so the certificate is already resolvable by the time the Ingress patch
+    below triggers the controller's reconcile of it.
+
+    Idempotent: a merge patch with unchanged values is a no-op against an already-patched
+    cluster (both patches). Mirrors cert_bootstrap._acm_client's mock/real gate exactly —
+    both mismatches raise. In mock/dev there is no real cluster to patch
+    (bootstrap_eks_environment already refuses to run against one), so this returns True
+    immediately without any k8s call, letting the mock end-to-end flow set
+    env.eks_ingress_tls_ready the same way a real patch would.
+    """
+    from api.services.platform_dns.route53_client import MockRealMismatch
+
+    if infra_is_mock and not dev_mode:
+        raise MockRealMismatch("refusing EKS TLS patch for a mock infrastructure outside dev mode")
+    if dev_mode and not infra_is_mock:
+        raise MockRealMismatch("refusing real EKS TLS patch against a mock infrastructure check inside dev mode")
+    if dev_mode:
+        return True
+
+    session = _boto_session(credentials, region)
+    cluster = session.client("eks").describe_cluster(name=cluster_name)["cluster"]
+    with k8s_api_client(
+        infra, app_config.mode,
+        endpoint=cluster["endpoint"], ca_data=cluster["certificateAuthority"]["data"],
+        token=mint_eks_token(session, cluster_name, region),
+        token_provider=lambda: mint_eks_token(session, cluster_name, region),
+    ) as api:
+        custom = k8s.CustomObjectsApi(api)
+        custom.patch_cluster_custom_object(
+            "eks.amazonaws.com", "v1", "ingressclassparams", INGRESS_CLASS_NAME,
+            {"spec": {"certificateARNs": [cert_arn]}},
+        )
+        networking = k8s.NetworkingV1Api(api)
+        networking.patch_namespaced_ingress(
+            "bootstrap", BOOTSTRAP_NAMESPACE,
+            {"metadata": {"annotations": {
+                "alb.ingress.kubernetes.io/listen-ports": '[{"HTTP": 80}, {"HTTPS": 443}]',
+            }}},
+        )
+    return True
+
+
 def _ingress_group_name(infra) -> str:
     """The ALB Auto Mode group name shared by every Ingress in this cluster's
     IngressClassParams.
@@ -191,7 +260,18 @@ def _ensure_bootstrap_ingress(api, lines: list):
     )
     networking = k8s.NetworkingV1Api(api)
     ingress = k8s.V1Ingress(
-        metadata=k8s.V1ObjectMeta(name="bootstrap"),
+        metadata=k8s.V1ObjectMeta(
+            name="bootstrap",
+            annotations={
+                # HTTP:80 only at bootstrap time — no certificate exists yet (this runs
+                # before any infra has ever requested one), and an ALB HTTPS listener
+                # cannot be created without one (a hard CreateListener constraint, not a
+                # controller choice). apply_eks_tls patches this same annotation to add
+                # HTTPS:443 once a certificate actually exists — see its docstring for why
+                # that patch lives there and not here.
+                "alb.ingress.kubernetes.io/listen-ports": '[{"HTTP": 80}]',
+            },
+        ),
         spec=k8s.V1IngressSpec(
             ingress_class_name=INGRESS_CLASS_NAME,
             default_backend=k8s.V1IngressBackend(

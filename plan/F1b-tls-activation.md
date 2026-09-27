@@ -3,10 +3,330 @@
 **Status:** Phase 1 plumbing done (#68); decisions + zone terraform done (#75); **part 1
 (platform DNS writer + ledger + teardown) done, mock-verified**; **part 2 (cert bootstrap,
 ACM policy grants, 443 listener, nginx host mode groundwork, EKS group-name fix) done,
-mock-verified — see Part 2 below for what shipped vs. what's scaffolded-but-not-wired**;
-part 3 (custom domains, full host-routing runtime wiring, host URL publish) not started.
-**Depends on:** #68, #75 · **Blocked by:** the owner action below (zone not yet applied to
-real AWS, so parts 1–2 are mock-verified only) and part 3 not yet built.
+mock-verified**; **part 3a (host URLs end-to-end: cross-service readiness contract, ECS/EKS
+deploy-flow wiring, DNS synced_at, host URL publish gating, backfill) done, mock-verified —
+see Part 3a below**; custom domains (`CustomDomain` API/UI, `RESERVED_DOMAIN_SUFFIX` fail-
+closed removal) not started. **Depends on:** #68, #75, part 2 · **Blocked by:** the owner
+action below (zone not yet applied to real AWS, so parts 1–3a are mock-verified only) and
+custom domains not yet built.
+
+## Part 3a — what shipped (mock-verified)
+
+Scope: the plan's "Scaffolded but not wired" list from part 2 (below), narrowed to host URLs
+— custom domains are a separate, not-yet-started slice.
+
+- **Cross-service contract.** A new event, `infrastructure.host_readiness_updated`
+  (`api/services/host_readiness.py`, infrastructure-service), carries a fresh snapshot
+  (`dns_label`, `tls_status`, `dns_synced`, `https_ready` — the last two computed, not
+  copied verbatim from any single table) to application-service's read-model
+  (`api/messaging/consumers/infrastructure.py:HostReadinessEventConsumer`). Published from
+  every place any of those four can change: `terraform_worker.py._save_outputs`,
+  `cert_bootstrap.ensure_certificate` (`finally`, so it fires on every outcome), the two
+  transitions in `run_worker.py.check_pending_certificates`, and the DNS writer's own
+  `dispatch.converge_from_infra_id` after a successful converge — the writer publishing a
+  read-model event needs no `PLATFORM_DNS_*` credential (`rabbitmq_url` is not one of the
+  vars `LAUNCHPAD_PROCESS_ROLE=dns_writer` restricts), so this does not weaken its
+  isolation. `dns_label` also travels on the existing `infrastructure.created` payload
+  (fires on every apply) as a second delivery path, since it never changes once minted.
+  application-service's consumer never trusts the payload for anything but read-model
+  fields, follows `InfraUpdatedEventConsumer`'s retry-until-materialized pattern, and
+  compares the event's own `occurred_at` against a stored `host_readiness_occurred_at`
+  before applying — this service's three publishers (a terraform apply, the TLS re-check
+  tick, the DNS writer) give no cross-publisher ordering guarantee, so a stale snapshot must
+  never clobber a fresher one.
+  **Decision:** the raw `https_listener_arn` is not mirrored — application-service's ECS
+  deploy flow gets the authoritative value with a live `describe_listeners` call right
+  before creating a rule (exactly like the existing `:80` listener lookup), which can never
+  be stale the way a mirrored value could. `https_ready` (compute-type-normalized: ECS's
+  `Environment.https_listener_arn` set, EKS's new `Environment.eks_ingress_tls_ready` set)
+  is still mirrored as a cheap DB-only pre-check for both compute types. **Updated by the B1
+  security fix:** EKS *does* now also get a live check on every deploy
+  (`EKSDeployer._verify_eks_https_listener`) — `https_ready`/`eks_ingress_tls_ready` proves
+  only "the IngressClassParams patch was accepted by the k8s API," never "the ALB listener
+  actually exists," and the live check is what closes that gap before host mode is granted.
+- **`PlatformDnsRecord.synced_at` population** (`api/services/platform_dns/converge.py`).
+  After a successful `change_resource_record_sets`, an INSYNC status on the response itself
+  (the mock zone, and occasionally a real one) stamps immediately; otherwise a bounded poll
+  (~60s, `_SYNC_POLL_ATTEMPTS`/`_SYNC_POLL_INTERVAL_SECONDS`) runs after the ledger
+  transaction has committed and its advisory lock released, never inside it. A row whose
+  poll times out keeps its `change_id` and is picked up by a one-shot `GetChange` catch-up
+  (`_stamp_pending_syncs`) at the *start* of the next reconcile for that infra, even one
+  that itself has nothing new to upsert or delete — closing the gap the early-return check
+  would otherwise leave. New `PlatformDnsRecord.change_id` field (additive migration); no
+  grants SQL change needed — the writer's Postgres role already has table-level
+  SELECT/INSERT/UPDATE/DELETE on `api_platformdnsrecord` (see `platform_dns/sql/
+  dns_writer_grants.sql`), and this is a new column on a table it already owns outright, not
+  a new table. **Known gap, documented rather than built out:** an infra whose only
+  remaining item is DNS propagation, and which never triggers another reconcile for any
+  other reason, could in principle stay unsynced past the poll bound — tracked in
+  `REAL-AWS-VALIDATION.md` as a candidate for a periodic sweep (`sweep_platform_dns`'s
+  pattern) if it's ever observed in practice.
+- **`api.services.host_readiness.is_dns_synced`**: true only when BOTH the edge and
+  wildcard ledger rows exist and have a non-null `synced_at` — a lone validation record (the
+  state before the first successful apply) never counts.
+- **EKS TLS apply** (`api/services/eks_bootstrap.py:apply_eks_tls`), the EKS counterpart to
+  ECS's conditional 443 listener: a merge-patch of the cluster's shared `IngressClassParams`
+  (created once, never updated, by part 2's `_ensure_ingress_class`) with
+  `certificateARNs: [cert_arn]` and `listenPorts: [{HTTP:80},{HTTPS:443}]`, called from a new
+  `run_worker.py._apply_eks_tls_for_issued_certs` sweep alongside the existing ECS
+  re-enqueue sweep, under the same `_cert_recheck_eligible` gate. Mirrors
+  `cert_bootstrap._acm_client`'s mock/real gate; in mock/dev it returns `True` with no k8s
+  call at all (there is no real cluster to patch — `bootstrap_eks_environment` already
+  refuses mock/dev outright), letting `Environment.eks_ingress_tls_ready` (new field) get
+  set the same way a real patch would for the mock end-to-end flow.
+- **ECS deploy-flow wiring** (`api/services/application_deployment_service.py`). Routing
+  mode is resolved once per deploy (`_resolve_host_routing`, before the image is even
+  built — host mode is baked into the task definition's nginx sidecar config): the mirrored
+  DB fields are a fast pre-check, a live `get_listener_arn(alb_arn, 443)` call is
+  authoritative. Host mode threads `host_mode`/`app_hostname` through
+  `_create_task_definition` -> `ECSClient.create_task_definition` ->
+  `container_config.generate_nginx_config`/`inject_routing_envs` (all already built and
+  tested in part 2 — this is the first thing that actually calls them with `host_mode=True`).
+  The target group's health check path moves in lockstep on every deploy, whether the TG is
+  new or reused (`ALBClient.modify_target_group`, also part-2 code, now actually called).
+  **The :80 redirect is one per-infra wildcard rule, not one per app**
+  (`ALBClient.ensure_host_redirect_rule`): the general path-rule allocator
+  (`get_next_priority`) always grabs the lowest free priority, so a per-app :80 redirect
+  rule would routinely land at a *higher* priority number than an existing path rule and
+  lose to it — `Host: a.{label}.{base}` + path `/a/x` would match app A's own `/a*` path
+  rule first and forward the request in plaintext, exactly the "never forwards an app
+  hostname" violation the pre-review called out. One wildcard rule
+  (`*.{dns_label}.{base}`), reserved at priority 1 (an atomic `set_rule_priorities` swap
+  displaces whatever currently holds it), created idempotently the first time any app on the
+  infra deploys in host mode, sidesteps the problem entirely and halves `:80` rule
+  consumption versus a per-app scheme. The per-app `:443` forward rule
+  (`Application.host_forward_rule_arn`, new field) *is* per-app, since 443 has no path rules
+  to collide with and a fixed-404 default action. A deploy that regresses out of host mode
+  (TLS/DNS readiness lost since the last deploy) tears down its own stale 443 rule.
+  Rollback (`_rollback_ecs`) re-resolves routing the same way, never carrying over whatever
+  mode the target snapshot's era implies.
+- **EKS deploy-flow wiring** (`api/k8s/deployer.py`). `EKSDeployer` resolves its own routing
+  mode in `__init__` (no live check available the way ALB's `describe_listeners` is — EKS
+  trusts the mirrored `Infrastructure.https_ready` outright). The host rule is a *second*
+  `V1IngressRule` on the same Ingress with `host=` set to the exact hostname (Prefix path
+  `/`), added alongside the always-present path rule — never replacing it. The ALB
+  healthcheck-path annotation and the nginx sidecar's own readiness probe both move to
+  `HOST_MODE_HEALTH_CHECK_PATH` in the same deploy that flips `host_mode`, closing the
+  three-way lockstep the design doc calls for. `Application.host_route_applied` (new field)
+  is EKS's counterpart to `host_forward_rule_arn`, written only after the Ingress apply
+  actually ran.
+- **Host URL publish gating** (`api/common/host_url.py`). `build_app_hostname` is the single
+  choke point every hostname passes through before reaching any of the three
+  config-injection sinks (nginx `server_name`, an ALB host-header condition, a k8s Ingress
+  `rules[].host`) — validates the platform domain is configured (fails closed: no
+  `launchpad.app`-style fallback the way infrastructure-service's `PLATFORM_BASE_DOMAIN`
+  setting has, since a value from here is shown to a customer as a live URL), the
+  `dns_label` shape (`[0-9a-f]{16}`, mirroring the writer's own `naming.DNS_LABEL_RE`), and
+  that the app's slug is a single DNS label (narrower than the general `app_slug`, which
+  admits `.`/`_` for Docker tags — neither survives under a wildcard cert scoped to one
+  label). `app_host_url(application)` is the full API-facing gate: every infra-level leg
+  (`infra_host_ready` — domain configured, `dns_label` minted, `tls_status == ISSUED`,
+  `dns_synced`, `https_ready`) *and* this specific app's own routing evidence
+  (`host_forward_rule_arn` on ECS, `host_route_applied` on EKS) — a TLS-ready infra is not
+  enough on its own if this app hasn't actually been deployed with the route applied yet.
+  Wired into `views/application.py`'s detail response as `host_url` (a live `https://` URL
+  or `null`) and `host_url_status` (a stable reason string — `tls_not_issued`,
+  `dns_not_synced`, `host_route_not_applied`, `slug_not_hostname_safe`, etc. — never a raw
+  exception). The dashboard shows a Host URL card above the always-present path-URL card.
+- **`backfill_host_routing`** (`ApplicationDeploymentService.backfill_host_routing` +
+  the management command of the same name). Closes the gap for an ECS app that was last
+  deployed before its infra finished TLS onboarding and hasn't pushed code since — host mode
+  otherwise only applies on an app's *next* deploy. Re-registers the task definition against
+  the exact image (tag + digest) its most recent `tag_source=resolved_sha` `Deployment` row
+  recorded (the same "pin to a known-good image, no rebuild" approach rollback already
+  uses), then runs the same target-group/ALB wiring a normal deploy would. Idempotent
+  (`already_host_mode` short-circuits) and safe to re-run; skips anything not eligible
+  rather than guessing. EKS needs no equivalent — `EKSDeployer` re-resolves `host_mode` on
+  every deploy already, so an EKS app picks up host mode the next time it deploys for any
+  reason, deploy or rollback.
+- **Mock end-to-end.** `api/mock/mock_session.py`'s ALB stub now always exposes both `:80`
+  and `:443` listeners (mock provisioning never runs terraform, so there is no "443 not
+  applied yet" state to model there — the app-level `tls_status`/`dns_synced`/`https_ready`
+  gate is what actually decides whether a mock deploy attempts host mode) and implements
+  `set_rule_priorities`; `describe_rules`/`create_rule` now round-trip `Conditions` so
+  `ensure_host_redirect_rule`'s idempotent lookup works against the mock the same as against
+  real ALB. `_mock_provision` (infrastructure-service) mirrors the real `provision()`'s
+  ISSUED-cert gate for `https_listener_arn` (ECS) and flips `eks_ingress_tls_ready` directly
+  (EKS) — the same mock-skips-the-network-call-and-synthesizes-the-result pattern used
+  throughout this file.
+
+**Deferred, explicitly:**
+
+- Custom domains proper (`CustomDomain` API/UI, the `RESERVED_DOMAIN_SUFFIX` fail-closed
+  removal originally flagged in part 1) — a separate slice from host URLs, not started.
+- A live check on every EKS deploy is now built (see Security review fixes below, B1) —
+  but only a read-only confirmation that the shared group ALB has a real `:443` listener.
+  There is still no live read of `IngressClassParams.spec.certificateARNs` itself;
+  `Infrastructure.https_ready` (mirrored from `Environment.eks_ingress_tls_ready`) is
+  trusted for "has the cluster-level patch been attempted and reported success," and the
+  live `:443` check plus `EKS_HOST_MODE_ENABLED` are what actually gate whether host mode
+  is granted.
+
+### Security review fixes (post-push, same branch)
+
+An independent review of the first part 3a push returned BLOCK. All findings addressed on
+the branch before it was force-pushed:
+
+- **B1 (EKS `:80` plaintext forward) — revised after a second review round.** Adding a
+  `host=` rule to an Ingress whose `IngressClassParams.listenPorts` includes both `80` and
+  `443` makes the AWS Load Balancer Controller put a forwarding rule for that hostname on
+  **both** ports — a plaintext forward for the exact host a customer would reach over
+  HTTPS on `:443`, with EKS's `Infrastructure.https_ready` mirror as the only (pre-review)
+  gate and no live check at all.
+
+  The first fix attempt kept the host rule on the existing path Ingress and added an
+  out-of-band `boto3` `:80` redirect rule (`ensure_host_redirect_rule`, the same helper ECS
+  uses) to intercept it. A second review round rejected this: that `:80` listener is owned
+  by the AWS Load Balancer Controller, which reconciles it independently of any manually
+  created rule, so the Ingress apply that runs right after can delete or renumber a rule
+  outside its own model with nothing re-checking afterward — the host rule could end up
+  forwarded on `:80` in plaintext regardless of what was reserved a moment earlier.
+
+  **Final fix:** the host rule now lives in its own Ingress (`{slug}-host`,
+  `EKSDeployer._host_ingress_manifest`), in the same `IngressGroup` as the path Ingress
+  (same `ingress_class_name`, hence the same shared ALB) but scoped to `HTTPS: 443` only
+  via the per-Ingress `alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'`
+  annotation. The path Ingress carries no such annotation and keeps defaulting to `:80`,
+  unchanged (golden-tested byte-for-byte in path mode). No out-of-band ALB rule is created
+  or needed — protection now comes entirely from a controller-recognized object, not from
+  fighting the controller's own reconcile loop. `EKSDeployer._verify_eks_https_listener`
+  (renamed from `_verify_and_secure_eks_alb`) still runs on every deploy before host mode
+  is granted, but is now read-only: it finds the shared group ALB via `Environment.alb_dns`
+  (`_find_group_alb_arn`, a client-side `DescribeLoadBalancers` scan, since the real API
+  has no filter-by-DNS-name) and confirms a real `:443` listener exists on it; it mutates
+  nothing. Any failure or ambiguity anywhere in that chain fails closed to path mode
+  (`eks_alb_not_discovered` / `eks_alb_live_check_failed` /
+  `eks_https_listener_not_applied`) — never a guess. A controller-managed `:80`→`:443`
+  redirect for this exact host (a per-Ingress `ssl-redirect` annotation) was considered and
+  left out: whether it can be scoped to only the host Ingress inside a shared group without
+  affecting the path Ingress's own `:80` traffic is exactly the kind of unverified
+  assumption this review round was raised over. Without it, `:80` for the hostname simply
+  hits the group ALB's fixed default action (a 404) — safe, if less friendly; never a
+  plaintext forward.
+
+  One more conflict surfaced while closing this out: `apply_eks_tls` was still patching
+  `spec.listenPorts: [{HTTP:80},{HTTPS:443}]` onto the shared `IngressClassParams` — and
+  the AWS Load Balancer Controller documents class-level `IngressClassParams` fields as
+  overriding the equivalent per-Ingress annotation, not the other way around. Left in
+  place, that class-level value would have silently widened every Ingress in the group,
+  including the host-only one, back onto both ports regardless of its own `listen-ports`
+  annotation — the exact same plaintext-forward risk this fix exists to close, just moved
+  one layer up. Fixed by removing `listenPorts` from the class-level patch entirely
+  (`apply_eks_tls` now sets only `certificateARNs`) and making both Ingresses' listen-port
+  scoping fully explicit: the path Ingress now also carries its own
+  `listen-ports: '[{"HTTP": 80}]'` annotation (previously implicit, relying on the
+  controller's own no-annotation default) alongside the host Ingress's `HTTPS: 443`. There
+  is now exactly one source of truth for listen ports — the per-Ingress annotations — not
+  two pulling in opposite directions.
+
+  Removing `listenPorts` from the class-level patch surfaced a second, structural problem:
+  nothing else established the group ALB's `:443` listener ahead of any app existing.
+  `EKSDeployer._verify_eks_https_listener` refuses to grant host mode until a `:443`
+  listener already exists, but the only thing that would have declared one was the very
+  per-app host Ingress that check gates — a deadlock that would make `EKS_HOST_MODE_ENABLED`
+  permanently unable to activate for any infra, ever, once turned on.
+
+  The first attempt at fixing this put `HTTPS: 443` on the bootstrap Ingress
+  (`eks_bootstrap.py:_ensure_bootstrap_ingress`) directly, at bootstrap-creation time — but
+  that runs before any infra has ever requested a certificate, and an ALB HTTPS listener
+  cannot be created without one (a hard `CreateListener` constraint, not a controller
+  choice); the controller would fail to resolve a certificate for the group and never write
+  an ALB hostname onto the Ingress's status, timing out EKS cluster bootstrap entirely —
+  every new EKS cluster, not just host mode. Caught before push. **Final fix:**
+  `_ensure_bootstrap_ingress` stays `HTTP: 80` only, and `apply_eks_tls` — the point where a
+  certificate is actually known to exist — patches the bootstrap Ingress's `listen-ports`
+  annotation to add `HTTPS: 443` right after (same k8s API call sequence) patching
+  `certificateARNs` onto the class, class first so the certificate is already resolvable
+  when the Ingress patch triggers the controller's reconcile of it. The bootstrap Ingress's
+  `default_backend` has no application significance (an empty-selector Service, never a real
+  app's backend), so this grants no app plaintext exposure — it mirrors, at the
+  bootstrap-Ingress layer, what ECS's terraform-managed 443 listener does (created
+  independent of any specific app), except its default action resolves to an empty target
+  group (503) rather than a literal fixed-404 response; see REAL-AWS-VALIDATION.md.
+
+  Host mode on EKS is additionally gated behind a new `EKS_HOST_MODE_ENABLED` setting
+  (default `False`, `application-service`) until the items below are confirmed against a
+  real cluster; with it off, every EKS app stays on path URLs
+  (`host_url_status=eks_host_mode_disabled`), unaffected by anything above. Also fixed in
+  this round (LOW, same review): `EKSDeployer.__init__` resolved host eligibility with a
+  DB-only check and no longer makes any AWS call — `_resolve_host_routing` is pure DB
+  logic, and the live `_verify_eks_https_listener` check now runs from `deploy()`, right
+  before it matters, so constructing an `EKSDeployer` can never have a side effect against
+  the customer's account. `apply_eks_tls`'s `listenPorts`/`certificateARNs` schema and
+  whether the controller honors a per-Ingress `listen-ports` override inside a shared
+  `IngressGroup` the way its docs describe (rather than reconciling every group member onto
+  the union of every declared port) are both unverified against a real cluster — see
+  `REAL-AWS-VALIDATION.md`, and `EKS_HOST_MODE_ENABLED` stays off until they are.
+- **R1 (redirect rule permanently outranked after one failed swap).**
+  `ensure_host_redirect_rule`'s lookup path returned the existing rule's ARN without
+  checking its priority — a `set_rule_priorities` call that failed partway (or a rule
+  displaced by something else after the fact) left it outranked by a later path rule
+  forever, since nothing ever re-checked. Fixed: the lookup now re-claims priority 1 via
+  `_reprioritize_to_one` every time it finds the rule not already there, not only at
+  creation. Also fixed in the same pass: `_reserve_host_redirect_priority` now runs
+  **before** `_configure_alb_routing` creates a path rule (closing the first-deploy race
+  where a path rule could grab priority 1 before any app on the infra ever reaches host
+  mode), and per-app path conditions changed from a single glob (`/{slug}*`, which also
+  matches `/{slug}suffix` and, once priorities can be swapped, could shadow a
+  different app whose slug shares a prefix) to an exact-or-prefixed pair
+  (`[f"/{slug}", f"/{slug}/*"]`) that never overlaps between different slugs regardless of
+  rule order.
+- **R2 (host_url shown for a route that no longer works).** `host_forward_rule_arn` was
+  saved before `verify_target_group_attached` ran and never cleared if a later step failed
+  and the unwind deleted the rule; `app_host_url` also ignored `Application.status`
+  entirely. Fixed: the `host_forward_rule` branch of `_cleanup_resource` now nulls the DB
+  field (tolerating `RuleNotFound`, since the rule may already be gone); `app_host_url`
+  requires `status == 'ACTIVE'` before considering any routing evidence at all.
+- **R3 (EKS TLS patch state never re-evaluated).** `eks_ingress_tls_ready` was a one-shot
+  latch — a certificate re-issue (a fresh ARN after a FAILED retry) left the Ingress class
+  serving a stale/deleted certificate forever, and a persistently failing patch attempt
+  (unreachable cluster, k8s API throttling) retried every ~30s tick indefinitely with no
+  cutoff. Fixed: new `Environment.eks_ingress_tls_cert_arn` tracks which cert ARN the
+  ready flag actually reflects (or is currently targeting); a mismatch against the
+  currently-ISSUED cert triggers a re-patch and drops the ready flag immediately, even
+  before the patch attempt itself runs. New `eks_ingress_tls_patch_attempted_at` bounds
+  retries to `EKS_TLS_PATCH_TIMEOUT` (30 min, mirroring `ISSUED_CHECK_TIMEOUT`'s own
+  age-based cutoff) against a stable target. All three EKS TLS fields are cleared at every
+  DESTROYED transition in `TerraformWorker.destroy()`.
+- **R4 (dns_label overwritable in the read-model).** Both ingestion paths
+  (`upsert_infrastructure` and `HostReadinessEventConsumer`) let a later event's dns_label
+  silently overwrite an already-stored value — this field feeds directly into every
+  hostname application-service builds. Fixed: write-once in both places — a stored
+  non-null value that disagrees with an incoming one is logged and refused, never applied;
+  a malformed incoming value is rejected outright.
+- **Recommended, all applied:**
+  - `converge.py`'s `_poll_until_synced` slept up to ~50s on the writer's single
+    `prefetch_count=1` consumer thread after every UPSERT, delaying every other queued
+    reconcile (including a teardown) behind it. Removed entirely — a PENDING change now
+    just leaves its `change_id` recorded, confirmed later by `_stamp_pending_syncs` (the
+    next reconcile for that infra) or the new `sync_platform_dns_changes` management
+    command (`sweep_pending_dns_syncs`), an out-of-process periodic sweep grouped by
+    `change_id` to avoid redundant `GetChange` calls — same operational pattern as
+    `sweep_platform_dns`.
+  - `occurred_at` (a wall-clock timestamp, vulnerable to skew between this service's
+    several concurrent publishers) is replaced end to end by
+    `Infrastructure.host_readiness_version`, a per-infra counter incremented under a row
+    lock before every publish. `HostReadinessEventConsumer` now requires it — a payload
+    missing or carrying a non-integer value is discarded, never treated as "always
+    current" the way a missing `occurred_at` previously was.
+  - `docs/PLATFORM_DNS_ISOLATION.md`'s RabbitMQ section extended to cover the writer's new
+    publish target (`infrastructure.events`, for `host_readiness_updated`), including an
+    explicit callout that RabbitMQ permissions are exchange/queue-name-based, not
+    routing-key-based, so this grant cannot be narrowed to only that one routing key — a
+    compromised writer credential could still forge other `infrastructure.events` message
+    types. Not wired into `infra/.docker` (documented, not automated), same as the
+    pre-existing Redis ACL gap in that file.
+  - `backfill_host_routing` now takes the per-app `DeploymentLock` before touching
+    anything (skipping — not blocking on — an app a concurrent ordinary deploy/rollback
+    already holds), rolls the ECS service back to its previous task definition if
+    `_configure_host_routing` fails after the service has already been moved to the new
+    one, and `--dry-run` calls the same (read-only) eligibility evaluation a real run
+    would rather than just naming the apps it would consider.
+  - `converge.py`'s ledger updates now filter exact `(name, type)` pairs (a `Q`-OR chain)
+    instead of an `__in`/`__in` cross product, and every `synced_at` stamp — in
+    `_stamp_pending_syncs`, the main upsert path, and the new periodic sweep — is guarded
+    on `change_id` matching what was just read, so a concurrent reconcile that already
+    re-upserted the row with a different change cannot have its confirmation misapplied.
 
 ## Part 2 — what shipped (mock-verified)
 
@@ -159,6 +479,9 @@ addressed on the branch before it was force-pushed:
   capture group excludes `\r`/`\n` to close a response-splitting angle.
 
 ### Scaffolded but not wired into the live deploy path (honest deferral, not an oversight)
+
+**All wired in part 3a** — see "Part 3a — what shipped" above. Left as written at the time
+(part 2) for the historical record of what was and wasn't done at each stage.
 
 The following are real, tested code — not stubs — but are not yet called from
 `application_deployment_service.py`'s deploy flow, because doing so needs a cross-service
@@ -384,6 +707,20 @@ never orphaned, platform-DNS paired hard gate) · `test_listener_rules_host.py`
 SNI cap) · teardown at each entry point · re-validation → `DISABLED` pulls the listener
 rule. **Golden non-regression:** ECS terraform output string-identical with `enable_https`
 unset; nginx path-mode config string-identical.
+
+**Part 3a's actual test files** (infrastructure-service):
+`test_platform_dns_converge.py` (synced_at population, catch-up, the periodic-sweep
+functions), `test_sync_platform_dns_changes.py`, `test_host_readiness.py` (including the
+monotonic version counter), `test_eks_bootstrap.py` (`apply_eks_tls`),
+`test_eks_tls_sweep.py` (re-issue detection, bounded retry, teardown clearing).
+Application-service: `test_host_url.py` (hostname validation), `test_host_url_gating.py`
+(the full gating matrix, including the ACTIVE-status gate), `test_host_readiness_consumer.py`
+(including the required-version rejection), `test_dns_label_write_once.py`,
+`test_alb_host_routing.py` (`ensure_host_redirect_rule`, including the re-prioritize-on-lookup
+fix), `test_host_mode_deploy_wiring.py` (ECS end-to-end against the mock ALB, the
+first-deploy-window fix, plus the path-mode golden-equivalence checks), `test_mock_eks_deploy.py`
+(EKS host-rule additions and the live-ALB-check fail-closed paths, appended to the existing
+SEAM 3 harness), `test_backfill_host_routing.py` (including the lock/rollback/dry-run fixes).
 
 ## Security pre-review
 

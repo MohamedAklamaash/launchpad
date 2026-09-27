@@ -85,6 +85,15 @@ class Infrastructure(models.Model):
     # dns_teardown_requested_at, which a plain hard delete can also set. Monotonic: never
     # cleared, and the view refuses a second exit once this is set.
     exited_at = models.DateTimeField(null=True, blank=True)
+    # RECOMMENDED item 2 (F1b part 3a security review): a per-infra monotonic counter for
+    # infrastructure.host_readiness_updated events, incremented under a row lock by
+    # api/services/host_readiness.py:publish_host_readiness on every publish. Wall-clock
+    # `occurred_at` timestamps are vulnerable to clock skew between this service's several
+    # publishers (a terraform apply, the TLS re-check tick, the DNS writer's own converge
+    # loop, potentially different machines) — an integer this row itself hands out is not.
+    # application-service's read-model mirrors this as the sole staleness signal for that
+    # event; a payload missing it is rejected outright, never treated as "always current".
+    host_readiness_version = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

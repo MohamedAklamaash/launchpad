@@ -30,6 +30,7 @@ from api.services.eks_bootstrap import (
     phase_marker,
 )
 from api.services.eks_teardown import cleanup_eks_orphans
+from api.services.host_readiness import publish_host_readiness
 from api.services.infrastructure import validate_aws_region, validate_vpc_cidr
 from api.services.log_redaction import clip_head, clip_tail, redact_provisioning_text
 from api.services.platform_dns.producer import request_dns_reconcile
@@ -56,6 +57,15 @@ DEFAULT_EKS_CLUSTER_VERSION = "1.31"
 MIN_PUBLIC_ACCESS_PREFIXLEN = 16
 MAX_LOG_CHARS = 256_000
 MAX_ERROR_CHARS = 8_000
+
+# R3 (security review): applied at every DESTROYED transition so a later re-provision (or
+# a stale row that somehow gets touched again) never inherits a "TLS already patched"
+# signal from a cluster/certificate pairing that no longer exists.
+EKS_TLS_TEARDOWN_FIELDS = {
+    "eks_ingress_tls_ready": False,
+    "eks_ingress_tls_cert_arn": None,
+    "eks_ingress_tls_patch_attempted_at": None,
+}
 _CREDENTIAL_KEYS = ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
 
 # Live (non-terminal) statuses whose Database row still gets a module block emitted into
@@ -672,6 +682,23 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
         for db in live_dbs:
             outputs.update(synthesize_database_outputs(db, region=region, account_id=account_id))
 
+        # F1b part 3a mock end-to-end: mirror the real provision()'s "443 applied only once
+        # ACM has ISSUED" gate. ECS synthesizes the listener ARN terraform would have
+        # produced; EKS has no terraform output for this at all (Ingress class patch, not a
+        # module output) so the readiness flag is set directly — mock never runs real k8s
+        # calls (eks_bootstrap.bootstrap_eks_environment already refuses mock outright).
+        issued_cert = InfrastructureCertificate.objects.filter(
+            infrastructure_id=infra_id, tls_status=InfrastructureCertificate.TLS_ISSUED,
+        ).first()
+        if issued_cert is not None and issued_cert.cert_arn:
+            if infra.compute_type == ComputeType.EKS:
+                Environment.objects.filter(id=env.id).update(eks_ingress_tls_ready=True)
+            else:
+                outputs["https_listener_arn"] = (
+                    f"arn:aws:elasticloadbalancing:{region}:{account_id}:listener/app/"
+                    f"mock-{infra_id}/https"
+                )
+
         TerraformWorker._save_outputs(
             infra_id,
             {"logs": "[MOCK] synthesized environment outputs", "outputs": outputs},
@@ -1069,8 +1096,14 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                     is_cloud_authenticated=infra.is_cloud_authenticated,
                     is_mock=infra.is_mock,
                     metadata=infra.metadata,
+                    dns_label=infra.dns_label,
                     correlation_id=None
                 ))
+
+                # F1b part 3a: dns_label/https_listener_arn (ECS) or eks_ingress_tls_ready
+                # (EKS) may all have just changed — refresh application-service's read-model
+                # snapshot. Best-effort, never raises (see host_readiness.py).
+                transaction.on_commit(lambda: publish_host_readiness(infra_id))
 
                 # Publish environment.updated after a short delay so the application-service
                 # has time to process and commit the infrastructure.created event first.
@@ -1260,7 +1293,9 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 except Exception:
                     logger.warning(f"platform DNS reconcile request failed for {infra_id} (non-fatal)", exc_info=True)
                 with transaction.atomic():
-                    Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYED")
+                    Environment.objects.filter(infrastructure_id=infra_id).update(
+                        status="DESTROYED", **EKS_TLS_TEARDOWN_FIELDS,
+                    )
                 return
 
             # Mock/real gate BEFORE the teardown call below, not after: mark_dns_teardown_
@@ -1290,7 +1325,7 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 )
                 with transaction.atomic():
                     Environment.objects.filter(infrastructure_id=infra_id).update(
-                        status="DESTROYED", logs="[MOCK] destroyed"
+                        status="DESTROYED", logs="[MOCK] destroyed", **EKS_TLS_TEARDOWN_FIELDS,
                     )
                 return
 
@@ -1348,7 +1383,7 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             with transaction.atomic():
                 if result["success"]:
                     Environment.objects.filter(infrastructure_id=infra_id).update(
-                        status="DESTROYED", logs=_capped_logs(destroy_logs)
+                        status="DESTROYED", logs=_capped_logs(destroy_logs), **EKS_TLS_TEARDOWN_FIELDS,
                     )
                     logger.info(f"Infrastructure {infra_id} destroyed")
                 else:

@@ -50,6 +50,13 @@ class PlatformDnsRecord(models.Model):
     # addition to InfrastructureCertificate.tls_status == ISSUED and the 443 listener being
     # applied — see api/services/host_readiness.py.
     synced_at = models.DateTimeField(null=True, blank=True)
+    # Route53 ChangeInfo.Id from the most recent UPSERT that touched this row — the handle
+    # converge.py uses to poll get_change and stamp synced_at, including on a later
+    # reconcile that finds this row already matches desired state (a redelivered message,
+    # or one that arrived between the UPSERT and the poll completing). Cleared to null
+    # whenever synced_at is stamped — a stale change_id on an already-synced row would just
+    # be re-polled forever for no reason.
+    change_id = models.CharField(max_length=64, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

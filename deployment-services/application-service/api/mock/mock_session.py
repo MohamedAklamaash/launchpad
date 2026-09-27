@@ -24,6 +24,20 @@ def _hex_infra_id(prefix: str, infra_id: str, salt: str = "") -> str:
 _MOCK_RESOLVED_SHA = "0" * 39 + "1"
 
 
+def mock_eks_alb_dns(infra_id: str, region: str) -> str:
+    """The mock's own deterministic stand-in for the shared EKS group ALB's DNS name — see
+    MockClient.describe_load_balancers. Test fixtures that want EKSDeployer's B1 live check
+    (find the group ALB from Environment.alb_dns) to succeed against the mock must set
+    Environment.alb_dns to exactly this value; anything else (e.g. a fixed literal string
+    like "alb.example.com") makes the live check correctly fail closed to path mode, since
+    that is exactly what it's supposed to do when the ALB can't be found."""
+    return f"mock-eks-alb-{_suffix(str(infra_id))}.{region}.elb.amazonaws.com"
+
+
+def mock_eks_alb_arn(infra_id: str, region: str, account_id: str) -> str:
+    return f"arn:aws:elasticloadbalancing:{region}:{account_id}:loadbalancer/app/mock-eks-alb/{_suffix(str(infra_id))}"
+
+
 class _MockClientExceptions:
     def __init__(self, service: str):
         self._service = service
@@ -142,21 +156,45 @@ class MockClient:
     def modify_target_group(self, **kwargs):
         return {"TargetGroups": [{"TargetGroupArn": kwargs.get("TargetGroupArn", "")}]}
 
+    def describe_load_balancers(self, **kwargs):
+        # Real elbv2 has no way to filter DescribeLoadBalancers by DNS name (only by ARN
+        # or LB name) — the real EKSDeployer._find_group_alb_arn call this backs paginates
+        # ALL load balancers and matches DNSName client-side. The mock models exactly one
+        # LB (see mock_eks_alb_dns/mock_eks_alb_arn above), so a Marker/NextMarker page
+        # request always ends the scan immediately, and it's up to the caller/fixture to
+        # have set Environment.alb_dns to the matching mock DNS name if it wants the B1
+        # live check to succeed.
+        if kwargs.get("Marker") or not self._infra_id:
+            return {"LoadBalancers": []}
+        return {"LoadBalancers": [{
+            "LoadBalancerArn": mock_eks_alb_arn(self._infra_id, self._region, self._account_id),
+            "DNSName": mock_eks_alb_dns(self._infra_id, self._region),
+        }]}
+
     def describe_listeners(self, **kwargs):
         lb_arn = kwargs.get("LoadBalancerArn", "alb")
         # Port is load-bearing: get_listener_arn selects by it rather than taking the
         # first listener, so a stub without it would strand every mock-mode deploy on
-        # "No listener found".
+        # "No listener found". Both :80 and :443 always exist in mock mode — real
+        # terraform only creates :443 once a certificate is ISSUED (modules/alb,
+        # enable_https), but mock provisioning never runs terraform at all (see
+        # infrastructure-service's TerraformWorker._mock_provision), so there is no
+        # equivalent "not yet applied" state to model here; the app-level tls_status/
+        # dns_synced/https_ready gate (api/common/host_url.py) is what actually decides
+        # whether a mock deploy attempts host mode.
         return {"Listeners": [
             {"ListenerArn": self._arn(f"listener/app/{_suffix(lb_arn)}/80"), "Port": 80},
+            {"ListenerArn": self._arn(f"listener/app/{_suffix(lb_arn)}/443"), "Port": 443},
         ]}
 
     def describe_rules(self, **kwargs):
         # Reflect rules created via create_rule so verify_target_group_attached and
         # get_next_priority see the forward action they just wired up — a stateless
-        # mock would loop forever on "target group not in listener rules yet".
+        # mock would loop forever on "target group not in listener rules yet". Conditions
+        # are included so a caller (e.g. ensure_host_redirect_rule) can find an existing
+        # rule by its host-header condition, the same as real ALB's describe_rules does.
         listener_arn = kwargs.get("ListenerArn", "listener")
-        default = {"RuleArn": self._arn("listener-rule/default"), "Priority": "default", "Actions": []}
+        default = {"RuleArn": self._arn("listener-rule/default"), "Priority": "default", "Actions": [], "Conditions": []}
         return {"Rules": self._listener_rules.get(listener_arn, []) + [default]}
 
     def create_rule(self, **kwargs):
@@ -165,6 +203,7 @@ class MockClient:
             "RuleArn": self._arn(f"listener-rule/{_suffix(str(kwargs))}"),
             "Priority": str(kwargs.get("Priority", 1)),
             "Actions": kwargs.get("Actions", []),
+            "Conditions": kwargs.get("Conditions", []),
         }
         self._listener_rules.setdefault(listener_arn, []).append(rule)
         return {"Rules": [rule]}
@@ -174,6 +213,16 @@ class MockClient:
         for rules in self._listener_rules.values():
             rules[:] = [r for r in rules if r["RuleArn"] != rule_arn]
         return {}
+
+    def set_rule_priorities(self, **kwargs):
+        by_arn = {p["RuleArn"]: str(p["Priority"]) for p in kwargs.get("RulePriorities", [])}
+        updated = []
+        for rules in self._listener_rules.values():
+            for rule in rules:
+                if rule["RuleArn"] in by_arn:
+                    rule["Priority"] = by_arn[rule["RuleArn"]]
+                    updated.append(rule)
+        return {"Rules": updated}
 
     def describe_target_health(self, **kwargs):
         return {"TargetHealthDescriptions": [{"TargetHealth": {"State": "healthy"}}]}

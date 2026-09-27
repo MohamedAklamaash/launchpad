@@ -37,7 +37,26 @@ class Infrastructure(models.Model):
         related_name='invited_infrastructures',
         blank=True,
     )
-    
+
+    # F1b part 3a: mirrored from infrastructure-service's own fields via the
+    # infrastructure.created and infrastructure.host_readiness_updated events (see
+    # api/messaging/consumers/infrastructure.py and api/common/host_url.py). Never derived
+    # from this row's own id or created_at — dns_label is independent random entropy minted
+    # once upstream and is immutable here, matching infra-service's own invariant.
+    dns_label = models.CharField(max_length=16, null=True, blank=True, editable=False)
+    tls_status = models.CharField(max_length=20, null=True, blank=True, editable=False)
+    dns_synced = models.BooleanField(default=False, editable=False)
+    https_ready = models.BooleanField(default=False, editable=False)
+    # Bookkeeping only, never exposed via the API: mirrors infrastructure-service's
+    # Infrastructure.host_readiness_version, a per-infra monotonic counter incremented
+    # under a row lock before every host_readiness_updated publish (RECOMMENDED item 2,
+    # security review) — this service's several publishers (a terraform apply, the TLS
+    # re-check tick, the DNS writer's own converge loop) give no cross-publisher wall-clock
+    # ordering guarantee, so an integer minted by the row itself replaces the wall-clock
+    # `occurred_at` this field used to hold. An event missing it is rejected outright, never
+    # treated as "always current" — see HostReadinessEventConsumer.
+    host_readiness_version = models.PositiveIntegerField(default=0, editable=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

@@ -10,12 +10,29 @@ ledger rows for the deleted names are removed only AFTER the call confirms succe
 PlatformDnsRecord's docstring for why that ordering is what makes "ledger is empty" a safe
 proxy for "nothing of ours is left in the zone", including across a hard delete of the
 Infrastructure row.
+
+F1b part 3a: `synced_at` (part of the host-URL publish gate — see host_readiness.py) is
+populated here from Route53's own GetChange status, never assumed. A change that lands
+already INSYNC (every real UPSERT/DELETE that requires no propagation, and the mock zone
+unconditionally) is stamped immediately. One still PENDING is left with its `change_id`
+recorded and `synced_at` null — converge_platform_dns itself never sleeps waiting for it
+(RECOMMENDED item 1, security review: this runs on the writer's single prefetch_count=1
+consumer thread, and a real Route53 propagation wait there would delay every other
+message behind it, including a teardown reconcile). Two catch-up paths confirm it later
+instead: `_stamp_pending_syncs`, a one-shot no-sleep GetChange run at the start of the
+*next* reconcile for this same infrastructure, and `sweep_pending_dns_syncs`
+(management command `sync_platform_dns_changes`), an out-of-process periodic sweep over
+every infra's pending rows — see that command's docstring for why it's a separate
+scheduled job rather than a thread inside the consumer, mirroring `sweep_platform_dns`'s
+own operational pattern.
 """
 import logging
 
 from api.models.platform_dns_record import PlatformDnsRecord
 from django.conf import settings
 from django.db import connection, transaction
+from django.db.models import Q
+from django.utils import timezone
 
 from . import naming
 from .desired_state import DesiredRecord, compute_desired_state
@@ -49,6 +66,16 @@ def _acquire_infra_lock(infrastructure_id: str) -> None:
 
 def converge_platform_dns(infrastructure_id: str, *, infra_is_mock: bool, dev_mode: bool) -> None:
     route53_error = None
+    client = None
+    zone_id = None
+    to_upsert: list[DesiredRecord] = []
+    to_delete: list = []
+
+    def _client():
+        nonlocal client, zone_id
+        if client is None:
+            client, zone_id = get_route53_client(infra_is_mock=infra_is_mock, dev_mode=dev_mode)
+        return client, zone_id
 
     with transaction.atomic():
         _acquire_infra_lock(infrastructure_id)
@@ -64,6 +91,14 @@ def converge_platform_dns(infrastructure_id: str, *, infra_is_mock: bool, dev_mo
             for row in PlatformDnsRecord.objects.filter(infrastructure_id=infrastructure_id)
         }
 
+        # Catch up any row from a previous UPSERT that never got confirmed INSYNC — a
+        # redelivered message, or one whose earlier poll (below) ran out of attempts.
+        # One GetChange per row, no sleep: cheap, and the bounded poll below still runs for
+        # anything issued by *this* invocation.
+        pending_sync_rows = [row for row in ledger_by_key.values() if row.synced_at is None and row.change_id]
+        if pending_sync_rows:
+            _stamp_pending_syncs(_client()[0], pending_sync_rows)
+
         to_upsert = [
             record for key, record in desired_by_key.items()
             if key not in ledger_by_key
@@ -78,7 +113,7 @@ def converge_platform_dns(infrastructure_id: str, *, infra_is_mock: bool, dev_mo
         if not to_upsert and not to_delete:
             return
 
-        client, zone_id = get_route53_client(infra_is_mock=infra_is_mock, dev_mode=dev_mode)
+        client, zone_id = _client()
 
         # DELETE requires the record set's CURRENT live TTL/values — Route53 rejects a
         # DELETE whose ResourceRecordSet doesn't exactly match what's live, and our
@@ -103,7 +138,10 @@ def converge_platform_dns(infrastructure_id: str, *, infra_is_mock: bool, dev_mo
                 infrastructure_id=infrastructure_id,
                 record_name=record.name,
                 record_type=record.record_type,
-                defaults={"kind": record.kind, "record_value": record.value, "ttl": record.ttl},
+                defaults={
+                    "kind": record.kind, "record_value": record.value, "ttl": record.ttl,
+                    "synced_at": None, "change_id": None,
+                },
             )
 
         # The Route53 call is caught, not left to propagate, so a failure here can never
@@ -116,14 +154,34 @@ def converge_platform_dns(infrastructure_id: str, *, infra_is_mock: bool, dev_mo
         changes = [_upsert_change(record) for record in to_upsert] + [
             _delete_change(live_record) for _row, live_record in delete_pairs
         ]
+        change_id = None
+        change_status = None
         if changes:
             try:
-                client.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch={"Changes": changes})
+                response = client.change_resource_record_sets(HostedZoneId=zone_id, ChangeBatch={"Changes": changes})
+                change_info = response.get("ChangeInfo", {})
+                change_id = change_info.get("Id")
+                change_status = change_info.get("Status")
             except Exception as exc:
                 route53_error = exc
 
-        if route53_error is None and delete_pairs:
-            PlatformDnsRecord.objects.filter(id__in=[row.id for row, _live in delete_pairs]).delete()
+        if route53_error is None:
+            if delete_pairs:
+                PlatformDnsRecord.objects.filter(id__in=[row.id for row, _live in delete_pairs]).delete()
+            if to_upsert and change_id:
+                # RECOMMENDED item 5 (security review): exact (name, type) pairs, not an
+                # __in/__in cross product — record_type is "CNAME" for everything this
+                # writer creates today, so the old filter happened to be exact in practice,
+                # but a name shared across two different types (or vice versa) would have
+                # matched rows outside this upsert's own set.
+                pair_condition = Q()
+                for record in to_upsert:
+                    pair_condition |= Q(record_name=record.name, record_type=record.record_type)
+                q = PlatformDnsRecord.objects.filter(pair_condition, infrastructure_id=infrastructure_id)
+                if change_status == "INSYNC":
+                    q.update(synced_at=timezone.now(), change_id=None)
+                else:
+                    q.update(change_id=change_id)
 
     if route53_error is not None:
         raise route53_error
@@ -138,6 +196,69 @@ def converge_platform_dns(infrastructure_id: str, *, infra_is_mock: bool, dev_mo
             "platform DNS deleted %s record for infra %s: %s",
             row.kind, infrastructure_id, row.record_name,
         )
+
+
+def _stamp_pending_syncs(client, rows: list) -> None:
+    """One GetChange per row still awaiting confirmation, no sleep — a cheap catch-up for
+    whatever a previous invocation's bounded poll didn't resolve in time. Any error (e.g. a
+    transient Route53 blip) is swallowed per-row: this is a best-effort nicety, and the same
+    catch-up runs again on the next reconcile regardless."""
+    for row in rows:
+        try:
+            status = client.get_change(Id=row.change_id)["ChangeInfo"]["Status"]
+        except Exception:
+            logger.warning("platform DNS GetChange catch-up failed for %s (will retry next reconcile)",
+                            row.change_id, exc_info=True)
+            continue
+        if status == "INSYNC":
+            # Guarded on change_id (RECOMMENDED item 5): if a concurrent reconcile already
+            # re-upserted this row with a different change_id since it was read above, this
+            # is now stale information and must not stamp synced_at for the wrong change.
+            PlatformDnsRecord.objects.filter(id=row.id, change_id=row.change_id).update(
+                synced_at=timezone.now(), change_id=None,
+            )
+
+
+def sweep_pending_dns_syncs(client) -> int:
+    """Out-of-process periodic catch-up for every infra's pending rows — see
+    api/management/commands/sync_platform_dns_changes.py, the scheduled job this backs
+    (RECOMMENDED item 1, security review). Deliberately not run from inside the
+    message-consuming process: converge_platform_dns never sleeps waiting for INSYNC (see
+    this module's docstring), and calling this from the same process on a timer would only
+    reintroduce the same "blocks the single prefetch_count=1 consumer thread" problem for
+    however long a batch of GetChange calls takes.
+
+    Groups pending rows by change_id first so a single Route53 ChangeBatch that touched
+    several records (e.g. an edge+wildcard pair from one reconcile) costs one GetChange
+    call, not one per row. Returns the number of rows newly confirmed INSYNC.
+    """
+    pending = list(
+        PlatformDnsRecord.objects.filter(synced_at__isnull=True).exclude(change_id__isnull=True).exclude(change_id="")
+    )
+    rows_by_change_id: dict[str, list] = {}
+    for row in pending:
+        rows_by_change_id.setdefault(row.change_id, []).append(row)
+
+    confirmed = 0
+    for change_id, rows in rows_by_change_id.items():
+        try:
+            status = client.get_change(Id=change_id)["ChangeInfo"]["Status"]
+        except Exception:
+            logger.warning(
+                "sync_platform_dns_changes: GetChange failed for %s (will retry next run)",
+                change_id, exc_info=True,
+            )
+            continue
+        if status != "INSYNC":
+            continue
+        # Guarded on change_id (RECOMMENDED item 5): a row a concurrent reconcile has
+        # since re-upserted with a *different* change_id must not be stamped synced for
+        # a change that no longer describes its current value.
+        updated = PlatformDnsRecord.objects.filter(
+            id__in=[row.id for row in rows], change_id=change_id,
+        ).update(synced_at=timezone.now(), change_id=None)
+        confirmed += updated
+    return confirmed
 
 
 def _fetch_live_record(client, zone_id: str, name: str, record_type: str) -> dict | None:

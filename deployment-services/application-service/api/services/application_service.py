@@ -93,6 +93,7 @@ class ApplicationService:
     _PROTECTED_CREATE_FIELDS = frozenset({
         "id", "user", "status", "version", "github_webhook_secret",
         "task_definition_arn", "service_arn", "target_group_arn", "listener_rule_arn",
+        "host_forward_rule_arn", "host_route_applied",
         "deployment_url", "build_id", "error_message", "is_sleeping", "desired_count",
         "runtime_refs", "auto_deploy_paused",
         "created_at", "updated_at",

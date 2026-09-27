@@ -78,10 +78,15 @@ def test_queries_the_requested_load_balancer():
 
 def test_mock_session_listener_carries_a_port():
     """Mock-mode deploys go through the same selection path, so the stub has to model
-    Port or every mock deploy strands on 'No :80 listener found'."""
+    Port or every mock deploy strands on 'No :80 listener found'. F1b part 3a: both :80
+    and :443 always exist in mock mode (see mock_session.py's describe_listeners) so a
+    mock end-to-end host-mode deploy can select the 443 listener the same way a real one
+    selects it once terraform has applied the conditional 443 listener."""
     from api.mock.mock_session import MockSession
 
     session = MockSession(region="us-east-1", account_id="000000000000")
     listeners = session.client("elbv2").describe_listeners(LoadBalancerArn="alb")["Listeners"]
-    assert [listener["Port"] for listener in listeners] == [80]
-    assert ALBClient(session).get_listener_arn("alb") == listeners[0]["ListenerArn"]
+    assert {listener["Port"] for listener in listeners} == {80, 443}
+    alb = ALBClient(session)
+    assert alb.get_listener_arn("alb", port=80) == next(l["ListenerArn"] for l in listeners if l["Port"] == 80)
+    assert alb.get_listener_arn("alb", port=443) == next(l["ListenerArn"] for l in listeners if l["Port"] == 443)

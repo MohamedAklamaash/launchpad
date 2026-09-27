@@ -191,6 +191,12 @@ class FakeRoute53Zone:
                 self._records.pop(key, None)
         return {"ChangeInfo": {"Id": "/change/MOCK", "Status": "INSYNC"}}
 
+    def get_change(self, Id=None):
+        # The fake zone applies every change synchronously, so any change id it ever
+        # handed out (including "/change/MOCK") is INSYNC the instant it's asked about —
+        # mirrors real Route53's eventual INSYNC, just with no propagation delay to model.
+        return {"ChangeInfo": {"Id": Id or "/change/MOCK", "Status": "INSYNC"}}
+
 
 _fake_zone_singleton: FakeRoute53Zone | None = None
 

@@ -5,6 +5,7 @@ import time
 
 from aws.alb import ALBClient
 from aws.codebuild import CodeBuildClient
+from aws.container_config import HOST_MODE_HEALTH_CHECK_PATH
 from aws.ecr import ECRClient
 from aws.ecs import ECSClient
 from aws.session import create_boto3_session
@@ -19,6 +20,11 @@ from shared.aws.app_security_group import (
 from shared.enums.orchestrator import ComputeType
 from shared.errors.deploy_errors import sanitize_deploy_error
 
+from api.common.host_url import (
+    HostUrlNotAvailable,
+    build_app_hostname,
+    infra_host_ready,
+)
 from api.common.naming import app_slug as _slug
 from api.common.naming import image_tag as _image_tag
 from api.k8s.deployer import EKSDeployer
@@ -56,6 +62,16 @@ class ApplicationDeploymentService:
             # Step 2: Assume AWS Role
             session = self._create_aws_session(application.infrastructure)
 
+            # Step 2.5: Resolve routing mode BEFORE the image is even built — host mode
+            # bakes the app's hostname into the nginx sidecar config inside the task
+            # definition, so it has to be known before Step 5 registers it. Never fails
+            # the deploy: an app that isn't eligible for host mode this time simply
+            # deploys in path mode, exactly as it always has (F1b part 3a is additive).
+            host_mode, app_hostname, _host_reason = (
+                self._resolve_host_routing(application, environment, session)
+                if not _is_eks(application) else (False, None, "eks")
+            )
+
             # Step 3: Trigger Build
             image_tag = _image_tag(application)
             build_id = self._trigger_build(session, application, environment, image_tag)
@@ -76,15 +92,21 @@ class ApplicationDeploymentService:
 
             # Step 5: Create ECS Task Definition
             task_def_arn = self._create_task_definition(
-                session, application, environment, resolved_sha=resolved_sha
+                session, application, environment, resolved_sha=resolved_sha,
+                host_mode=host_mode, app_hostname=app_hostname,
             )
             application.task_definition_arn = task_def_arn
             application.status = 'DEPLOYING'
             application.save()
             created_resources.append(('task_definition', task_def_arn))
-            
-            # Step 6: Create Target Group
-            target_group_arn = self._create_target_group(session, application, environment)
+
+            # Step 6: Create Target Group — health check path moves in lockstep with the
+            # nginx sidecar's own routing mode (see container_config.HOST_MODE_HEALTH_CHECK_PATH),
+            # whether the target group is newly created or reused from a previous deploy.
+            health_check_path = HOST_MODE_HEALTH_CHECK_PATH if host_mode else '/'
+            target_group_arn = self._create_target_group(
+                session, application, environment, health_check_path=health_check_path,
+            )
             application.target_group_arn = target_group_arn
             application.save()
             created_resources.append(('target_group', target_group_arn))
@@ -106,11 +128,29 @@ class ApplicationDeploymentService:
             self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
             logger.info(f"Target group {application.target_group_arn} has healthy targets")
 
+            # Step 8.55: R1 — reserve the infra-wide :80 wildcard redirect's priority-1 slot
+            # BEFORE this (or any) app's own path rule is created. This runs whenever the
+            # infra has a dns_label, independent of whether THIS deploy is itself eligible
+            # for host mode: the very first deploy on an infra after TLS onboarding begins
+            # must not let a path rule claim priority 1 before any app ever reaches host
+            # mode, or a later host-mode-eligible app finds every low priority already
+            # taken and the redirect rule permanently outranked.
+            self._reserve_host_redirect_priority(alb, application, environment)
+
             # Step 8.6: Configure ALB Routing AFTER targets are confirmed healthy — zero 502 window
             listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
             application.listener_rule_arn = listener_rule_arn
             application.save()
             created_resources.append(('listener_rule', listener_rule_arn))
+
+            # Step 8.65: Host-mode routing (443 forward) — additive, on top of the path
+            # rule above, never in place of it. The :80 redirect was already reserved in
+            # step 8.55, before the path rule existed at all.
+            host_forward_rule_arn = self._configure_host_routing(
+                alb, application, environment, host_mode, app_hostname,
+            )
+            if host_forward_rule_arn:
+                created_resources.append(('host_forward_rule', host_forward_rule_arn))
 
             # Step 8.7: Verify target group is attached to ALB
             alb.verify_target_group_attached(application.target_group_arn, listener_arn)
@@ -177,6 +217,21 @@ class ApplicationDeploymentService:
             elif resource_type == 'listener_rule':
                 alb = ALBClient(session)
                 alb.client.delete_rule(RuleArn=resource_id)
+            elif resource_type == 'host_forward_rule':
+                # R2: host_forward_rule_arn is saved to the DB before
+                # verify_target_group_attached runs (see _configure_host_routing) — a
+                # failure there must not leave a stale ARN pointing at a rule this branch
+                # just deleted, or app_host_url() would keep reporting a live host route
+                # that no longer exists. Cleared even if the rule was already gone
+                # (RuleNotFound) — either way, nothing this ARN names is still live.
+                alb = ALBClient(session)
+                try:
+                    alb.client.delete_rule(RuleArn=resource_id)
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'RuleNotFound':
+                        raise
+                application.host_forward_rule_arn = None
+                Application.objects.filter(id=application.id).update(host_forward_rule_arn=None)
             elif resource_type == 'target_group':
                 alb = ALBClient(session)
                 alb.client.delete_target_group(TargetGroupArn=resource_id)
@@ -421,7 +476,8 @@ class ApplicationDeploymentService:
 
     def _create_task_definition(self, session, application: Application, environment: Environment,
                                 resolved_sha: str | None = None, image_tag: str | None = None,
-                                image_digest: str | None = None):
+                                image_digest: str | None = None, host_mode: bool = False,
+                                app_hostname: str | None = None):
         ecs = ECSClient(session)
         ecr = ECRClient(session)
         logs = session.client('logs')
@@ -468,12 +524,13 @@ class ApplicationDeploymentService:
             app_name=_slug(application.name),
             secrets=db_secrets,
             tags=app_tags(application.infrastructure_id, _slug(application.name)),
+            host_mode=host_mode, app_hostname=app_hostname,
         )
-        
+
         logger.info(f"Created task definition {task_def_arn}")
         return task_def_arn
     
-    def _create_target_group(self, session, application: Application, environment: Environment):
+    def _create_target_group(self, session, application: Application, environment: Environment, health_check_path: str = '/'):
         alb = ALBClient(session)
 
         if application.target_group_arn:
@@ -482,6 +539,10 @@ class ApplicationDeploymentService:
                 tg = resp['TargetGroups'][0]
                 if tg['VpcId'] == environment.vpc_id:
                     logger.info(f"Reusing existing target group {application.target_group_arn}")
+                    # A routing-mode change (path <-> host) on a redeploy must move the
+                    # health check in lockstep with the nginx sidecar this deploy is about
+                    # to ship, whether or not the target group itself is new.
+                    alb.modify_target_group(application.target_group_arn, health_check_path)
                     return application.target_group_arn
                 else:
                     logger.warning(f"Stored TG is in wrong VPC ({tg['VpcId']} != {environment.vpc_id}), deleting and creating new one")
@@ -500,6 +561,7 @@ class ApplicationDeploymentService:
         target_group_arn = alb.create_target_group(
             name=tg_name, vpc_id=environment.vpc_id, port=80,
             tags=app_tags(application.infrastructure_id, _slug(application.name)),
+            health_check_path=health_check_path,
         )
         logger.info(f"Created target group {target_group_arn}")
         return target_group_arn
@@ -611,18 +673,134 @@ class ApplicationDeploymentService:
                     raise
 
         priority = alb.get_next_priority(listener_arn)
-        
+        slug = _slug(application.name)
+
         listener_rule_arn = alb.create_listener_rule(
             listener_arn=listener_arn,
             target_group_arn=application.target_group_arn,
-            path_pattern=f"/{_slug(application.name)}*",
+            # R1: an exact match plus a trailing-slash prefix, never a bare glob — `/a*`
+            # (the old shape) also matches `/ab/x`, so once ensure_host_redirect_rule's
+            # priority-1 swap can reorder path rules relative to each other, two apps
+            # whose slugs share a prefix ("a" and "ab") could start shadowing one
+            # another depending on which one happens to end up at a lower priority
+            # number after a swap. Exact-or-prefixed-with-slash patterns never overlap
+            # between different slugs regardless of priority order.
+            path_pattern=[f"/{slug}", f"/{slug}/*"],
             priority=priority,
-            tags=app_tags(application.infrastructure_id, _slug(application.name)),
+            tags=app_tags(application.infrastructure_id, slug),
         )
-        
+
         logger.info(f"Created listener rule {listener_rule_arn}")
         return listener_rule_arn, listener_arn
-    
+
+    def _reserve_host_redirect_priority(self, alb: ALBClient, application: Application, environment: Environment):
+        """R1: claim the infra-wide :80 wildcard redirect's priority-1 slot before this (or
+        any) app's own path rule exists, independent of whether THIS deploy is itself
+        eligible for host mode — see the call site in deploy_application for why. A no-op
+        when the platform domain isn't configured or the infra has no dns_label yet (there
+        is nothing to build a wildcard condition from); never fails the deploy."""
+        infra = application.infrastructure
+        base_domain = self._base_domain()
+        if not infra.dns_label or not base_domain:
+            return
+        try:
+            http_listener_arn = alb.get_listener_arn(environment.alb_arn, port=80)
+            if http_listener_arn:
+                alb.ensure_host_redirect_rule(http_listener_arn, infra.dns_label, base_domain)
+        except Exception:
+            logger.warning(
+                "Could not reserve host-redirect priority for infra %s (non-fatal)",
+                infra.id, exc_info=True,
+            )
+
+    def _resolve_host_routing(self, application: Application, environment: Environment, session) -> tuple:
+        """F1b part 3a. Returns (host_mode, app_hostname, reason) — reason is None when
+        host_mode is True, otherwise a stable string (see api/common/host_url.py and
+        views/application.py's host_url_status) explaining why this deploy ran in path
+        mode instead. Never raises: an app ineligible for host mode this time simply
+        deploys in path mode, exactly as every app did before this feature existed.
+
+        The infra-level DB fields (tls_status/dns_synced/https_ready, mirrored from
+        infrastructure-service — see api/common/host_url.py:infra_host_ready) are a fast
+        pre-check; the live :443 describe_listeners call right after is authoritative,
+        since those mirrored fields can be briefly stale relative to the real ALB.
+        """
+        infra = application.infrastructure
+        ready, reason = infra_host_ready(infra)
+        if not ready:
+            return False, None, reason
+
+        try:
+            hostname = build_app_hostname(infra.dns_label, _slug(application.name))
+        except HostUrlNotAvailable as exc:
+            return False, None, exc.reason
+
+        alb = ALBClient(session)
+        https_listener_arn = alb.get_listener_arn(environment.alb_arn, port=443)
+        if not https_listener_arn:
+            logger.warning(
+                "infra %s reports https_ready but no :443 listener exists on ALB %s yet — "
+                "deploying %s in path mode this time",
+                infra.id, environment.alb_arn, application.name,
+            )
+            return False, None, "https_listener_not_applied"
+
+        return True, hostname, None
+
+    def _configure_host_routing(self, alb: ALBClient, application: Application,
+                                environment: Environment, host_mode: bool, app_hostname: str | None):
+        """Additive on top of _configure_alb_routing's path rule — never removes it. A
+        deploy that downgrades out of host mode (TLS/DNS regressed since the last deploy,
+        vanishingly rare) tears down its own stale 443 forward rule rather than leaving a
+        rule that would forward a request straight into an app whose nginx no longer
+        expects to be reached by that Host."""
+        if not host_mode:
+            if application.host_forward_rule_arn:
+                self._delete_host_forward_rule(alb, application)
+            return None
+
+        infra = application.infrastructure
+        https_listener_arn = alb.get_listener_arn(environment.alb_arn, port=443)
+        http_listener_arn = alb.get_listener_arn(environment.alb_arn, port=80)
+        # _resolve_host_routing confirmed the :443 listener existed moments ago, but the
+        # build+wait steps between then and here can take minutes — long enough for a
+        # concurrent re-provision to have torn it down. Fail loudly rather than handing
+        # boto3 a None ARN (a confusing ParamValidationError) or silently no-op-ing with
+        # nginx already baked for host mode.
+        if not https_listener_arn or not http_listener_arn:
+            raise ValueError(
+                f"ALB {environment.alb_arn} is missing its :443 or :80 listener — cannot "
+                f"configure host-mode routing for {application.name}"
+            )
+
+        alb.ensure_host_redirect_rule(http_listener_arn, infra.dns_label, self._base_domain())
+
+        if application.host_forward_rule_arn:
+            self._delete_host_forward_rule(alb, application)
+
+        host_forward_rule_arn = alb.create_host_forward_rule(
+            https_listener_arn, application.target_group_arn, app_hostname,
+            tags=app_tags(application.infrastructure_id, _slug(application.name)),
+        )
+        application.host_forward_rule_arn = host_forward_rule_arn
+        application.save(update_fields=['host_forward_rule_arn'])
+        logger.info(f"Configured host-mode routing for {application.name} at https://{app_hostname}")
+        return host_forward_rule_arn
+
+    def _delete_host_forward_rule(self, alb: ALBClient, application: Application):
+        try:
+            alb.client.delete_rule(RuleArn=application.host_forward_rule_arn)
+        except ClientError as e:
+            if e.response['Error']['Code'] != 'RuleNotFound':
+                logger.error(f"Could not delete old host-forward rule {application.host_forward_rule_arn}: {e}")
+                raise
+        application.host_forward_rule_arn = None
+        application.save(update_fields=['host_forward_rule_arn'])
+
+    def _base_domain(self) -> str:
+        from django.conf import settings
+        return settings.PLATFORM_BASE_DOMAIN
+
     def _generate_deployment_url(self, application: Application, environment: Environment):
         return f"http://{environment.alb_dns}/{_slug(application.name)}"
     
@@ -718,6 +896,12 @@ class ApplicationDeploymentService:
     def _rollback_ecs(self, session, application: Application, environment: Environment, target) -> str:
         ecs = ECSClient(session)
 
+        # Routing mode is re-resolved at rollback time too, not carried over from
+        # whatever the target Deployment snapshot's era looked like — TLS/DNS readiness
+        # (or the lack of it) may have changed since, and the health check + nginx
+        # sidecar must always match what's true right now.
+        host_mode, app_hostname, _host_reason = self._resolve_host_routing(application, environment, session)
+
         # Build the new task definition against the SNAPSHOT's cpu/memory/port, not the
         # application's current ones — a rollback restores the resource shape that shipped
         # with the image, not whatever is configured today. Nothing is persisted yet: if
@@ -728,6 +912,7 @@ class ApplicationDeploymentService:
             task_def_arn = self._create_task_definition(
                 session, application, environment,
                 image_tag=target.image_tag, image_digest=target.image_digest,
+                host_mode=host_mode, app_hostname=app_hostname,
             )
             service_name = f"{_slug(application.name)}-service"
             ecs.client.update_service(
@@ -751,6 +936,10 @@ class ApplicationDeploymentService:
         self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
         alb = ALBClient(session)
         self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
+
+        health_check_path = HOST_MODE_HEALTH_CHECK_PATH if host_mode else '/'
+        alb.modify_target_group(application.target_group_arn, health_check_path)
+        self._configure_host_routing(alb, application, environment, host_mode, app_hostname)
 
         deployment_url = self._generate_deployment_url(application, environment)
         application.deployment_url = deployment_url
@@ -782,3 +971,136 @@ class ApplicationDeploymentService:
             'alloted_cpu', 'alloted_memory', 'port', 'deployment_url', 'status', 'error_message',
         ])
         return deployment_url
+
+    # ── Backfill (F1b part 3a) ───────────────────────────────────────────────
+    #
+    # Moves an already-ACTIVE ECS app into host-mode routing without waiting for its next
+    # code push, once its infrastructure becomes TLS-ready after the app was last deployed.
+    # No CodeBuild: re-registers the task definition against the exact image (tag+digest)
+    # its most recent successful Deployment row recorded — the same "pin to a known-good
+    # image, no rebuild" approach rollback uses — with the host-mode nginx config baked in.
+    # Idempotent: a no-op for an app that isn't eligible, or is already in host mode.
+    # EKS needs no equivalent command — EKSDeployer re-resolves host_mode on every deploy,
+    # so an EKS app picks up host mode automatically the next time it is deployed for any
+    # reason; there is no "wait for a push" gap to backfill there.
+
+    def evaluate_backfill_eligibility(self, application: Application) -> tuple:
+        """Read-only: every check `backfill_host_routing` needs before it mutates anything,
+        split out so `--dry-run` can report exactly what a real run would decide without
+        ever calling ECS/ALB. The live `_resolve_host_routing` call this makes is itself
+        read-only (`describe_listeners`), never a mutation.
+
+        Returns (eligible, reason, context). `context` is only populated when eligible —
+        the session/environment/target/hostname `backfill_host_routing` then acts on,
+        so eligibility is computed exactly once per call rather than re-derived."""
+        from shared.enums.orchestrator import ComputeType
+
+        if _is_eks(application):
+            return False, "eks_not_applicable", None
+        if application.status != 'ACTIVE':
+            return False, f"status_{application.status.lower()}", None
+        if application.host_forward_rule_arn:
+            return False, "already_host_mode", None
+        if application.infrastructure.compute_type != ComputeType.ECS_FARGATE:
+            return False, "not_ecs", None
+
+        environment = Environment.objects.filter(infrastructure=application.infrastructure).first()
+        if environment is None or environment.status != 'ACTIVE':
+            return False, "environment_not_active", None
+
+        target = self._latest_succeeded_deployment(application)
+        if target is None:
+            return False, "no_deployment_history", None
+
+        session = self._create_aws_session(application.infrastructure)
+        host_mode, app_hostname, reason = self._resolve_host_routing(application, environment, session)
+        if not host_mode:
+            return False, reason, None
+
+        return True, "eligible", {
+            "session": session, "environment": environment,
+            "target": target, "app_hostname": app_hostname,
+        }
+
+    def backfill_host_routing(self, application: Application) -> tuple[bool, str]:
+        """Returns (migrated, reason). `reason` is a short human string either way — a
+        skip reason (e.g. 'tls_not_issued', 'already_host_mode'), 'failed_rolled_back' (the
+        ECS service was moved to the new task definition but something after that failed —
+        see _rollback_backfill), or 'migrated'.
+
+        Caller's responsibility, not this method's (matching how deploy_application/
+        rollback_application work — the worker loop holds the lock around them, not the
+        service methods themselves): take `DeploymentLock` for `application.id` before
+        calling this, so a concurrent ordinary deploy/rollback of the same app can never
+        race the ECS service update below."""
+        eligible, reason, ctx = self.evaluate_backfill_eligibility(application)
+        if not eligible:
+            return False, reason
+
+        session, environment = ctx["session"], ctx["environment"]
+        target, app_hostname = ctx["target"], ctx["app_hostname"]
+
+        original_task_definition_arn = application.task_definition_arn
+        task_def_arn = self._create_task_definition(
+            session, application, environment,
+            image_tag=target.image_tag, image_digest=target.image_digest,
+            host_mode=True, app_hostname=app_hostname,
+        )
+        ecs = ECSClient(session)
+        service_name = f"{_slug(application.name)}-service"
+        ecs.client.update_service(
+            cluster=environment.cluster_arn, service=service_name,
+            taskDefinition=task_def_arn, forceNewDeployment=True,
+        )
+        application.task_definition_arn = task_def_arn
+        application.save(update_fields=['task_definition_arn'])
+
+        try:
+            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+            alb = ALBClient(session)
+            self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
+            alb.modify_target_group(application.target_group_arn, HOST_MODE_HEALTH_CHECK_PATH)
+            self._configure_host_routing(alb, application, environment, True, app_hostname)
+        except Exception:
+            logger.exception(
+                f"backfill_host_routing: {application.name} failed after the ECS service "
+                "was already moved to the new task definition — rolling back"
+            )
+            self._rollback_backfill(session, application, environment, service_name, original_task_definition_arn)
+            return False, "failed_rolled_back"
+
+        logger.info(f"backfill_host_routing: migrated {application.name} to host mode at https://{app_hostname}")
+        return True, "migrated"
+
+    def _rollback_backfill(self, session, application: Application, environment: Environment,
+                           service_name: str, original_task_definition_arn: str | None):
+        """RECOMMENDED item 4 (security review): a failure between the ECS service update
+        and a fully-configured host route must not leave the service running the new
+        (host-mode) task definition with none of the routing that makes it reachable —
+        restore the task definition it ran before this attempt, if there was one."""
+        if not original_task_definition_arn:
+            logger.warning(
+                f"backfill_host_routing: {application.name} has no prior task definition to "
+                "roll back to — leaving the new one in place"
+            )
+            return
+        try:
+            ecs = ECSClient(session)
+            ecs.client.update_service(
+                cluster=environment.cluster_arn, service=service_name,
+                taskDefinition=original_task_definition_arn, forceNewDeployment=True,
+            )
+            Application.objects.filter(id=application.id).update(task_definition_arn=original_task_definition_arn)
+            application.task_definition_arn = original_task_definition_arn
+        except Exception:
+            logger.exception(
+                f"backfill_host_routing: rollback of {application.name} to "
+                f"{original_task_definition_arn} also failed — service left on the new "
+                "task definition with incomplete routing"
+            )
+
+    def _latest_succeeded_deployment(self, application: Application):
+        from api.models.deployment import Deployment
+        return Deployment.objects.filter(
+            application=application, status=Deployment.STATUS_SUCCEEDED, tag_source=Deployment.TAG_SOURCE_RESOLVED_SHA,
+        ).order_by('-created_at').first()

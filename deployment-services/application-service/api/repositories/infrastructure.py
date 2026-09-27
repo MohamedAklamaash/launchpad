@@ -4,6 +4,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from shared.enums.orchestrator import ComputeType
 
+from api.common.host_url import is_valid_dns_label
 from api.models.infrastructure import Infrastructure
 from api.models.user import User
 
@@ -70,6 +71,22 @@ class InfrastructureRepository:
         if "is_cloud_authenticated" in infra_data:
             defaults["is_cloud_authenticated"] = infra_data["is_cloud_authenticated"]
 
+        # dns_label is minted once upstream and never changes (Infrastructure.mint_dns_label)
+        # — write-once here too. R4 (security review): a stored non-null value that
+        # disagrees with the incoming payload is refused and logged, never overwritten —
+        # this field feeds directly into every hostname app-service builds
+        # (api/common/host_url.py), so a forged or buggy event carrying a different label
+        # must not be able to silently repoint it. A payload that omits it (an older
+        # producer, or a race before the label was minted upstream) leaves the stored value
+        # untouched either way.
+        incoming_dns_label = infra_data.get("dns_label")
+        if incoming_dns_label and not is_valid_dns_label(incoming_dns_label):
+            logger.error(
+                "upsert_infrastructure: rejecting malformed dns_label in event payload",
+                extra={"infra_id": str(infra_id), "dns_label": incoming_dns_label},
+            )
+            incoming_dns_label = None
+
         incoming_is_mock = bool(infra_data.get("is_mock", False))
 
         try:
@@ -80,6 +97,19 @@ class InfrastructureRepository:
                     .first()
                 )
                 defaults["is_mock"] = (existing.is_mock if existing else False) or incoming_is_mock
+                if incoming_dns_label:
+                    if existing is None or existing.dns_label is None:
+                        defaults["dns_label"] = incoming_dns_label
+                    elif existing.dns_label != incoming_dns_label:
+                        logger.error(
+                            "upsert_infrastructure: refusing to overwrite an already-set "
+                            "dns_label with a different value",
+                            extra={
+                                "infra_id": str(infra_id),
+                                "stored_dns_label": existing.dns_label,
+                                "incoming_dns_label": incoming_dns_label,
+                            },
+                        )
                 if existing:
                     for field, value in defaults.items():
                         setattr(existing, field, value)

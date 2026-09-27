@@ -57,3 +57,49 @@ def test_dev_eks_provision_fills_eks_subset_without_terraform_or_k8s(make_mock_e
     assert env.alb_security_group_id is None
     assert env.target_group_arn is None
     assert env.ecs_task_execution_role_arn is None
+
+
+# ── F1b part 3a: mock end-to-end for the EKS ISSUED-cert -> eks_ingress_tls_ready gate ────
+
+@pytest.mark.django_db
+def test_dev_eks_provision_sets_ingress_tls_ready_when_cert_is_issued(make_mock_eks_infra):
+    """EKS has no terraform output for this (the Ingress class patch is a k8s object, not
+    a module output) — _mock_provision sets the flag directly, mirroring how it always
+    skips the real network call and synthesizes the resulting state in dev mode."""
+    from api.models.infrastructure_certificate import InfrastructureCertificate
+
+    infra, env = make_mock_eks_infra
+    InfrastructureCertificate.objects.create(
+        infrastructure=infra, tls_status=InfrastructureCertificate.TLS_ISSUED,
+        cert_arn="arn:aws:acm:us-east-1:123456789012:certificate/mock",
+    )
+
+    with patch.object(tw_mod, "is_dev_mode", return_value=True), \
+            patch.object(auth_mod, "is_dev_mode", return_value=True), \
+            patch.object(TerraformWorker, "_exec_tf", side_effect=AssertionError("_exec_tf must not run in dev")), \
+            patch.object(eb, "bootstrap_eks_environment", side_effect=AssertionError("bootstrap must not run in dev")), \
+            patch.object(tw_mod, "bootstrap_eks_environment", side_effect=AssertionError("bootstrap must not run in dev")), \
+            patch("api.messaging.producer.producer.infra_producer"):
+        TerraformWorker.provision(str(infra.id))
+
+    env.refresh_from_db()
+    assert env.eks_ingress_tls_ready is True
+
+    from api.services.host_readiness import https_ready_for
+    assert https_ready_for(infra, env) is True
+
+
+@pytest.mark.django_db
+def test_dev_eks_provision_leaves_ingress_tls_ready_false_without_a_cert(make_mock_eks_infra):
+    infra, env = make_mock_eks_infra
+
+    with patch.object(tw_mod, "is_dev_mode", return_value=True), \
+            patch.object(auth_mod, "is_dev_mode", return_value=True), \
+            patch.object(TerraformWorker, "_exec_tf", side_effect=AssertionError("_exec_tf must not run in dev")), \
+            patch.object(eb, "bootstrap_eks_environment", side_effect=AssertionError("bootstrap must not run in dev")), \
+            patch.object(tw_mod, "bootstrap_eks_environment", side_effect=AssertionError("bootstrap must not run in dev")), \
+            patch("api.messaging.producer.producer.infra_producer"):
+        TerraformWorker.provision(str(infra.id))
+
+    env.refresh_from_db()
+    assert env.eks_ingress_tls_ready is False

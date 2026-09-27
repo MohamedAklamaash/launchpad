@@ -330,3 +330,133 @@ DNS** account (`infra/platform-dns`).
       sidecar setup) — confirm no other in-cluster caller (another pod, a NetworkPolicy
       gap) can reach the app's nginx sidecar directly and spoof `X-Forwarded-Proto` without
       going through the ALB at all, which would let it claim an HTTP request is HTTPS.
+
+## F1b part 3a — host URLs
+
+- [ ] **`GetChange` propagation time in practice.** `converge.py`'s bounded poll
+      (`_SYNC_POLL_ATTEMPTS=6` × `_SYNC_POLL_INTERVAL_SECONDS=10` ≈ 60s) is a guess at how
+      long real Route53 UPSERT/DELETE changes typically take to reach INSYNC. Confirm the
+      real distribution (AWS docs describe INSYNC as "typically" under a minute but give no
+      hard bound) and whether the poll needs lengthening, or whether the "next reconcile
+      catches up any still-PENDING row" fallback (`_stamp_pending_syncs`) is exercised often
+      enough in practice that the poll bound barely matters. If a real infra is observed
+      sitting with `dns_synced=False` for an extended period with no further reconcile ever
+      triggered, that is exactly the documented gap — build the periodic sweep this file's
+      F1b part 3a plan section flags as a candidate follow-up, do not just extend the bound.
+- [ ] **`set_rule_priorities` and the priority-1 reservation.** `ALBClient.
+      ensure_host_redirect_rule` creates the wildcard `:80` redirect at whatever priority
+      `get_next_priority` returns, then swaps it to `1` via one `set_rule_priorities` call
+      (also moving whatever rule held `1` to the vacated slot). Confirm this API call is
+      genuinely atomic against a real listener under concurrent rule creation (two apps on
+      the same infra deploying into host mode for the first time at nearly the same moment,
+      each racing to become the one that creates the shared rule) — the code takes the
+      per-listener lock (`_get_listener_lock`) around the whole
+      describe-then-create-then-swap sequence, which should already serialize this within
+      one process, but confirm across the `MAX_PROVISION_WORKERS`/multi-worker-process
+      topology this runs under in production, not just within one Python process.
+- [ ] **ALB per-listener rule limit headroom with the wildcard redirect.** Re-confirm the
+      part 2 "Host rule priorities and limits" item above now that `:80` carries one
+      wildcard redirect rule per infra (not one per app) plus the existing per-app path
+      rules — this should only ever *improve* headroom versus what part 2 flagged, but
+      confirm the actual count against a real infra with many apps.
+- [ ] **EKS `IngressClassParams` merge-patch semantics.** `apply_eks_tls`'s
+      `patch_cluster_custom_object` call is assumed to merge `spec.certificateARNs`/
+      `spec.listenPorts` into the existing object (created by part 2's
+      `_ensure_ingress_class` with only `spec.scheme`/`spec.group`) via a strategic/JSON
+      merge patch, not replace the whole `spec`. Confirm against a real EKS Auto Mode
+      cluster that `group.name` (the ALB Auto Mode group every app's Ingress shares) survives
+      this patch unchanged, and that the ALB actually starts serving `:443` with the patched
+      certificate without a control-plane restart or manual `kubectl rollout` of anything.
+- [ ] **EKS Ingress host-rule interaction with the shared ALB group.** Every app's Ingress in
+      one infra shares one ALB (via `IngressClassParams.spec.group.name`). Confirm the AWS
+      Load Balancer Controller correctly merges each app's own `host=` rule from its own
+      Ingress object into that one shared ALB's listener rules — i.e. that two apps on the
+      same infra, each with their own exact-host Ingress rule, do not collide or shadow one
+      another the way an accidental wildcard or path overlap would.
+- [ ] **B1 (security review, revised): per-Ingress `listen-ports` honoured inside a shared
+      `IngressGroup` in EKS Auto Mode.** The first B1 fix attempt (`listenPorts:
+      [{HTTP:80},{HTTPS:443}]` on the shared `IngressClassParams` plus an out-of-band boto3
+      `:80` redirect rule to intercept the resulting plaintext forward) was rejected by a
+      second review round: that `:80` listener is owned by the AWS Load Balancer
+      Controller, which reconciles it independently of any manually created rule, so nothing
+      guaranteed the redirect survived the Ingress apply that ran right after it. The final
+      design instead gives each app's host rule its own Ingress (`{slug}-host`,
+      `EKSDeployer._host_ingress_manifest`) in the same `IngressGroup` as the existing path
+      Ingress, scoped to `HTTPS: 443` only via the per-Ingress annotation
+      `alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'`. **This item is the crux
+      of the fix and is completely unverified against a real cluster:** confirm the
+      controller actually scopes an individual Ingress's own rules to the listen ports THAT
+      Ingress declares, rather than reconciling every member of a shared group onto the
+      union of every declared port (which would put the host rule back on :80 despite the
+      annotation). `EKS_HOST_MODE_ENABLED` (default off, `application-service`) gates host
+      mode on EKS entirely until this is confirmed. Note: `apply_eks_tls` was found during
+      this same round to also set `spec.listenPorts` at the `IngressClassParams` (class)
+      level, and the AWS Load Balancer Controller documents class-level fields as
+      overriding the per-Ingress annotation — which would have made this whole fix inert.
+      It now sets only `certificateARNs`, and both Ingresses (path and host) carry their
+      own explicit `listen-ports` annotation, so confirming this item also means confirming
+      there is no other class-level or cluster-wide `listenPorts` source anywhere else in
+      the stack that could reintroduce the same conflict.
+      **`MockClient.describe_listeners` (application-service `api/mock/mock_session.py`)
+      unconditionally returns both a `:80` and a `:443` listener, so no mock-mode test can
+      exercise the controller actually withholding or creating either — every assertion
+      about listen-port scoping and precedence in this item is real-cluster-only.**
+- [ ] **B1: `apply_eks_tls` is what must first establish the group ALB's `:443` listener,
+      ahead of any app.** Removing `listenPorts` from the `IngressClassParams` patch
+      (previous item) left nothing else to declare `:443` before an app's own host Ingress
+      does — but `EKSDeployer._verify_eks_https_listener` refuses to grant host mode until a
+      `:443` listener already exists, which would deadlock every EKS infra permanently once
+      `EKS_HOST_MODE_ENABLED` is turned on (nothing would ever create the first `:443`
+      listener for a check that requires one to already exist). A first attempt put
+      `HTTPS: 443` directly on the bootstrap Ingress at bootstrap-creation time
+      (`_ensure_bootstrap_ingress`) — caught before push: that runs before any certificate
+      exists, and an ALB HTTPS listener cannot be created without one, which would time out
+      EKS cluster bootstrap entirely, not just host mode. **Fixed instead in
+      `apply_eks_tls`**, the point where a certificate is actually known to exist: it patches
+      `certificateARNs` onto the class, then patches the bootstrap Ingress's `listen-ports`
+      annotation to `'[{"HTTP": 80}, {"HTTPS": 443}]'`, class first so the certificate is
+      already resolvable when the Ingress patch triggers the controller's reconcile of it.
+      Confirm against a real cluster: (a) this patch sequence actually provisions a working
+      `:443` listener with no further manual intervention, and that patching the class before
+      the Ingress (rather than the reverse, or both in one call) is sufficient ordering — the
+      k8s API gives no cross-object transactional guarantee here; (b) a cluster that already
+      has a `bootstrap` Ingress from before this fix shipped receives the annotation patch
+      correctly (`_get_or_create` never updates on creation, but `apply_eks_tls`'s
+      `patch_namespaced_ingress` call is a normal patch, not a create, so this should not be
+      affected by that — confirm it isn't); (c) the bootstrap Ingress's `default_backend` (an
+      empty-selector Service with no real pods) returns something other than a silent hang
+      for unmatched `:443` traffic — likely a 503 given no healthy targets, not the
+      fixed-404 ECS's terraform listener returns, which is an acceptable but not identical
+      default action and should be confirmed as such, not assumed.
+- [ ] **B1: no `:80` rule for the host hostname appears on the shared ALB after a reconcile.**
+      With the host Ingress scoped to `HTTPS: 443` only, deploy an app into EKS host mode
+      against a real cluster and inspect the shared group ALB's `:80` listener rules
+      (`DescribeRules`) both immediately after the apply and after triggering at least one
+      more reconcile (e.g. deploying a second app, or an unrelated Ingress change in the same
+      group) — confirm no rule matching the host's exact hostname is ever created on `:80`,
+      at any point, not just at first apply. If one appears, `EKS_HOST_MODE_ENABLED` must
+      stay off until the controller version/annotation combination in use is confirmed not
+      to leak the rule onto `:80`.
+- [ ] **B1: `:443` host routing actually works end to end.** With the host Ingress applied
+      against a real cluster and the shared ALB's `:443` listener carrying the issued
+      certificate (part 2's `apply_eks_tls`), confirm an HTTPS request to the app's exact
+      hostname (`{slug}.{dns_label}.{base}`) reaches the app's nginx sidecar and gets the
+      expected response, and that the existing path URL
+      (`http://{alb_dns}/{slug}`) on the SAME shared ALB keeps working unaffected — the two
+      Ingresses in one group must not shadow or otherwise interfere with each other.
+- [ ] **`_apply_eks_tls_for_issued_certs` retries every ~30s tick indefinitely on a
+      transient failure.** Unlike the ECS re-enqueue sweep (which only calls
+      `InfraQueue.enqueue_provision`, cheap and deduped), a stuck EKS infra whose
+      `apply_eks_tls` call fails transiently (unreachable cluster endpoint, a k8s API
+      throttle) gets a fresh `assume_role_credentials_only` + `describe_cluster` + patch
+      attempt on every tick with no backoff or age-based give-up, unlike the PENDING-cert
+      loop's `ISSUED_CHECK_TIMEOUT`. Confirm this is an acceptable customer-account call
+      rate in practice, or add the same age-gated give-up the PENDING loop uses.
+- [ ] **`describe_task_definition`-free backfill correctness.** `backfill_host_routing`
+      re-registers a task definition from a `Deployment` row's `image_tag`/`image_digest`
+      rather than reading the currently-registered task definition back from ECS — confirm
+      this never silently changes cpu/memory/port/env away from what is actually running
+      when the row it picks is the most recent SUCCEEDED one (it should always match
+      `application`'s current fields for a normal, non-rolled-back app, but confirm against
+      an app that was rolled back and then had its `alloted_cpu`/`alloted_memory` edited
+      without a subsequent deploy — an edge case this command does not special-case).

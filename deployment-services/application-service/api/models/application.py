@@ -71,6 +71,16 @@ class Application(models.Model):
     service_arn = models.CharField(max_length=512, null=True, blank=True)
     target_group_arn = models.CharField(max_length=512, null=True, blank=True)
     listener_rule_arn = models.CharField(max_length=512, null=True, blank=True)
+    # F1b part 3a: set by the most recent deploy that ran in host mode (ECS's 443
+    # host-header forward rule — aws/alb.py:create_host_forward_rule). Null means the last
+    # deploy ran in path mode, either because the infra wasn't TLS-ready yet or the app's
+    # slug isn't a valid single DNS label (see api/common/host_url.py). Path URLs keep
+    # working regardless — host mode is additive, never a migration.
+    host_forward_rule_arn = models.CharField(max_length=512, null=True, blank=True)
+    # EKS has no per-app ARN to persist (the host rule lives inside the app's own Ingress
+    # manifest, reapplied by every deploy) — this is the equivalent boolean signal for the
+    # host_url API gate.
+    host_route_applied = models.BooleanField(default=False)
     deployment_url = models.CharField(max_length=512, null=True, blank=True)
     build_id = models.CharField(max_length=255, null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)

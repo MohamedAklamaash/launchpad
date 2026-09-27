@@ -30,6 +30,11 @@ export interface Application {
   envs: Record<string, string>;
   attached_database_ids: string[];
   deployment_url: string | null;
+  /** F1b: null until TLS/DNS are live and this app has a host-mode route — the path URL
+   * above always works regardless, host URLs are additive. */
+  host_url: string | null;
+  /** Why host_url is null, e.g. 'tls_not_issued', 'dns_not_synced', 'host_route_not_applied'. */
+  host_url_status: string | null;
   build_id: string | null;
   error_message: string | null;
   created_at: string;

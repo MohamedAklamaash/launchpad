@@ -50,6 +50,8 @@ class AppDetailSerializer(serializers.Serializer):
     envs = serializers.DictField(child=serializers.CharField())
     attached_database_ids = serializers.ListField(child=serializers.UUIDField())
     deployment_url = serializers.CharField(allow_null=True)
+    host_url = serializers.CharField(allow_null=True, help_text="F1b: null until TLS/DNS are live and this app has a host-mode route")
+    host_url_status = serializers.CharField(allow_null=True, help_text="Why host_url is null, e.g. 'tls_not_issued', 'dns_not_synced'")
     build_id = serializers.CharField(allow_null=True)
     error_message = serializers.CharField(allow_null=True)
     created_at = serializers.DateTimeField()
@@ -183,6 +185,8 @@ class ApplicationDetailDeleteView(APIView):
         app = self.service.get_application_details(request.user.id, pk)
         if not app:
             return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+        from api.common.host_url import app_host_url
+        host_url, host_url_status = app_host_url(app)
         return Response({
             "id": str(app.id), "name": app.name, "description": app.description,
             "infrastructure_id": str(app.infrastructure_id),
@@ -192,7 +196,9 @@ class ApplicationDetailDeleteView(APIView):
             "port": app.port, "url": app.project_remote_url, "branch": app.project_branch,
             "dockerfile_path": app.dockerfile_path, "build_context": app.build_context or "", "envs": app.envs,
             "attached_database_ids": app.attached_database_ids or [],
-            "deployment_url": app.deployment_url, "build_id": app.build_id,
+            "deployment_url": app.deployment_url,
+            "host_url": host_url, "host_url_status": host_url_status,
+            "build_id": app.build_id,
             "error_message": app.error_message if app.status not in ('ACTIVE', 'SLEEPING') else None,
             "created_at": app.created_at.isoformat() if app.created_at else None,
             "updated_at": app.updated_at.isoformat() if app.updated_at else None,
