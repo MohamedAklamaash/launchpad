@@ -2,8 +2,20 @@ import { Op, type WhereOptions } from 'sequelize';
 import { InfraCreatedPayload } from '@launchpad/common';
 
 import type { AuthUserRegisteredPayload } from '@launchpad/common';
-import { User as UserModel } from '@/db';
+import { User as UserModel, sequelize } from '@/db';
 import type { User as IUser, CreateUserInput } from '@/types/user.type';
+
+// MySQL's LIKE treats `%` and `_` as wildcards and `\` as its escape character —
+// unescaped, a caller's own query text changes what the pattern matches (e.g. `___`
+// matches any 3+ character name, defeating the "must know something specific" point of
+// the minimum query length upstream).
+const escapeLikePattern = (value: string): string =>
+    value.replace(/[\\%_]/g, (char) => `\\${char}`);
+
+// infra_id is a UUID (see InvitedUser.infra_id, auth-service) — validating the shape
+// before splicing it into a raw SQL fragment (below) means there is no character set
+// left that could break out of the string literal.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const toUserSignature = (user: UserModel): IUser => {
     return {
@@ -81,23 +93,38 @@ export class UserRepository {
 
     async searchByQuery(
         query: string,
-        options: { limit?: number; excludeIds?: string[] } = {},
+        options: { limit?: number; excludeIds?: string[]; infraIds?: string[] } = {},
     ): Promise<IUser[]> {
-        const where: WhereOptions = {
-            [Op.or]: [
-                { user_name: { [Op.like]: `%${query}%` } },
-                { email: { [Op.like]: `%${query}%` } },
-            ],
-        };
+        const escaped = escapeLikePattern(query);
+        const conditions: WhereOptions[] = [
+            {
+                [Op.or]: [
+                    { user_name: { [Op.like]: `%${escaped}%` } },
+                    { email: { [Op.like]: `%${escaped}%` } },
+                ],
+            },
+        ];
 
         if (options.excludeIds && options.excludeIds.length > 0) {
-            Object.assign(where, {
-                [Op.and]: [{ user_id: { [Op.notIn]: options.excludeIds } }],
-            });
+            conditions.push({ user_id: { [Op.notIn]: options.excludeIds } });
+        }
+
+        // Scoped to users who share at least one infra with the caller, filtered in SQL
+        // rather than over-fetching and narrowing in JS — a JS post-filter on a capped
+        // set of name/email matches can starve real matches that don't happen to land
+        // in the first page of that raw query.
+        if (options.infraIds) {
+            const safeInfraIds = options.infraIds.filter((id) => UUID_RE.test(id));
+            if (safeInfraIds.length === 0) return [];
+            conditions.push({
+                [Op.or]: safeInfraIds.map((id) =>
+                    sequelize.literal(`JSON_CONTAINS(infra_id, '"${id}"')`),
+                ),
+            } as unknown as WhereOptions);
         }
 
         const users = await UserModel.findAll({
-            where,
+            where: { [Op.and]: conditions },
             order: [['created_at', 'DESC']],
             limit: options.limit ?? 10,
         });

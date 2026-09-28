@@ -7,10 +7,6 @@ import type { User } from '@/types/user.type';
 // Below this, a search term is too broad to be a deliberate lookup (an invite flow
 // typing a name or email) and turns into cheap enumeration.
 const MIN_SEARCH_QUERY_LENGTH = 3;
-// How many candidates we pull from the DB by name/email match before narrowing to the
-// caller's own infras — wide enough that the post-filter below rarely starves the
-// final, smaller result set.
-const SEARCH_CANDIDATE_LIMIT = 50;
 const SEARCH_RESULT_LIMIT = 10;
 
 export interface UserSearchResult {
@@ -55,7 +51,14 @@ export const GetUserById = async (req: Request, res: Response, next: NextFunctio
 export const SearchUsers = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const caller = resolveCaller(req);
-        const query = (req.query.q as string) ?? '';
+        const rawQuery = req.query.q;
+        // Express/qs parses a repeated `?q=&q=` as an array — reject it explicitly
+        // rather than letting a non-string reach `.trim()`, which throws and would
+        // otherwise surface as an unhandled 500 instead of a 400.
+        if (Array.isArray(rawQuery)) {
+            throw new HttpError(400, "Search query 'q' must be a single string, not a list");
+        }
+        const query = (rawQuery as string | undefined) ?? '';
         if (query.trim().length < MIN_SEARCH_QUERY_LENGTH) {
             throw new HttpError(
                 400,
@@ -76,14 +79,19 @@ export const SearchUsers = async (req: Request, res: Response, next: NextFunctio
             throw error;
         }
 
+        // The shared-infra filter runs in SQL (searchByQuery), not here — a JS
+        // post-filter over a capped set of name/email matches can starve real matches
+        // that don't happen to be among the first N rows. This second, cheap filter is
+        // a safety net only: it should never actually remove anything the query didn't
+        // already exclude.
         const candidates = await userService.searchUsers({
             query,
-            limit: SEARCH_CANDIDATE_LIMIT,
+            limit: SEARCH_RESULT_LIMIT,
             excludeIds: [caller.sub],
+            infraIds: callerInfraIds,
         });
         const scoped = candidates
             .filter((user) => user.infra_id.some((infraId) => callerInfraIds.includes(infraId)))
-            .slice(0, SEARCH_RESULT_LIMIT)
             .map(toSearchResult);
 
         res.status(200).json(scoped);

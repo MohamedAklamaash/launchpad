@@ -7,8 +7,7 @@ import { otpAttempts } from '@/utils/otp-attempts';
 import { Op } from 'sequelize';
 import { HttpError } from '@launchpad/common';
 import { InvitedUserLoginInput, AuthenticateUserInput } from '@/types/auth.invited_user.types';
-
-const REGISTRATION_OTP_PURPOSE = 'register';
+import { OTP_PURPOSE } from '@/types/otp-purpose';
 
 export class InvitedUserAuthService extends BaseService {
     public async login(input: Omit<InvitedUserLoginInput, 'infra_id'>) {
@@ -20,9 +19,16 @@ export class InvitedUserAuthService extends BaseService {
             const isValid = await comparePassword(password, user.password_hash);
             if (!isValid) throw new HttpError(401, 'Invalid password');
 
-            // Block login if there's a pending first-time OTP for any infra
+            // Block login if there's a pending first-time OTP for any infra. Scoped to
+            // the registration purpose specifically — an outstanding password-reset
+            // code (a different flow, requested from an already-working account) must
+            // not lock the owner out of their normal password login too.
             const pendingOtp = await UserOTP.findOne({
-                where: { invited_user_id: user.id, expires_at: { [Op.gt]: new Date() } },
+                where: {
+                    invited_user_id: user.id,
+                    purpose: OTP_PURPOSE.REGISTER,
+                    expires_at: { [Op.gt]: new Date() },
+                },
                 transaction,
             });
             if (pendingOtp)
@@ -38,32 +44,52 @@ export class InvitedUserAuthService extends BaseService {
 
     public async authenticateWithOTP(input: AuthenticateUserInput) {
         const { email, otp } = input;
+        const purpose = OTP_PURPOSE.REGISTER;
+
+        // Looked up outside any transaction, before the attempt is claimed: the id (or
+        // its absence) decides which Redis key this guess counts against, and — on a
+        // 404 case — nothing here is written yet for a transaction to roll back.
+        const user = await InvitedUser.findOne({ where: { email } });
+        const attemptKey = otpAttempts.keyFor(user?.id, email);
+
+        // Claims the slot unconditionally, before the guess (or even whether the
+        // account exists) is evaluated at all — see otp-attempts.ts. If N requests
+        // arrive concurrently, each gets a distinct atomic count; only the first 5 can
+        // ever proceed past this line, no matter how they're interleaved.
+        const allowed = await otpAttempts.claimAttempt(attemptKey);
+        if (!allowed) {
+            // Runs outside the transaction below on purpose: a 429 thrown inside a
+            // sequelize.transaction callback rolls back everything that callback did,
+            // including a destroy — this invalidation must actually commit.
+            if (user) {
+                await UserOTP.destroy({ where: { invited_user_id: user.id, purpose } });
+            }
+            throw new HttpError(429, 'Too many attempts — request a new code');
+        }
+
+        // Same response an existing user gets for a wrong code — a distinct "no such
+        // account" response would let this endpoint enumerate emails independent of
+        // ever guessing anything OTP-shaped.
+        if (!user) throw new HttpError(400, 'Invalid or expired OTP');
 
         return sequelize.transaction(async (transaction) => {
-            const user = await InvitedUser.findOne({ where: { email }, transaction });
-            if (!user) throw new HttpError(404, 'User not found');
-
-            if (!(await otpAttempts.hasAttemptsRemaining(REGISTRATION_OTP_PURPOSE, email))) {
-                // The cap is hit — invalidate whatever OTP is outstanding so the
-                // attacker's next guess (even a correct one) can't land, and the
-                // legitimate user has to request a fresh code.
-                await UserOTP.destroy({ where: { invited_user_id: user.id }, transaction });
-                throw new HttpError(429, 'Too many attempts — request a new code');
-            }
-
             const otpRecord = await UserOTP.findOne({
-                where: { invited_user_id: user.id, otp, expires_at: { [Op.gt]: new Date() } },
+                where: {
+                    invited_user_id: user.id,
+                    otp,
+                    purpose,
+                    expires_at: { [Op.gt]: new Date() },
+                },
                 transaction,
             });
             if (!otpRecord) {
-                await otpAttempts.recordFailedAttempt(REGISTRATION_OTP_PURPOSE, email);
                 throw new HttpError(400, 'Invalid or expired OTP');
             }
 
             user.is_authenticated = true;
             await user.save({ transaction });
             await otpRecord.destroy({ transaction });
-            await otpAttempts.clearAttempts(REGISTRATION_OTP_PURPOSE, email);
+            await otpAttempts.clearAttempts(attemptKey);
 
             const refreshToken = await this.createRefreshToken(user.id, transaction);
             return this.buildAuthResponse(user, refreshToken.token_id);

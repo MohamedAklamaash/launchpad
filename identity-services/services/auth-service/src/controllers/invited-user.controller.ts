@@ -34,7 +34,9 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
         );
 
         // Never serialize the raw model — it carries password_hash and OTP linkage.
-        // The OTP is delivered by email; only echo it outside production for local/e2e flows.
+        // The OTP is delivered by email; only echo it for local/e2e convenience — an
+        // allowlist of dev/test, not "anything that isn't production", since that would
+        // also echo it in a real deployed 'staging' environment.
         const body: Record<string, unknown> = {
             user: {
                 id: user.id,
@@ -46,7 +48,7 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
                 created_at: user.created_at,
             },
         };
-        if (env.NODE_ENV !== 'production') {
+        if (['development', 'test'].includes(env.NODE_ENV)) {
             body.otp = otp;
         }
 

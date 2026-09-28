@@ -4,6 +4,7 @@ import { RefreshToken, UserOTP } from '@/db';
 import { signAccessToken, signRefreshToken } from '@/utils/handle-token';
 import { generateOTP } from '@/utils/generate-otp';
 import { AuthResponse, USER_ROLE, UserData } from '@/types/auth.invited_user.types';
+import { OtpPurpose } from '@/types/otp-purpose';
 
 export abstract class BaseService {
     protected async createRefreshToken(userId: string, transaction: Transaction) {
@@ -68,7 +69,21 @@ export abstract class BaseService {
         };
     }
 
-    protected async createOTP(userId: string, infraId: string, transaction: Transaction) {
+    // Deletes any OTP already outstanding for this user+purpose before minting a new
+    // one — at most one live code per user per purpose. Without this, repeated calls
+    // (a resend, a retried request) stockpile multiple simultaneously-valid codes,
+    // which both widens the guessable surface and defeats the point of a single
+    // attempt-capped code. A user can still have one register-purpose and one
+    // password-reset-purpose code outstanding at the same time; only same-purpose
+    // codes are deduped.
+    protected async createOTP(
+        userId: string,
+        infraId: string,
+        purpose: OtpPurpose,
+        transaction: Transaction,
+    ) {
+        await UserOTP.destroy({ where: { invited_user_id: userId, purpose }, transaction });
+
         const expiresAt = new Date();
         expiresAt.setMinutes(expiresAt.getMinutes() + 10); // 10 min expiry window
         return UserOTP.create(
@@ -77,6 +92,7 @@ export abstract class BaseService {
                 otp: generateOTP(),
                 expires_at: expiresAt,
                 infra_id: infraId,
+                purpose,
             },
             { transaction },
         );

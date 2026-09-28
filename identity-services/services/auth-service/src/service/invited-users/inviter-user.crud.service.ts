@@ -10,6 +10,7 @@ import {
     userAuthenticationQueue,
 } from '@/messaging/producer/user-created.message';
 import { AUTHENTICATE_INVITED_USER_EVENT } from '@launchpad/common';
+import { OTP_PURPOSE } from '@/types/otp-purpose';
 
 export class InvitedUserService extends BaseService {
     public async listInvitedBy(inviterId: string) {
@@ -116,7 +117,12 @@ export class InvitedUserService extends BaseService {
 
             let otp: string | undefined;
             if (requiresVerification) {
-                const otpRecord = await this.createOTP(user.id, infra_id, transaction);
+                const otpRecord = await this.createOTP(
+                    user.id,
+                    infra_id,
+                    OTP_PURPOSE.REGISTER,
+                    transaction,
+                );
                 otp = otpRecord.otp;
             }
 
@@ -127,14 +133,22 @@ export class InvitedUserService extends BaseService {
         // enqueue an OTP email or publish a user/roles event for state that never persisted.
         const { user, otp } = committed;
         if (otp) {
-            await userAuthenticationQueue.add(AUTHENTICATE_INVITED_USER_EVENT, {
-                user_id: user.id,
-                email,
-                otp,
-                infra_id,
-                source: 'mail',
-                user_name,
-            });
+            // The job payload carries the OTP in plaintext — BullMQ keeps completed/failed
+            // jobs in Redis by default, which would leave a guessable-if-short-lived
+            // secret sitting there indefinitely. Drop it as soon as the consumer succeeds;
+            // cap how long a failed job (and its payload) lingers if it doesn't.
+            await userAuthenticationQueue.add(
+                AUTHENTICATE_INVITED_USER_EVENT,
+                {
+                    user_id: user.id,
+                    email,
+                    otp,
+                    infra_id,
+                    source: 'mail',
+                    user_name,
+                },
+                { removeOnComplete: true, removeOnFail: { age: 3600 } },
+            );
         }
 
         try {

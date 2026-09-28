@@ -43,7 +43,7 @@ const makeUser = (overrides: Partial<User>): User => ({
 const fakeRequest = (
     authorization: string | undefined,
     params: Record<string, string> = {},
-    query: Record<string, string> = {},
+    query: Record<string, unknown> = {},
 ) => ({ headers: { authorization }, params, query }) as unknown as Request;
 
 const fakeResponse = () => {
@@ -169,6 +169,47 @@ test('SearchUsers: a query shorter than the minimum length is rejected', async (
     await SearchUsers(fakeRequest(`Bearer ${signToken('user-a')}`, {}, { q: 'jo' }), res, next);
     const error = getError();
     assert.ok(error instanceof HttpError && error.statusCode === 400);
+});
+
+test('SearchUsers: a repeated q param (parsed as an array) is rejected with 400, not a 500', async () => {
+    const { res } = fakeResponse();
+    const { next, getError } = fakeNext();
+    await SearchUsers(
+        fakeRequest(`Bearer ${signToken('user-a')}`, {}, { q: ['john', 'jane'] }),
+        res,
+        next,
+    );
+    const error = getError();
+    assert.ok(error instanceof HttpError && error.statusCode === 400);
+});
+
+test('SearchUsers: the caller infra ids are pushed down to the repository query', async () => {
+    const getByIdSpy = mock.method(userService, 'getUserById', async () =>
+        makeUser({ user_id: 'user-a', infra_id: ['infra-1', 'infra-2'] }),
+    );
+    let searchArgs: Record<string, unknown> | undefined;
+    const searchSpy = mock.method(
+        userService,
+        'searchUsers',
+        async (args: Record<string, unknown>) => {
+            searchArgs = args;
+            return [];
+        },
+    );
+    try {
+        const { res } = fakeResponse();
+        const { next, getError } = fakeNext();
+        await SearchUsers(
+            fakeRequest(`Bearer ${signToken('user-a')}`, {}, { q: 'john' }),
+            res,
+            next,
+        );
+        assert.equal(getError(), undefined);
+        assert.deepEqual(searchArgs?.infraIds, ['infra-1', 'infra-2']);
+    } finally {
+        getByIdSpy.mock.restore();
+        searchSpy.mock.restore();
+    }
 });
 
 test('SearchUsers: results are scoped to users who share an infra with the caller', async () => {

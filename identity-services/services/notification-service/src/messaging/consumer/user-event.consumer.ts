@@ -32,7 +32,10 @@ export const userEventsWorker = new Worker(
                     );
                 }
 
-                const authUrl = `${env.GATEWAY_SERVICE_URL}/auth/authenticate-with-otp?email=${email}&otp=${otp}`;
+                // encodeURIComponent both — an unencoded '+', '&', or '#' in an email
+                // address would otherwise break the query string (truncating or
+                // misparsing the otp param) or get silently mangled by an email client.
+                const authUrl = `${env.GATEWAY_SERVICE_URL}/auth/authenticate-with-otp?email=${encodeURIComponent(email)}&otp=${encodeURIComponent(otp)}`;
                 const emailHtml = getAuthEmailTemplate(authUrl, user_name);
 
                 logger.info({ job_id: job.id, email, user_id }, 'Sending auth email');

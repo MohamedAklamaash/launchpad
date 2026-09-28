@@ -1,20 +1,15 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
-import { env } from '@/config/env';
+import { HttpError } from '@launchpad/common';
+import { resolveCaller } from '@/utils/resolve-caller';
 import { ConnectMongoDB } from '@/db';
 
 export const docsAuth = async (req: Request, res: Response, next: NextFunction) => {
-    const auth = req.headers.authorization;
-    if (!auth?.startsWith('Bearer ')) {
-        res.status(401).send('Authorization required to view docs');
-        return;
-    }
     try {
-        const payload = jwt.verify(auth.split(' ')[1], env.JWT_SECRET) as { user_name?: string };
-        if (!payload.user_name) {
-            res.status(401).send('Invalid token');
-            return;
-        }
+        // resolveCaller (not a bare jwt.verify): pins the algorithm and rejects a
+        // narrow-purpose token — currently auth-service's 5-minute password_reset
+        // token — the same way every data route in this service now does. Proving you
+        // read one inbox shouldn't also grant access to internal API docs.
+        const payload = resolveCaller(req);
         const client = await ConnectMongoDB();
         const user = await client
             ?.db()
@@ -25,7 +20,8 @@ export const docsAuth = async (req: Request, res: Response, next: NextFunction) 
             return;
         }
         next();
-    } catch {
-        res.status(401).send('Invalid token');
+    } catch (error) {
+        const status = error instanceof HttpError ? error.statusCode : 401;
+        res.status(status).send('Invalid token');
     }
 };
