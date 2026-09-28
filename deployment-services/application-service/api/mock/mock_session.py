@@ -65,7 +65,8 @@ class _MockPaginator:
 
 class MockClient:
     def __init__(self, service: str, region: str, account_id: str, deleted_services: set,
-                 listener_rules: dict, infra_id: str | None = None, listener_certificates: dict | None = None):
+                 listener_rules: dict, infra_id: str | None = None, listener_certificates: dict | None = None,
+                 target_groups: dict | None = None):
         self._service = service
         self._region = region
         self._account_id = account_id
@@ -73,6 +74,12 @@ class MockClient:
         self._deleted_services = deleted_services
         self._listener_rules = listener_rules
         self._listener_certificates = listener_certificates if listener_certificates is not None else {}
+        # H4: name -> {"arn", "vpc_id", "tags"} — shared across every MockClient built
+        # from the same MockSession, so a second create_target_group call for the same
+        # name (a redeploy, or a test simulating a foreign/orphaned target group) sees
+        # what a real elbv2 CreateTargetGroup would: DuplicateTargetGroupNameException,
+        # never a silent second success.
+        self._target_groups = target_groups if target_groups is not None else {}
         self.meta = _MockMeta(region)
         self.exceptions = _MockClientExceptions(service)
 
@@ -125,12 +132,24 @@ class MockClient:
 
     def create_target_group(self, **kwargs):
         name = kwargs.get("Name", "tg")
+        if name in self._target_groups:
+            # Real elbv2 behaviour this mock exists to reproduce (H4): CreateTargetGroup
+            # on a name that already exists raises, regardless of whether the caller's
+            # settings match — ALBClient.create_target_group's DuplicateTargetGroupNameException
+            # handler is what decides whether to adopt it.
+            raise self.exceptions.DuplicateTargetGroupNameException(
+                f"A target group with the same name '{name}' already exists"
+            )
+        vpc_id = kwargs.get("VpcId", self._mock_vpc_id)
+        tags = {t["Key"]: t["Value"] for t in kwargs.get("Tags", [])}
+        arn = self._arn(f"targetgroup/{name}/{_suffix(name)}")
+        self._target_groups[name] = {"arn": arn, "vpc_id": vpc_id, "tags": tags}
         return {
             "TargetGroups": [
                 {
-                    "TargetGroupArn": self._arn(f"targetgroup/{name}/{_suffix(name)}"),
+                    "TargetGroupArn": arn,
                     "TargetGroupName": name,
-                    "VpcId": kwargs.get("VpcId", self._mock_vpc_id),
+                    "VpcId": vpc_id,
                 }
             ]
         }
@@ -142,16 +161,37 @@ class MockClient:
         for arn in arns:
             groups.append({"TargetGroupArn": arn, "VpcId": self._mock_vpc_id})
         for name in names:
-            groups.append(
-                {
-                    "TargetGroupArn": self._arn(f"targetgroup/{name}/{_suffix(name)}"),
-                    "TargetGroupName": name,
-                    "VpcId": self._mock_vpc_id,
-                }
-            )
+            existing = self._target_groups.get(name)
+            if existing:
+                groups.append({
+                    "TargetGroupArn": existing["arn"], "TargetGroupName": name,
+                    "VpcId": existing["vpc_id"],
+                })
+            else:
+                groups.append(
+                    {
+                        "TargetGroupArn": self._arn(f"targetgroup/{name}/{_suffix(name)}"),
+                        "TargetGroupName": name,
+                        "VpcId": self._mock_vpc_id,
+                    }
+                )
         return {"TargetGroups": groups}
 
+    def describe_tags(self, **kwargs):
+        arns = kwargs.get("ResourceArns") or []
+        by_arn = {tg["arn"]: tg["tags"] for tg in self._target_groups.values()}
+        return {
+            "TagDescriptions": [
+                {"ResourceArn": arn, "Tags": [{"Key": k, "Value": v} for k, v in by_arn.get(arn, {}).items()]}
+                for arn in arns
+            ]
+        }
+
     def delete_target_group(self, **kwargs):
+        arn = kwargs.get("TargetGroupArn")
+        stale = [name for name, tg in self._target_groups.items() if tg["arn"] == arn]
+        for name in stale:
+            del self._target_groups[name]
         return {}
 
     def modify_target_group(self, **kwargs):
@@ -448,10 +488,12 @@ class MockSession:
         self._deleted_services: set = set()
         self._listener_rules: dict = {}
         self._listener_certificates: dict = {}
+        self._target_groups: dict = {}
 
     def client(self, service_name: str, **kwargs):
         return MockClient(
             service_name, self.region_name, self._account_id,
             self._deleted_services, self._listener_rules, infra_id=self._infra_id,
             listener_certificates=self._listener_certificates,
+            target_groups=self._target_groups,
         )

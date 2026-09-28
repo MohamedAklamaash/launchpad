@@ -278,6 +278,32 @@ def test_two_infras_same_account_same_app_name_read_only_own_streams(factory, ma
 
 
 @pytest.mark.django_db
+def test_uses_the_stored_log_group_name_when_present(factory, make_stack, monkeypatch):
+    """H4: an app deployed under the new per-infra+per-app hashed log group scheme
+    (application.log_group_name persisted at its first deploy) must be tailed from
+    that stored name, not the legacy per-slug one — this is what actually stops two
+    infras from sharing a log group at all, on top of B1's stream-level isolation."""
+    calls = []
+    original = MockClient.filter_log_events
+
+    def spy(self, **kwargs):
+        calls.append(kwargs)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(MockClient, "filter_log_events", spy)
+
+    stack = make_stack(name="api")
+    stored = "/ecs/api-deadbeef-task"
+    stack.app.log_group_name = stored
+    stack.app.save(update_fields=["log_group_name"])
+
+    resp = _get(factory, stack.owner, str(stack.app.id))
+
+    assert resp.status_code == 200
+    assert calls[-1]["logGroupName"] == stored
+
+
+@pytest.mark.django_db
 def test_recreated_app_window_is_clamped_to_its_own_created_at(make_stack):
     """A deleted-then-recreated app of the same name gets a fresh created_at. Even if a
     stale task briefly reappeared in list_tasks (ECS's ~1h STOPPED visibility window),

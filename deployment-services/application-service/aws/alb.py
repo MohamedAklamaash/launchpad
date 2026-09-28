@@ -1,12 +1,47 @@
+import hashlib
 import logging
 import os
+import re
 import threading
 
 from botocore.exceptions import ClientError
+from shared.aws.cost_tags import TAG_INFRA_KEY
 
-from aws.tags import as_key_value_tags
+from aws.tags import TAG_APP_ID_KEY, as_key_value_tags
 
 logger = logging.getLogger(__name__)
+
+# H4 C2: reserved the same way api/common/naming.py:target_group_name reserves it —
+# the `-{8-hex-hash}-tg` suffix must survive truncation in full; only the readable
+# slug prefix may be cut. Duplicated here (not imported) because aws/ is the low-level
+# AWS-client layer and does not depend on api/ business logic.
+_TARGET_GROUP_NAME_LIMIT = 32
+
+
+class TargetGroupOwnershipMismatch(RuntimeError):
+    """H4: `CreateTargetGroup` on a name that already exists doesn't error when the
+    existing target group's settings match — it hands back that target group's ARN
+    (see `create_target_group`'s `DuplicateTargetGroupNameException` handling below).
+    Matching *settings* is not matching *ownership*: this app would then register its
+    tasks into whatever that target group already forwards to, which could be a
+    different app or a different tenant's, or an orphan the cleanup path (6 retries,
+    then gives up — application_cleanup_service._delete_target_group) never removed.
+    Raised instead of silently adopting a target group whose launchpad:infra/
+    launchpad:app/launchpad:app-id tags don't match the caller's own. The message
+    names the target group and gives actionable guidance because it lands, unsanitized,
+    on `Application.error_message` (`sanitize_deploy_error` passes a plain
+    `RuntimeError`'s `str()` straight through) — this is the customer's own AWS
+    account, so naming their own target group back to them discloses nothing new."""
+
+    def __init__(self, target_group_arn: str, name: str):
+        super().__init__(
+            f"Target group {name!r} (ARN: {target_group_arn}) already exists in your "
+            "AWS account but is not tagged for this application/infrastructure, so "
+            "Launchpad refused to reuse it. Delete that target group yourself, or "
+            "rename this application so a new one is created under a different name, "
+            "then redeploy."
+        )
+        self.target_group_arn = target_group_arn
 
 
 class SniCertificateCapExceeded(RuntimeError):
@@ -68,18 +103,86 @@ class ALBClient:
                 Matcher={'HttpCode': '200-499'},
                 **({'Tags': as_key_value_tags(tags)} if tags else {}),
             )
-            return response['TargetGroups'][0]['TargetGroupArn']
+            target_group_arn = response['TargetGroups'][0]['TargetGroupArn']
         except self.client.exceptions.DuplicateTargetGroupNameException:
+            # Real elbv2 raises this only when a target group of this name already
+            # exists with DIFFERING settings. When settings match, CreateTargetGroup
+            # instead returns a plain success carrying the EXISTING target group's ARN
+            # — the case H4 is actually about — which is why the ownership check below
+            # runs on both paths, not just this one.
             logger.warning(f"Target group {name} already exists, fetching ARN")
             response = self.client.describe_target_groups(Names=[name])
             tg = response['TargetGroups'][0]
-            # If the existing TG is in a different VPC, it cannot be reused — create with unique suffix
+            # If the existing TG is in a different VPC, it cannot be reused. H4 C2: the
+            # replacement name is deterministic (a hash of the identifying tags plus
+            # the actual differing input, vpc_id) rather than wall-clock time — two
+            # racing callers hitting this same branch for the same (name, vpc_id) pair
+            # converge on the same new name instead of each minting their own, and
+            # nothing here depends on truncating `name` itself (the old
+            # `f"{name[:24]}-{int(time.time())%10000}"` could cut into name's own hash
+            # suffix). Since `name` is now a hash of this exact app+infra(+app-id) pair
+            # (api/common/naming.py:target_group_name), a same-name/different-VPC hit
+            # here can in practice only be this very app's own predecessor (e.g. an
+            # environment rebuild) — the tag check below still does not run down this
+            # recursive branch, since the new name is different and goes through
+            # create_target_group's success path fresh.
             if tg['VpcId'] != vpc_id:
-                logger.warning(f"Existing TG {name} is in VPC {tg['VpcId']}, not {vpc_id} — creating with unique name")
-                import time
-                unique_name = f"{name[:24]}-{int(time.time()) % 10000}"
+                logger.warning(f"Existing TG {name} is in VPC {tg['VpcId']}, not {vpc_id} — creating with a VPC-discriminated name")
+                unique_name = self._vpc_discriminated_name(name, vpc_id, tags)
                 return self.create_target_group(unique_name, vpc_id, port, tags=tags, health_check_path=health_check_path)
-            return tg['TargetGroupArn']
+            target_group_arn = tg['TargetGroupArn']
+
+        # H4: verify ownership on every path, not only the exception one — a target
+        # group returned from the plain success path above can still be someone else's
+        # (or an orphan's) if AWS decided the settings matched closely enough to reuse
+        # it. A freshly-created group is trivially "ours" (we just set these tags in the
+        # same call), so this only ever actually rejects the adopted case.
+        if tags:
+            self._verify_target_group_ownership(target_group_arn, name, tags)
+        return target_group_arn
+
+    def _vpc_discriminated_name(self, name: str, vpc_id: str, tags: dict | None) -> str:
+        """H4 C2: a deterministic replacement name for the wrong-VPC branch above.
+        Hashes the identifying tags (falling back to `name` itself when none were
+        given) together with `vpc_id` — the actual thing that differs — so the same
+        inputs always produce the same output, and reserves its own `-{hash}-tg`
+        suffix the same way `target_group_name` does, so truncation can never cut into
+        the discriminator."""
+        tags = tags or {}
+        seed = f"{tags.get(TAG_INFRA_KEY, name)}:{tags.get(TAG_APP_ID_KEY, name)}:{vpc_id}"
+        digest = hashlib.sha256(seed.encode()).hexdigest()[:8]
+        suffix = f"-{digest}-tg"
+        slug_source = name.removesuffix('-tg')
+        slug = re.sub(r'[^a-z0-9-]', '-', slug_source.lower()).strip('-') or "app"
+        max_slug_len = _TARGET_GROUP_NAME_LIMIT - len(suffix)
+        return f"{slug[:max_slug_len]}{suffix}"
+
+    def _verify_target_group_ownership(self, target_group_arn: str, name: str, expected_tags: dict,
+                                       retries: int = 2, backoff_seconds: float = 0.1):
+        """H4: a name match alone is not proof of ownership (see
+        TargetGroupOwnershipMismatch) — compare the existing target group's own tags
+        against the ones this call would have set at creation before treating it as
+        reusable. A target group with no matching tags is either foreign or a
+        half-created race; either way this must not proceed.
+
+        H4 C3: `DescribeTags` right after a `CreateTargetGroup(Tags=...)` this same
+        call just issued is a read-after-write on a resource this process only just
+        learned the ARN of — retried a couple of times with a short backoff before
+        concluding it's a genuine mismatch, in case tag propagation lags creation by a
+        moment (unconfirmed against a real account — see REAL-AWS-VALIDATION.md)."""
+        import time
+
+        attempts = retries + 1
+        actual: dict = {}
+        for attempt in range(attempts):
+            response = self.client.describe_tags(ResourceArns=[target_group_arn])
+            descriptions = response.get('TagDescriptions') or []
+            actual = {t['Key']: t['Value'] for t in descriptions[0]['Tags']} if descriptions else {}
+            if all(actual.get(key) == value for key, value in expected_tags.items()):
+                return
+            if attempt < attempts - 1:
+                time.sleep(backoff_seconds * (attempt + 1))
+        raise TargetGroupOwnershipMismatch(target_group_arn, name)
 
     def modify_target_group(self, target_group_arn, health_check_path):
         """Update an already-created target group's health check path in place — used

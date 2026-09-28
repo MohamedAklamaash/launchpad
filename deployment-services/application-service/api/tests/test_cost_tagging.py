@@ -169,6 +169,13 @@ class _FakeALBClient:
         self.create_target_group_calls.append(kwargs)
         return {"TargetGroups": [{"TargetGroupArn": "arn:aws:elasticloadbalancing:x:targetgroup/tg"}]}
 
+    def describe_tags(self, **kwargs):
+        # H4: ALBClient.create_target_group verifies ownership by echoing back the tags
+        # it just set — this fake mirrors that (a freshly created target group is
+        # always "ours"), same as api/mock/mock_session.py's MockClient.
+        tags = self.create_target_group_calls[-1].get("Tags", [])
+        return {"TagDescriptions": [{"ResourceArn": kwargs["ResourceArns"][0], "Tags": tags}]}
+
     def describe_rules(self, **kwargs):
         return {"Rules": []}
 
@@ -443,12 +450,14 @@ def test_create_task_definition_call_site_passes_app_tags(deploy_fixtures):
 
 
 def test_create_target_group_call_site_passes_app_tags(deploy_fixtures):
+    """Target groups additionally carry launchpad:app-id (H4 C1) — this only asserts
+    app_tags()'s own two keys are still present and correct alongside it."""
     service, session, app, env = deploy_fixtures
     with patch("api.services.application_deployment_service.ALBClient") as alb_cls:
         service._create_target_group(session, app, env)
 
     tags = alb_cls.return_value.create_target_group.call_args.kwargs["tags"]
-    assert tags == app_tags(app.infrastructure_id, "my-app")
+    assert tags.items() >= app_tags(app.infrastructure_id, "my-app").items()
 
 
 class _FakeEC2:

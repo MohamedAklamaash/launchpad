@@ -15,7 +15,13 @@ class ECSClient:
         self.service_stable_poll_interval = int(os.environ.get('ECS_SERVICE_STABLE_POLL_INTERVAL', '10'))
         self.failed_tasks_threshold = int(os.environ.get('ECS_FAILED_TASKS_THRESHOLD', '3'))
     
-    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None, secrets=None, tags=None, host_mode=False, app_hostname=None):
+    def create_task_definition(self, family, image, cpu, memory, envs, execution_role_arn, container_port=8000, app_name=None, secrets=None, tags=None, host_mode=False, app_hostname=None, log_group=None):
+        # H4: callers that already know the log group they're wiring this task
+        # definition to (application_deployment_service._create_task_definition) pass
+        # it explicitly; the `/ecs/{family}` default only covers a caller that never
+        # adopted that lookup (kept so this stays a backward-compatible default, not a
+        # breaking signature change).
+        log_group = log_group or f'/ecs/{family}'
         env_vars = [{'name': k, 'value': str(v)} for k, v in (envs or {}).items()]
         logger.info(f"Creating task definition with {len(env_vars)} environment variables: {list(envs.keys()) if envs else []}")
         
@@ -72,7 +78,7 @@ class ECSClient:
             'logConfiguration': {
                 'logDriver': 'awslogs',
                 'options': {
-                    'awslogs-group': f'/ecs/{family}',
+                    'awslogs-group': log_group,
                     'awslogs-region': self.client.meta.region_name,
                     'awslogs-stream-prefix': 'app'
                 }
@@ -132,7 +138,7 @@ class ECSClient:
                 'logConfiguration': {
                     'logDriver': 'awslogs',
                     'options': {
-                        'awslogs-group': f'/ecs/{family}',
+                        'awslogs-group': log_group,
                         'awslogs-region': self.client.meta.region_name,
                         'awslogs-stream-prefix': 'nginx'
                     }

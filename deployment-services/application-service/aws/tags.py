@@ -8,10 +8,26 @@ picked up by `tag_existing_app_resources` (application-service management comman
 """
 from shared.aws.cost_tags import TAG_APP_KEY, TAG_INFRA_KEY
 
+# H4 C1: not part of app_tags()/Cost Explorer's grouping keys — this identifies a
+# specific Application ROW, not its (mutable, reusable) name. Only target groups carry
+# it today, as the extra input to ALBClient's ownership check (see
+# target_group_tags/_verify_target_group_ownership): app_tags() alone is
+# launchpad:infra + launchpad:app, both name-shaped, so a delete-then-recreate of an
+# app under the same name on the same infra would tag its new target group identically
+# to its predecessor's on that axis alone. target_group_name()'s per-row hash already
+# makes the two land on different names in practice; this tag makes the ownership
+# *check* not have to rely on that alone.
+TAG_APP_ID_KEY = "launchpad:app-id"
+
 
 def app_tags(infra_id, app_name: str) -> dict[str, str]:
     """Tags for a resource that belongs to exactly one app."""
     return {TAG_INFRA_KEY: str(infra_id), TAG_APP_KEY: app_name}
+
+
+def target_group_tags(infra_id, app_name: str, app_id) -> dict[str, str]:
+    """`app_tags()` plus the owning Application row's own id — see TAG_APP_ID_KEY."""
+    return {**app_tags(infra_id, app_name), TAG_APP_ID_KEY: str(app_id)}
 
 
 def infra_tags(infra_id) -> dict[str, str]:

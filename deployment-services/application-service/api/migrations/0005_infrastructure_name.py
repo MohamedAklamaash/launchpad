@@ -4,6 +4,12 @@ from django.db import migrations, models
 
 
 def populate_names(apps, schema_editor):
+    # H4 review: `str(infra.id)[:8]` is a UUIDv7 prefix, but `name` here is a purely
+    # cosmetic display label on this service's own read-model copy of Infrastructure
+    # (no unique constraint, never an AWS resource name or namespace key) — a display
+    # collision between two rows backfilled in the same window is not a security issue.
+    # This is also a historical, already-applied data migration; it is not edited to
+    # use a different formula going forward; a real fix would live in a new migration.
     Infrastructure = apps.get_model('api', 'Infrastructure')
     for infra in Infrastructure.objects.filter(name__isnull=True):
         infra.name = f"infra-{str(infra.id)[:8]}"
