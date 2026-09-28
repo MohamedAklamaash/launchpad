@@ -245,19 +245,6 @@ def _ensure_bootstrap_ingress(api, lines: list):
         f"Namespace/{BOOTSTRAP_NAMESPACE}",
         lines,
     )
-    service = k8s.V1Service(
-        metadata=k8s.V1ObjectMeta(name=DEFAULT_BACKEND_SERVICE),
-        spec=k8s.V1ServiceSpec(
-            type="ClusterIP",
-            selector={"app": DEFAULT_BACKEND_SERVICE},
-            ports=[k8s.V1ServicePort(port=80, target_port=80)],
-        ),
-    )
-    _get_or_create(
-        lambda: core.create_namespaced_service(BOOTSTRAP_NAMESPACE, service),
-        f"Service/{DEFAULT_BACKEND_SERVICE}",
-        lines,
-    )
     networking = k8s.NetworkingV1Api(api)
     ingress = k8s.V1Ingress(
         metadata=k8s.V1ObjectMeta(
@@ -270,14 +257,29 @@ def _ensure_bootstrap_ingress(api, lines: list):
                 # HTTPS:443 once a certificate actually exists — see its docstring for why
                 # that patch lives there and not here.
                 "alb.ingress.kubernetes.io/listen-ports": '[{"HTTP": 80}]',
+                # H6: an empty-backend Service (a ClusterIP with no pods ever behind it)
+                # used to sit here as the default action, so unmatched :443/:80 traffic hit
+                # a target group with zero healthy targets and the ALB answered with a raw
+                # 503 — indistinguishable from a real outage. A fixed-response action needs
+                # no backing Service at all: the controller resolves the action by this
+                # annotation's key before it ever looks up a Service/Endpoints object, so
+                # this always returns a clean 404 regardless of cluster state. Unverified
+                # against a real ALB controller — see plan/REAL-AWS-VALIDATION.md's H6 entry.
+                f"alb.ingress.kubernetes.io/actions.{DEFAULT_BACKEND_SERVICE}": (
+                    '{"type":"fixed-response","fixedResponseConfig":'
+                    '{"contentType":"text/plain","statusCode":"404","messageBody":"Not Found"}}'
+                ),
             },
         ),
         spec=k8s.V1IngressSpec(
             ingress_class_name=INGRESS_CLASS_NAME,
             default_backend=k8s.V1IngressBackend(
                 service=k8s.V1IngressServiceBackend(
+                    # "use-annotation" is the ALB controller's documented sentinel port
+                    # name telling it to resolve the backend from the actions.<name>
+                    # annotation above instead of a real Service port.
                     name=DEFAULT_BACKEND_SERVICE,
-                    port=k8s.V1ServiceBackendPort(number=80),
+                    port=k8s.V1ServiceBackendPort(name="use-annotation"),
                 )
             ),
         ),

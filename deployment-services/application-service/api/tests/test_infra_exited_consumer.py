@@ -65,21 +65,18 @@ def test_missing_exited_at_is_discarded(consumer, make_infra):
 
 
 @pytest.mark.django_db
-def test_unmaterialized_infra_is_requeued_then_ackable_once_it_exists(consumer, make_infra, monkeypatch):
+def test_unmaterialized_infra_is_requeued_then_ackable_once_it_exists(consumer, make_infra):
     infra_id = str(uuid.uuid4())
     consumer._retry_counts = {}
-
-    real_time_sleep = MagicMock()
-    monkeypatch.setattr("api.messaging.consumers.infrastructure.time.sleep", real_time_sleep)
 
     payload = {"infra_id": infra_id, "exited_at": "2026-01-01T00:00:00Z"}
     ch = _deliver(consumer, payload)
     ch.basic_nack.assert_called_once_with(delivery_tag=1, requeue=True)
     # RECOMMENDED 3 (security review): the retry delay must go through the pika
     # connection's own sleep (keeps heartbeats alive), never a bare time.sleep (which
-    # would starve the BlockingConnection's I/O loop for the delay's duration).
+    # would starve the BlockingConnection's I/O loop for the delay's duration — this
+    # module no longer imports `time` at all, see H6).
     ch.connection.sleep.assert_called_once_with(1)  # delay = min(2**0, 30) = 1
-    real_time_sleep.assert_not_called()
 
     infra = make_infra(id=infra_id)
     ch2 = _deliver(consumer, payload)

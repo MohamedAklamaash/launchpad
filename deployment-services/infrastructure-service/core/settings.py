@@ -75,6 +75,14 @@ MAX_DATABASES_PER_INFRA = int(os.environ.get('MAX_DATABASES_PER_INFRA', '10'))
 RATE_BUDGET_DATABASES_LIMIT = int(os.environ.get('RATE_BUDGET_DATABASES_LIMIT', '60'))
 RATE_BUDGET_DATABASES_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_DATABASES_WINDOW_SECONDS', '60'))
 
+# H6: a tighter per-user budget on top of `databases`, scoped to create/delete only (GET
+# passes through uncharged — see shared.ratelimit.budget.rate_limited's `methods` param).
+# Create/delete each provision or tear down a real RDS/ElastiCache/DocumentDB resource in
+# the customer's account, so they warrant a much lower ceiling than the read-heavy general
+# budget above.
+RATE_BUDGET_DATABASES_WRITE_LIMIT = int(os.environ.get('RATE_BUDGET_DATABASES_WRITE_LIMIT', '10'))
+RATE_BUDGET_DATABASES_WRITE_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_DATABASES_WRITE_WINDOW_SECONDS', '300'))
+
 # Per-user budget for the evidence-pack endpoint (F5) — an AssumeRole plus a handful of
 # read-only IAM calls in the customer's account, requested rarely (an auditor pulling
 # evidence, not a polling dashboard), so the default is much tighter than `databases`.

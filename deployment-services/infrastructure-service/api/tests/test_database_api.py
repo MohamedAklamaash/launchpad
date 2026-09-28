@@ -427,5 +427,78 @@ def test_detail_returns_503_when_limiter_unavailable(factory, make_infra_env, mo
 
     owner, infra, _env = make_infra_env()
     resp = _get(factory, database_detail, owner, str(infra.id), str(uuid.uuid4()))
-
     assert resp.status_code == 503
+
+
+# ── H6: tighter `databases_write` budget on create/delete only ───────────────────
+
+def _budget_calls(monkeypatch):
+    calls = []
+
+    def _record(user_id, bucket, limit, window):
+        calls.append(bucket)
+
+    monkeypatch.setattr("shared.ratelimit.budget.customer_call_budget", _record)
+    return calls
+
+
+def test_get_and_list_are_not_charged_against_the_write_budget(factory, make_infra_env, monkeypatch):
+    from api.views.database import database_detail, database_list_create
+
+    calls = _budget_calls(monkeypatch)
+    owner, infra, _env = make_infra_env()
+
+    _list(factory, database_list_create, owner, str(infra.id))
+    _get(factory, database_detail, owner, str(infra.id), str(uuid.uuid4()))
+
+    assert calls == ["databases", "databases"]
+
+
+def test_create_charges_both_the_general_and_write_budgets(factory, make_infra_env, monkeypatch):
+    from api.views.database import database_list_create
+
+    calls = _budget_calls(monkeypatch)
+    owner, infra, _env = make_infra_env()
+
+    resp = _create(factory, database_list_create, owner, str(infra.id), **VALID_CREATE)
+
+    assert resp.status_code == 202
+    assert calls == ["databases", "databases_write"]
+
+
+def test_create_over_write_budget_returns_429_before_touching_the_service(factory, make_infra_env, monkeypatch):
+    from api.views.database import database_list_create
+
+    calls = []
+
+    def _budget(user_id, bucket, limit, window):
+        calls.append(bucket)
+        return 120 if bucket == "databases_write" else None
+
+    monkeypatch.setattr("shared.ratelimit.budget.customer_call_budget", _budget)
+    monkeypatch.setattr(
+        "api.services.database_service.DatabaseService.create_database",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be called over budget")),
+    )
+
+    owner, infra, _env = make_infra_env()
+    resp = _create(factory, database_list_create, owner, str(infra.id), **VALID_CREATE)
+
+    assert resp.status_code == 429
+    assert resp["Retry-After"] == "120"
+
+
+def test_delete_charges_both_the_general_and_write_budgets(factory, make_infra_env, monkeypatch):
+    from api.models.database import Database
+    from api.views.database import database_detail, database_list_create
+
+    owner, infra, _env = make_infra_env()
+    create_resp = _create(factory, database_list_create, owner, str(infra.id), **VALID_CREATE)
+    db_id = create_resp.data["id"]
+    Database.objects.filter(id=db_id).update(status="ERROR")
+
+    calls = _budget_calls(monkeypatch)
+    resp = _delete(factory, database_detail, owner, str(infra.id), db_id, confirm_name="primary-db")
+
+    assert resp.status_code == 202
+    assert calls == ["databases", "databases_write"]

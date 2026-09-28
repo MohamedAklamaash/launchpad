@@ -57,7 +57,6 @@ def test_enable_network_policy_is_idempotent_when_already_enabled(monkeypatch):
 def test_ensure_bootstrap_ingress_is_rerun_safe(monkeypatch):
     core = MagicMock()
     core.create_namespace.side_effect = _conflict()
-    core.create_namespaced_service.side_effect = _conflict()
     networking = MagicMock()
     networking.create_namespaced_ingress.side_effect = _conflict()
     monkeypatch.setattr(eb.k8s, "CoreV1Api", lambda api: core)
@@ -66,6 +65,41 @@ def test_ensure_bootstrap_ingress_is_rerun_safe(monkeypatch):
     lines = []
     eb._ensure_bootstrap_ingress(object(), lines)
     assert all("already exists" in line for line in lines)
+
+
+def test_ensure_bootstrap_ingress_never_creates_an_empty_backend_service(monkeypatch):
+    """H6: the old empty-backend Service (no pods ever behind it) is what made unmatched
+    traffic hit a target group with zero healthy targets and answer 503. The fixed-response
+    action needs no Service at all."""
+    core = MagicMock()
+    networking = MagicMock()
+    monkeypatch.setattr(eb.k8s, "CoreV1Api", lambda api: core)
+    monkeypatch.setattr(eb.k8s, "NetworkingV1Api", lambda api: networking)
+
+    eb._ensure_bootstrap_ingress(object(), [])
+
+    core.create_namespaced_service.assert_not_called()
+
+
+def test_ensure_bootstrap_ingress_declares_a_fixed_404_default_action(monkeypatch):
+    """H6: unmatched :443/:80 traffic on the shared ALB group must get a clean 404, not the
+    503 an empty-backend Service produced — see plan/H-hardening.md's H6 section."""
+    core = MagicMock()
+    networking = MagicMock()
+    monkeypatch.setattr(eb.k8s, "CoreV1Api", lambda api: core)
+    monkeypatch.setattr(eb.k8s, "NetworkingV1Api", lambda api: networking)
+
+    eb._ensure_bootstrap_ingress(object(), [])
+
+    _namespace, ingress = networking.create_namespaced_ingress.call_args.args
+    action_annotation = ingress.metadata.annotations[
+        f"alb.ingress.kubernetes.io/actions.{eb.DEFAULT_BACKEND_SERVICE}"
+    ]
+    assert '"type":"fixed-response"' in action_annotation
+    assert '"statusCode":"404"' in action_annotation
+    backend_port = ingress.spec.default_backend.service.port
+    assert backend_port.name == "use-annotation"
+    assert backend_port.number is None
 
 
 def test_ensure_bootstrap_ingress_declares_only_http_80_at_creation(monkeypatch):

@@ -1232,8 +1232,88 @@ Type them all; a malformed id returns 422 at the edge.
 
 ## H6 — Small items
 
+**Status:** done (mock-verified; item 1's ALB behavior is unverified against a real
+controller — see plan/REAL-AWS-VALIDATION.md's H6 entry — item 5 was found to be
+out of scope and left as-is, see Decision 5).
+
 - EKS: unmatched `:443` traffic gets 503 (empty-backend Service) rather than a fixed 404.
 - Custom domains: an operator path to force-disable a domain (abuse/takedown).
 - Databases: a tighter per-user write bucket for create/delete (F0 follow-up).
+- Consumers that retry inside a pika callback with a bare `time.sleep()` (H2's note: this
+  starves the connection's heartbeat) — swept across both services.
 - dns_writer Redis ACL + RabbitMQ user wired into `infra/.docker` for local dev (documented
   in `docs/PLATFORM_DNS_ISOLATION.md`, not automated).
+
+### Files
+
+- `infrastructure-service/api/services/eks_bootstrap.py` (`_ensure_bootstrap_ingress`),
+  `api/tests/test_eks_bootstrap.py`.
+- `infrastructure-service/api/management/commands/force_disable_custom_domain.py` (new),
+  `api/tests/test_force_disable_custom_domain.py` (new).
+- `infrastructure-service/api/views/database.py`, `core/settings.py`, `test_settings.py`,
+  `env.example`, `shared/ratelimit/budget.py` (`rate_limited`'s new `methods` filter),
+  `api/tests/test_database_api.py`.
+- `application-service/api/messaging/consumers/{infrastructure,environment,user}.py`,
+  `infrastructure-service/api/messaging/consumer/application_consumer.py`,
+  `api/tests/test_h6_consumer_heartbeat_sleep.py` (new, application-service),
+  `api/tests/test_h6_application_consumer_sleep.py` (new, infrastructure-service),
+  `api/tests/test_host_readiness_consumer.py` / `test_infra_exited_consumer.py` (updated —
+  their `time.sleep` monkeypatches no longer apply since the module stopped importing
+  `time`).
+
+### Decisions
+
+1. **EKS default action: `fixed-response` + `use-annotation`, no backing Service at all.**
+   The old default backend was a real `ClusterIP` Service with a selector matching no pods
+   — unmatched traffic hit a target group with zero healthy targets, and the ALB answered
+   with a bare 503 indistinguishable from a real outage. The AWS Load Balancer Controller's
+   `alb.ingress.kubernetes.io/actions.<name>` annotation resolves the backend by name before
+   ever doing a Service/Endpoints lookup, so the fix needs no Service object at all —
+   `_ensure_bootstrap_ingress` no longer creates one. `_get_or_create` swallows a 409 on
+   `Ingress/bootstrap` and never updates an existing object (same as `_ensure_ingress_class`,
+   see `_ingress_group_name`'s docstring on that pattern) — a cluster that already
+   bootstrapped before this change keeps its old Ingress spec (and its now-orphaned
+   `default-backend` Service, no longer referenced by anything) and keeps returning 503
+   forever; only a cluster bootstrapping for the first time after this change gets the
+   fixed-404 default. Unverified against a real controller (added to
+   plan/REAL-AWS-VALIDATION.md, and that check must run against a fresh cluster, not an
+   already-bootstrapped one): whether EKS Auto Mode's specific ALB controller build honors
+   `use-annotation` the way AWS's own documentation describes.
+2. **`force_disable_custom_domain` reuses `CustomDomainService._teardown` directly**, the
+   same private helper `delete_domain`/`disable_for_application`/every periodic sweep
+   already call — an operator-forced disable tears a domain down through the identical
+   DISABLING -> detach -> certificate-delete -> DISABLED path, not a second, unaudited one.
+   `--confirm` is required to mutate anything; without it the command only reports the
+   target (status, infra) and exits — the same "dry-run by default" shape
+   `republish_exited_events --dry-run` uses, inverted (here the safe default has no flag).
+   Lookup is by `--domain-id` (exact) or `--hostname` (normalized the same way a claim
+   normalizes it, excluding already-DISABLED rows, refused as ambiguous if more than one
+   non-disabled row matches — forcing `--domain-id`). The audit line is a structured
+   `audit.custom_domain` logger record only, no new DB table — this is a low-volume
+   operator action, not a per-request access log like `exit_export_audit.py`'s.
+3. **`databases_write` is a second, stacked `@rate_limited` decorator, not a replacement
+   for `databases`.** `shared.ratelimit.budget.rate_limited` gained an optional `methods`
+   filter so the tighter budget only charges POST (create) / DELETE — a GET under the same
+   view function passes through uncharged. This keeps `databases` as the general read+write
+   ceiling (F0) and layers a much tighter one (10/300s default) specifically on the two
+   operations that provision or tear down a real AWS resource, matching `evidence`/
+   `exit_export`'s existing pattern of a tighter budget for AWS-touching endpoints.
+4. **Every bare `time.sleep()` inside a pika callback's retry path is now
+   `ch.connection.sleep()`**, matching the fix H2 already applied to
+   `InfraExitedEventConsumer` (see that section's docstring for the full "starves the
+   BlockingConnection's heartbeat" reasoning) — `InfraEventConsumer`,
+   `InfraUpdatedEventConsumer`, `HostReadinessEventConsumer`,
+   `EnvironmentEventConsumer` (both its retry branches), `AuthEventConsumer`, and
+   infrastructure-service's `ApplicationEventConsumer`. `import time` was removed from
+   every file where it became unused. No behavior change to retry counts, backoff, or ack
+   semantics — only what the process does while waiting.
+5. **dns_writer Redis ACL + RabbitMQ user: left undone, and left documented as such.**
+   `docs/PLATFORM_DNS_ISOLATION.md` already explains why in detail: the compose stack's
+   Redis runs a single `--requirepass` line that can't add an ACL user without an
+   `aclfile`, which would change how every other service in the stack authenticates to
+   Redis, and RabbitMQ's single shared `guest` user would need a dedicated vhost/user
+   threaded through every other service's `RABBITMQ_URL` to add per-user permissions. The
+   item's own acceptance criterion — "only if it doesn't change how other services
+   authenticate" — is not met by any change available here, so no code or compose file
+   changed for this item; the existing documentation already carries this as a tracked
+   follow-up.

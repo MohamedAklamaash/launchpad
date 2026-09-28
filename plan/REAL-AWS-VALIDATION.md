@@ -561,3 +561,21 @@ DNS** account (`infra/platform-dns`).
       dataset, spot-check that `log_group_name` actually got set for a real pre-F3 app
       row (one with `task_definition_arn` set but no `Deployment` rows), not just in the
       unit test.
+
+## H6 EKS bootstrap default action
+
+- [ ] Run against a **fresh** cluster (one that has never run `bootstrap_eks_environment`
+      before this change) — `_ensure_bootstrap_ingress`'s `_get_or_create` swallows a 409
+      and never updates an existing Ingress, so an already-bootstrapped cluster keeps its
+      old empty-backend-Service spec and this check would trivially still see a 503
+      regardless of whether the new code path works. After bootstrap, a request to the
+      ALB's DNS name with a `Host` header that matches no Ingress rule returns HTTP 404
+      with the `alb.ingress.kubernetes.io/actions.default-backend` fixed-response body,
+      not a 503 — confirms the AWS Load Balancer Controller resolves the action by
+      annotation name without requiring a backing Kubernetes Service to exist (no
+      `default-backend` Service is created anymore).
+- [ ] The `use-annotation` sentinel port name on the Ingress's default backend is accepted
+      by the controller version actually deployed (`eks.amazonaws.com/alb`, AWS's own EKS
+      Auto Mode controller) — this is AWS's own documented convention for the
+      `aws-load-balancer-controller` action-annotation feature, unverified specifically
+      against the Auto Mode variant this cluster runs.
