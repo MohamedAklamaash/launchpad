@@ -3,7 +3,7 @@ import { InvitedUser, UserOTP, RefreshToken } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { comparePassword } from '@/utils/handle-password';
 import { verifyRefreshToken } from '@/utils/handle-token';
-import { otpAttempts } from '@/utils/otp-attempts';
+import { MAX_OTP_ATTEMPTS, NIL_INVITED_USER_ID, otpAttempts } from '@/utils/otp-attempts';
 import { Op } from 'sequelize';
 import { HttpError } from '@launchpad/common';
 import { InvitedUserLoginInput, AuthenticateUserInput } from '@/types/auth.invited_user.types';
@@ -46,53 +46,65 @@ export class InvitedUserAuthService extends BaseService {
         const { email, otp } = input;
         const purpose = OTP_PURPOSE.REGISTER;
 
-        // Looked up outside any transaction, before the attempt is claimed: the id (or
-        // its absence) decides which Redis key this guess counts against, and — on a
-        // 404 case — nothing here is written yet for a transaction to roll back.
-        const user = await InvitedUser.findOne({ where: { email } });
-        const attemptKey = otpAttempts.keyFor(user?.id, email);
+        // Claims a slot unconditionally, before the guess (or even whether the account
+        // exists) is evaluated at all — see otp-attempts.ts. This one DB statement both
+        // claims the slot AND is the only place that decides whether `email` is a real
+        // account (H7: no separate InvitedUser.findOne up front), so an unknown email
+        // and a known email run the exact same query with the exact same round trip
+        // instead of one short-circuiting before the other. If N requests arrive
+        // concurrently, each gets a distinct atomically-incremented count; only the
+        // first MAX_OTP_ATTEMPTS can ever proceed past the cap check below, no matter
+        // how they're interleaved.
+        const claim = await otpAttempts.claimAttempt(email);
 
-        // Claims the slot unconditionally, before the guess (or even whether the
-        // account exists) is evaluated at all — see otp-attempts.ts. If N requests
-        // arrive concurrently, each gets a distinct atomic count; only the first 5 can
-        // ever proceed past this line, no matter how they're interleaved.
-        const allowed = await otpAttempts.claimAttempt(attemptKey);
-        if (!allowed) {
-            // Runs outside the transaction below on purpose: a 429 thrown inside a
+        if (claim && claim.attempts > MAX_OTP_ATTEMPTS) {
+            // Outside any transaction on purpose: a 429 thrown inside a
             // sequelize.transaction callback rolls back everything that callback did,
             // including a destroy — this invalidation must actually commit.
-            if (user) {
-                await UserOTP.destroy({ where: { invited_user_id: user.id, purpose } });
-            }
+            await UserOTP.destroy({ where: { invited_user_id: claim.userId, purpose } });
             throw new HttpError(429, 'Too many attempts — request a new code');
         }
 
-        // Same response an existing user gets for a wrong code — a distinct "no such
-        // account" response would let this endpoint enumerate emails independent of
-        // ever guessing anything OTP-shaped.
-        if (!user) throw new HttpError(400, 'Invalid or expired OTP');
+        // H7 (R3 follow-up): an unknown email still runs the OTP lookup below, bound to
+        // a row id that can never exist, instead of short-circuiting before ever
+        // touching UserOTP — the same 400 an existing user gets for a wrong guess, and
+        // now the same DB work behind it too.
+        const lookupUserId = claim?.userId ?? NIL_INVITED_USER_ID;
 
         return sequelize.transaction(async (transaction) => {
             const otpRecord = await UserOTP.findOne({
                 where: {
-                    invited_user_id: user.id,
+                    invited_user_id: lookupUserId,
                     otp,
                     purpose,
                     expires_at: { [Op.gt]: new Date() },
                 },
                 transaction,
             });
-            if (!otpRecord) {
+            if (!claim || !otpRecord) {
                 throw new HttpError(400, 'Invalid or expired OTP');
             }
 
-            user.is_authenticated = true;
-            await user.save({ transaction });
+            await InvitedUser.update(
+                { is_authenticated: true },
+                { where: { id: claim.userId }, transaction },
+            );
             await otpRecord.destroy({ transaction });
-            await otpAttempts.clearAttempts(attemptKey);
+            await otpAttempts.resetAttempts(claim.userId);
 
-            const refreshToken = await this.createRefreshToken(user.id, transaction);
-            return this.buildAuthResponse(user, refreshToken.token_id);
+            const refreshToken = await this.createRefreshToken(claim.userId, transaction);
+            return this.buildAuthResponse(
+                {
+                    id: claim.userId,
+                    email: claim.email,
+                    user_name: claim.user_name,
+                    role: claim.role,
+                    roles: claim.roles,
+                    infra_id: claim.infra_id,
+                    created_at: claim.created_at,
+                },
+                refreshToken.token_id,
+            );
         });
     }
 

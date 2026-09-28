@@ -91,6 +91,41 @@ def ecs_log_group_for(application) -> str:
     return application.log_group_name or ecs_log_group(app_slug(application.name))
 
 
+def ecs_task_family(slug: str) -> str:
+    """Legacy ECS task-definition family, shared by every app with this slug on every
+    infrastructure in the same AWS account+region (H7 residual from H4) — kept only as
+    the fallback for an `Application` row that already deployed under this name before
+    `Application.task_family` existed. A row's own stored family, once persisted, never
+    changes back to this. See `new_ecs_task_family` for what a genuinely new deploy
+    uses, and `ecs_task_family_for` for the single place that decides between the two
+    when reading."""
+    return f"{slug}-task"
+
+
+def new_ecs_task_family(application) -> str:
+    """ECS task-definition family for a genuinely new deploy (H7 residual from H4) —
+    discriminated by a hash of both the infrastructure id and the application id, the
+    same pattern as `new_ecs_log_group`. Computed once, the first time an `Application`
+    row is deployed, and persisted to `Application.task_family`; every later
+    deploy/rollback/backfill of that row, plus runtime-log tailing and the exit-export
+    inventory, read the stored value back through `ecs_task_family_for` rather than
+    recomputing it. The family also names the app container inside the task
+    definition, so `ECSClient.create_service`'s `container_name` must be given this
+    same value."""
+    slug = app_slug(application.name)
+    digest = _resource_discriminator(application.infrastructure_id, application.id)
+    return f"{slug}-{digest}-task"
+
+
+def ecs_task_family_for(application) -> str:
+    """The ECS task-definition family this application's containers actually run
+    under right now: the stored family (H7) if one was ever persisted, else the
+    legacy shared-per-slug name for a row that deployed before
+    `Application.task_family` existed. Every reader — runtime-log tailing, the
+    exit-export inventory — calls this instead of re-deriving either name itself."""
+    return application.task_family or ecs_task_family(app_slug(application.name))
+
+
 def require_k8s_safe_slug(name: str) -> str:
     """Slugs admit '.' and '_' (legal in Docker tags) which k8s object names reject.
     Refuse rather than re-sanitize: 'my.app' and 'my-app' would collapse onto one

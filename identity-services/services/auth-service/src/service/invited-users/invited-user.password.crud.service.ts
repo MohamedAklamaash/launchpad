@@ -3,7 +3,7 @@ import { InvitedUser, UserOTP, PasswordSettings } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { hashPassword, comparePassword } from '@/utils/handle-password';
 import { signAccessToken, verifyAccessToken } from '@/utils/handle-token';
-import { otpAttempts } from '@/utils/otp-attempts';
+import { MAX_OTP_ATTEMPTS, NIL_INVITED_USER_ID, otpAttempts } from '@/utils/otp-attempts';
 import { Op } from 'sequelize';
 import { HttpError, FORGOT_PASSWORD_EVENT } from '@launchpad/common';
 import {
@@ -77,48 +77,49 @@ export class PasswordService extends BaseService {
         const { email, otp } = input;
         const purpose = OTP_PURPOSE.PASSWORD_RESET;
 
-        // Same shape as InvitedUserAuthService.authenticateWithOTP: the slot is claimed
-        // unconditionally, before the guess (or account existence) is evaluated, and
-        // any cap-triggered invalidation runs outside the transaction below so it can
-        // never be rolled back by the 429 it precedes.
-        const user = await InvitedUser.findOne({ where: { email } });
-        const attemptKey = otpAttempts.keyFor(user?.id, email);
+        // Same shape as InvitedUserAuthService.authenticateWithOTP: one atomic DB
+        // statement both claims the attempt slot and is the only place that decides
+        // whether `email` is a real account, so an unknown email and a known email run
+        // the same query with the same round trip. Any cap-triggered invalidation runs
+        // outside the transaction below so it can never be rolled back by the 429 it
+        // precedes.
+        const claim = await otpAttempts.claimAttempt(email);
 
-        const allowed = await otpAttempts.claimAttempt(attemptKey);
-        if (!allowed) {
-            if (user) {
-                await UserOTP.destroy({ where: { invited_user_id: user.id, purpose } });
-            }
+        if (claim && claim.attempts > MAX_OTP_ATTEMPTS) {
+            await UserOTP.destroy({ where: { invited_user_id: claim.userId, purpose } });
             throw new HttpError(429, 'Too many attempts — request a new code');
         }
 
-        if (!user) throw new HttpError(400, 'Invalid or expired OTP');
+        // H7 (R3 follow-up): an unknown email still runs the OTP lookup below, bound to
+        // a row id that can never exist, instead of short-circuiting before ever
+        // touching UserOTP.
+        const lookupUserId = claim?.userId ?? NIL_INVITED_USER_ID;
 
         return sequelize.transaction(async (transaction) => {
             const otpRecord = await UserOTP.findOne({
                 where: {
-                    invited_user_id: user.id,
+                    invited_user_id: lookupUserId,
                     otp,
                     purpose,
                     expires_at: { [Op.gt]: new Date() },
                 },
                 transaction,
             });
-            if (!otpRecord) {
+            if (!claim || !otpRecord) {
                 throw new HttpError(400, 'Invalid or expired OTP');
             }
 
             await otpRecord.destroy({ transaction });
-            await otpAttempts.clearAttempts(attemptKey);
+            await otpAttempts.resetAttempts(claim.userId);
 
             // Return a short-lived reset token specifically for password reset
             return signAccessToken(
                 {
-                    sub: user.id,
-                    email: user.email,
+                    sub: claim.userId,
+                    email: claim.email,
                     scope: 'password_reset',
-                    user_name: user.user_name,
-                    role: user.role,
+                    user_name: claim.user_name,
+                    role: claim.role,
                 },
                 '5m',
             );

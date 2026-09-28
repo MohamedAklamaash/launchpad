@@ -1,5 +1,6 @@
 import logging
 
+import jwt
 from django.conf import settings
 from django.http import JsonResponse
 
@@ -62,11 +63,15 @@ class JWTAuthMiddleware:
                 {"message": e.message, "details": e.details},
                 status=e.status_code
             )
-        except Exception as e:
-            logger.exception("Unexpected error in JWTAuthMiddleware")
+        except jwt.PyJWTError:
+            # Expired, malformed, invalid-signature, or a ScopedTokenRejected token —
+            # never echo the exception text back to the caller.
             return JsonResponse(
-                {"message": "Internal Server Error", "details": str(e)},
-                status=500
+                {"message": "Invalid or expired token", "details": None},
+                status=401
             )
+        except Exception:
+            logger.exception("Unexpected error in JWTAuthMiddleware")
+            return JsonResponse({"message": "Internal Server Error"}, status=500)
 
         return self.get_response(request)

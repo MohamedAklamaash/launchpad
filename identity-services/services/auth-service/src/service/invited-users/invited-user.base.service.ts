@@ -4,7 +4,7 @@ import { RefreshToken, UserOTP } from '@/db';
 import { signAccessToken, signRefreshToken } from '@/utils/handle-token';
 import { generateOTP } from '@/utils/generate-otp';
 import { AuthResponse, USER_ROLE, UserData } from '@/types/auth.invited_user.types';
-import { OtpPurpose } from '@/types/otp-purpose';
+import { OTP_PURPOSE, OtpPurpose } from '@/types/otp-purpose';
 
 export abstract class BaseService {
     protected async createRefreshToken(userId: string, transaction: Transaction) {
@@ -69,20 +69,33 @@ export abstract class BaseService {
         };
     }
 
-    // Deletes any OTP already outstanding for this user+purpose before minting a new
-    // one — at most one live code per user per purpose. Without this, repeated calls
-    // (a resend, a retried request) stockpile multiple simultaneously-valid codes,
-    // which both widens the guessable surface and defeats the point of a single
-    // attempt-capped code. A user can still have one register-purpose and one
-    // password-reset-purpose code outstanding at the same time; only same-purpose
-    // codes are deduped.
+    // Deletes any OTP already outstanding for this user+purpose (register: also scoped
+    // to this infra) before minting a new one. Without this, repeated calls (a resend,
+    // a retried request) stockpile multiple simultaneously-valid codes, which both
+    // widens the guessable surface and defeats the point of a single attempt-capped
+    // code. A user can still have one register-purpose and one password-reset-purpose
+    // code outstanding at the same time; only same-purpose codes are deduped.
+    //
+    // Register codes are additionally scoped to `infra_id`: a user invited to infra A,
+    // then invited to infra B before verifying A's still-valid invite, must not have
+    // A's code silently invalidated by B's — each infra's invite is its own flow with
+    // its own code. Password-reset stays deduped by (user, purpose) alone — resetting
+    // is a single per-account flow, not a per-infra one, and requestPasswordReset picks
+    // one infra to stamp the reset token's context with regardless of how many the
+    // account belongs to. The attempt-cap budget stays shared across every live code
+    // for the account (see otp-attempts.ts) either way, so this widens which code can
+    // be *outstanding*, never how many guesses an attacker gets against the account.
     protected async createOTP(
         userId: string,
         infraId: string,
         purpose: OtpPurpose,
         transaction: Transaction,
     ) {
-        await UserOTP.destroy({ where: { invited_user_id: userId, purpose }, transaction });
+        const dedupWhere =
+            purpose === OTP_PURPOSE.REGISTER
+                ? { invited_user_id: userId, purpose, infra_id: infraId }
+                : { invited_user_id: userId, purpose };
+        await UserOTP.destroy({ where: dedupWhere, transaction });
 
         const expiresAt = new Date();
         expiresAt.setMinutes(expiresAt.getMinutes() + 10); // 10 min expiry window

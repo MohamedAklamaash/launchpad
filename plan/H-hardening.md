@@ -1,8 +1,8 @@
 # H — Hardening follow-ups
 
-**Status:** not started · Found while building and reviewing F0–F6 and F1b; none was
-owned by any feature. Each item is one PR, built mock-first, with an independent security
-review before merge — same process as the features.
+**Status:** H1–H7 done (mock-verified) · Found while building and reviewing F0–F6 and
+F1b; none was owned by any feature. Each item is one PR, built mock-first, with an
+independent security review before merge — same process as the features.
 
 ## H1 — Encrypt `Application.envs` at rest
 
@@ -1317,3 +1317,154 @@ out of scope and left as-is, see Decision 5).
    authenticate" — is not met by any change available here, so no code or compose file
    changed for this item; the existing documentation already carries this as a tracked
    follow-up.
+
+## H7 — Residuals
+
+**Status: done** (mock-verified; item 5's core SQL statement and item 7's Redis half
+additionally verified against real `postgres:16-alpine`/`redis:7` containers — see
+below).
+
+Closes the remaining low-priority residuals called out across H3's and H6's own review
+passes (decision 5 above in particular — H7 item 7 revisits that "not achievable" call
+with a narrower mechanism, an ACL file / management-API approach neither H3 nor H6 tried).
+
+1. **`JWTAuthMiddleware` 500 on any non-`HttpError` JWT failure.** `shared/middleware/
+   authentication.py` caught `HttpError` then fell through to a bare `except Exception`,
+   turning an expired/malformed token or a `ScopedTokenRejected` (H3) into a 500 with the
+   exception text in `details`. Now catches `jwt.PyJWTError` (the common base of
+   `ScopedTokenRejected` and every PyJWT decode failure) between the two and returns a
+   fixed 401 body (`{"message": "Invalid or expired token", "details": null}`), never the
+   exception's own text. `payment-service`'s `JWTAuthentication` (DRF `BaseAuthentication`)
+   does **not** have the same shape — it already catches `Exception` broadly around
+   `decode_jwt` and returns `None` (unauthenticated) rather than 500ing, so it was left
+   unchanged. Tests: `infrastructure-service/api/tests/test_shared_jwt_middleware_401.py`
+   (expired, malformed, and scoped tokens all 401 with the fixed body; a valid token still
+   reaches the view).
+2. **`.gitignore`'s `*.log*` substring trap.** Flagged in H3's residuals: the rule matched
+   any path *containing* `.log`, not just log files, and had already caught a real source
+   file once. Replaced with `*.log.[0-9]*` (rotated logs) alongside the pre-existing
+   `*.log`/`logs/` rules; no rotation config anywhere in the repo produces any other
+   suffix. `git status --ignored` before/after is identical except for `.gitignore`
+   itself — nothing tracked or untracked changed ignore status.
+3. **OTP verify timing leaked account existence.** `authenticateWithOTP`/`verifyResetOTP`
+   used to look the account up first and only run the OTP-row query (and open a
+   transaction) for a *known* email — an unknown email short-circuited before ever
+   touching `UserOTP`. Folded into item 5's redesign: both flows now run the exact same
+   two DB operations (one atomic claim, one `UserOTP.findOne`) regardless of whether the
+   email is registered, the second bound to a nil UUID (`NIL_INVITED_USER_ID`) when it
+   isn't. Test: `otp-attempt-cap.test.ts`'s "run identical DB operations" case asserts the
+   literal call sequence (`claimAttempt` → `transaction` → `UserOTP.findOne`) is the same
+   list for both an unknown email and a known email with a wrong guess.
+4. **Multi-infra invites: `createOTP` dedup invalidated another infra's live code.**
+   `invited-user.base.service.ts`'s `createOTP` deleted every prior same-purpose OTP
+   before minting a new one — a user invited to infra A, then invited to infra B before
+   verifying A's still-valid code, had A's code silently deleted as a side effect of B's
+   invite. Register-purpose dedup is now scoped to `(user, purpose, infra_id)`;
+   password-reset stays `(user, purpose)` only, since a reset is one per-account flow, not
+   per-infra. The attempt-cap budget (item 5) stays shared across every live code for the
+   account either way — this widens which code can be *outstanding*, never how many
+   guesses an attacker gets. Tests: `inviter-user.crud.service.register-otp.test.ts` gained
+   a case inviting an existing, unverified user to a second infra and asserting the dedup
+   delete is scoped to that infra.
+   **User-visible consequence, intended:** a user with codes outstanding for both infra A
+   and infra B who verifies B still has A's row live — `login()`'s `pendingOtp` check
+   (scoped to the register purpose, unaffected by this item) blocks that user's normal
+   password login until A's code expires (≤10 min) or is itself verified/dedup'd out by a
+   third invite to A. Pre-H7, verifying B would have deleted A's code and cleared the
+   block immediately; this is the direct trade-off for A no longer being silently
+   invalidated by B's invite in the first place.
+5. **OTP attempt cap failed closed on a Redis outage.** `otp-attempts.ts`'s `claimAttempt`/
+   `clearAttempts` moved off Redis onto `InvitedUser` (`failed_otp_attempts` +
+   `otp_attempts_window_start`, added idempotently in `db/index.ts` next to the existing
+   `purpose` `ALTER`, plus on the Sequelize model — auth-service has no migration
+   framework). `claimAttempt(email)` is one atomic `UPDATE ... RETURNING` keyed on
+   `email`: its `WHERE` clause is the only place that decides whether the account exists,
+   and its `SET` clause claims the slot, so a zero-row result (unknown email) both counts
+   as "not allowed to have counted anything" *and* runs the identical query/round-trip a
+   known email's claim does (closing item 3 as a side effect). Semantics unchanged from
+   the Redis version: claimed before the guess is evaluated, cap `MAX_OTP_ATTEMPTS` (5),
+   invalidation on exceed and the reset-to-0 on success both outside/inside the right
+   transaction boundary as before, 10-minute window. `shouldThrottleForgotPassword` stays
+   on Redis, still fails open, unchanged. Tests: `otp-attempts.test.ts` (claim/reset
+   against a mocked `sequelize.query`, per-account isolation) and
+   `otp-attempt-cap.test.ts`'s concurrency case (6 concurrent `authenticateWithOTP` calls
+   against a shared in-memory row via a mocked `sequelize.query`, asserting exactly 5
+   reach the OTP lookup and the 6th is a 429 — the real `claimAttempt` code path, not a
+   mock of it). The `UPDATE ... RETURNING` statement itself was additionally run
+   against a real `postgres:16-alpine` container (a table with the two new columns, one
+   row): six calls with a literal email returned `failed_otp_attempts` 1..6 with a
+   stable window timestamp; manually rewinding `otp_attempts_window_start` past 10
+   minutes and re-running reset the count to 1; the same statement against an email with
+   no matching row returned zero rows and left the real row untouched.
+6. **`ECSClient.create_task_definition`'s `family` shared across infras with the same
+   app slug.** Same class of collision H4 already fixed for target groups and log
+   groups, left as a deliberate residual there. `Application.task_family` (additive
+   migrations `0038`/`0039`, the latter backfilling the legacy `{slug}-task` name for
+   every app with deploy evidence, mirroring `0034`/`0035` exactly) now carries a
+   per-infra+per-app hashed family (`api/common/naming.py:new_ecs_task_family`/
+   `ecs_task_family_for`) for new deploys, with the same `_has_succeeded_before`
+   three-signal legacy fallback log_group_name uses. Every place that derived the family
+   inline now reads the stored value: `_create_task_definition` (deploy/rollback/backfill
+   all funnel through this one method), `_create_ecs_service`'s `container_name`
+   (must match the container's actual name inside the task definition),
+   `runtime_logs_service.py`'s ECS log-stream binding, and `exit_inventory.py`'s rendered
+   task definition. Tests: `application-service/api/tests/test_h7_task_family_naming.py`
+   (new/legacy/stored family selection, the `_create_ecs_service` call site, exit
+   inventory and its legacy fallback, migration `0039`'s backfill selectivity).
+7. **dns_writer Redis ACL + RabbitMQ user, wired into `infra/.docker`, opt-in.** H6
+   decision 5 called this not achievable without changing how every other service
+   authenticates; revisited with a narrower mechanism than a shared `--requirepass` line
+   or a `definitions.json` import. Redis: `infra/.docker/init/redis-entrypoint.sh` renders
+   an `aclfile` only when `DNS_WRITER_REDIS_PASSWORD` is set, keeping `default` on the
+   same `REDIS_PASSWORD` every other service already uses and adding a
+   `launchpad_dns_writer` user scoped to `~platform_dns:*` — verified against a real
+   `redis:7` container (`docker run ... --aclfile`): default still authenticates with
+   `REDIS_PASSWORD`, `launchpad_dns_writer` gets `NOPERM` on `infra:*` and `OK` on
+   `platform_dns:*`. Left unset, the entrypoint runs the original `--requirepass` line
+   verbatim. RabbitMQ: a one-shot `rabbitmq-init` service
+   (`init/rabbitmq-dns-writer-init.sh`) calls the management HTTP API to `PUT` a
+   `launchpad_dns_writer` user and the same configure/write/read permission patterns
+   `docs/PLATFORM_DNS_ISOLATION.md` already documented, only when
+   `DNS_WRITER_RABBITMQ_PASSWORD` is set — never a `definitions.json` import, which could
+   redefine `RABBITMQ_DEFAULT_USER`'s own permissions/existence on load. `docker compose
+   config` diffed against the pre-H7 render confirms only the `redis` service and the new
+   `rabbitmq-init` service changed — every other service's `REDIS_URL`/`RABBITMQ_URL` line
+   is byte-identical. `docs/PLATFORM_DNS_ISOLATION.md` updated in place; not verified
+   end-to-end against a real `rabbitmq:4-management` container (no image pull available in
+   this environment) — the management API calls themselves are standard, idempotent PUTs.
+
+### Files
+
+- `deployment-services/shared/middleware/authentication.py`,
+  `deployment-services/infrastructure-service/api/tests/test_shared_jwt_middleware_401.py`
+  (new).
+- `.gitignore`.
+- `identity-services/services/auth-service/src/utils/otp-attempts.ts` (rewritten),
+  `src/db/index.ts`, `src/db/models/invited-user.model.ts`,
+  `src/service/invited-users/invited-user.base.service.ts`,
+  `src/service/invited-users/invited-user.auth.service.ts`,
+  `src/service/invited-users/invited-user.password.crud.service.ts`,
+  `src/utils/otp-attempts.test.ts` (rewritten),
+  `src/service/invited-users/otp-attempt-cap.test.ts` (rewritten),
+  `src/service/invited-users/inviter-user.crud.service.register-otp.test.ts`.
+- `application-service/api/models/application.py`, `api/common/naming.py`,
+  `api/services/application_deployment_service.py`, `api/services/exit_inventory.py`,
+  `api/services/runtime_logs_service.py`, `api/migrations/0038_application_task_family.py`
+  (new), `api/migrations/0039_backfill_legacy_task_family.py` (new),
+  `api/tests/test_h7_task_family_naming.py` (new).
+- `infra/.docker/docker-compose.yml`, `infra/.docker/init/redis-entrypoint.sh` (new),
+  `infra/.docker/init/rabbitmq-dns-writer-init.sh` (new), `infra/.docker/env.example`,
+  `docs/PLATFORM_DNS_ISOLATION.md`.
+
+### Tests
+
+`application-service`: 571 passed, including the 11 new cases in
+`test_h7_task_family_naming.py`. `infrastructure-service`: full suite green, including
+the new middleware test file.
+`gateway-service`: 84 passed, unchanged (H7 touched no gateway code). `auth-service`: 61
+`node --test` cases pass across the full `src/**/*.test.ts` glob, including the rewritten
+OTP attempt-cap and dedup suites. `ruff check deployment-services gateway-service
+payment-service`, `compileall`, `iam_policy/generate.py --check`, and
+`makemigrations api --check --dry-run` (application-service, `MODE=dev`, no live
+Postgres — "No changes detected") all clean. `pnpm format`/`pnpm lint`/
+`tsc --noEmit` clean across `identity-services`.

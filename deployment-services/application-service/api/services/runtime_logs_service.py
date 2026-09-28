@@ -21,7 +21,12 @@ from kubernetes.client.rest import ApiException
 from shared.enums.orchestrator import ComputeType
 from shared.enums.user_role import UserRole
 
-from api.common.naming import app_slug, ecs_log_group_for, require_k8s_safe_slug
+from api.common.naming import (
+    app_slug,
+    ecs_log_group_for,
+    ecs_task_family_for,
+    require_k8s_safe_slug,
+)
 from api.k8s.deployer import cluster_name_from_arn, k8s_apis, namespace_for
 from api.models.application import Application
 from api.models.environment import Environment
@@ -171,7 +176,11 @@ class RuntimeLogsService:
 
     def _tail_ecs(self, session, app, env, infra, container, minutes, cursor, user_id, deadline) -> LogsResult:
         slug = app_slug(app.name)
-        family = f"{slug}-task"
+        # H7 residual from H4: the app's own stored task family (falling back to the
+        # legacy shared name for a row that deployed before that field existed) — the
+        # log-stream name this reads must match the container name ECS actually ran
+        # under, which is the family, not a freshly-recomputed slug-only guess.
+        family = ecs_task_family_for(app)
         # H4: the app's own stored log group (falling back to the legacy shared name
         # for a row that deployed before that field existed) — B1's stream binding
         # already keeps two infras from reading each other's tasks even when they
