@@ -3,7 +3,7 @@ import { InvitedUserFacade } from '@/service/invited-user.facade.service';
 import { HttpError } from '@launchpad/common';
 import { USER_ROLE } from '@/types/auth.invited_user.types';
 import { getAuthHeader } from '@/utils/auth-header';
-import { verifyAccessToken } from '@/utils/handle-token';
+import { verifySessionToken } from '@/utils/handle-token';
 import { superAdminMiddleware } from '@/utils/super-admin';
 import { resolveRevokeCallerId } from '@/utils/revoke-authz';
 import { env } from '@/config/env';
@@ -14,7 +14,7 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
     try {
         const token = getAuthHeader(req);
         const { email, password, user_name, infra_id, role } = req.body;
-        const payload = verifyAccessToken(token);
+        const payload = verifySessionToken(token);
         const super_user = await superAdminMiddleware(payload);
         if (!super_user.infra_id.includes(infra_id)) {
             throw new HttpError(
@@ -60,7 +60,7 @@ export const RegisterInvitedUser = async (req: Request, res: Response) => {
 export const ListInvitedUsers = async (req: Request, res: Response) => {
     try {
         const token = getAuthHeader(req);
-        const payload = verifyAccessToken(token);
+        const payload = verifySessionToken(token);
         const invitees = await invitedUserFacade.listInvitedBy(payload.sub);
         return res.status(200).json(
             invitees.map((u) => ({
@@ -84,7 +84,7 @@ export const ListInvitedUsers = async (req: Request, res: Response) => {
 export const RemoveMemberFromOrg = async (req: Request, res: Response) => {
     try {
         const token = getAuthHeader(req);
-        const payload = verifyAccessToken(token);
+        const payload = verifySessionToken(token);
         const super_user = await superAdminMiddleware(payload);
         const { userId } = req.params as { userId: string };
         const { infra_ids } = (req.body ?? {}) as { infra_ids?: string[] };
@@ -115,30 +115,51 @@ export const LoginUser = async (req: Request, res: Response) => {
     }
 };
 
+const authenticateOTP = async (email: string, otp: string, res: Response) => {
+    const authRes = await invitedUserFacade.authenticateWithOTP({ email, otp });
+    return res.status(200).json(authRes);
+};
+
+// GET stays only because it's the link auth-email.template.ts puts in the verification
+// email (notification-service's user-event.consumer.ts builds
+// `${GATEWAY_SERVICE_URL}/auth/authenticate-with-otp?email=...&otp=...`) — a clickable
+// link has to be a GET. That still puts the OTP in the URL (access logs, browser
+// history, proxies), so the dashboard's own manual-entry form uses the POST variant
+// below instead; see AuthenticateOTPWithBody.
 export const AuthenticateOTP = async (req: Request, res: Response) => {
     try {
         const { email, otp } = req.query as { email: string; otp: string };
-        const authRes = await invitedUserFacade.authenticateWithOTP({
-            email,
-            otp,
-        });
-
-        return res.status(200).json(authRes);
+        return await authenticateOTP(email, otp, res);
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
         throw new HttpError(500, 'Internal Server Error');
     }
 };
 
-export const ForgotPassword = async (req: Request, res: Response) => {
+export const AuthenticateOTPWithBody = async (req: Request, res: Response) => {
     try {
-        const { email } = req.body;
-        const otp = await invitedUserFacade.forgotPassword({ email });
-        return res.status(200).json({ otp });
+        const { email, otp } = req.body as { email: string; otp: string };
+        return await authenticateOTP(email, otp, res);
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
         throw new HttpError(500, 'Internal Server Error');
     }
+};
+
+// Always responds the same way regardless of whether `email` belongs to an account —
+// requestPasswordReset itself never throws for an unknown email or returns the OTP, and
+// the response here doesn't wait for that work to finish, so a client can't distinguish
+// "known email, email queued" from "unknown email, nothing happened" by status, body, or
+// response time. Failures (DB down, queue unavailable) are logged, never surfaced to the
+// caller — surfacing them would itself be a side channel.
+export const ForgotPassword = async (req: Request, res: Response) => {
+    const { email } = req.body;
+    invitedUserFacade.forgotPassword({ email }).catch((error: unknown) => {
+        console.error('ForgotPassword background task failed', error);
+    });
+    return res.status(202).json({
+        message: 'If that email is registered, a verification code has been sent to it.',
+    });
 };
 
 export const VerifyResetOTP = async (req: Request, res: Response) => {
@@ -169,11 +190,17 @@ export const ResetPassword = async (req: Request, res: Response) => {
     }
 };
 
+// The caller may only change their own password. `oldPassword` still proves possession
+// of the current credential, but the account acted on comes from the verified access
+// token's `sub` — never from a body-supplied email, which would let any bearer of a
+// still-valid token (or a forged body on an unauthenticated call) target another account.
 export const UpdatePassword = async (req: Request, res: Response) => {
     try {
-        const { email, oldPassword, newPassword } = req.body;
+        const token = getAuthHeader(req);
+        const payload = verifySessionToken(token);
+        const { oldPassword, newPassword } = req.body;
         const success = await invitedUserFacade.updatePassword({
-            email,
+            user_id: payload.sub,
             old_password: oldPassword,
             new_password: newPassword,
         });

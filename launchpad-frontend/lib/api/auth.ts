@@ -25,15 +25,16 @@ export const authApi = {
     return data;
   },
 
-  // Verify OTP after first-time registration (GET with query params)
+  // Verify OTP after first-time registration. POST, not GET — a GET would put the OTP
+  // in the URL (access logs, browser history). The GET route still exists only for the
+  // link inside the verification email itself, which the dashboard never constructs.
   verifyOtp: async (email: string, otp: string): Promise<AuthResponse> => {
-    const { data } = await apiClient.get('/api/auth/authenticate-with-otp', {
-      params: { email, otp },
-    });
+    const { data } = await apiClient.post('/api/auth/authenticate-with-otp', { email, otp });
     return data;
   },
 
-  // Forgot password — sends OTP to email
+  // Forgot password — always resolves the same way regardless of whether the email is
+  // registered; the backend never reveals account existence or returns the code.
   forgotPassword: async (email: string): Promise<void> => {
     await apiClient.post('/api/auth/forgot-password', { email });
   },

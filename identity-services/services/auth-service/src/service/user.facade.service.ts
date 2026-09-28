@@ -12,7 +12,7 @@ import {
 import { PublishUserRegistered } from '@/messaging/producer/user-created.message';
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
 import { USER_ROLE } from '@/types/auth.invited_user.types';
-import { verifyAccessToken } from '@/utils/handle-token';
+import { verifySessionToken } from '@/utils/handle-token';
 
 export class UserFacadeService extends BaseService {
     private clientId = env.GITHUB_CLIENT_ID;
@@ -24,7 +24,7 @@ export class UserFacadeService extends BaseService {
     }
 
     public async getUserFromToken(token: string) {
-        const payload = verifyAccessToken(token);
+        const payload = verifySessionToken(token);
         const user = await User.findByPk(payload.sub);
 
         if (!user) {

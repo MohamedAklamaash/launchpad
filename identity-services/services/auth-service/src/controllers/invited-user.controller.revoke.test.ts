@@ -38,6 +38,12 @@ const { HttpError } = await import('@launchpad/common');
 const accessTokenFor = (sub: string) =>
     signAccessToken({ sub, email: `${sub}@example.com`, user_name: sub, role: 'user' });
 
+const passwordResetTokenFor = (sub: string) =>
+    signAccessToken(
+        { sub, email: `${sub}@example.com`, user_name: sub, role: 'user', scope: 'password_reset' },
+        '5m',
+    );
+
 const fakeRequest = (authorization: string | undefined, body: Record<string, unknown>) =>
     ({ headers: { authorization }, body }) as unknown as Request;
 
@@ -65,6 +71,28 @@ test('unauthenticated request is rejected with 401 before touching the facade', 
         const { res } = fakeResponse();
         await assert.rejects(
             () => RevokeRefreshToken(fakeRequest(undefined, {}), res),
+            (error: unknown) => error instanceof HttpError && error.statusCode === 401,
+        );
+        assert.equal(revokeSpy.mock.callCount(), 0);
+    } finally {
+        revokeSpy.mock.restore();
+    }
+});
+
+test('a password_reset token cannot revoke sessions, with no refresh token to fall back on', async () => {
+    const revokeSpy = mock.method(
+        InvitedUserFacade.prototype,
+        'revokeRefreshToken',
+        async () => true,
+    );
+    try {
+        const { res } = fakeResponse();
+        await assert.rejects(
+            () =>
+                RevokeRefreshToken(
+                    fakeRequest(`Bearer ${passwordResetTokenFor('user-a')}`, {}),
+                    res,
+                ),
             (error: unknown) => error instanceof HttpError && error.statusCode === 401,
         );
         assert.equal(revokeSpy.mock.callCount(), 0);

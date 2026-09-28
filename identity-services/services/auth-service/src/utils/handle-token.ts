@@ -55,6 +55,21 @@ export const verifyAccessToken = (token: string): AccessTokenPayload => {
     }
 };
 
+// Every access token carries a `scope` claim, but only ever a truthy one for a
+// deliberately narrow-purpose token — currently just PasswordService's 5-minute
+// `password_reset` token, which is minted from an email+OTP pair, not a full login, and
+// must never be usable as a stand-in for one. Every call site that treats a bearer token
+// as "this is an active session" (invite/list/remove-member, update-password, revoke,
+// GetCurrentUser) must verify through this instead of the raw verifyAccessToken — a
+// scoped token still passes signature and expiry checks, so those alone aren't enough.
+export const verifySessionToken = (token: string): AccessTokenPayload => {
+    const payload = verifyAccessToken(token);
+    if (payload.scope) {
+        throw new HttpError(401, 'This token cannot be used as a session credential');
+    }
+    return payload;
+};
+
 export const signRefreshToken = (payload: RefreshTokenPayload): string => {
     return jwt.sign(payload, REFRESH_TOKEN, REFRESH_OPTIONS);
 };

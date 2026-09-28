@@ -28,7 +28,15 @@ class ForgotPasswordBody(BaseModel):
     email: str = Field(example="user@example.com")
 
 class ForgotPasswordResponse(BaseModel):
-    otp: str = Field(example="482910", description="Dev-only — not returned in production")
+    message: str = Field(
+        example="If that email is registered, a verification code has been sent to it.",
+        description="Identical for a known or unknown email — never reveals account "
+                    "existence, and never contains the code itself.",
+    )
+
+class AuthenticateOtpBody(BaseModel):
+    email: str = Field(example="user@example.com")
+    otp: str = Field(min_length=6, max_length=6, example="123456")
 
 class VerifyResetOTPBody(BaseModel):
     email: str = Field(example="user@example.com")
@@ -39,7 +47,6 @@ class ResetPasswordBody(BaseModel):
     newPassword: str = Field(min_length=6, example="newSecret123")
 
 class UpdatePasswordBody(BaseModel):
-    email: str = Field(example="user@example.com")
     oldPassword: str = Field(min_length=6, example="oldSecret123")
     newPassword: str = Field(min_length=6, example="newSecret456")
 
@@ -84,15 +91,23 @@ async def auth_login(body: LoginBody, request: Request):
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/login", request)
 
 
-@router.get("/authenticate-with-otp", summary="Verify email OTP after registration",
+@router.get("/authenticate-with-otp", summary="Verify email OTP after registration (magic-link form)",
             response_model=AuthTokens,
-            description="Query params: `email` and `otp` (6-digit code sent after registration).")
+            description="Query params: `email` and `otp`. Only the verification email's "
+                        "own link should use this — prefer POST for anything else, since "
+                        "a GET puts the OTP in the URL (access logs, browser history).")
 async def auth_otp(email: str, otp: str, request: Request):
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/authenticate-with-otp", request)
 
 
-@router.post("/forgot-password", summary="Request a password reset OTP",
-             response_model=ForgotPasswordResponse)
+@router.post("/authenticate-with-otp", summary="Verify email OTP after registration",
+             response_model=AuthTokens)
+async def auth_otp_body(body: AuthenticateOtpBody, request: Request):
+    return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/authenticate-with-otp", request)
+
+
+@router.post("/forgot-password", summary="Request a password reset code",
+             response_model=ForgotPasswordResponse, status_code=202)
 async def auth_forgot_password(body: ForgotPasswordBody, request: Request):
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/forgot-password", request)
 
