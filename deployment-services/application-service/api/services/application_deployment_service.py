@@ -254,6 +254,7 @@ class ApplicationDeploymentService:
         application.status = 'DEPLOYING'
         application.save()
 
+        self._abort_if_exited(application)
         EKSDeployer(session, application, environment).deploy(image_uri, created_resources)
 
         deployment_url = self._generate_deployment_url(application, environment)
@@ -342,7 +343,33 @@ class ApplicationDeploymentService:
             raise ValueError(f"Environment is missing required fields: {', '.join(missing_fields)}")
         
         return environment
-    
+
+    def _abort_if_exited(self, application: Application) -> None:
+        """H2 security review R1: a deploy/rollback can run for minutes (CodeBuild, ECS
+        service stabilization, ALB target-health polling) — long enough for a customer to
+        complete exit after this call started. `application.infrastructure` was read once
+        at the top of `deploy_application`/`rollback_application` and is never
+        re-fetched, so a check against that in-memory object would miss an exit that
+        landed mid-deploy. This does a fresh, minimal read of just the field, and is
+        called immediately before every remaining AWS/Kubernetes mutation (ECS
+        create/update_service, the EKS apply, ALB listener-rule and host-forward-rule
+        creation) so a deploy that was already this far along still stops rather than
+        finishing a customer's own record of it having exited.
+
+        Raises `InfrastructureExitedError`, which the caller's existing except block
+        already turns into the same cleanup + FAILED status + sanitized error_message
+        path a build/AWS failure gets — this does not need its own failure handling."""
+        from api.models.infrastructure import Infrastructure
+        from api.services.exit_enforcement import InfrastructureExitedError
+
+        exited_at = Infrastructure.objects.filter(
+            id=application.infrastructure_id
+        ).values_list('exited_at', flat=True).first()
+        if exited_at is not None:
+            raise InfrastructureExitedError(
+                "Infrastructure exited during deployment — aborting before applying further changes."
+            )
+
     def _create_aws_session(self, infrastructure):
         if not infrastructure.code:
             raise ValueError("Infrastructure AWS Account ID (code) is not set")
@@ -674,6 +701,7 @@ class ApplicationDeploymentService:
             logger.error(f"Failed to configure security groups: {e}")
             raise ValueError(f"Failed to configure security groups: {e}")
         
+        self._abort_if_exited(application)
         service_arn = ecs.create_service(
             cluster_arn=environment.cluster_arn,
             service_name=f"{_slug(application.name)}-service",
@@ -711,6 +739,7 @@ class ApplicationDeploymentService:
         priority = alb.get_next_priority(listener_arn)
         slug = _slug(application.name)
 
+        self._abort_if_exited(application)
         listener_rule_arn = alb.create_listener_rule(
             listener_arn=listener_arn,
             target_group_arn=application.target_group_arn,
@@ -790,6 +819,7 @@ class ApplicationDeploymentService:
         vanishingly rare) tears down its own stale 443 forward rule rather than leaving a
         rule that would forward a request straight into an app whose nginx no longer
         expects to be reached by that Host."""
+        self._abort_if_exited(application)
         if not host_mode:
             if application.host_forward_rule_arn:
                 self._delete_host_forward_rule(alb, application)
@@ -951,6 +981,7 @@ class ApplicationDeploymentService:
                 host_mode=host_mode, app_hostname=app_hostname,
             )
             service_name = f"{_slug(application.name)}-service"
+            self._abort_if_exited(application)
             ecs.client.update_service(
                 cluster=environment.cluster_arn,
                 service=service_name,
@@ -994,6 +1025,7 @@ class ApplicationDeploymentService:
         original = (application.alloted_cpu, application.alloted_memory, application.port)
         application.alloted_cpu, application.alloted_memory, application.port = target.cpu, target.memory, target.port
         try:
+            self._abort_if_exited(application)
             EKSDeployer(session, application, environment).deploy(image_uri, created_resources)
         except Exception:
             application.alloted_cpu, application.alloted_memory, application.port = original
@@ -1031,6 +1063,8 @@ class ApplicationDeploymentService:
         so eligibility is computed exactly once per call rather than re-derived."""
         from shared.enums.orchestrator import ComputeType
 
+        if application.infrastructure.exited_at is not None:
+            return False, "infrastructure_exited", None
         if _is_eks(application):
             return False, "eks_not_applicable", None
         if application.status != 'ACTIVE':
@@ -1084,6 +1118,7 @@ class ApplicationDeploymentService:
         )
         ecs = ECSClient(session)
         service_name = f"{_slug(application.name)}-service"
+        self._abort_if_exited(application)
         ecs.client.update_service(
             cluster=environment.cluster_arn, service=service_name,
             taskDefinition=task_def_arn, forceNewDeployment=True,

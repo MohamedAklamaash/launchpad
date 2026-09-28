@@ -331,6 +331,13 @@ CERT_CHECK_INTERVAL_SECONDS = int(os.environ.get('INFRA_CERT_CHECK_INTERVAL_SECO
 # custom domain is a slow-moving condition (a customer transferring a domain away, letting
 # a TXT record lapse), not one that needs sub-minute detection.
 CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS = int(os.environ.get('INFRA_CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS', '300'))
+# H2 R2(b) (security review): backstop for a lost/never-delivered infrastructure.exited
+# event — see api/services/exit_republish.py. Not the primary delivery path (that's the
+# direct publish from complete_exit plus its own 409 self-heal), so this can be slow —
+# an exited infra sitting un-mirrored for a while is a UX gap for that one customer, not a
+# security hole (application-service's own enforcement is the thing that matters, and it
+# is exactly what this tick is closing the gap for).
+EXITED_EVENT_REPUBLISH_INTERVAL_SECONDS = int(os.environ.get('INFRA_EXITED_EVENT_REPUBLISH_INTERVAL_SECONDS', '900'))
 # The running/queued job refreshes its lock this often; must be well under DB_LOCK_STALENESS_SECONDS
 # so a live job never looks crashed to the reaper or acquire_db_lock.
 LOCK_HEARTBEAT_SECONDS = int(os.environ.get('INFRA_LOCK_HEARTBEAT_SECONDS', '60'))
@@ -766,10 +773,16 @@ class Command(BaseCommand):
         reap_lock_key = "infra:worker:reap_lock"
         cert_check_lock_key = "infra:worker:cert_check_lock"
         custom_domain_check_lock_key = "infra:worker:custom_domain_check_lock"
+        exited_republish_lock_key = "infra:worker:exited_republish_lock"
         provision_counter = 0
         last_reap = time.monotonic()
         last_cert_check = time.monotonic()
         last_custom_domain_check = time.monotonic()
+        # 0, not time.monotonic(): the other ticks above wait a full interval before their
+        # first run, but H2 R2(b) wants this to also fire once at worker startup (closing
+        # the gap for anything that exited while every worker was down), so the very first
+        # loop iteration below already satisfies "time since last run >= interval".
+        last_exited_republish = 0.0
         while running:
             try:
                 # Periodically re-drive stuck jobs. A short-lived Redis lock rate-limits it to
@@ -815,6 +828,22 @@ class Command(BaseCommand):
                         previous_future=custom_domain_future,
                         previous_started_at=custom_domain_check_started_at,
                     )
+
+                # H2 R2(b): backstop republish of infrastructure.exited for every already-
+                # exited infra — see api/services/exit_republish.py. Same fleet-wide rate
+                # limit as the ticks above (one worker per interval); logged and skipped on
+                # failure (a broker outage here must not kill the dispatch loop) rather than
+                # raised, since a future tick will simply retry.
+                if time.monotonic() - last_exited_republish >= EXITED_EVENT_REPUBLISH_INTERVAL_SECONDS:
+                    last_exited_republish = time.monotonic()
+                    if r.set(exited_republish_lock_key, worker_id, nx=True, ex=max(EXITED_EVENT_REPUBLISH_INTERVAL_SECONDS - 5, 10)):
+                        try:
+                            from api.services.exit_republish import (
+                                republish_all_exited_infrastructures,
+                            )
+                            republish_all_exited_infrastructures()
+                        except Exception:
+                            logger.exception("Exited-event republish tick failed")
 
                 # Always drain destroy queue first (non-blocking), then provision
                 had_destroy = dispatch_destroy()

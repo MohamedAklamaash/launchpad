@@ -5,6 +5,7 @@ from aws.session import create_boto3_session
 from api.models.application import Application
 from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
+from api.services.exit_enforcement import require_not_exited
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,12 @@ class ApplicationSleepService:
         infra = self.infra_repo.get_infrastructure(application.infrastructure_id)
         if not infra:
             raise ValueError("Infrastructure not found")
-        
+        require_not_exited(infra)
+
         cluster_arn = self._get_cluster_arn(infra)
         session = create_boto3_session(infra)
         ecs = session.client('ecs')
-        
+
         try:
             response = ecs.describe_services(
                 cluster=cluster_arn,
@@ -79,11 +81,12 @@ class ApplicationSleepService:
         infra = self.infra_repo.get_infrastructure(application.infrastructure_id)
         if not infra:
             raise ValueError("Infrastructure not found")
-        
+        require_not_exited(infra)
+
         cluster_arn = self._get_cluster_arn(infra)
         session = create_boto3_session(infra)
         ecs = session.client('ecs')
-        
+
         try:
             restore_count = application.desired_count if application.desired_count > 0 else 1
             

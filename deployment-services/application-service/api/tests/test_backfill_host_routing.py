@@ -298,3 +298,57 @@ def test_command_migrates_and_releases_the_lock(command_session_patch):
     app.refresh_from_db()
     assert app.host_forward_rule_arn is not None
     assert DeploymentLock().is_locked(str(app.id)) is False
+
+
+@pytest.mark.django_db
+def test_command_skips_a_later_app_whose_infra_exited_mid_run(command_session_patch, monkeypatch):
+    """H2 security review RECOMMENDED 4: `apps` (select_related('infrastructure')) is
+    evaluated once at the top of Command.handle. Two apps on the SAME infra share that one
+    evaluation, so without a per-iteration refresh, an infra that exits while the first app
+    is being processed would still look not-exited (stale in-memory FK) by the time the
+    loop reaches the second."""
+    from django.core.management import call_command
+    from django.utils import timezone
+
+    from api.models.application import Application
+    from api.models.deployment import Deployment
+    from api.models.infrastructure import Infrastructure
+    from api.services.application_deployment_service import ApplicationDeploymentService
+
+    app1, _env, infra = command_session_patch
+    app2 = Application.objects.create(
+        # Guaranteed to sort after app1's id (a random uuid4 from backfill_fixtures) in the
+        # command's `.order_by('id')` — the test needs app1 processed strictly first.
+        id=uuid.UUID(int=(2**128 - 1)), user=app1.user, infrastructure=infra, name="my-app-2",
+        project_remote_url="https://github.com/x/y2", project_branch="main",
+        project_commit_hash="", envs={}, port=8080,
+        alloted_cpu=256, alloted_memory=512, attached_database_ids=[],
+        status='ACTIVE', task_definition_arn="arn:aws:ecs:us-east-1:123456789012:task-definition/my-app-2-task:1",
+        service_arn="arn:aws:ecs:us-east-1:123456789012:service/my-app-2-service",
+        target_group_arn="arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/my-app-2/abc",
+    )
+    Deployment.objects.create(
+        application=app2, image_tag="my-app-2-abc123", image_digest="sha256:" + "b" * 64,
+        commit_sha="b" * 40, tag_source=Deployment.TAG_SOURCE_RESOLVED_SHA,
+        compute_type=ComputeType.ECS_FARGATE, env_keys=[], env_values_hash="y",
+        attached_database_ids=[], cpu=256, memory=512, port=8080,
+        status=Deployment.STATUS_SUCCEEDED, triggered_by=Deployment.TRIGGERED_BY_DEPLOY,
+    )
+
+    real_backfill = ApplicationDeploymentService.backfill_host_routing
+
+    def _exit_infra_after_app1(self, application):
+        if application.id == app1.id:
+            result = real_backfill(self, application)
+            Infrastructure.objects.filter(id=infra.id).update(exited_at=timezone.now())
+            return result
+        return real_backfill(self, application)
+
+    monkeypatch.setattr(ApplicationDeploymentService, "backfill_host_routing", _exit_infra_after_app1)
+
+    call_command("backfill_host_routing")
+
+    app1.refresh_from_db()
+    app2.refresh_from_db()
+    assert app1.host_forward_rule_arn is not None  # migrated before the infra exited
+    assert app2.host_forward_rule_arn is None      # refresh_from_db caught the exit first

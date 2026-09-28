@@ -19,6 +19,7 @@ from api.services.application_cleanup_service import ApplicationCleanupService
 from api.services.application_deployment_service import ApplicationDeploymentService
 from api.services.deployment_lock import DeploymentLock
 from api.services.deployment_queue import DeploymentQueue
+from api.services.exit_enforcement import require_not_exited
 from api.services.infrastructure_permissions import InfrastructurePermissions
 
 logger = logging.getLogger(__name__)
@@ -160,10 +161,13 @@ class ApplicationService:
         infra = self.infra_repo.get_infrastructure(infra_id)
         if not infra:
             raise ValueError("Infrastructure not found")
-        
-        # Check permissions (SUPER_ADMIN or ADMIN can create)
+
+        # Check permissions (SUPER_ADMIN or ADMIN can create) BEFORE the exit check — a
+        # non-member must get PermissionError regardless of infra state, not a 409 that
+        # leaks whether an infra it has no access to has exited.
         if not InfrastructurePermissions.can_create_application(infra, user.id):
             raise PermissionError("You don't have permission to create applications. Required role: SUPER_ADMIN or ADMIN")
+        require_not_exited(infra)
 
         requested_cpu = float(data.get("alloted_cpu", 0))
         requested_mem = float(data.get("alloted_memory", 0))
@@ -327,10 +331,12 @@ class ApplicationService:
         infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
         if not infra:
             raise ValueError("Infrastructure not found")
-        
+
+        # Permission check BEFORE the exit check — see create_application's comment.
         if not InfrastructurePermissions.can_update_application(infra, user_id):
             raise PermissionError("You don't have permission to update applications. Required role: SUPER_ADMIN or ADMIN")
-        
+        require_not_exited(infra)
+
         update_fields = []
 
         if 'name' in update_data:

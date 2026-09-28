@@ -20,6 +20,7 @@ from api.views.infrastructure import (
     infrastructure_reprovision,
     infrastructure_update,
 )
+from api.views.infrastructure_internal import infrastructure_exit_status
 from api.views.provisioning_logs import provisioning_logs
 from api.views.script_api_key import (
     infrastructure_policy_refresh_callback,
@@ -42,6 +43,9 @@ urlpatterns = [
     # Internal-only, fixed literal path (no gateway route). Called same-origin by
     # application-service's app-delete cleanup (F1b part 3b).
     path('internal/custom-domains/disable-for-application/', custom_domain_disable_for_application, name='custom-domain-disable-for-application'),
+    # H2 RECOMMENDED 2: fixed literal path, infrastructure_id in the query string — see
+    # api/views/infrastructure_internal.py's docstring for why (no gateway route either).
+    path('internal/infrastructures/exit-status/', infrastructure_exit_status, name='infrastructure-exit-status'),
     path('infrastructures/<str:infra_id>/', infrastructure_detail, name='infrastructure-detail'),
     path('infrastructures/<str:infra_id>/update/', infrastructure_update, name='infrastructure-update'),
     path('infrastructures/<str:infra_id>/reprovision/', infrastructure_reprovision, name='infrastructure-reprovision'),

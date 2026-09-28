@@ -24,6 +24,7 @@ def test_attach_rejects_invalid_body():
     assert response.status_code == 400
 
 
+@pytest.mark.django_db
 @pytest.mark.parametrize("exc_name,expected_status", [
     ("CustomDomainNotFound", 404),
     ("CustomDomainNotReady", 409),
@@ -46,6 +47,7 @@ def test_attach_maps_service_errors_to_status_codes(exc_name, expected_status):
     assert response.status_code == expected_status
 
 
+@pytest.mark.django_db
 def test_attach_returns_rule_arns_on_success():
     body = {
         "infrastructure_id": str(uuid.uuid4()), "application_id": str(uuid.uuid4()),
@@ -120,6 +122,7 @@ def test_detach_returns_502_when_aws_side_not_confirmed():
     assert response.data == {"detached": False}
 
 
+@pytest.mark.django_db
 def test_attach_view_does_not_require_request_user():
     """These are pure machine-to-machine calls — no forwarded JWT, no request.user set by
     any auth middleware (none runs in this direct-call test, matching production where

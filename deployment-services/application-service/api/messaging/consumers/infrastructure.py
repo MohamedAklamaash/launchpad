@@ -431,6 +431,149 @@ class HostReadinessEventConsumer:
         self.stop()
 
 
+class InfraExitedEventConsumer:
+    """Consume infrastructure.exited and latch it onto the read-model (H2 — see
+    plan/H-hardening.md).
+
+    Deliberately NOT gated by host_readiness_version: that counter orders repeated
+    snapshots of a value that can move in either direction (dns_synced/https_ready flip on
+    every terraform apply), so "higher wins" is the right rule for it. exited_at is a
+    one-way latch — infrastructure-service's own field is set once by the exit flow and
+    never cleared — so the only ordering rule that makes sense here is "first exited event
+    wins, and nothing ever un-sets it", the same write-once pattern already used for
+    dns_label. A stale or redelivered event (earlier exited_at, or a duplicate) is
+    therefore harmless to re-apply: once the local field is set, every later event is a
+    no-op, never a clear."""
+
+    EXCHANGE_NAME = "infrastructure.events"
+    ROUTING_KEY = "infrastructure.exited"
+    QUEUE_NAME = "application-service.infra-exited-events"
+    MAX_RETRIES = 10
+
+    def __init__(self):
+        self._retry_counts: dict = {}
+        self.consumer = ResilientPikaConsumer(
+            url=app_config.rabbitmq_url,
+            exchange=self.EXCHANGE_NAME,
+            queue=self.QUEUE_NAME,
+            routing_key=self.ROUTING_KEY,
+            name="application-service-infra-exited-consumer",
+            prefetch_count=1,
+        )
+
+    @staticmethod
+    def _is_transient(exc: Exception) -> bool:
+        return isinstance(exc, (ObjectDoesNotExist, OperationalError))
+
+    def callback(self, ch, method, properties, body):
+        correlation_id = (
+            properties.correlation_id
+            if properties and properties.correlation_id
+            else str(uuid.uuid4())
+        )
+        log = logger.getChild("infra_exited_event")
+
+        try:
+            event = json.loads(body)
+        except json.JSONDecodeError:
+            log.error("JSON decode failed — discarding", extra={"correlation_id": correlation_id})
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        payload = event.get("payload", {})
+        infra_id = payload.get("infra_id")
+        if not infra_id:
+            log.warning("infra_exited event missing infra_id — discarding", extra={"correlation_id": correlation_id})
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        exited_at = payload.get("exited_at")
+        if not exited_at:
+            log.error(
+                "infra_exited event missing exited_at — discarding",
+                extra={"correlation_id": correlation_id, "infra_id": infra_id},
+            )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            return
+
+        try:
+            from api.models.infrastructure import Infrastructure
+            from django.utils import timezone
+            from django.utils.dateparse import parse_datetime
+
+            connection.close()
+
+            infra = Infrastructure.objects.filter(id=infra_id).first()
+            if infra is None:
+                retry_count = self._retry_counts.get(infra_id, 0)
+                if retry_count >= self.MAX_RETRIES:
+                    log.warning(
+                        "infra_exited event unresolved after max retries — discarding (likely stale infra)",
+                        extra={"correlation_id": correlation_id, "infra_id": infra_id},
+                    )
+                    self._retry_counts.pop(infra_id, None)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                else:
+                    self._retry_counts[infra_id] = retry_count + 1
+                    delay = min(2 ** retry_count, 30)
+                    log.warning(
+                        "infra_exited event deferred — infra not synced yet (attempt %d/%d, delay %ds)",
+                        retry_count + 1, self.MAX_RETRIES, delay,
+                        extra={"correlation_id": correlation_id, "infra_id": infra_id},
+                    )
+                    # Security review RECOMMENDED 3: NOT time.sleep — this callback runs on
+                    # a pika BlockingConnection's own I/O thread, and a bare time.sleep()
+                    # starves that connection's event loop for the duration, so the broker
+                    # never sees a heartbeat and can drop the connection under load.
+                    # connection.sleep() blocks for the same delay but keeps pumping
+                    # process_data_events internally, which is pika's own documented
+                    # answer to exactly this. MAX_RETRIES (10, unchanged) is already the
+                    # bounded "give up after N attempts" the alternative (a real AMQP DLQ)
+                    # would also provide — no DLX exists anywhere in this codebase's AMQP
+                    # consumers (the "DLQ" in inspect_dlq.py is a separate Redis structure
+                    # for the deployment job queue, not this exchange), so adding one here
+                    # is out of scope for this fix.
+                    ch.connection.sleep(delay)
+                    ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                return
+
+            with transaction.atomic():
+                # Write-once latch, same pattern as dns_label: a stored value is never
+                # overwritten, regardless of what the incoming timestamp says — this field
+                # only ever gates checks (deploy/rollback/create refused once set), never
+                # the reverse, so there is no such thing as a "fresher" exited_at worth
+                # applying over an already-set one.
+                if infra.exited_at is None:
+                    parsed = parse_datetime(exited_at)
+                    infra.exited_at = parsed or timezone.now()
+                    infra.save(update_fields=["exited_at"])
+                else:
+                    log.info(
+                        "infra_exited event received for an already-exited infra — no-op",
+                        extra={"correlation_id": correlation_id, "infra_id": infra_id},
+                    )
+
+            self._retry_counts.pop(infra_id, None)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+
+        except Exception as exc:
+            transient = self._is_transient(exc)
+            log.exception(
+                "Error processing infra_exited event",
+                extra={"correlation_id": correlation_id, "infra_id": infra_id},
+            )
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=transient)
+
+    def start(self):
+        self.consumer.start(self.callback)
+
+    def stop(self):
+        self.consumer.stop()
+
+    def close(self):
+        self.stop()
+
+
 class InfraDeletedEventConsumer:
     """Consume infrastructure.deleted events and drop the local read-model row."""
 

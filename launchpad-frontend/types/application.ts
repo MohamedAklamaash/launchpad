@@ -35,6 +35,9 @@ export interface Application {
   host_url: string | null;
   /** Why host_url is null, e.g. 'tls_not_issued', 'dns_not_synced', 'host_route_not_applied'. */
   host_url_status: string | null;
+  /** H2: true once this app's infrastructure completed the exit flow. Deploy, retry,
+   * rollback, resume-auto-deploy, edit and webhook-triggered deploys are all refused. */
+  infrastructure_exited: boolean;
   build_id: string | null;
   error_message: string | null;
   created_at: string;

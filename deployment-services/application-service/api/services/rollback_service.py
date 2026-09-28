@@ -10,6 +10,7 @@ from api.services.application_service import DeploymentInProgressError
 from api.services.deployment_lock import DeploymentLock
 from api.services.deployment_queue import DeploymentQueue
 from api.services.deployment_snapshot import snapshot_env
+from api.services.exit_enforcement import require_not_exited
 from api.services.infrastructure_permissions import InfrastructurePermissions
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ class RollbackService:
 
     def trigger_rollback(self, user_id, app_id, deployment_id) -> Deployment:
         app = self._get_owned_application(user_id, app_id)
+        require_not_exited(app.infrastructure)
         target = self._get_target(app, deployment_id)
 
         if DeploymentLock().is_locked(app_id):
@@ -108,6 +110,7 @@ class RollbackService:
 
     def resume_auto_deploy(self, user_id, app_id):
         app = self._get_owned_application(user_id, app_id)
+        require_not_exited(app.infrastructure)
         app.auto_deploy_paused = False
         app.save(update_fields=['auto_deploy_paused'])
         return app
