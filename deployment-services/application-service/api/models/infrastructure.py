@@ -57,6 +57,14 @@ class Infrastructure(models.Model):
     # treated as "always current" — see HostReadinessEventConsumer.
     host_readiness_version = models.PositiveIntegerField(default=0, editable=False)
 
+    # H2 (hardening): mirrored from infrastructure-service's own field via the
+    # infrastructure.exited event (see api/messaging/consumers/infrastructure.py). A
+    # one-way latch — write-once, exactly like dns_label, never cleared by a later event —
+    # since infrastructure-service's own exited_at is itself monotonic (set once by the
+    # exit flow, never cleared). Gates deploy/rollback/app-create/webhook-deploy/
+    # custom-domain-attach once set.
+    exited_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

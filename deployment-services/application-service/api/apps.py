@@ -65,6 +65,7 @@ class ApiConfig(AppConfig):
             HostReadinessEventConsumer,
             InfraDeletedEventConsumer,
             InfraEventConsumer,
+            InfraExitedEventConsumer,
             InfraUpdatedEventConsumer,
             InfraUserRemovedEventConsumer,
         )
@@ -133,6 +134,15 @@ class ApiConfig(AppConfig):
             except Exception:
                 logger.exception("HostReadinessEventConsumer crashed")
 
+        def start_infra_exited_consumer():
+            try:
+                if not _wait_for_db():
+                    return
+                logger.info("Initializing Application Service InfraExitedEventConsumer…")
+                InfraExitedEventConsumer().start()
+            except Exception:
+                logger.exception("InfraExitedEventConsumer crashed")
+
         threading.Thread(target=start_infra_consumer, name="AppInfraConsumer", daemon=True).start()
         threading.Thread(target=start_infra_updated_consumer, name="AppInfraUpdatedConsumer", daemon=True).start()
         threading.Thread(target=start_infra_deleted_consumer, name="AppInfraDeletedConsumer", daemon=True).start()
@@ -140,4 +150,5 @@ class ApiConfig(AppConfig):
         threading.Thread(target=start_auth_consumer, name="AppAuthConsumer", daemon=True).start()
         threading.Thread(target=start_environment_consumer, name="AppEnvConsumer", daemon=True).start()
         threading.Thread(target=start_host_readiness_consumer, name="AppHostReadinessConsumer", daemon=True).start()
+        threading.Thread(target=start_infra_exited_consumer, name="AppInfraExitedConsumer", daemon=True).start()
         logger.info("Application Service messaging threads scheduled.")

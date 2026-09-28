@@ -407,6 +407,38 @@ def test_backfill_skips_mock_infrastructures(schema_db, monkeypatch):
     call_command("tag_existing_app_resources")
 
 
+def test_backfill_skips_exited_infrastructures(schema_db, monkeypatch):
+    """H2 security review RECOMMENDED 4: an exited infra's role may already be gone —
+    this one-off backfill has no business re-touching that customer's account at all."""
+    from django.utils import timezone
+
+    from api.models.application import Application
+    from api.models.infrastructure import Infrastructure
+    from api.models.user import User
+
+    user = User.objects.create(id=uuid.uuid4(), email=f"u-{uuid.uuid4()}@example.com", user_name="t")
+    infra = Infrastructure.objects.create(
+        id=uuid.uuid4(), user=user, name=f"infra-{uuid.uuid4()}", cloud_provider="aws",
+        max_cpu=1024, max_memory=512, code="123456789012", is_mock=False,
+        exited_at=timezone.now(),
+    )
+    Application.objects.create(
+        id=uuid.uuid4(), user=user, infrastructure=infra, name="my-app",
+        project_remote_url="https://github.com/x/y", project_branch="main",
+        project_commit_hash="", envs={}, port=8080, alloted_cpu=256, alloted_memory=512,
+        attached_database_ids=[], task_definition_arn="arn:aws:ecs:x:task-definition/t",
+    )
+
+    def _boom(infrastructure):
+        raise AssertionError("must not assume role against an exited infrastructure")
+
+    monkeypatch.setattr(
+        "api.management.commands.tag_existing_app_resources.create_boto3_session", _boom,
+    )
+
+    call_command("tag_existing_app_resources")
+
+
 # ── deploy call sites actually pass the tags (not just the wrappers accepting them) ──
 
 @pytest.fixture

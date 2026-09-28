@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff, Github, Copy, Globe, PackageX, Pin, PlayCircle } from 'lucide-react';
+import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff, Github, Copy, Globe, PackageX, Pin, PlayCircle, AlertTriangle } from 'lucide-react';
 import { Application } from '@/types/application';
 import { Infrastructure } from '@/types/infrastructure';
 import { applicationApi } from '@/lib/api/applications';
@@ -202,12 +202,25 @@ export default function ApplicationDetailPage() {
           </div>
           {app.description && <p className="text-sm text-muted-foreground mt-1.5">{app.description}</p>}
         </div>
-        {canEdit && (
+        {canEdit && !app.infrastructure_exited && (
           <Button variant="outline" size="sm" onClick={() => setEditOpen(true)} className="gap-1.5">
             <Pencil className="w-3.5 h-3.5" /> Edit
           </Button>
         )}
       </div>
+
+      {app.infrastructure_exited && (
+        <div className="flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3.5">
+          <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-medium text-warning">Infrastructure exited</p>
+            <p className="text-xs text-warning/80 mt-0.5">
+              This application&apos;s infrastructure has completed the exit flow. Deploys, rollbacks,
+              config changes, and auto-deploy on push are disabled. Runtime logs still work.
+            </p>
+          </div>
+        </div>
+      )}
 
       {app.host_url && (
         <a href={app.host_url} target="_blank" rel="noopener noreferrer"
@@ -247,26 +260,30 @@ export default function ApplicationDetailPage() {
       <div className="flex gap-2 flex-wrap">
         {app.status === 'ACTIVE' && !app.is_sleeping && (
           <>
-            <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Redeployment queued')} disabled={actionLoading} className="gap-1.5">
-              <RefreshCw className="w-3.5 h-3.5" /> Redeploy
-            </Button>
-            <Button variant="outline" size="sm" className="gap-1.5"
-              onClick={() => action(() => applicationApi.sleep(id), 'Application sleeping')} disabled={actionLoading}>
-              <Moon className="w-3.5 h-3.5" /> Sleep
-            </Button>
+            {!app.infrastructure_exited && (
+              <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Redeployment queued')} disabled={actionLoading} className="gap-1.5">
+                <RefreshCw className="w-3.5 h-3.5" /> Redeploy
+              </Button>
+            )}
+            {!app.infrastructure_exited && (
+              <Button variant="outline" size="sm" className="gap-1.5"
+                onClick={() => action(() => applicationApi.sleep(id), 'Application sleeping')} disabled={actionLoading}>
+                <Moon className="w-3.5 h-3.5" /> Sleep
+              </Button>
+            )}
           </>
         )}
-        {app.is_sleeping && (
+        {app.is_sleeping && !app.infrastructure_exited && (
           <Button size="sm" onClick={() => action(() => applicationApi.wake(id), 'Application waking up')} disabled={actionLoading} className="gap-1.5">
             <Sun className="w-3.5 h-3.5" /> Wake Up
           </Button>
         )}
-        {app.status === 'FAILED' && (
+        {app.status === 'FAILED' && !app.infrastructure_exited && (
           <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Retry queued')} disabled={actionLoading} className="gap-1.5">
             <RefreshCw className="w-3.5 h-3.5" /> Retry
           </Button>
         )}
-        {app.auto_deploy_paused && canEdit && hasRollbackAccess && (
+        {app.auto_deploy_paused && canEdit && hasRollbackAccess && !app.infrastructure_exited && (
           <Button variant="outline" size="sm" className="gap-1.5"
             onClick={() => action(() => applicationApi.resumeAutoDeploy(id), 'Auto-deploy resumed')} disabled={actionLoading}>
             <PlayCircle className="w-3.5 h-3.5" /> Resume auto-deploy
@@ -398,7 +415,7 @@ export default function ApplicationDetailPage() {
                   {app.envs && Object.keys(app.envs).length > 0 && (
                     <span className="font-mono text-[10px] text-muted-foreground/60">{Object.keys(app.envs).length} vars</span>
                   )}
-                  {canEdit && (
+                  {canEdit && !app.infrastructure_exited && (
                     <button onClick={startEditEnvs}
                       className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors">
                       <Pencil className="w-3 h-3" /> Edit
@@ -447,7 +464,7 @@ export default function ApplicationDetailPage() {
       <DeploymentHistory
         appId={id}
         appStatus={app.status}
-        canRollback={!!canEdit}
+        canRollback={!!canEdit && !app.infrastructure_exited}
         onRolledBack={() => loadApp()}
         onAccessChange={setHasRollbackAccess}
       />

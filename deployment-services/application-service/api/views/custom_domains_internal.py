@@ -35,6 +35,7 @@ from api.services.custom_domain_routing import (
     attach_custom_domain,
     detach_custom_domain,
 )
+from api.services.exit_enforcement import InfrastructureExitedError, require_not_exited
 
 
 class CustomDomainAttachRequestSerializer(serializers.Serializer):
@@ -73,6 +74,14 @@ def custom_domain_attach(request):
     body = CustomDomainAttachRequestSerializer(data=request.data)
     if not body.is_valid():
         return Response({"error": "Invalid request", "details": body.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    from api.models.infrastructure import Infrastructure
+
+    infra = Infrastructure.objects.filter(id=body.validated_data["infrastructure_id"]).first()
+    try:
+        require_not_exited(infra)
+    except InfrastructureExitedError as e:
+        return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
 
     try:
         result = attach_custom_domain(**body.validated_data)

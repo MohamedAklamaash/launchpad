@@ -43,6 +43,33 @@ class ResilientPikaProducer:
         logger.info(f"AMQP Producer [{self.name}] connected to {self.exchange}")
         self._flush_buffer()
 
+    def declare_queue(self, queue: str, routing_key: str):
+        """Idempotently declare and bind a consumer's queue from the producer side too,
+        so a message published before that consumer's process has ever started still has
+        somewhere to land instead of being silently dropped by the broker (a topic
+        exchange drops anything with no matching binding). Must be called after
+        `connect()`.
+
+        The declare args here MUST match `ResilientPikaConsumer._connect_and_consume`'s
+        exactly (durable=True, exclusive=False, auto_delete=False, no extra `arguments`) —
+        RabbitMQ raises PRECONDITION_FAILED and closes the channel if two declares for the
+        same queue name disagree on any property, so drifting from the consumer's own
+        declare would break the consumer's very next (re)connect, not just this call."""
+        if not self.channel:
+            raise RuntimeError(f"AMQP Producer [{self.name}] declare_queue called before connect()")
+
+        self.channel.queue_declare(
+            queue=queue,
+            durable=True,
+            exclusive=False,
+            auto_delete=False,
+        )
+        self.channel.queue_bind(
+            queue=queue,
+            exchange=self.exchange,
+            routing_key=routing_key,
+        )
+
     def _is_connected(self) -> bool:
         return bool(
             self.connection

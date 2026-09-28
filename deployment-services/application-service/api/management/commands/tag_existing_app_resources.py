@@ -33,7 +33,12 @@ class Command(BaseCommand):
     def handle(self, *args, dry_run, **options):
         stats = {"infras": 0, "skipped_mock": 0, "apps": 0, "resources_tagged": 0, "errors": 0}
 
-        for infra in Infrastructure.objects.all().order_by("id"):
+        # H2 security review RECOMMENDED 4: an exited infra's LaunchpadDeploymentRole may
+        # already be gone — create_boto3_session below would just fail loudly (or, worse,
+        # briefly succeed against a role the customer is mid-revoking) for zero benefit,
+        # since this is a one-off cost-attribution backfill, not something an exited
+        # customer has any reason to want re-run against their account.
+        for infra in Infrastructure.objects.filter(exited_at__isnull=True).order_by("id"):
             if infra.is_mock:
                 stats["skipped_mock"] += 1
                 continue

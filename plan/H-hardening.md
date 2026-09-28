@@ -19,11 +19,272 @@ review before merge — same process as the features.
 
 ## H2 — Enforce exit in application-service
 
+**Status:** done (mock-verified; no real-AWS surface — this is a read-model/authz gate, not
+an AWS-touching change).
+
 F6 Decision 14: after *Complete exit* infrastructure-service refuses reprovision/config
 changes, but application-service still deploys and creates apps — its read-model never
 learns `exited_at`. Publish an `infrastructure.exited` event (or extend the readiness
 contract), mirror `exited_at`, refuse deploy / rollback / app create / webhook deploys /
 custom-domain attach with a clear error.
+
+### Files
+
+- `infrastructure-service/api/messaging/producer/producer.py` (`publish_infrastructure_exited`,
+  `declare_queue` wiring), `api/views/exit_export.py` (publishes after `exited_at` is set,
+  and again on the already-exited 409 branch), `api/management/commands/
+  republish_exited_events.py`, `api/services/exit_republish.py` (periodic-tick backstop),
+  `api/management/commands/run_worker.py` (the tick), `api/views/infrastructure_internal.py`
+  + `api/routes.py` (exit-status lookup for the clear command).
+- `application-service/api/models/infrastructure.py` (`exited_at` + migration 0036),
+  `api/messaging/consumers/infrastructure.py` (`InfraExitedEventConsumer`), `api/apps.py`
+  (consumer thread wiring), `api/services/exit_enforcement.py`
+  (`InfrastructureExitedError` + `require_not_exited`), `api/services/application_service.py`
+  (create/update), `api/services/rollback_service.py` (rollback/resume-auto-deploy),
+  `api/services/application_sleep_service.py` (sleep/wake), `api/views/application.py`
+  (deploy/retry/create/update/sleep/wake views + webhook + error mapping),
+  `api/views/custom_domains_internal.py` (attach), `api/services/application_deployment_service.py`
+  (`_abort_if_exited`, `evaluate_backfill_eligibility`),
+  `api/management/commands/backfill_host_routing.py`,
+  `api/management/commands/tag_existing_app_resources.py`,
+  `api/management/commands/run_worker.py` (dequeue-time re-check in
+  `execute_deploy_job`/`execute_rollback_job`),
+  `api/management/commands/clear_infrastructure_exited.py`, `api/services/exit_status_client.py`.
+- `shared/resilience/amqp.py` (`ResilientPikaProducer.declare_queue`),
+  `shared/middleware/authentication.py` (`EXEMPT_EXACT_PATHS` addition).
+- `launchpad-frontend/types/application.ts` (`infrastructure_exited`),
+  `app/dashboard/applications/[id]/page.tsx` (banner + hidden actions, incl. sleep/wake),
+  `app/dashboard/applications/new/page.tsx` (infra picker excludes exited infras).
+
+### Decisions
+
+1. **A dedicated `infrastructure.exited` event, not an extension of
+   `host_readiness_updated`, and no version counter.** `HostReadinessEventConsumer` treats
+   `host_readiness_version` as "higher wins" — exactly right for a value that moves in both
+   directions (dns_synced/https_ready flip on every terraform apply). `exited_at` is a
+   one-way latch: infrastructure-service's own field is set once by the exit flow and never
+   cleared. Reusing the counter would have been actively wrong: a `host_readiness_updated`
+   publish that fires *after* exit (the DNS writer's converge loop, a TLS re-check tick)
+   would carry a higher version than an exited event minted earlier, and the versioned
+   consumer would discard the exited event as "stale" — the exact bug this decision avoids.
+   `InfraExitedEventConsumer` instead applies "first exited event wins, never cleared or
+   changed by anything after" — the same write-once pattern `upsert_infrastructure` already
+   uses for `dns_label`. Verified by `test_infra_exited_consumer.py`: a later event, an
+   earlier event, and a duplicate redelivery are all no-ops once set; a subsequent
+   `host_readiness_updated` or `infrastructure.created` upsert cannot clear it either.
+2. **Published from `infrastructure_complete_exit` in two places**: right after
+   `infra.save(update_fields=["exited_at"])` on first success, and again on the
+   already-exited 409 branch. The second publish is deliberate self-heal — a lost or
+   not-yet-consumed event on the first call costs nothing extra to fix, since the owner
+   retrying "Complete Exit" (which lands on the 409) republishes it for free, and the
+   consumer's first-wins latch makes a duplicate publish harmless. A `republish_exited_events`
+   management command covers infrastructures that exited before this event existed at all
+   (real data on `main` predates H2).
+3. **Best-effort, never fails the request** — wrapped exactly like
+   `api/services/host_readiness.py:publish_host_readiness`: a broker hiccup must not turn a
+   successful exit into a 500 (`test_publish_failure_does_not_break_complete_exit`).
+4. **`require_not_exited(infra)` is one helper, one exception
+   (`api.services.exit_enforcement.InfrastructureExitedError`, `code =
+   "infrastructure_exited"`)**, called at every mutating entry point right after the
+   infrastructure is fetched — before any other side effect. This matters concretely for
+   retry: `ApplicationRetryDeployView` resets ARNs to null and enqueues a cleanup job before
+   enqueuing the fresh deploy, so the check runs before that reset, not after
+   (`test_retry_view_returns_409_and_never_resets_arns`).
+5. **Gated:** app create, app update, manual deploy, retry, rollback, resume-auto-deploy,
+   GitHub webhook deploys (ack 200 without enqueueing, same shape as the existing
+   `auto_deploy_paused` ack — GitHub must not see a 4xx/5xx and retry forever), custom-domain
+   attach (checked against the target `infrastructure_id` in the request body, before calling
+   `attach_custom_domain`). **Not gated, deliberately:**
+   - App delete and its cleanup worker job — F6's whole point is the customer keeps a
+     working account after exit; refusing cleanup would leave orphaned ECS/ALB resources
+     dangling forever. If the deployment role is already gone the AWS call fails and the
+     job takes the existing retry/DLQ path, same as any other post-exit AWS failure.
+   - Custom-domain detach — `complete_exit` itself calls `teardown_for_infrastructure`,
+     which detaches every route; gating detach would make exit unable to tear down its own
+     domains.
+   - `export_inventory` / `application_summary_for_custom_domains` — reads, and the exit
+     export must keep working after exit (that is its entire purpose).
+   - Runtime logs (`api/views/runtime_logs.py`) — read-only, and the logs are the customer's
+     own CloudWatch/cluster data, harmless to read after exit. Not fixed here: if the
+     customer has already deleted `LaunchpadDeploymentRole` by the time they call this, the
+     AssumeRole fails and it surfaces as the existing 502 `UpstreamError` path — no special
+     post-exit case needed, but this is a real gap between "exited" and "role actually
+     revoked" worth knowing about.
+   - Sleep/Wake — out of scope for this round (not in F6 Decision 14's original list); they
+     mutate ECS desired-count but neither creates new resources nor changes deploy
+     configuration. Tracked as a follow-up if a real exited customer reports it as
+     confusing, not fixed here.
+6. **`backfill_host_routing` reports ineligible rather than filtering the queryset.**
+   `ApplicationDeploymentService.evaluate_backfill_eligibility` checks
+   `application.infrastructure.exited_at` first and returns `(False, "infrastructure_exited",
+   None)`. The command's queryset deliberately still includes exited apps so `--dry-run`
+   reports them as ineligible instead of silently vanishing from the output — the real run
+   never reaches AWS for one either way, since eligibility is re-checked before any mutation.
+7. **Worker re-checks at dequeue time**, mirroring the existing `auto_deploy_paused`
+   re-check in `execute_deploy_job` for webhook jobs: `execute_deploy_job` and
+   `execute_rollback_job` both re-read the app's infrastructure fresh off the DB (the
+   read-model mirror, not a value carried in the job payload) and ack-without-running if
+   `exited_at` is set — a job queued before exit cannot run after
+   (`test_worker_skips_a_{deploy,rollback}_job_when_infra_exited_at_dequeue_time`).
+8. **`infrastructure_exited` added to the app detail response** rather than relying on the
+   frontend cross-fetching `GET infrastructures/{id}` and reading its `exited_at` — that
+   call already exists on the app detail page (for `isOwner`/`compute_type`) but is
+   independently permissioned and best-effort (`.catch(() => setInfra(null))`); an invited
+   ADMIN whose infra fetch fails would otherwise never see the gate. The field is computed
+   from application-service's own mirror (`app.infrastructure.exited_at is not None`), the
+   same row the enforcement checks already read, so the two can never disagree.
+9. **Additive migration only** (`0036_infrastructure_exited_at`, nullable
+   `DateTimeField`, `editable=False`) — no backfill migration needed since the read-model
+   is populated by the consumer/republish command, not by a data migration reading
+   infrastructure-service's database directly (the two services don't share a database).
+   **Migration numbering:** originally landed as `0034` off `0033_custom_domain_route`;
+   H3 (#91) and H4 (#92) both merged first and H4 added its own `0034`/`0035`
+   (`0034_application_log_group_name`, `0035_backfill_legacy_log_group_name` — see H4's
+   own Decisions for its collision note with H1's unmerged `0034_encrypt_application_envs.py`).
+   Renumbered to `0036` at rebase time, dependency repointed at `0035_backfill_legacy_log_group_name`.
+10. **Permission check always runs before `require_not_exited`, never after.**
+    `create_application`/`update_application` originally checked exit state first; fixed
+    so a non-member gets `PermissionError` (403) regardless of an infra's exit state,
+    matching the order every other gated path (deploy/retry/rollback) already used.
+    Checking exit state first would have let anyone who can guess or enumerate an
+    infrastructure UUID learn whether it has exited without any access to it — a small
+    oracle, closed by ordering the checks the same way everywhere
+    (`test_{create,update}_application_checks_permission_before_exit_state`).
+11. **`republish_exited_events` connects explicitly before its publish loop, and lets a
+    connect failure raise.** `ResilientPikaProducer.publish()` lazily calls its own
+    `connect()` when not yet connected, but swallows a connect failure internally and just
+    leaves the message in its in-memory buffer — fine for a long-lived process (the next
+    publish attempt retries), wrong for a one-shot management command that would otherwise
+    exit right after, silently losing every buffered message while printing "republished
+    N". `infra_producer.connect()` (which does re-raise) runs first, so an unreachable
+    broker fails the command loudly instead of reporting a false success
+    (`test_republish_exited_events_fails_loudly_when_the_broker_is_unreachable`).
+
+### Rollout / operator note (superseded in part — see Decision 13 below)
+
+Standard migrate-before-start discipline, not specific to this feature: if
+application-service's web/worker/consumer processes start on code that references
+`Infrastructure.exited_at` before migration `0036` has been applied, every read of that
+column raises `ProgrammingError`, which `InfraExitedEventConsumer` (like every other
+consumer in that file) treats as non-transient and nacks without requeue — the event is
+lost, not retried.
+
+## Independent security review (post-merge-readiness pass)
+
+Found no BLOCK. Two REQUIRED fixes and four RECOMMENDED, all applied below.
+
+12. **R1 — a job re-checks exit only at dequeue; a deploy/rollback already running when
+    exit lands kept mutating.** A deploy/rollback can take minutes (CodeBuild, ECS service
+    stabilization, ALB target-health polling) — long enough for Complete Exit to land
+    mid-flight. `ApplicationDeploymentService._abort_if_exited(application)` does a fresh,
+    single-field DB read of `Infrastructure.exited_at` (never the in-memory
+    `application.infrastructure`, which was read once at the top of the call and would
+    miss anything that changed since) and is called immediately before every remaining
+    AWS/Kubernetes mutation: `_create_ecs_service`'s `ecs.create_service` call (which
+    itself branches internally into `update_service` for an already-existing service —
+    one checkpoint covers both), `_configure_alb_routing`'s listener-rule creation,
+    `_configure_host_routing` (guarded at entry, covering both the host-forward-rule
+    create and the downgrade-to-path-mode delete branch), both EKS deploy paths
+    (`_deploy_to_eks`, `_rollback_eks`, immediately before `EKSDeployer.deploy`),
+    `_rollback_ecs`'s `update_service` call, and `backfill_host_routing`'s own
+    `update_service` call (on top of its existing eligibility check, closing the same
+    TOCTOU window there too). Raises `InfrastructureExitedError`, which every one of
+    these call sites' existing outer `except Exception` already turns into the same
+    cleanup-then-FAILED-with-sanitized-message path a build or AWS failure gets — no new
+    failure handling needed, and no half-applied state worse than what that path already
+    produces. Exit does **not** forcibly drain or cancel a deploy/rollback already past
+    its last checkpoint (e.g. mid `_wait_for_service_stable_with_refresh`) — it stops the
+    *next* mutation, not an AWS operation already in flight. Tested by actually racing it:
+    `test_deploy_aborts_if_infra_exits_mid_deploy_before_ecs_service_call` and
+    `test_rollback_aborts_if_infra_exits_mid_rollback_before_update_service` run a real
+    mock deploy/rollback through `MockSession`, flip `exited_at` from inside a patched
+    `_create_task_definition` (simulating the exit landing mid-pipeline), and assert the
+    next AWS call never happens; `test_deploy_abort_cleans_up_resources_already_created`
+    confirms the cleanup path still runs.
+13. **R2 — the exited event can be lost, and the 409 self-heal needs the owner to act
+    again.** Two independent fixes, since either alone leaves a gap:
+    - **(a) The consumer's queue is now also declared/bound from the producer side.** A
+      topic exchange silently drops a message with no matching binding — if
+      application-service's `InfraExitedEventConsumer` has never run once,
+      `infrastructure.exited` had nowhere to land before this fix (the "Rollout /
+      operator note" above no longer needs the deploy-ordering workaround it used to
+      describe). `shared/resilience/amqp.py:ResilientPikaProducer.declare_queue` declares
+      the SAME queue with IDENTICAL properties to
+      `ResilientPikaConsumer._connect_and_consume`'s own `queue_declare`
+      (durable/exclusive/auto_delete, no extra `arguments`) — RabbitMQ closes the channel
+      with PRECONDITION_FAILED on any mismatch, which would break the consumer's own next
+      reconnect, so `test_declare_queue_args_match_the_consumers_live_declare_call`
+      cross-checks against the consumer's actual call rather than a hardcoded copy of its
+      kwargs. `InfraEventProducer.connect()` calls it for
+      `application-service.infra-exited-events` (a literal string — this queue belongs to
+      a different service/codebase this one must not import from), best-effort: a
+      declare/bind failure never blocks `connect()` itself, since two more independent
+      layers ((b) below, and the 409 self-heal) still exist.
+    - **(b) `api/services/exit_republish.py:republish_all_exited_infrastructures()`** runs
+      automatically from a periodic, fleet-wide-rate-limited tick in
+      infrastructure-service's `run_worker.py` (same `r.set(lock_key, ..., nx=True)`
+      pattern as the existing reap/cert-check/custom-domain ticks), initialized to fire
+      once immediately at worker startup and every
+      `INFRA_EXITED_EVENT_REPUBLISH_INTERVAL_SECONDS` (default 900s) after. An operator no
+      longer has to remember to run `republish_exited_events` by hand — it now happens on
+      its own, closing the gap for an infra that exited while every worker was down, or
+      whose event was lost for any other reason. A tick failure is logged and skipped, not
+      raised, so a broker outage never takes down the dispatch loop.
+14. **RECOMMENDED 1 — sleep/wake gated too.** Not in F6 Decision 14's original list, but
+    they mutate the ECS service (`ecs.update_service` in
+    `application_sleep_service.py:sleep_application`/`wake_application`) the same way
+    deploy does. Gated at both the view layer (`ApplicationSleepView`/`ApplicationWakeView`,
+    409 `infrastructure_exited` after the existing ownership check) and the service layer
+    (`require_not_exited(infra)` right after `InfrastructureRepository.get_infrastructure`,
+    a fresh read, before either `ecs.update_service` call) — defense in depth, matching
+    every other gated action. Frontend hides both buttons when `infrastructure_exited`.
+15. **RECOMMENDED 2 — recovery from a bad/forged event, without raw SQL.** A new
+    `clear_infrastructure_exited --infrastructure-id <id> --confirm` command on
+    application-service. It never trusts its own caller's word for it: it calls a new
+    internal-only, X-INTERNAL-TOKEN-authenticated endpoint on infrastructure-service
+    (`GET /api/v1/internal/infrastructures/exit-status/?infrastructure_id=<id>`, exempt
+    from JWT the same way `custom-domains/disable-for-application` is — fixed literal
+    path, id in the query string rather than a path segment, matching that exemption
+    list's own "no path-param UUID" rule) and refuses to clear unless that response
+    confirms `exited_at` is null there. Unreachable, non-200, or "it IS exited there" all
+    refuse — the command clears a wrong mirror, it never overrides a real exit. Every
+    outcome is logged (`api.management.commands.clear_infrastructure_exited`, WARNING);
+    a successful clear logs the operator identity (OS user@host — a management command has
+    no authenticated user) and the stale `exited_at` value it removed.
+16. **RECOMMENDED 3 — `time.sleep` inside a pika `BlockingConnection` callback starves its
+    heartbeat processing.** `InfraExitedEventConsumer.callback`'s bounded retry-with-backoff
+    (an unmaterialized `infra_id` — event ordering, not an error) called `time.sleep(delay)`
+    before nacking with requeue, copied from the same pattern already present in every
+    other consumer in this file (`InfraEventConsumer`, `InfraUpdatedEventConsumer`,
+    `HostReadinessEventConsumer` — all pre-existing, not part of this feature). A bare
+    `time.sleep()` blocks the callback thread for up to 30s without pumping the
+    connection's own I/O loop, so the broker never sees a heartbeat during that window and
+    can drop the connection under load. Fixed in `InfraExitedEventConsumer` specifically
+    (the consumer this feature owns) with `ch.connection.sleep(delay)` — pika's own
+    documented answer to exactly this, since it blocks for the same duration but keeps
+    processing `process_data_events` internally. `MAX_RETRIES` (10, unchanged) already is
+    the bounded "give up after N attempts" a real dead-letter queue would also provide, and
+    no AMQP DLX exists anywhere in this codebase's consumers to route to (the "DLQ" in
+    `inspect_dlq.py` is a separate Redis structure for the Redis-backed deployment job
+    queue, unrelated). **Not fixed in the three sibling consumers** — they predate H2, are
+    outside this feature's diff, and touching three unrelated consumer classes for a
+    pre-existing pattern is a different PR's blast radius; tracked as an H6 follow-up.
+    `test_unmaterialized_infra_is_requeued_then_ackable_once_it_exists` now asserts
+    `ch.connection.sleep(1)` is called and that the module's `time.sleep` is not.
+17. **RECOMMENDED 4 — two bulk/backfill tools re-checked for the same staleness classes.**
+    `tag_existing_app_resources` (a one-off cost-attribution tagging backfill) now filters
+    its outer `Infrastructure.objects.filter(exited_at__isnull=True)` loop — no reason to
+    even attempt `create_boto3_session` against an exited customer's account for a tool
+    they have no reason to want re-run. `backfill_host_routing`'s command loop
+    `select_related('infrastructure')`s once at the top and can run long across many apps;
+    a per-iteration `app.infrastructure.refresh_from_db(fields=['exited_at'])` (both the
+    real run and `--dry-run`) closes the window where an infra exits between the queryset
+    evaluation and a later app's turn — belt-and-suspenders on top of R1's TOCTOU-safe
+    `_abort_if_exited` inside the deploy service itself, which remains the layer that
+    actually gates the AWS mutation regardless of what this refresh sees.
+    `test_command_skips_a_later_app_whose_infra_exited_mid_run` proves the specific race:
+    two apps on one infra from a single queryset evaluation, the infra exits after the
+    first is processed, and the second is skipped rather than migrated on stale data.
 
 ## H3 — Unauthenticated identity endpoints
 

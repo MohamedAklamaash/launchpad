@@ -40,6 +40,10 @@ class Command(BaseCommand):
         from api.services.deployment_lock import DeploymentLock
 
         service = ApplicationDeploymentService()
+        # H2: exited infrastructures are NOT filtered out of this queryset — an exited
+        # app must still show up in --dry-run output as ineligible ("infrastructure_exited",
+        # from evaluate_backfill_eligibility below), not silently vanish. The real run
+        # never touches AWS for one: eligibility is re-checked before any mutation.
         apps = Application.objects.filter(
             status='ACTIVE', host_forward_rule_arn__isnull=True,
             infrastructure__compute_type=ComputeType.ECS_FARGATE,
@@ -60,6 +64,15 @@ class Command(BaseCommand):
         migrated = skipped = failed = locked = 0
 
         for app in apps:
+            # H2 security review RECOMMENDED 4: `apps` was evaluated once at the top of
+            # this method via select_related('infrastructure') — a long run touching many
+            # apps could have an infra exit between then and reaching THIS app, and the
+            # in-memory `app.infrastructure` object would still show the stale
+            # pre-exit value. A single-field refresh closes that window before eligibility
+            # is even evaluated; `_abort_if_exited` inside the deploy service itself is
+            # the second, TOCTOU-safe layer that covers the window during this app's own
+            # processing (see plan/H-hardening.md).
+            app.infrastructure.refresh_from_db(fields=['exited_at'])
             if not lock.acquire(str(app.id), worker_id):
                 # An ordinary deploy or rollback of this app is in flight — never race it.
                 # Left for a later run: this command is idempotent and safe to re-run.
@@ -96,6 +109,7 @@ class Command(BaseCommand):
         calls ECS/ALB mutating APIs, and takes no lock, since nothing is written."""
         eligible = ineligible = 0
         for app in apps:
+            app.infrastructure.refresh_from_db(fields=['exited_at'])
             try:
                 is_eligible, reason, _ctx = service.evaluate_backfill_eligibility(app)
             except Exception:

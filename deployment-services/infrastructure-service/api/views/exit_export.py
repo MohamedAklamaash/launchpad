@@ -53,6 +53,18 @@ def _no_store(response: Response, request_id: str) -> Response:
     return response
 
 
+def _publish_infrastructure_exited(infra) -> None:
+    """Best-effort mirror publish for H2 (see plan/H-hardening.md) — must never fail the
+    request this is called from. Matches api/services/host_readiness.py's own
+    never-raises contract."""
+    try:
+        from api.messaging.producer.producer import infra_producer
+
+        infra_producer.publish_infrastructure_exited(infra.id, infra.exited_at)
+    except Exception:
+        logger.warning("publish_infrastructure_exited failed for %s (non-fatal)", infra.id, exc_info=True)
+
+
 def _reauth_ok(user) -> bool:
     """The JWT's `auth_time` — the original interactive login (password/OTP/GitHub OAuth),
     never advanced by a refresh — must be within the last EXIT_EXPORT_REAUTH_MAX_AGE_SECONDS.
@@ -249,6 +261,11 @@ def infrastructure_complete_exit(request: HttpRequest, infra_id):
                       {"error": "Set confirm: true to complete exit"}, infrastructure_id=infra.id)
 
     if infra.exited_at is not None:
+        # H2: re-publish on every call, not just the first — application-service's
+        # read-model mirror is a best-effort latch (first-applied wins, never cleared), so
+        # a lost or not-yet-consumed event is self-healed by the owner's own retry rather
+        # than needing an operator to run the backfill command.
+        _publish_infrastructure_exited(infra)
         return _deny(status.HTTP_409_CONFLICT,
                       {"error": "This infrastructure has already exited"}, infrastructure_id=infra.id)
 
@@ -290,6 +307,7 @@ def infrastructure_complete_exit(request: HttpRequest, infra_id):
 
     infra.exited_at = timezone.now()
     infra.save(update_fields=["exited_at"])
+    _publish_infrastructure_exited(infra)
     record_access(
         request_id=request_id, user_id=request.user.id, infrastructure_id=infra.id, action="complete_exit",
         status_code=200, duration_ms=int((time.monotonic() - started) * 1000), client_ip=client_ip,

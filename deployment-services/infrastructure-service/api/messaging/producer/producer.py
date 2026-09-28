@@ -19,6 +19,20 @@ class InfraEventProducer:
     # api/services/host_readiness.py). A pure state mirror — the consumer never treats this
     # payload as an authorization decision, only as read-model fields to upsert.
     ROUTING_KEY_HOST_READINESS_UPDATED = "infrastructure.host_readiness_updated"
+    # H2 (hardening): a dedicated event rather than folding this into
+    # host_readiness_updated — see plan/H-hardening.md Decisions. exited_at is a one-way
+    # latch (never cleared once set), so unlike host_readiness_updated it carries no
+    # ordering counter: the consumer applies "first exited event wins", exactly like the
+    # dns_label write-once pattern, rather than comparing versions.
+    ROUTING_KEY_INFRA_EXITED = "infrastructure.exited"
+    # H2 R2(a) (security review): declared from THIS side too (see connect() below), not
+    # only by application-service's InfraExitedEventConsumer — a topic exchange drops a
+    # message with no matching binding, so publishing before that consumer has ever run
+    # once would otherwise lose it silently. Literal string, not an import: this queue is
+    # owned by application-service's consumer module, a separate service/codebase this one
+    # must not import from — kept in sync with
+    # api/messaging/consumers/infrastructure.py:InfraExitedEventConsumer.QUEUE_NAME there.
+    _APPLICATION_SERVICE_EXITED_QUEUE = "application-service.infra-exited-events"
 
     def __init__(self):
         self.producer = ResilientPikaProducer(
@@ -30,6 +44,23 @@ class InfraEventProducer:
     def connect(self):
         try:
             self.producer.connect()
+            # H2 R2(a): bind application-service's exited-events queue from this side too,
+            # so the binding exists even if that service's own consumer has never started.
+            # Best-effort and never fatal to the connect itself — a failure here means the
+            # topology backstop didn't get set up this time, not that publishing is broken;
+            # the periodic republish tick (api/services/exit_republish.py) and the 409
+            # self-heal in exit_export.py are the other two independent layers protecting
+            # this same event from being permanently lost.
+            try:
+                self.producer.declare_queue(
+                    queue=self._APPLICATION_SERVICE_EXITED_QUEUE,
+                    routing_key=self.ROUTING_KEY_INFRA_EXITED,
+                )
+            except Exception:
+                logger.warning(
+                    "InfraEventProducer could not declare/bind %s (non-fatal)",
+                    self._APPLICATION_SERVICE_EXITED_QUEUE, exc_info=True,
+                )
             logger.info("InfraEventProducer connected to RabbitMQ")
         except Exception:
             logger.exception("Failed to connect InfraEventProducer")
@@ -288,6 +319,29 @@ class InfraEventProducer:
                 "correlation_id": cid, "infra_id": str(infra_id),
                 "tls_status": tls_status, "dns_synced": bool(dns_synced), "https_ready": bool(https_ready),
             },
+        )
+
+    def publish_infrastructure_exited(self, infra_id, exited_at, correlation_id=None):
+        """Publish infrastructure.exited — see plan/H-hardening.md H2. `exited_at` is an
+        ISO timestamp for the audit trail only; the consumer's own latch (has a value vs.
+        None) is what it actually acts on, never a comparison against this value. Safe to
+        call more than once for the same infrastructure (the owner's second "Complete
+        Exit" click on an already-exited infra, or a deliberate republish for infras that
+        exited before this event existed) — idempotent on the consumer side."""
+        cid = correlation_id or str(uuid.uuid4())
+        event = {
+            "type": self.ROUTING_KEY_INFRA_EXITED,
+            "payload": {
+                "infra_id": str(infra_id),
+                "exited_at": exited_at.isoformat() if hasattr(exited_at, "isoformat") else exited_at,
+            },
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"version": 1, "correlation_id": cid},
+        }
+        self.producer.publish(routing_key=self.ROUTING_KEY_INFRA_EXITED, body=event)
+        logger.info(
+            "Published infrastructure.exited event",
+            extra={"correlation_id": cid, "infra_id": str(infra_id)},
         )
 
     def close(self):

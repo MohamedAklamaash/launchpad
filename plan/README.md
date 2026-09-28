@@ -15,7 +15,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 | [F4](F4-cost-tagging.md) | Cost attribution | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F5](F5-evidence-pack.md) | Compliance pack | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F6](F6-exit-export.md) | Exit export | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
-| [H](H-hardening.md) | Hardening follow-ups (H1–H6) | **not started** | nothing |
+| [H](H-hardening.md) | Hardening follow-ups (H1–H6) | **in progress** — H2 done (mock-verified); H1, H3–H6 not started | nothing |
 
 ## Recommended order
 

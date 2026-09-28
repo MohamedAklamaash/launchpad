@@ -95,8 +95,20 @@ function NewApplicationPageInner() {
 
   useEffect(() => {
     infrastructureApi.list()
-      .then((data) => setInfrastructures(data.filter((i) => i.status === 'ACTIVE')))
+      // H2: an exited infrastructure refuses application-create with a 409 — never offer
+      // it as a target here.
+      .then((data) => {
+        const eligible = data.filter((i) => i.status === 'ACTIVE' && !i.exited_at);
+        setInfrastructures(eligible);
+        // A pre-filled ?infra= query param (deep link) may point at one filtered out above
+        // (exited since the link was shared) — clear it so the form can't be submitted
+        // against a target the picker never showed as an option.
+        if (infraId && !eligible.some((i) => i.id === infraId)) {
+          set('infrastructure_id', '');
+        }
+      })
       .catch(() => toast.error('Failed to load infrastructures', { id: 'app-new-infra-load' }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount only, matching every other effect in this file; infraId is read from the initial URL and does not need to re-trigger this fetch.
   }, []);
 
   const selectInfra = (id: string) => {

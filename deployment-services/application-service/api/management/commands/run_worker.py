@@ -35,6 +35,15 @@ def execute_deploy_job(app_id, job):
         DeploymentQueue.ack_job(job)
         return
 
+    # H2: a job queued before "Complete Exit" must not run after — re-check the freshly
+    # read row's infrastructure (the read-model mirror, kept current by
+    # InfraExitedEventConsumer) at dequeue time, the same shape as the auto_deploy_paused
+    # re-check just below.
+    if app.infrastructure.exited_at is not None:
+        logger.info(f"Skipping deploy for {app_id}: infrastructure has exited")
+        DeploymentQueue.ack_job(job)
+        return
+
     # A rollback pins the app to a known-good deploy by setting auto_deploy_paused, but the
     # webhook checks that flag before enqueueing — a job already queued (or racing the
     # enqueue) when the pin lands would otherwise still run and silently undo the rollback.
@@ -59,6 +68,13 @@ def execute_rollback_job(app_id, job):
     app = ApplicationRepository().get_by_id(app_id)
     if not app:
         logger.error(f"Application {app_id} not found")
+        DeploymentQueue.ack_job(job)
+        return
+
+    # H2: same re-check as execute_deploy_job — a rollback queued before exit must not
+    # run after.
+    if app.infrastructure.exited_at is not None:
+        logger.info(f"Skipping rollback for {app_id}: infrastructure has exited")
         DeploymentQueue.ack_job(job)
         return
 
@@ -166,6 +182,13 @@ class Command(BaseCommand):
                 _close_db()
 
         def run_cleanup(job):
+            # H2: deliberately NOT gated on Infrastructure.exited_at, unlike deploy/rollback
+            # above. Cleanup only runs after the owner deleted an application (or a retry
+            # is discarding partial resources) — refusing it would leave orphaned ECS/ALB
+            # resources dangling in the customer's own account after exit, which is the
+            # opposite of F6's goal. If LaunchpadDeploymentRole is already gone the AWS
+            # call fails and this job nacks into the existing retry/DLQ path, same as any
+            # other post-exit AWS failure — no special-casing needed.
             from aws.session import create_boto3_session
 
             from api.models.infrastructure import Infrastructure

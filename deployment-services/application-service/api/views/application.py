@@ -19,6 +19,7 @@ from api.repositories.application import ApplicationRepository
 from api.services.application_service import ApplicationService
 from api.services.application_sleep_service import ApplicationSleepService
 from api.services.deployment_queue import DeploymentQueue
+from api.services.exit_enforcement import InfrastructureExitedError, require_not_exited
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class AppDetailSerializer(serializers.Serializer):
     deployment_url = serializers.CharField(allow_null=True)
     host_url = serializers.CharField(allow_null=True, help_text="F1b: null until TLS/DNS are live and this app has a host-mode route")
     host_url_status = serializers.CharField(allow_null=True, help_text="Why host_url is null, e.g. 'tls_not_issued', 'dns_not_synced'")
+    infrastructure_exited = serializers.BooleanField(help_text="H2: true once this app's infrastructure completed the exit flow — deploy/rollback/create/webhook actions are refused")
     build_id = serializers.CharField(allow_null=True)
     error_message = serializers.CharField(allow_null=True)
     created_at = serializers.DateTimeField()
@@ -158,6 +160,8 @@ class ApplicationListCreateView(APIView):
         try:
             app = self.service.create_application(request.user, request.data)
             return Response({"id": str(app.id), "name": app.name}, status=status.HTTP_201_CREATED)
+        except InfrastructureExitedError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except ValueError as e:
@@ -198,6 +202,7 @@ class ApplicationDetailDeleteView(APIView):
             "attached_database_ids": app.attached_database_ids or [],
             "deployment_url": app.deployment_url,
             "host_url": host_url, "host_url_status": host_url_status,
+            "infrastructure_exited": app.infrastructure.exited_at is not None,
             "build_id": app.build_id,
             "error_message": app.error_message if app.status not in ('ACTIVE', 'SLEEPING') else None,
             "created_at": app.created_at.isoformat() if app.created_at else None,
@@ -247,6 +252,8 @@ class ApplicationUpdateView(APIView):
                 "attached_database_ids": updated.attached_database_ids or [],
                 "updated_at": updated.updated_at.isoformat(),
             })
+        except InfrastructureExitedError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except ValueError as e:
@@ -281,6 +288,7 @@ class ApplicationDeployView(APIView):
             infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
             if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            require_not_exited(infra)
             # A manual deploy is an explicit override of whatever a prior rollback pinned.
             if app.auto_deploy_paused:
                 app.auto_deploy_paused = False
@@ -288,6 +296,8 @@ class ApplicationDeployView(APIView):
             DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
+        except InfrastructureExitedError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
@@ -320,6 +330,7 @@ class ApplicationRetryDeployView(APIView):
             infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
             if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            require_not_exited(infra)
 
             # A manual (re)deploy is an explicit override of whatever a prior rollback pinned.
             if app.auto_deploy_paused:
@@ -360,6 +371,8 @@ class ApplicationRetryDeployView(APIView):
             DeploymentQueue.enqueue_deployment(pk, str(app.infrastructure_id))
             return Response({"message": "Deployment retry queued successfully",
                              "application_id": str(pk), "status": "QUEUED"}, status=status.HTTP_202_ACCEPTED)
+        except InfrastructureExitedError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
         except Exception as e:
             logger.exception("Failed to retry deployment")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -386,9 +399,12 @@ class ApplicationSleepView(APIView):
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
             if str(app.user_id) != str(request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            require_not_exited(app.infrastructure)
             self.sleep_service.sleep_application(app)
             return Response({"message": "Application put to sleep successfully",
                              "application_id": str(pk), "status": "SLEEPING"})
+        except InfrastructureExitedError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
@@ -417,9 +433,12 @@ class ApplicationWakeView(APIView):
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
             if str(app.user_id) != str(request.user.id):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            require_not_exited(app.infrastructure)
             self.sleep_service.wake_application(app)
             return Response({"message": "Application woken up successfully",
                              "application_id": str(pk), "status": "ACTIVE"})
+        except InfrastructureExitedError as e:
+            return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
@@ -468,6 +487,8 @@ def _rollback_error_response(e: Exception):
         return Response({"error": str(e)}, status=status.HTTP_404_NOT_FOUND)
     if isinstance(e, PermissionError):
         return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+    if isinstance(e, InfrastructureExitedError):
+        return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
     from api.services.application_service import DeploymentInProgressError
     if isinstance(e, DeploymentInProgressError):
         return Response({"error": str(e)}, status=status.HTTP_409_CONFLICT)
@@ -656,6 +677,16 @@ def application_github_webhook(request, app_id: str):
         logger.info(f"GitHub webhook for app {app_id}: ignoring push to {pushed_ref} (tracks {expected_ref})")
         return Response(
             {"status": "ignored", "reason": f"pushed ref {pushed_ref} != tracked {expected_ref}"},
+            status=status.HTTP_200_OK,
+        )
+
+    # H2: an exited infrastructure's role may already be gone — ack without deploying,
+    # the same shape as the auto_deploy_paused check below, rather than a 4xx/5xx GitHub
+    # would treat as a delivery failure and keep retrying.
+    if app.infrastructure.exited_at is not None:
+        logger.info(f"GitHub webhook for app {app_id}: infrastructure exited; acknowledging without deploying")
+        return Response(
+            {"status": "ignored", "reason": "infrastructure exited", "application_id": str(app_id)},
             status=status.HTTP_200_OK,
         )
 
