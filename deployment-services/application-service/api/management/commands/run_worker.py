@@ -196,6 +196,11 @@ class Command(BaseCommand):
                     cleanup._delete_ecs_service(session, env.cluster_arn if env else None, job['service_arn'])
                 if job.get('listener_rule_arn'):
                     cleanup._delete_listener_rule(session, job['listener_rule_arn'])
+                if job.get('host_forward_rule_arn'):
+                    # F1b part 3a's :443 host-forward rule — a distinct ALB resource from
+                    # the :80 path rule above, previously leaked on delete (see
+                    # deployment_queue.py:enqueue_cleanup).
+                    cleanup._delete_listener_rule(session, job['host_forward_rule_arn'])
                 if job.get('target_group_arn'):
                     cleanup._delete_target_group(session, job['target_group_arn'])
                 if job.get('task_definition_arn'):

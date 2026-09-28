@@ -134,6 +134,15 @@ else:
 RATE_BUDGET_COSTS_LIMIT = int(os.environ.get('RATE_BUDGET_COSTS_LIMIT', '20'))
 RATE_BUDGET_COSTS_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_COSTS_WINDOW_SECONDS', '60'))
 
+# F1b part 3b (custom domains): per-user budget for claim/verify/delete (each costs an
+# AssumeRole plus at least one ACM/DNS call), and a per-infra cap on concurrently PENDING
+# claims — without it, an attacker with one owned infra could flood a customer's AWS
+# account with ACM RequestCertificate calls (one per claim) merely by claiming hostnames
+# and never verifying them.
+RATE_BUDGET_CUSTOM_DOMAINS_LIMIT = int(os.environ.get('RATE_BUDGET_CUSTOM_DOMAINS_LIMIT', '30'))
+RATE_BUDGET_CUSTOM_DOMAINS_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_CUSTOM_DOMAINS_WINDOW_SECONDS', '60'))
+MAX_PENDING_CUSTOM_DOMAINS_PER_INFRA = int(os.environ.get('MAX_PENDING_CUSTOM_DOMAINS_PER_INFRA', '20'))
+
 # Bounded query window for the costs endpoint — a customer-controlled start/end could
 # otherwise page through years of Cost Explorer history at $0.01/request.
 COST_QUERY_MAX_MONTHS = int(os.environ.get('COST_QUERY_MAX_MONTHS', '3'))
@@ -151,17 +160,44 @@ COST_ESTIMATE_EKS_CONTROL_PLANE_HOUR_USD = float(os.environ.get('COST_ESTIMATE_E
 # Single settings source for the platform's DNS zone apex. App URLs are
 # {slug}.{dns_label}.{PLATFORM_BASE_DOMAIN}; the platform DNS writer (api/services/
 # platform_dns/) and the custom-domain reserved-suffix check both read this one value
-# rather than each defining their own. The 'launchpad.app' fallback exists only so
-# services that never touch DNS (tests, non-AWS deployments) don't need the var set; F1b
-# part 3 (custom domains) is expected to remove this default and fail closed instead, per
-# the F1b security pre-review — deferred there because that's also where the fail-open
-# default was originally flagged as a spoofing risk (evil.launchpad.app).
-PLATFORM_BASE_DOMAIN = os.environ.get('PLATFORM_BASE_DOMAIN', 'launchpad.app')
+# rather than each defining their own.
+#
+# F1b part 3b (security pre-review §5): a fallback to 'launchpad.app' here was a fail-open
+# spoofing hole — a customer could claim `evil.launchpad.app` as a "custom domain" on their
+# own infra and the reserved-suffix check would use whatever this defaulted to, not the
+# platform's real zone, if the two ever drifted. Unset now fails closed outside dev mode.
+# MODE=dev gets a placeholder that can never collide with a real customer domain or the
+# platform's own zone, so tests and non-AWS local dev don't need the var set.
+_platform_base_domain = os.environ.get('PLATFORM_BASE_DOMAIN')
+if _platform_base_domain:
+    PLATFORM_BASE_DOMAIN = _platform_base_domain
+elif is_dev_mode(app_config.mode):
+    PLATFORM_BASE_DOMAIN = "launchpad.test"
+else:
+    raise ValueError(
+        "PLATFORM_BASE_DOMAIN must be set outside MODE=dev — it is the platform's DNS zone "
+        "apex and the reserved-suffix boundary for customer custom domains, and has no "
+        "safe default."
+    )
 
 # Apex domain custom-domain hostnames must not be able to spoof, e.g. `evil.launchpad.app`.
-# Matched against the normalized (IDNA-decoded, lowercased) hostname — see
+# Matched against the normalized ASCII/punycode hostname — see
 # api/models/custom_domain.py:normalize_hostname.
 RESERVED_DOMAIN_SUFFIX = PLATFORM_BASE_DOMAIN
+
+# A root domain PLATFORM_BASE_DOMAIN is delegated from, if any (e.g. PLATFORM_BASE_DOMAIN=
+# "eu.launchpad.app" delegated from "launchpad.app") — a custom hostname equal to or under
+# this is rejected too, alongside PLATFORM_BASE_DOMAIN itself.
+#
+# Deliberately optional, not required outside MODE=dev like PLATFORM_BASE_DOMAIN above:
+# in this platform's actual DNS topology (see infra/platform-dns/README.md and
+# docs/PLATFORM_DNS_ISOLATION.md), PLATFORM_BASE_DOMAIN *is* the platform's own zone apex,
+# applied directly to a dedicated DNS account — it is not itself a sub-zone delegated from
+# some larger domain this platform also controls. Forcing an operator to set this to a
+# meaningless value in that (the normal) case would be worse than leaving it unset. Set it
+# only if a future deployment's PLATFORM_BASE_DOMAIN ever becomes a delegated sub-zone of a
+# larger root this platform still owns and must also keep customers off of.
+PLATFORM_ROOT_DOMAIN = os.environ.get('PLATFORM_ROOT_DOMAIN') or None
 
 
 # Application definition

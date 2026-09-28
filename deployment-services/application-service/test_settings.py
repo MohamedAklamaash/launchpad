@@ -74,3 +74,6 @@ LOGGING_CONFIG = None
 # max_cpu/max_memory quota still applies on top of this.
 EKS_MAX_APP_CPU = float(os.environ.get('EKS_MAX_APP_CPU', '64'))
 EKS_MAX_APP_MEMORY = float(os.environ.get('EKS_MAX_APP_MEMORY', '256'))
+
+MAX_SNI_CERTIFICATES_PER_LISTENER = 24
+INFRASTRUCTURE_SERVICE_URL = "http://localhost:8002"

@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.endpoints import (
     application,
     auth,
+    custom_domain,
     database,
     infrastructure,
     notification,
@@ -22,3 +23,4 @@ api_router.include_router(payment.router)
 api_router.include_router(application.router)
 api_router.include_router(application.webhook_router)
 api_router.include_router(database.router)
+api_router.include_router(custom_domain.router)

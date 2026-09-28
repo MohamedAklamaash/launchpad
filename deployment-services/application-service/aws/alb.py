@@ -2,13 +2,39 @@ import logging
 import os
 import threading
 
+from botocore.exceptions import ClientError
+
 from aws.tags import as_key_value_tags
 
 logger = logging.getLogger(__name__)
 
+
+class SniCertificateCapExceeded(RuntimeError):
+    """The listener already carries as many SNI certificates as this platform will place
+    on it. Raised both by ALBClient.add_listener_certificate's own AWS-side TooManyCertificates
+    catch and by the caller's own pre-check (see custom_domains.attach_custom_domain) —
+    either way, the caller must not have already committed anything to the database."""
+
+    def __init__(self, listener_arn: str):
+        super().__init__(f"SNI certificate cap reached on listener {listener_arn}")
+        self.listener_arn = listener_arn
+
+
 # Per-listener lock to prevent priority races under concurrent deploys
 _priority_locks: dict = {}
 _priority_locks_lock = threading.Lock()
+
+# Security review R5: every host-header-conditioned :80 redirect (the one platform
+# wildcard from ensure_host_redirect_rule, plus one per claimed custom domain from
+# create_host_redirect_rule) must always outrank every :80 path rule (no host
+# condition — create_listener_rule) on priority number, or a path rule with a
+# matching path could win the match on a custom domain's Host and forward it to a
+# backend in plaintext instead of redirecting to HTTPS. Reserving a low band for host
+# redirects and flooring path rules above it makes this true for every rule created
+# from this fix forward without needing to reprioritize on every call — see
+# create_listener_rule/create_host_redirect_rule below.
+_HOST_REDIRECT_PRIORITY_FLOOR = 1
+_PATH_RULE_PRIORITY_FLOOR = 1000
 
 
 def _get_listener_lock(listener_arn: str) -> threading.Lock:
@@ -68,12 +94,15 @@ class ALBClient:
         )
         logger.info(f"Updated health check path for {target_group_arn} to {health_check_path}")
 
-    def _create_rule_with_retry(self, listener_arn, conditions, actions, tags=None):
+    def _create_rule_with_retry(self, listener_arn, conditions, actions, tags=None, floor=1):
         """Shared priority-assignment + PriorityInUseException retry, per listener lock.
         Used by every rule-creation method below so a path rule, a host-forward rule, and
-        a host-redirect rule racing on the same listener never collide on priority."""
+        a host-redirect rule racing on the same listener never collide on priority.
+        `floor` reserves the low end of the priority space for host-redirect rules (see
+        _HOST_REDIRECT_PRIORITY_FLOOR/_PATH_RULE_PRIORITY_FLOOR above) — callers pass it
+        through unchanged on the retry path too."""
         with _get_listener_lock(listener_arn):
-            priority = self.get_next_priority(listener_arn)
+            priority = self.get_next_priority(listener_arn, floor=floor)
             try:
                 response = self.client.create_rule(
                     ListenerArn=listener_arn, Conditions=conditions, Actions=actions,
@@ -81,7 +110,7 @@ class ALBClient:
                 )
                 logger.info(f"Created listener rule with priority {priority}")
             except self.client.exceptions.PriorityInUseException:
-                priority = self.get_next_priority(listener_arn)
+                priority = self.get_next_priority(listener_arn, floor=floor)
                 response = self.client.create_rule(
                     ListenerArn=listener_arn, Conditions=conditions, Actions=actions,
                     Priority=priority, **({'Tags': as_key_value_tags(tags)} if tags else {}),
@@ -94,7 +123,14 @@ class ALBClient:
         of exact/prefix patterns — see the R1 note on `_configure_alb_routing`'s caller:
         a bare `/{slug}*` glob matches any OTHER slug sharing that prefix (`/a*` matches
         `/ab/x`), so the deploy flow now always passes `[f"/{slug}", f"/{slug}/*"]`
-        instead. ALB OR-matches multiple Values on one path-pattern condition."""
+        instead. ALB OR-matches multiple Values on one path-pattern condition.
+
+        Floored at _PATH_RULE_PRIORITY_FLOOR (R5): a path rule carries no host condition,
+        so it matches ANY Host on that path — including a claimed custom domain's. A path
+        rule allowed to land below a host-redirect rule's priority would win that match
+        first and forward a plaintext :80 request straight to a backend instead of
+        redirecting to HTTPS, exactly the violation host-redirect rules exist to prevent.
+        """
         import time
         patterns = path_pattern if isinstance(path_pattern, list) else [path_pattern]
         rule_arn = self._create_rule_with_retry(
@@ -102,6 +138,7 @@ class ALBClient:
             conditions=[{'Field': 'path-pattern', 'Values': patterns}],
             actions=[{'Type': 'forward', 'TargetGroupArn': target_group_arn}],
             tags=tags,
+            floor=_PATH_RULE_PRIORITY_FLOOR,
         )
 
         propagation_delay = int(os.environ.get('ALB_RULE_PROPAGATION_DELAY', '5'))
@@ -121,10 +158,58 @@ class ALBClient:
             tags=tags,
         )
 
+    def _reclaim_path_rules_below_floor(self, listener_arn):
+        """Move any path-pattern rule (no host-header condition) currently sitting below
+        _PATH_RULE_PRIORITY_FLOOR up above it. Two ways a rule can end up there despite
+        create_listener_rule always flooring new ones at 1000: it was created before
+        this fix shipped, or it was the rule sitting at priority 1 when
+        _reprioritize_to_one displaced it (see that method's own floor selection, fixed
+        alongside this). Left alone, a pre-existing low path rule would still outrank a
+        host-redirect rule created *after* it — a Host match on a custom domain would hit
+        the path rule first (no host condition, so it matches any Host) and forward a
+        plaintext :80 request straight to a backend instead of redirecting to HTTPS,
+        exactly what the whole priority-band scheme exists to prevent (R5). Idempotent —
+        a no-op once every path rule is already >= the floor. Acquires its own listener
+        lock and must be called before, not from inside, another method's own lock
+        acquisition on the same listener (_get_listener_lock's Lock is not reentrant)."""
+        with _get_listener_lock(listener_arn):
+            existing_rules = self.client.describe_rules(ListenerArn=listener_arn).get('Rules', [])
+            used_priorities = {
+                int(r['Priority']) for r in existing_rules if r['Priority'] != 'default'
+            }
+            violators = [
+                r for r in existing_rules
+                if r['Priority'] != 'default' and int(r['Priority']) < _PATH_RULE_PRIORITY_FLOOR
+                and any(c.get('Field') == 'path-pattern' for c in r.get('Conditions', []))
+            ]
+            if not violators:
+                return
+            new_priorities = []
+            next_priority = _PATH_RULE_PRIORITY_FLOOR
+            for rule in violators:
+                while next_priority in used_priorities:
+                    next_priority += 1
+                new_priorities.append({'RuleArn': rule['RuleArn'], 'Priority': next_priority})
+                used_priorities.add(next_priority)
+            self.client.set_rule_priorities(RulePriorities=new_priorities)
+            logger.info(
+                f"Reclaimed {len(violators)} path rule(s) below priority "
+                f"{_PATH_RULE_PRIORITY_FLOOR} on {listener_arn}"
+            )
+
     def create_host_redirect_rule(self, listener_arn, hostname, tags=None):
         """The :80 counterpart: a host-header match for this app's own hostname redirects
         to https, and never forwards — per the pre-review, a plaintext request to an app's
-        dedicated hostname must never reach the backend over HTTP."""
+        dedicated hostname must never reach the backend over HTTP. Used both for a
+        claimed custom domain (one rule per domain) and, via ensure_host_redirect_rule
+        below, the one per-infra platform wildcard.
+
+        Floored at _HOST_REDIRECT_PRIORITY_FLOOR, always below _PATH_RULE_PRIORITY_FLOOR
+        (R5) — see create_listener_rule's docstring for why a path rule must never be
+        allowed to outrank this. Reclaims any pre-existing path rule below the floor
+        first, so a custom-domain redirect created after an old-style path rule still
+        outranks it."""
+        self._reclaim_path_rules_below_floor(listener_arn)
         return self._create_rule_with_retry(
             listener_arn,
             conditions=[{'Field': 'host-header', 'Values': [hostname]}],
@@ -136,6 +221,7 @@ class ALBClient:
                 },
             }],
             tags=tags,
+            floor=_HOST_REDIRECT_PRIORITY_FLOOR,
         )
 
     def ensure_host_redirect_rule(self, listener_arn, dns_label, base_domain, tags=None):
@@ -155,8 +241,10 @@ class ALBClient:
         host-mode hostname on this infra, is created (and priority-swapped into place)
         once, and is a plain idempotent lookup on every later deploy. This also keeps :80
         rule consumption to one rule per infra instead of one per app (ALB caps a
-        listener's rule count).
+        listener's rule count). Reclaims any pre-existing path rule below the floor
+        first (R5) — called before, not from inside, the lock acquisition below.
         """
+        self._reclaim_path_rules_below_floor(listener_arn)
         wildcard_host = f"*.{dns_label}.{base_domain}"
         with _get_listener_lock(listener_arn):
             existing_rules = self.client.describe_rules(ListenerArn=listener_arn).get('Rules', [])
@@ -201,16 +289,26 @@ class ALBClient:
         Called both right after creating the redirect rule and every time
         ensure_host_redirect_rule finds it already existing but not at 1 — see R1's note
         above on why this must be idempotent and repeatable, not just a one-shot swap at
-        creation time."""
+        creation time.
+
+        R5: the displaced rule's new priority must respect its own kind — a path rule
+        (no host-header condition) displaced from priority 1 must land at or above
+        _PATH_RULE_PRIORITY_FLOOR, not merely at "any free slot", or it would still sit
+        in the low band and outrank a host-redirect rule created later. A displaced
+        host-type rule (another host-header-conditioned rule, vanishingly unlikely but
+        not impossible) stays in the low band, floor 1, same as before.
+        """
         rule_at_1 = next(
             (r for r in existing_rules if r.get('Priority') == '1' and r['RuleArn'] != rule_arn), None,
         )
         priorities = [{'RuleArn': rule_arn, 'Priority': 1}]
         if rule_at_1 is not None:
+            is_path_rule = any(c.get('Field') == 'path-pattern' for c in rule_at_1.get('Conditions', []))
+            displaced_floor = _PATH_RULE_PRIORITY_FLOOR if is_path_rule else _HOST_REDIRECT_PRIORITY_FLOOR
             # An atomic priority swap: the rule currently at 1 moves to a priority
             # get_next_priority guarantees free right now, so there is never a moment
             # both rules claim the same priority nor a moment priority 1 is unclaimed.
-            displaced_priority = self.get_next_priority(listener_arn)
+            displaced_priority = self.get_next_priority(listener_arn, floor=displaced_floor)
             priorities.append({'RuleArn': rule_at_1['RuleArn'], 'Priority': displaced_priority})
         self.client.set_rule_priorities(RulePriorities=priorities)
         logger.info(f"Reseated host-redirect rule {rule_arn} to priority 1 on {listener_arn}")
@@ -256,12 +354,94 @@ class ALBClient:
                 return listener['ListenerArn']
         return None
     
-    def get_next_priority(self, listener_arn):
+    def get_next_priority(self, listener_arn, floor=1):
+        """First free priority at or above `floor` — see _HOST_REDIRECT_PRIORITY_FLOOR/
+        _PATH_RULE_PRIORITY_FLOOR for why callers pin a floor rather than always
+        starting from 1 (R5)."""
         response = self.client.describe_rules(ListenerArn=listener_arn)
         priorities = [int(rule['Priority']) for rule in response['Rules'] if rule['Priority'] != 'default']
-        # Find first gap starting from 1 to avoid races with sequential max+1
+        # Find first gap starting from floor to avoid races with sequential max+1
         used = set(priorities)
-        priority = 1
+        priority = floor
         while priority in used:
             priority += 1
         return priority
+
+    def delete_rule(self, rule_arn):
+        """Idempotent: a rule already gone (previous attempt partially succeeded, or a
+        concurrent cleanup already removed it) is not an error — teardown must never wedge
+        on a rule that simply isn't there anymore."""
+        try:
+            self.client.delete_rule(RuleArn=rule_arn)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "RuleNotFound":
+                raise
+            logger.info(f"Listener rule {rule_arn} already gone, nothing to delete")
+
+    # ── custom-domain SNI certificate attach/detach (F1b part 3b) ──────────────────
+    #
+    # A per-app host-forward/redirect rule (above) routes traffic once a Host header
+    # matches; a custom domain also needs its own certificate presented over TLS for that
+    # Host, which is a property of the *listener*, not a rule. AddListenerCertificates
+    # attaches an additional SNI certificate to the existing 443 listener without
+    # replacing its default certificate (the platform wildcard cert from part 2) — this is
+    # deliberately boto3, not Terraform: the set of attached certificates changes on every
+    # custom-domain claim, and Terraform doesn't track resources it didn't create.
+
+    def count_listener_certificates(self, listener_arn) -> int:
+        """Count of SNI certificates on this listener, excluding its default certificate
+        (IsDefault=True) — the default is the platform wildcard cert from Terraform, not a
+        custom-domain attachment, and doesn't count against the SNI cap."""
+        count = 0
+        paginator_token = None
+        while True:
+            kwargs = {"ListenerArn": listener_arn}
+            if paginator_token:
+                kwargs["Marker"] = paginator_token
+            response = self.client.describe_listener_certificates(**kwargs)
+            count += sum(1 for c in response.get("Certificates", []) if not c.get("IsDefault"))
+            paginator_token = response.get("NextMarker")
+            if not paginator_token:
+                return count
+
+    def has_listener_certificate(self, listener_arn, cert_arn) -> bool:
+        paginator_token = None
+        while True:
+            kwargs = {"ListenerArn": listener_arn}
+            if paginator_token:
+                kwargs["Marker"] = paginator_token
+            response = self.client.describe_listener_certificates(**kwargs)
+            if any(c.get("CertificateArn") == cert_arn for c in response.get("Certificates", [])):
+                return True
+            paginator_token = response.get("NextMarker")
+            if not paginator_token:
+                return False
+
+    def add_listener_certificate(self, listener_arn, cert_arn):
+        """Idempotent — AWS itself no-ops re-adding a certificate already on the
+        listener, so no existence check is needed before calling. TooManyCertificates is
+        AWS's own hard SNI-cap enforcement (25/listener) — belt-and-suspenders behind this
+        module's own count_listener_certificates check, surfaced as a distinct exception
+        so a race that slips past the count check still fails cleanly."""
+        try:
+            self.client.add_listener_certificates(
+                ListenerArn=listener_arn, Certificates=[{"CertificateArn": cert_arn}],
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "TooManyCertificates":
+                raise SniCertificateCapExceeded(listener_arn) from e
+            raise
+
+    def remove_listener_certificate(self, listener_arn, cert_arn):
+        """Idempotent: RemoveListenerCertificates doesn't error on a certificate that
+        isn't attached (AWS silently no-ops), so the only ClientError worth swallowing
+        here is the listener itself being gone (a teardown race, e.g. infra destroy
+        already removed the ALB) — there's nothing left to detach either way."""
+        try:
+            self.client.remove_listener_certificates(
+                ListenerArn=listener_arn, Certificates=[{"CertificateArn": cert_arn}],
+            )
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ListenerNotFound":
+                raise
+            logger.info(f"Listener {listener_arn} already gone, nothing to detach {cert_arn} from")

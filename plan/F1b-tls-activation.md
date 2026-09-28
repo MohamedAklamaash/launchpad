@@ -5,10 +5,13 @@
 ACM policy grants, 443 listener, nginx host mode groundwork, EKS group-name fix) done,
 mock-verified**; **part 3a (host URLs end-to-end: cross-service readiness contract, ECS/EKS
 deploy-flow wiring, DNS synced_at, host URL publish gating, backfill) done, mock-verified —
-see Part 3a below**; custom domains (`CustomDomain` API/UI, `RESERVED_DOMAIN_SUFFIX` fail-
-closed removal) not started. **Depends on:** #68, #75, part 2 · **Blocked by:** the owner
-action below (zone not yet applied to real AWS, so parts 1–3a are mock-verified only) and
-custom domains not yet built.
+see Part 3a below**; **part 3b (customer custom domains: claim/verify/list/delete API +
+dashboard UI, authoritative-TXT ownership proof, per-domain ACM issuance, ALB SNI cap +
+attach/detach, teardown at all three entry points, periodic re-validation, fail-closed
+`RESERVED_DOMAIN_SUFFIX`) done, mock-verified — see Part 3b below**. F1b is feature-complete
+against mocks. **Depends on:** #68, #75, part 2 · **Blocked by:** the owner action below
+(zone not yet applied to real AWS, so every part above is mock-verified only) — see
+`plan/REAL-AWS-VALIDATION.md` for the real-AWS checklist every part still owes.
 
 ## Part 3a — what shipped (mock-verified)
 
@@ -153,7 +156,8 @@ Scope: the plan's "Scaffolded but not wired" list from part 2 (below), narrowed 
 **Deferred, explicitly:**
 
 - Custom domains proper (`CustomDomain` API/UI, the `RESERVED_DOMAIN_SUFFIX` fail-closed
-  removal originally flagged in part 1) — a separate slice from host URLs, not started.
+  removal originally flagged in part 1) — a separate slice from host URLs, done in part 3b
+  (see below).
 - A live check on every EKS deploy is now built (see Security review fixes below, B1) —
   but only a read-only confirmation that the shared group ALB has a real `:443` listener.
   There is still no live read of `IngressClassParams.spec.certificateARNs` itself;
@@ -732,3 +736,335 @@ H2 and H3 are all live here. Review the design before writing the DNS writer, no
 
 Apex/root custom domains (CNAME-only, documented). Migrating existing apps off path URLs —
 host URLs are additive. Any traffic transiting platform infrastructure: DNS and certs only.
+
+## Part 3b — customer custom domains (design)
+
+Builds on the `CustomDomain` model from #68 (state machine, partial unique index, 72h
+expiry — kept as-is). Adds the API, the DNS/ACM verifier, ALB wiring, and teardown.
+
+**Service boundary.** `CustomDomain` and the ACM certificate lifecycle
+(`RequestCertificate`/`DescribeCertificate`/`DeleteCertificate`) stay in infrastructure-
+service, next to `cert_bootstrap.py`, reusing its `_acm_client`/`FakeAcmClient`/tagging
+helpers rather than duplicating them. Listener rules and the SNI attach/detach live in
+application-service's `aws/alb.py`, next to the existing host-forward/redirect rules and
+the live `describe_listeners`-based listener discovery already used by
+`_resolve_host_routing` — application-service never persists a listener ARN, so this stays
+consistent. The two are joined by a **synchronous internal HTTP call**
+(`shared.resilience.http_client.ResilientHttpClient` + `X-INTERNAL-TOKEN`), the same
+pattern `exit_export.py` already uses to call application-service's `export_inventory` —
+not a new RabbitMQ event type. This keeps the whole PENDING→VALIDATED transition,
+including the SNI cap check and the attach, inside one Django transaction on the
+`Infrastructure` row lock in infrastructure-service, with app-service's attach/detach as a
+best-effort-idempotent step that gets compensated (detached again) if the local DB commit
+loses the cross-tenant race.
+
+New model: application-service gets `CustomDomainRoute` (hostname, infrastructure_id,
+application_id, cert_arn, host_forward_rule_arn, host_redirect_rule_arn) — its own record
+of what it attached, so app-delete cleanup and detach don't need a round trip back to
+infrastructure-service to discover rule ARNs.
+
+**Verify flow** (`CustomDomainService.verify`, infrastructure-service):
+1. `select_for_update` the `Infrastructure` row (serializes concurrent verifies for the
+   same infra — needed because the SNI cap check below is a live AWS read, not something
+   the DB transaction can make atomic on its own).
+2. `select_for_update` the `CustomDomain` row; re-check `status == PENDING` and
+   `not is_expired` **on the locked row**, not the caller's in-memory object (this was a
+   real bug in `mark_validated()` — see below).
+3. Authoritative TXT check at `_launchpad-challenge.{host}` against the hostname's own
+   NS set (never the recursive resolver).
+4. `DescribeCertificate` on the domain's own per-domain ACM cert (requested at claim
+   time — see below) — must be `ISSUED`.
+5. Call application-service's internal attach endpoint (cap-checks
+   `describe_listener_certificates` against the infra's live 443 listener, then
+   `add_listener_certificates` + creates the host-forward and host-redirect rules,
+   idempotently). A 409 here (cap reached) aborts before any DB write.
+6. `domain.mark_validated()`. If this raises `HostnameAlreadyValidatedError` (lost the
+   cross-tenant race on the partial unique index — a different infra, so step 1's lock
+   didn't serialize against it), call the detach endpoint to undo step 5 and return 409.
+7. Commit.
+
+**Claim flow** requests the per-domain ACM cert immediately (DNS validation is
+asynchronous and the customer needs the validation CNAME up front, alongside the TXT and
+the `edge.` CNAME instructions) and generates the ownership token
+(`secrets.token_urlsafe(32)`, returned once, stored as `sha256` hex on
+`ownership_token_hash` — never stored in reversible form). Claims are refused with 409 at
+`compute_type == 'eks'` (host mode is disabled there behind `EKS_HOST_MODE_ENABLED`,
+so a claim could never route) and capped at 20 PENDING claims per infrastructure, both
+checked under the same infra row lock claim uses to mint the row.
+
+**`mark_validated` fix (H4).** Before this change, the status/expiry re-check ran on
+`self` (the caller's possibly-stale object) *before* acquiring the row lock, then the
+locked block blindly wrote `VALIDATED` — a concurrent double-verify or a verify racing
+the 72h sweep could validate an already-expired or already-transitioned row. Fixed to
+re-check on the row returned by `select_for_update()`.
+
+**Hostname normalization (H6).** `normalize_hostname` used to decode back to Unicode
+after the IDNA round-trip, and silently kept the raw label on `idna.IDNAError` — fine for
+the suffix check alone, wrong for a value that also has to reach an ALB host-header
+condition, `ACM DomainName`, and a DNS query. Changed to return the ASCII/punycode form
+and raise instead of silently keeping the raw label; `reject_reserved_suffix` compares
+against `PLATFORM_BASE_DOMAIN` run through the same normalizer, not a raw string compare.
+A new `validate_hostname_syntax` enforces LDH charset, ≤63 bytes/label, ≤253 total, ≥2
+labels (apex stays documented-out, not hard-blocked — unchanged from part 2's decision),
+no `*`, and rejects IPv4/IPv6 literals via `ipaddress.ip_address`. This runs before the
+hostname reaches ALB, ACM, or the resolver. The 13 existing `test_custom_domain.py` cases
+that asserted Unicode output were updated to assert the ASCII form; the suffix-rejection
+behavior they cover is unchanged.
+
+**Fail-closed suffix (H5).** `PLATFORM_BASE_DOMAIN` (also `RESERVED_DOMAIN_SUFFIX`, same
+setting, infrastructure-service only) no longer defaults to `'launchpad.app'`. Unset
+outside dev mode raises a plain `ValueError` at settings load — matching this same
+settings module's existing `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN` fail-closed check
+immediately above it, not `django.core.exceptions.ImproperlyConfigured` (an earlier draft
+of this note said otherwise). Dev mode falls back to `launchpad.test` (a value that can
+never collide with a real customer domain or the platform's own zone). application-service
+was **not** touched here: its own `PLATFORM_BASE_DOMAIN` (`host_url.py`) already read
+`os.environ.get('PLATFORM_BASE_DOMAIN') or None` with no fallback — unset already produces
+`None` there today, which already suppresses every platform host URL rather than building
+one from a wrong value (an earlier draft of this note claimed both services "got the same
+fix"; only infrastructure-service's reserved-suffix check had the fail-open bug — F1b part
+3a's own settings.py comment already documented app-service's None-on-unset behavior as
+intentional). An optional `PLATFORM_ROOT_DOMAIN` (infrastructure-service) covers a
+delegated root the base domain might be a sub-zone of; deliberately left optional rather
+than required outside dev, since in this platform's actual topology
+`PLATFORM_BASE_DOMAIN` *is* the zone apex, not a delegated sub-zone of anything else this
+platform controls (see the settings.py comment for when to set it).
+
+**Re-validation job.** A periodic tick (added next to the existing TLS re-check tick in
+`run_worker.py`, and — unlike that tick — run on its own dedicated worker thread with a
+hard wait ceiling on the dispatch side, since an authoritative DNS lookup is bounded by
+its own deadline but a customer's DNS is still attacker-reachable) walks VALIDATED
+domains, re-runs the authoritative TXT check, and increments `verification_failure_count`
+on failure (reset to 0 on success). Three consecutive failures move the row through
+`DISABLING` (a retryable checkpoint added in the second security review pass — see below)
+→ detach (application-service) → `DeleteCertificate` → `DISABLED`; a stuck `DISABLING` row
+is retried by the same tick's `sweep_stuck_disabling`. The same tick sweeps expired
+PENDING claims (72h) and
+best-effort deletes their ACM certs — a claim that only reached `RequestCertificate` and
+never got the CNAME published would otherwise leave a `PENDING_VALIDATION` cert in the
+customer's account forever.
+
+**Teardown, three entry points.** App delete (application-service's cleanup path) detaches
+its own `CustomDomainRoute` rows locally (no round trip needed) and best-effort notifies
+infrastructure-service to `DeleteCertificate` + mark `DISABLED`. Infra destroy hooks into
+`TerraformWorker._pre_destroy_cleanup` — one call there covers every `enqueue_destroy`
+call site, since they all funnel through the same `TerraformWorker.destroy()` — detach,
+then delete cert, before terraform destroys the ALB (detach needs a live listener; cert
+delete does not). Complete exit (`infrastructure_complete_exit`) is not an infra destroy —
+the customer keeps their AWS resources — but Launchpad still stops managing routing for
+it, so it gets its own best-effort teardown call, after the DNS teardown succeeds and
+never gating `exited_at` (never blocks `request_and_await_dns_teardown`, per H2).
+
+**Authz.** Owner-only (`str(infrastructure.user_id) == str(user_id)`) for claim/verify/
+delete, matching `DatabaseService._require_owner` — an invited `ADMIN`
+(`InfrastructureUserRole`) is refused with 403, same as database management. List is
+readable by owner + invited members (`InfrastructureRepository.get_by_id`'s existing
+scope), matching `list_databases`.
+
+**Pre-existing bug found, fixed separately.** `DeploymentQueue.enqueue_cleanup`'s job
+dict never carried `host_forward_rule_arn`, so deleting an ECS app in host mode leaked
+its `:443` host-forward rule (`ApplicationCleanupService.cleanup_application`, which
+does handle it, was dead code — nothing called it). Fixed in its own commit since it's a
+platform-hostname bug, not a custom-domain one, but the fix lives on this branch because
+custom-domain cleanup touches the exact same job dict and cleanup handler.
+
+**IAM policy: no version bump.** `policy.json` v4's ACM statements already grant
+`RequestCertificate`/`DescribeCertificate`/`AddTagsToCertificate`/`DeleteCertificate`
+generically (tag-conditioned on `ManagedBy=launchpad`, not scoped to the wildcard
+domain), and `elasticloadbalancing:*` is already ungated — both already cover a
+per-customer-domain cert and `AddListenerCertificates`/`RemoveListenerCertificates`. No
+`policy.json` or `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF` change needed for this slice.
+
+## Part 3b — second security review pass
+
+An independent review of the first Part 3b commit found a resource-exhaustion/SSRF gap in
+the DNS resolver and several teardown/locking races. All fixed on the same branch before
+merge; the design decisions above (service boundary, DISABLING addition aside) are
+unchanged.
+
+**B1 — resolver could stall the infra worker fleet, and reached private/link-local IPs.**
+`custom_domain_dns.py` previously bounded each individual dnspython call to its own
+timeout but had no bound on the *total* number of calls a single lookup could make (label
+walk, NS hosts, NS IPs each effectively unbounded) or on the *combined* wall-clock cost —
+and the periodic re-validation tick ran this inline on the worker's main dispatch thread,
+so a single slow/adversarial domain could stall provision/destroy dispatch fleet-wide for
+as long as it stalled, with the Redis tick lock (~295s TTL) expiring mid-stall and letting
+another worker pile onto the same problem. Separately, nothing stopped a candidate
+nameserver IP from being loopback, RFC1918, link-local, or the cloud metadata address
+(`169.254.169.254`) — a customer-controlled "nameserver" is otherwise a live SSRF/timing
+oracle against this platform's own VPC. Fixed: one shared `_Deadline` (10s) threaded
+through every dnspython call in a single lookup (`_TOTAL_LOOKUP_DEADLINE_SECONDS`), hard
+caps on labels walked / NS hosts / NS IPs (`_MAX_LABELS_TO_WALK`/`_MAX_NS_HOSTS`/
+`_MAX_NS_IPS`), every candidate IP filtered through `ipaddress.*.is_global` before a
+packet is ever sent to it, `OSError` caught alongside `dns.exception.DNSException` (a raw
+socket refusal isn't a DNS-library exception), and the periodic tick moved onto its own
+dedicated worker thread (`run_worker.py`'s `custom_domain_pool`) with dispatch bounded by
+`CUSTOM_DOMAIN_CHECK_HARD_TIMEOUT_SECONDS` (60s) rather than blocking on it directly.
+
+**R1 — verify held both row locks across the DNS lookup and the app-service attach.**
+`verify_domain` used to run the authoritative TXT lookup *inside* the
+`Infrastructure`+`CustomDomain` row-lock transaction, alongside the attach call
+(AssumeRole plus several ELBv2 calls on application-service's side) — a slow lookup into a
+zone the customer fully controls, or a client disconnecting mid-request, held both locks
+for however long that took. Fixed: `verify_ownership_token` now runs before any lock is
+taken; status/expiry/cert_arn are re-checked on the row `select_for_update()` returns
+before anything from the pre-lock read is trusted.
+
+**R2 — teardown was one-shot with no retry state, and detach was keyed by hostname
+alone.** The original `_teardown` attempted detach and `DeleteCertificate` in one pass and
+unconditionally marked the row `DISABLED` (or deleted it, for a PENDING row) regardless of
+whether either AWS call actually succeeded — `_detach` didn't check the HTTP response
+status (`ResilientHttpClient` returns a 4xx/5xx `Response` object without raising, so a
+non-exception failure was silently treated as success), `delete_certificate` swallowed
+`ResourceInUseException` the same as any other outcome, and `_detach_route`
+(application-service) deleted its `CustomDomainRoute` row in a `finally` block regardless
+of whether the AWS calls in the `try` above it had succeeded. A domain could end up marked
+DISABLED (or gone) with its SNI certificate and ALB rules still live, permanently orphaned
+— and since `CustomDomainRoute.hostname` is unique, a surviving row would make every
+future attach for that hostname 409 forever. Separately, detach was scoped by `hostname`
+alone: a hostname freed by a DISABLED row can be reclaimed by a different infrastructure,
+and a stale/retried detach call for the old owner could rip out the new owner's current
+attachment.
+
+Fixed with a new `DISABLING` intermediate status (additive migration, no data backfill —
+the table was empty in every real deployment): `_teardown` now does `mark_disabling()`
+(a fast, immediately-committed checkpoint — PENDING or VALIDATED → DISABLING, idempotent)
+*before* the slow network calls, which run with **no DB lock held at all**; `mark_disabled`
+(DISABLING → DISABLED, clearing `cert_arn`) is only reached once `_detach` returns `True`
+(HTTP 200, confirmed) **and** `delete_certificate` returns `True` (deleted or already
+`ResourceNotFoundException` — `ResourceInUseException` and everything else now returns
+`False`). Detach is scoped by `(infrastructure_id, hostname)` on both sides — the request
+body and the `CustomDomainRoute` query. `_detach_route` only deletes its row once the ALB
+calls succeed; a failure leaves the row in place for the next retry. A stuck `DISABLING`
+row is retried by the new `sweep_stuck_disabling` (same bounded-per-tick pattern as the
+other two sweeps). Every teardown path — owner delete, infra destroy, complete-exit,
+disable-for-application, the expired-claim sweep, the failed-re-validation path — now
+converges on the same `_teardown`, so a PENDING row is DISABLED (not hard-deleted) exactly
+like a VALIDATED one; this also fixes R1's "PENDING teardown must detach too" (a crash
+between application-service's attach succeeding and `mark_validated()` committing could
+otherwise leave a PENDING row with a live, un-detached route).
+
+**R3 — `delete_domain`/`_teardown` read status unlocked, racing `verify_domain`.** Reading
+`domain.status` on an unlocked object to decide whether to detach could act on a value
+`verify_domain` had already changed underneath it (e.g. tearing down a row that was
+VALIDATED a moment ago without detaching it). `mark_disabling()` re-checks status on the
+row `select_for_update()` returns, not on the caller's object, and is idempotent from any
+of PENDING/VALIDATED — `_teardown` now always attempts detach after it succeeds,
+regardless of what the row's status used to be, so there's no branch left to race.
+
+**R4 — claim/verify didn't check `exited_at`/`dns_teardown_requested_at`.** A claim or
+verification could complete after an infra had already started (or finished) tearing down,
+re-attaching routing that teardown had already removed (or never removed, if verify raced
+ahead of it) and outliving the ALB's own destruction. Both are now refused
+(`_refuse_if_infra_exiting`) — a fast pre-check on the unlocked read, and the authoritative
+check again on the row `select_for_update()` returns inside the transaction. No change was
+needed to how `dns_teardown_requested_at`/`exited_at` themselves get set:
+`mark_dns_teardown_requested`'s conditional `UPDATE ... WHERE dns_teardown_requested_at IS
+NULL` and `exit_export.py`'s `exited_at` write both target the same `Infrastructure` row
+claim/verify already lock, and under Postgres a plain `UPDATE` on a row blocks until a
+concurrent `SELECT ... FOR UPDATE` holder on that row commits — the ordering holds without
+either write needing its own explicit lock (this is a real guarantee only under Postgres;
+`select_for_update()` is a documented no-op on the sqlite test backend).
+
+**R5 — a custom domain's `:80` redirect could be outranked by a path rule.**
+`create_host_redirect_rule` (used for both the platform wildcard and per-custom-domain
+redirects) and `create_listener_rule` (path rules, no host condition) both allocated
+priority from the same "lowest free number" pool — a path rule created after a custom
+domain's redirect could land at a lower priority number (evaluated first) and, having no
+host condition, match a request to `http://custom.example.com/{slug}/x` and forward it to
+a backend in plaintext instead of redirecting to HTTPS. Fixed by reserving a low priority
+band for every host-header-conditioned rule (`_HOST_REDIRECT_PRIORITY_FLOOR = 1`) and
+flooring path rules above it (`_PATH_RULE_PRIORITY_FLOOR = 1000`) — `get_next_priority`
+takes a `floor` parameter now, threaded through `_create_rule_with_retry`. No live
+migration of already-provisioned ALBs was needed: nothing has shipped against a real AWS
+account yet.
+
+**Recommended items also addressed:** `attach_custom_domain` is now reservation-first (the
+`CustomDomainRoute` row is created, with placeholder rule ARNs, before any AWS call — a
+concurrent attach for the same hostname now collides on the DB constraint immediately
+instead of both callers racing in AWS), checks `application.target_group_arn` before
+attempting anything, and compensates (detaches whatever was actually attached) on any
+failure; `cert_arn` is validated against `arn:aws:acm:{region}:{account_id}:certificate/…`
+and cross-checked against the calling infra's own AWS account (real infras only — mock
+certs don't carry a real account id), and `hostname` is re-validated with the same shared
+`shared/validators/hostname.py:validate_hostname_syntax` infrastructure-service uses (moved
+there from `api/models/custom_domain.py`, which re-exports it, so existing imports/tests
+were untouched) — application-service must not simply trust a value handed to it by
+infrastructure-service for a value that reaches an ALB host-header condition. The
+authoritative TXT response now requires the `AA` flag and rejects a CNAME-redirected
+answer (`response.canonical_name()` must equal the query name) rather than accepting any
+TXT rrset present in the answer section regardless of owner name. App delete now notifies
+infrastructure-service unconditionally, not only when a `CustomDomainRoute` existed
+locally — a still-PENDING domain (claimed but never verified, so never attached in this
+service at all) also needs its certificate cleaned up there, and this notification is the
+only signal that ever reaches infrastructure-service that the application is gone.
+`_verify_application`'s cross-service call was moved off `GET /applications/{id}/` (full
+detail, including env vars and the webhook-secret shape) onto a new narrow
+`GET /internal/applications/{id}/summary/` returning only `{id, infrastructure_id,
+status}` — infrastructure-service's claim flow has no legitimate use for the rest, and
+receiving it at all was unnecessary secrets exposure. An all-numeric top-level label
+(`0x7f.1`) is now rejected in `validate_hostname_syntax` — some HTTP clients and resolvers
+treat it as legacy dotted-decimal/hex IP shorthand. `dnspython==2.8.0` (new dependency,
+`deployment-services/requirements.txt`) was checked with `pip-audit` — no known
+vulnerabilities in it or anything else in that file.
+
+**Part 3b's actual files.** infrastructure-service: `api/models/custom_domain.py`
+(hardened, +application_id/ownership_token_hash/verification_failure_count/DISABLING,
+hostname-syntax validation now imported from `shared/validators/hostname.py`),
+`api/services/custom_domain_dns.py` (shared per-lookup deadline, label/host/IP caps,
+global-IP-only, AA/CNAME-checked), `api/services/custom_domain_cert.py`
+(`delete_certificate` returns success/failure), `api/services/custom_domain_service.py`,
+`api/views/custom_domain.py` + `api/views/custom_domain_internal.py` + routes,
+`core/settings.py` (fail-closed `PLATFORM_BASE_DOMAIN`/`PLATFORM_ROOT_DOMAIN`, budget/cap
+settings), `api/services/terraform_worker.py` (destroy teardown hook),
+`api/views/exit_export.py` (complete-exit teardown hook),
+`api/management/commands/run_worker.py` (periodic re-validation/sweep tick, on its own
+worker thread with a hard dispatch-side timeout). `deployment-services/shared/validators/
+hostname.py` (new — shared between both services). application-service:
+`api/models/custom_domain_route.py`, `api/services/custom_domain_routing.py`
+(reservation-first attach, cert_arn/hostname validation, scoped detach),
+`api/views/custom_domains_internal.py` + urls (attach/detach/`application_summary_for_
+custom_domains`), `aws/alb.py` (SNI attach/detach, `delete_rule`, the host-redirect/
+path-rule priority band), `api/mock/mock_session.py` (listener-cert mock support),
+`api/services/application_service.py` (app-delete cleanup wiring, unconditional notify),
+`api/services/deployment_queue.py` + `api/management/commands/run_worker.py` (the
+pre-existing `host_forward_rule_arn` leak fix). `shared/middleware/authentication.py`
+(JWT-exempt internal paths). `gateway-service/app/api/endpoints/custom_domain.py` + router.
+`launchpad-frontend`: `components/custom-domains-panel.tsx`, `lib/api/custom-domains.ts`,
+`types/custom-domain.ts`, wired into the application detail page.
+
+**Part 3b's actual test files.** infrastructure-service:
+`api/tests/test_custom_domain.py` (hardening: syntax fuzz incl. all-numeric TLD,
+fail-closed suffix, the `mark_validated` race fix, ownership tokens, `DISABLING` state
+machine), `api/tests/test_custom_domain_dns.py` (authoritative-lookup plumbing against
+mocked dnspython calls and real `dns.message.Message` objects for AA/CNAME handling, the
+mock/dev fake resolver, the is_mock/dev_mode gate, the shared deadline and label/host/IP
+caps, non-global IPs never queried), `api/tests/test_custom_domain_cert.py` (per-domain
+ACM lifecycle against the shared fake ACM double, `ResourceInUse` vs `ResourceNotFound`),
+`api/tests/test_custom_domain_service.py` (claim/verify/delete/teardown orchestration, EKS
+refusal, PENDING cap, cross-tenant race + compensating detach, sweep + re-validation, the
+DNS-lookup-before-lock ordering, the exiting-infra refusal under lock, `DISABLING` retry),
+`api/tests/test_custom_domain_api.py` (HTTP layer: owner-only, cross-tenant 404, budget
+429, response shape), `api/tests/test_custom_domain_internal_view.py`,
+`api/tests/test_destroy_custom_domain_teardown.py`, `test_complete_exit.py`'s two added
+cases. application-service: `api/tests/test_alb_sni_certificates.py`,
+`api/tests/test_alb_host_routing.py` (the R5 priority-band tests),
+`api/tests/test_custom_domain_routing.py` (reservation-first, cert_arn/hostname
+validation, scoped detach never touching another infra's attachment),
+`api/tests/test_custom_domains_internal_views.py` (incl. the narrow application-summary
+lookup), `api/tests/test_app_delete_custom_domain_cleanup.py`. gateway-service:
+`tests/test_custom_domain_route.py`, `tests/test_custom_domain_rate_limit_exemption.py`.
+
+**Deferred, explicitly, from part 3b:**
+
+- The pre-claim `application_id` check calls application-service's own
+  `GET /internal/applications/{id}/summary/` synchronously; a claim under a slow or
+  unreachable application-service fails the whole claim rather than degrading. Acceptable
+  for an owner-triggered, low-frequency action; revisit only if it becomes a real
+  reliability complaint.
+- No admin/support tooling to force-disable a domain outside the owner/periodic-job paths
+  (e.g. a takedown request) — `disable_for_application`/`_teardown` exist and are callable,
+  but there is no endpoint or management command wired to them for that case yet.
+- Frontend: no polling for a claim's ACM validation record once it "still generating" —
+  the owner has to refresh the page. `backfill_validation_record`'s single-shot check
+  exists server-side; a poll loop client-side was left out to keep the panel simple.

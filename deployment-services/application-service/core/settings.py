@@ -302,6 +302,20 @@ EKS_MAX_APP_MEMORY = float(os.environ.get('EKS_MAX_APP_MEMORY', '256'))
 # resolves. See api/common/host_url.py.
 PLATFORM_BASE_DOMAIN = os.environ.get('PLATFORM_BASE_DOMAIN') or None
 
+# F1b part 3b: AWS hard-caps a listener at 25 total certificates (default + SNI). Counting
+# only SNI attachments (aws/alb.py:count_listener_certificates excludes IsDefault), 24
+# leaves exactly one slot for the platform's own default/wildcard certificate — the same
+# boundary AWS itself enforces (TooManyCertificatesException), reached here first with a
+# clean 409 instead of relying solely on that exception surfacing through boto3.
+MAX_SNI_CERTIFICATES_PER_LISTENER = int(os.environ.get('MAX_SNI_CERTIFICATES_PER_LISTENER', '24'))
+
+# Same-origin base URL for infrastructure-service, used only by the custom-domains
+# teardown path (api/services/custom_domain_routing.py) to best-effort notify it that an
+# application was deleted so it can disable that application's CustomDomain rows and
+# delete their ACM certificates — mirrors infrastructure-service's own
+# APPLICATION_SERVICE_URL (used by its exit-export endpoint), the reverse direction.
+INFRASTRUCTURE_SERVICE_URL = os.environ.get('INFRASTRUCTURE_SERVICE_URL', 'http://localhost:8002')
+
 # F1b part 3a security review (B1): EKS host mode is gated behind an explicit opt-in,
 # default OFF. Unlike ECS (where a per-app :443 host-header forward rule and one
 # infra-wide :80 wildcard redirect are the whole mechanism), EKS host mode depends on the

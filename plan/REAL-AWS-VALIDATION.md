@@ -460,3 +460,76 @@ DNS** account (`infra/platform-dns`).
       `application`'s current fields for a normal, non-rolled-back app, but confirm against
       an app that was rolled back and then had its `alloted_cpu`/`alloted_memory` edited
       without a subsequent deploy — an edge case this command does not special-case).
+
+## F1b part 3b — custom domains
+
+- [ ] **Authoritative TXT lookup.** `custom_domain_dns.fetch_authoritative_txt_records`
+      walks up from the claimed hostname to find its NS records, resolves those to IPs via
+      the system resolver, then queries each directly with RD=0. Confirm against a real
+      domain on at least two DNS providers (one that answers TXT on the exact
+      `_launchpad-challenge.{host}` name, one where the zone is delegated one level above
+      the claimed hostname) that this actually reaches the zone's real authoritative
+      servers and not a recursive resolver in the path (some networks intercept UDP/53).
+      Confirm the `RD=0` bit is honored — an authoritative server that ignores it and
+      recurses anyway would defeat the whole point of not using a stub resolver.
+- [ ] **Per-domain ACM issuance and reuse boundary.** `custom_domain_cert.request_certificate`
+      never reuses an existing certificate (unlike cert_bootstrap's wildcard flow) — confirm
+      requesting the same hostname twice (e.g. claim, delete, re-claim before the first
+      cert's IdempotencyToken window elapses) does not return the previous cert's ARN
+      unexpectedly, and that ACM's ~1h IdempotencyToken TTL is short enough in practice
+      not to collide across genuinely separate claims of the same hostname by different
+      tenants (the token is domain_id-scoped, so this should be structurally impossible,
+      but a real `RequestCertificate` behavior confirmation is still owed).
+- [ ] **`poll_for_validation_record`'s short window.** Bounded to ~5s (5 attempts, 1s
+      apart) so the claim HTTP response stays well under the gateway's proxy timeout —
+      confirm ACM populates `DomainValidationOptions[].ResourceRecord` within that window
+      for a non-wildcard, single-hostname certificate in practice (part 2's own item above
+      covers the wildcard case; a single-label DomainName may behave differently). If it
+      routinely misses, `describe_validation_record`'s on-demand backfill (called from the
+      list/detail read path) is the fallback — confirm that path actually surfaces the
+      record to the dashboard on the next poll.
+- [ ] **SNI cap enforcement order.** `ALBClient.add_listener_certificate` catches AWS's own
+      `TooManyCertificatesException` as a backstop behind `count_listener_certificates`'s
+      own pre-check — confirm the real per-listener cap (this item already flagged under
+      part 2 above) and that `IsDefault` correctly excludes the platform's own
+      wildcard/default certificate from the count in a real `DescribeListenerCertificates`
+      response, not just in the mock.
+- [ ] **`add_listener_certificates` / `remove_listener_certificates` propagation.** Confirm
+      how quickly a newly attached SNI certificate becomes selectable by real TLS
+      handshakes for the claimed hostname (ALB's SNI matching is usually near-instant, but
+      unconfirmed against this codebase), and that `remove_listener_certificates` for a
+      certificate that's mid-handshake-selection on live traffic doesn't cause a
+      brief TLS error window for that hostname.
+- [ ] **Re-validation job cadence and false disables.** `CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS`
+      (~5min default) × 3 consecutive failures means a hostname can be disabled roughly
+      10-15 minutes after ownership actually lapses — confirm this is an acceptable window,
+      and separately confirm a real authoritative-NS query never has a false-negative
+      failure mode (e.g. a provider that briefly serves stale/empty answers during their
+      own maintenance) common enough to trip 3 consecutive misses on a domain the customer
+      never touched.
+- [ ] **Teardown ordering against a real ALB.** `TerraformWorker.destroy`'s custom-domain
+      teardown runs before `terraform destroy` — confirm `remove_listener_certificates`
+      against a listener terraform is about to destroy doesn't itself get blocked or
+      delayed by an in-flight terraform plan/lock, and that a subsequent `DeleteCertificate`
+      never races a listener deletion that's already removed the SNI attachment out from
+      under it (should be idempotent per `remove_listener_certificate`'s design, but
+      unconfirmed against real API latency/ordering).
+- [ ] **Authoritative-answer AA/CNAME hardening against a real provider.** Confirm at
+      least one major DNS provider's authoritative servers set the `AA` bit on ordinary
+      TXT answers the way `custom_domain_dns._extract_txt_values` requires (some
+      providers' edge/anycast setups have been known to omit it in edge cases) — a
+      provider that never sets `AA` would make every domain hosted there permanently
+      unverifiable, which only a real query against it can rule out.
+- [ ] **Non-global-IP filter against a real anycast/CDN-fronted nameserver.** Confirm a
+      real customer's nameservers never resolve (even transiently, e.g. during a
+      provider-side migration) to an address `ipaddress.*.is_global` rejects — a false
+      positive here would look identical to "no authoritative nameserver IP found" and
+      block verification/re-validation for a legitimately-configured domain.
+- [ ] **`DISABLING` retry cadence under real AWS latency.** `sweep_stuck_disabling` runs
+      on the same ~5min tick as the other two sweeps — confirm this is fast enough that a
+      domain doesn't sit `DISABLING` (certificate not yet deleted, but already detached)
+      for an operationally awkward length of time after a transient AWS API error, and
+      that ACM's real `ResourceInUseException` timing (how soon after
+      `RemoveListenerCertificates` a `DeleteCertificate` stops being rejected) matches the
+      assumption that a bare retry on the next tick is enough, rather than needing a
+      short explicit delay between detach and delete.

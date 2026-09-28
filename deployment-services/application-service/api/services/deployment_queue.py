@@ -94,7 +94,7 @@ class DeploymentQueue:
     def enqueue_cleanup(app_id: str, infrastructure_id: str, service_arn: str | None = None,
                         listener_rule_arn: str | None = None, target_group_arn: str | None = None,
                         task_definition_arn: str | None = None, runtime: str | None = None,
-                        refs: dict | None = None):
+                        refs: dict | None = None, host_forward_rule_arn: str | None = None):
         try:
             job = {
                 "app_id": str(app_id),
@@ -104,6 +104,11 @@ class DeploymentQueue:
                 "listener_rule_arn": listener_rule_arn,
                 "target_group_arn": target_group_arn,
                 "task_definition_arn": task_definition_arn,
+                # F1b part 3a's own :443 host-forward rule, previously never carried by
+                # this job — a pre-existing leak (delete_application read it but never
+                # passed it through) fixed alongside the custom-domain cleanup this job
+                # dict also needed (F1b part 3b), since both touch the same call site.
+                "host_forward_rule_arn": host_forward_rule_arn,
                 "retry_count": 0,
             }
             # An absent "runtime" means the legacy ECS ARN shape, so jobs enqueued by the
