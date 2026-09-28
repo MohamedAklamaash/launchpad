@@ -11,7 +11,11 @@ class _FakeElbv2:
     def __init__(self):
         self.rules = []
         self.modified = []
-        self._next_priority = 1
+        # A monotonic counter, not the rule's own (mutable, reprioritizable) Priority —
+        # two rules created at the same creation-time Priority (e.g. a reclaimed path
+        # rule that freed up priority 1 for a new host-redirect rule created right after
+        # it) would otherwise collide on an arn derived from Priority alone.
+        self._next_rule_id = 1
 
     def describe_rules(self, **kwargs):
         return {"Rules": [
@@ -21,7 +25,8 @@ class _FakeElbv2:
 
     def create_rule(self, **kwargs):
         priority = kwargs["Priority"]
-        arn = f"arn:aws:elasticloadbalancing:::listener-rule/{priority}"
+        arn = f"arn:aws:elasticloadbalancing:::listener-rule/{self._next_rule_id}"
+        self._next_rule_id += 1
         self.rules.append({
             "priority": priority, "arn": arn,
             "conditions": kwargs["Conditions"], "actions": kwargs["Actions"],
@@ -305,3 +310,69 @@ def test_wildcard_and_custom_domain_redirects_share_the_low_band_below_path_rule
     custom_priority = next(r["priority"] for r in elbv2.rules if r["arn"] == custom_redirect_arn)
     path_priority = next(r["priority"] for r in elbv2.rules if r["conditions"][0]["Field"] == "path-pattern")
     assert custom_priority < path_priority
+
+
+# ── R5 follow-up: pre-existing low-priority path rules get reclaimed ───────────────────
+
+def _inject_legacy_path_rule(elbv2, priority, arn="arn:aws:elasticloadbalancing:::listener-rule/legacy"):
+    """Simulates a path rule created before the 1000-floor shipped — directly appended
+    to the fake's state at a low priority, bypassing create_listener_rule's own
+    (already-fixed) floor."""
+    elbv2.rules.append({
+        "priority": priority, "arn": arn,
+        "conditions": [{"Field": "path-pattern", "Values": ["/legacy-app", "/legacy-app/*"]}],
+        "actions": [{"Type": "forward", "TargetGroupArn": "tg-legacy"}],
+    })
+
+
+def test_create_host_redirect_rule_reclaims_a_pre_existing_low_path_rule():
+    client, elbv2 = _client()
+    _inject_legacy_path_rule(elbv2, priority=2)
+
+    redirect_arn = client.create_host_redirect_rule("listener-arn", "custom.example.com")
+
+    from aws.alb import _PATH_RULE_PRIORITY_FLOOR
+    redirect_priority = next(r["priority"] for r in elbv2.rules if r["arn"] == redirect_arn)
+    legacy_priority = next(r["priority"] for r in elbv2.rules if r["arn"].endswith("legacy"))
+    assert legacy_priority >= _PATH_RULE_PRIORITY_FLOOR
+    assert redirect_priority < legacy_priority
+
+
+def test_ensure_host_redirect_rule_reclaims_a_pre_existing_low_path_rule():
+    client, elbv2 = _client()
+    _inject_legacy_path_rule(elbv2, priority=2)
+
+    wildcard_arn = client.ensure_host_redirect_rule("listener-arn", "abc123", "launchpad.app")
+
+    from aws.alb import _PATH_RULE_PRIORITY_FLOOR
+    wildcard_priority = next(r["priority"] for r in elbv2.rules if r["arn"] == wildcard_arn)
+    legacy_priority = next(r["priority"] for r in elbv2.rules if r["arn"].endswith("legacy"))
+    assert legacy_priority >= _PATH_RULE_PRIORITY_FLOOR
+    assert wildcard_priority < legacy_priority
+
+
+def test_reclaim_is_idempotent_when_no_violators_exist():
+    client, elbv2 = _client()
+    client.create_listener_rule("listener-arn", "tg-arn", ["/app", "/app/*"], priority=1)
+    before = {r["arn"]: r["priority"] for r in elbv2.rules}
+
+    client._reclaim_path_rules_below_floor("listener-arn")
+
+    after = {r["arn"]: r["priority"] for r in elbv2.rules}
+    assert before == after
+
+
+def test_reprioritize_to_one_moves_a_displaced_path_rule_above_the_floor():
+    """A path rule occupying priority 1 (legacy state, from before this fix) must not be
+    displaced into just any free low-band slot when the platform wildcard claims
+    priority 1 — it has to land at or above the path-rule floor, or it would still
+    outrank a host-redirect rule created later."""
+    client, elbv2 = _client()
+    _inject_legacy_path_rule(elbv2, priority=1, arn="arn:aws:elasticloadbalancing:::listener-rule/legacy-at-1")
+
+    wildcard_arn = client.ensure_host_redirect_rule("listener-arn", "abc123", "launchpad.app")
+
+    from aws.alb import _PATH_RULE_PRIORITY_FLOOR
+    assert next(r["priority"] for r in elbv2.rules if r["arn"] == wildcard_arn) == 1
+    legacy_priority = next(r["priority"] for r in elbv2.rules if r["arn"].endswith("legacy-at-1"))
+    assert legacy_priority >= _PATH_RULE_PRIORITY_FLOOR

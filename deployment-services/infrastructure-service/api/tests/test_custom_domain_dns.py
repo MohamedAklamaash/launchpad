@@ -143,7 +143,14 @@ def test_fetch_authoritative_txt_real_raises_on_os_error_not_just_dns_exception(
         )
 
 
-@pytest.mark.parametrize("bad_ip", ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "fc00::1"])
+@pytest.mark.parametrize("bad_ip", [
+    "127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "fc00::1",
+    "64:ff9b::7f00:1",       # NAT64 well-known prefix embedding 127.0.0.1
+    "64:ff9b::808:808",      # NAT64 well-known prefix embedding 8.8.8.8 — still denied outright
+    "::ffff:10.0.0.1",       # IPv4-mapped, embeds a private address
+    "::ffff:127.0.0.1",      # IPv4-mapped, embeds loopback
+    "::10.0.0.1",            # deprecated IPv4-compatible, embeds a private address
+])
 def test_non_global_nameserver_ips_are_never_queried(bad_ip):
     """169.254.169.254 is the cloud metadata address — a customer-controlled 'nameserver
     IP' is otherwise a live SSRF/timing-oracle primitive against this platform's own VPC,
@@ -186,6 +193,30 @@ def test_global_ip_alongside_a_non_global_one_is_still_queried():
 
     assert values == ["ok"]
     assert udp_mock.call_args.args[1] == "1.2.3.10"
+
+
+# ── Item 5: NAT64 and IPv4-mapped/IPv4-compatible IPv6 addresses ───────────────────
+
+@pytest.mark.parametrize("ip", [
+    "64:ff9b::808:808",   # NAT64 well-known prefix, even wrapping a public IPv4
+    "64:ff9b::7f00:1",    # NAT64 well-known prefix wrapping loopback
+    "::ffff:10.0.0.1",    # IPv4-mapped, private embedded address
+    "::ffff:127.0.0.1",   # IPv4-mapped, loopback embedded address
+    "::10.0.0.1",         # deprecated IPv4-compatible, private embedded address
+    "::",                 # unspecified — must not be misread as embedding 0.0.0.0
+    "::1",                # loopback — must not be misread as embedding 0.0.0.1
+])
+def test_is_global_ip_denies_nat64_and_embedded_private_ipv4(ip):
+    assert custom_domain_dns._is_global_ip(ip) is False
+
+
+@pytest.mark.parametrize("ip", [
+    "::ffff:8.8.8.8",   # IPv4-mapped, public embedded address
+    "::8.8.8.8",        # deprecated IPv4-compatible, public embedded address
+    "8.8.8.8",
+])
+def test_is_global_ip_allows_globally_routable_embedded_ipv4(ip):
+    assert custom_domain_dns._is_global_ip(ip) is True
 
 
 def test_ns_host_count_is_capped():

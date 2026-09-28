@@ -47,6 +47,12 @@ class CustomDomainAttachRequestSerializer(serializers.Serializer):
 class CustomDomainDetachRequestSerializer(serializers.Serializer):
     infrastructure_id = serializers.UUIDField()
     hostname = serializers.CharField(max_length=255)
+    # Asserted by infrastructure-service, the only service whose Infrastructure row
+    # carries dns_teardown_requested_at/exited_at — see
+    # custom_domain_routing._is_already_detached_error. Optional so a caller that
+    # predates this field still gets today's behavior (never treats AccessDenied as
+    # success).
+    infra_tearing_down = serializers.BooleanField(required=False, default=False)
 
 
 _ERROR_STATUS = {
@@ -91,7 +97,10 @@ def custom_domain_detach(request):
     if not body.is_valid():
         return Response({"error": "Invalid request", "details": body.errors}, status=status.HTTP_400_BAD_REQUEST)
 
-    detached = detach_custom_domain(body.validated_data["infrastructure_id"], body.validated_data["hostname"])
+    detached = detach_custom_domain(
+        body.validated_data["infrastructure_id"], body.validated_data["hostname"],
+        infra_tearing_down=body.validated_data["infra_tearing_down"],
+    )
     if not detached:
         return Response({"detached": False}, status=status.HTTP_502_BAD_GATEWAY)
     return Response({"detached": True}, status=status.HTTP_200_OK)

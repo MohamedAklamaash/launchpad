@@ -281,6 +281,72 @@ def test_detach_keeps_the_route_row_when_aws_side_fails(fixtures):
 
 
 @pytest.mark.django_db
+def test_detach_treats_missing_load_balancer_as_already_detached(fixtures):
+    """Security review re-verification item 4: the ALB itself being gone means there is
+    nothing left to detach from, regardless of infra_tearing_down — must not wedge the
+    caller's CustomDomain row in DISABLING forever."""
+    from botocore.exceptions import ClientError
+
+    infra, app, _session = fixtures
+    routing.attach_custom_domain(
+        infrastructure_id=infra.id, application_id=app.id,
+        hostname="app.example.com", cert_arn=CERT_ARN_A,
+    )
+    not_found = ClientError(
+        {"Error": {"Code": "LoadBalancerNotFound", "Message": "gone"}}, "DescribeListeners",
+    )
+
+    with patch("aws.alb.ALBClient.get_listener_arn", side_effect=not_found):
+        assert routing.detach_custom_domain(infra.id, "app.example.com") is True
+
+    from api.models.custom_domain_route import CustomDomainRoute
+    assert not CustomDomainRoute.objects.filter(hostname="app.example.com").exists()
+
+
+@pytest.mark.django_db
+def test_detach_treats_access_denied_as_already_detached_when_infra_is_tearing_down(fixtures):
+    from botocore.exceptions import ClientError
+
+    infra, app, _session = fixtures
+    routing.attach_custom_domain(
+        infrastructure_id=infra.id, application_id=app.id,
+        hostname="app.example.com", cert_arn=CERT_ARN_A,
+    )
+    access_denied = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "role gone"}}, "AssumeRole",
+    )
+
+    with patch("aws.alb.ALBClient.get_listener_arn", side_effect=access_denied):
+        assert routing.detach_custom_domain(infra.id, "app.example.com", infra_tearing_down=True) is True
+
+    from api.models.custom_domain_route import CustomDomainRoute
+    assert not CustomDomainRoute.objects.filter(hostname="app.example.com").exists()
+
+
+@pytest.mark.django_db
+def test_detach_keeps_retrying_access_denied_when_infra_is_not_tearing_down(fixtures):
+    """An AssumeRole AccessDenied while the infra is NOT known to be tearing down is a
+    real problem (e.g. the customer revoked the role early) — must not be silently
+    treated as success."""
+    from botocore.exceptions import ClientError
+
+    infra, app, _session = fixtures
+    routing.attach_custom_domain(
+        infrastructure_id=infra.id, application_id=app.id,
+        hostname="app.example.com", cert_arn=CERT_ARN_A,
+    )
+    access_denied = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "role gone"}}, "AssumeRole",
+    )
+
+    with patch("aws.alb.ALBClient.get_listener_arn", side_effect=access_denied):
+        assert routing.detach_custom_domain(infra.id, "app.example.com") is False
+
+    from api.models.custom_domain_route import CustomDomainRoute
+    assert CustomDomainRoute.objects.filter(hostname="app.example.com").exists()
+
+
+@pytest.mark.django_db
 def test_detach_custom_domains_for_application_returns_only_confirmed_hostnames(fixtures):
     infra, app, _session = fixtures
     routing.attach_custom_domain(

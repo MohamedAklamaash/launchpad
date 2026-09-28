@@ -28,8 +28,10 @@ from api.models.custom_domain import (
 from api.models.infrastructure import Infrastructure
 from api.repositories.infrastructure import InfrastructureRepository
 from api.services import custom_domain_cert, custom_domain_dns
+from botocore.exceptions import ClientError
 from django.conf import settings
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from shared.enums.orchestrator import ComputeType
 from shared.mode import is_dev_mode
@@ -38,6 +40,13 @@ from shared.resilience.http_client import ResilientHttpClient
 logger = logging.getLogger(__name__)
 
 __all__ = ["CustomDomainConflictError", "CustomDomainService"]
+
+# Security review re-verification item 3: without a per-infrastructure cap, one tenant
+# with many VALIDATED domains could consume an entire revalidate_validated_domains tick
+# (time_budget_seconds) before any other tenant's domain is even looked at, on top of
+# which the oldest-last_verified_at-first ordering already spreads checks fairly across
+# ticks. This bounds the damage within a single tick regardless of ordering.
+MAX_DOMAINS_PER_INFRA_PER_TICK = 20
 
 
 class CustomDomainConflictError(ValueError):
@@ -165,7 +174,7 @@ class CustomDomainService:
             )
         return response.json()
 
-    def _detach(self, infrastructure_id, hostname) -> bool:
+    def _detach(self, infra, hostname) -> bool:
         """Returns True only once application-service has confirmed the detach (200) —
         never on a connection error or a non-200 response (security review R2: the old
         version treated any outcome as success and let the caller mark the row DISABLED
@@ -173,21 +182,32 @@ class CustomDomainService:
         (infrastructure_id, hostname), not hostname alone: a hostname freed by a DISABLED
         row can be reclaimed by a different infrastructure, and a stale/retried detach
         call for the OLD owner must never be able to rip out the NEW owner's current
-        attachment of the same hostname."""
+        attachment of the same hostname.
+
+        Passes infra_tearing_down (security review re-verification item 4) — only this
+        service's Infrastructure row carries dns_teardown_requested_at/exited_at;
+        application-service's mirror of Infrastructure doesn't have those fields, so it
+        can't tell on its own whether an AssumeRole AccessDenied means "the customer
+        revoked our role" (a real problem to keep retrying) or "we already tore down
+        after exit, of course the role is gone" (safe to treat as detached)."""
+        infra_tearing_down = bool(infra.dns_teardown_requested_at or infra.exited_at)
         try:
             response = _app_service_internal_client.post(
                 "/api/v1/internal/custom-domains/detach/",
-                json={"infrastructure_id": str(infrastructure_id), "hostname": hostname},
+                json={
+                    "infrastructure_id": str(infra.id), "hostname": hostname,
+                    "infra_tearing_down": infra_tearing_down,
+                },
                 headers={"X-INTERNAL-TOKEN": settings.INTERNAL_AUTH_TOKEN},
                 timeout=(2, 8),
             )
         except Exception:
             logger.warning("detach call failed for %r on infra %s (will retry next sweep)",
-                            hostname, infrastructure_id, exc_info=True)
+                            hostname, infra.id, exc_info=True)
             return False
         if response.status_code != 200:
             logger.warning("detach for %r on infra %s returned status %s (will retry next sweep)",
-                            hostname, infrastructure_id, response.status_code)
+                            hostname, infra.id, response.status_code)
             return False
         return True
 
@@ -322,7 +342,21 @@ class CustomDomainService:
             try:
                 locked.mark_validated()
             except HostnameAlreadyValidatedError:
-                self._detach(infra_id, locked.hostname)
+                # Compensating for the _attach above, which the other account's earlier
+                # verify_domain call actually won the race for. This row stays PENDING
+                # (mark_validated's IntegrityError rolled back the VALIDATED write), so
+                # an unconfirmed detach here isn't retried again until sweep_expired_claims
+                # picks the claim up once it passes its TTL — security review
+                # re-verification item 6: log now rather than silently assuming the
+                # compensation worked in the meantime.
+                if not self._detach(infra, locked.hostname):
+                    logger.warning(
+                        "compensating detach not confirmed for %s on infra %s after a "
+                        "lost validation race — application-service may hold a stale "
+                        "attachment until this claim expires and sweep_expired_claims "
+                        "retries the detach",
+                        locked.hostname, infra.id,
+                    )
                 raise CustomDomainConflictError(
                     f"{locked.hostname!r} was just validated on another account"
                 ) from None
@@ -358,17 +392,38 @@ class CustomDomainService:
         if domain.status == 'DISABLED':
             return  # a concurrent teardown already finished this one
 
-        if not self._detach(infra.id, domain.hostname):
+        if not self._detach(infra, domain.hostname):
             logger.warning("detach not confirmed for %s on infra %s; leaving DISABLING for the next sweep",
                             domain.hostname, infra.id)
             return
 
         if domain.cert_arn:
-            credentials, region, dev_mode = self._credentials_and_region(infra)
-            if not custom_domain_cert.delete_certificate(
-                domain.cert_arn, credentials=credentials, region=region,
-                infra_is_mock=infra.is_mock, dev_mode=dev_mode,
-            ):
+            # Security review re-verification item 4: if the customer's AssumeRole is
+            # gone because this infra already tore down/exited, delete_certificate can
+            # never succeed again — retrying every sweep would wedge this row in
+            # DISABLING forever. Treated as "nothing more we can do" only when the infra
+            # itself confirms it's tearing down/exited; an AccessDenied at any other time
+            # is a real problem (e.g. a customer revoking the role early) and must keep
+            # retrying rather than silently declaring victory.
+            infra_tearing_down = bool(infra.dns_teardown_requested_at or infra.exited_at)
+            try:
+                credentials, region, dev_mode = self._credentials_and_region(infra)
+                cert_deleted = custom_domain_cert.delete_certificate(
+                    domain.cert_arn, credentials=credentials, region=region,
+                    infra_is_mock=infra.is_mock, dev_mode=dev_mode,
+                )
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") != "AccessDenied" or not infra_tearing_down:
+                    raise
+                logger.warning(
+                    "cannot delete certificate %s for %s on infra %s — AssumeRole "
+                    "denied after teardown/exit; marking DISABLED anyway, the "
+                    "certificate is orphaned in the customer's AWS account",
+                    domain.cert_arn, domain.hostname, infra.id,
+                )
+                cert_deleted = True
+
+            if not cert_deleted:
                 logger.warning("certificate delete not confirmed for %s on infra %s; leaving DISABLING for the next sweep",
                                 domain.hostname, infra.id)
                 return
@@ -458,14 +513,27 @@ class CustomDomainService:
         an ACM certificate live for a hostname they no longer control. A single missed
         check does not disable anything: DNS hiccups and transient authoritative-NS
         outages are expected, not evidence of lost ownership. Bounded per call, same
-        pattern as sweep_expired_claims/run_worker.py's TLS re-check."""
+        pattern as sweep_expired_claims/run_worker.py's TLS re-check.
+
+        Ordered oldest-checked-first (nulls — never checked — first) so a domain isn't
+        starved of re-checks by others repeatedly jumping the queue, and capped per
+        infrastructure per tick so one tenant with many domains can't consume the whole
+        tick's time budget before any other tenant's domain is looked at."""
         deadline = timezone.now().timestamp() + time_budget_seconds
-        validated = CustomDomain.objects.filter(status='VALIDATED').select_related('infrastructure')
+        validated = (
+            CustomDomain.objects.filter(status='VALIDATED')
+            .select_related('infrastructure')
+            .order_by(F('last_verified_at').asc(nulls_first=True))
+        )
+        per_infra_count: dict = {}
         for domain in validated:
             if timezone.now().timestamp() > deadline:
                 logger.info("custom-domain re-validation hit its time budget; remaining rows deferred to next tick")
                 break
             infra = domain.infrastructure
+            per_infra_count[infra.id] = per_infra_count.get(infra.id, 0) + 1
+            if per_infra_count[infra.id] > MAX_DOMAINS_PER_INFRA_PER_TICK:
+                continue
             try:
                 dev_mode = is_dev_mode(app_config.mode)
                 ok = custom_domain_dns.verify_ownership_token(domain, infra_is_mock=infra.is_mock, dev_mode=dev_mode)

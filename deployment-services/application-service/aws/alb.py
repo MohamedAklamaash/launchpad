@@ -158,6 +158,45 @@ class ALBClient:
             tags=tags,
         )
 
+    def _reclaim_path_rules_below_floor(self, listener_arn):
+        """Move any path-pattern rule (no host-header condition) currently sitting below
+        _PATH_RULE_PRIORITY_FLOOR up above it. Two ways a rule can end up there despite
+        create_listener_rule always flooring new ones at 1000: it was created before
+        this fix shipped, or it was the rule sitting at priority 1 when
+        _reprioritize_to_one displaced it (see that method's own floor selection, fixed
+        alongside this). Left alone, a pre-existing low path rule would still outrank a
+        host-redirect rule created *after* it — a Host match on a custom domain would hit
+        the path rule first (no host condition, so it matches any Host) and forward a
+        plaintext :80 request straight to a backend instead of redirecting to HTTPS,
+        exactly what the whole priority-band scheme exists to prevent (R5). Idempotent —
+        a no-op once every path rule is already >= the floor. Acquires its own listener
+        lock and must be called before, not from inside, another method's own lock
+        acquisition on the same listener (_get_listener_lock's Lock is not reentrant)."""
+        with _get_listener_lock(listener_arn):
+            existing_rules = self.client.describe_rules(ListenerArn=listener_arn).get('Rules', [])
+            used_priorities = {
+                int(r['Priority']) for r in existing_rules if r['Priority'] != 'default'
+            }
+            violators = [
+                r for r in existing_rules
+                if r['Priority'] != 'default' and int(r['Priority']) < _PATH_RULE_PRIORITY_FLOOR
+                and any(c.get('Field') == 'path-pattern' for c in r.get('Conditions', []))
+            ]
+            if not violators:
+                return
+            new_priorities = []
+            next_priority = _PATH_RULE_PRIORITY_FLOOR
+            for rule in violators:
+                while next_priority in used_priorities:
+                    next_priority += 1
+                new_priorities.append({'RuleArn': rule['RuleArn'], 'Priority': next_priority})
+                used_priorities.add(next_priority)
+            self.client.set_rule_priorities(RulePriorities=new_priorities)
+            logger.info(
+                f"Reclaimed {len(violators)} path rule(s) below priority "
+                f"{_PATH_RULE_PRIORITY_FLOOR} on {listener_arn}"
+            )
+
     def create_host_redirect_rule(self, listener_arn, hostname, tags=None):
         """The :80 counterpart: a host-header match for this app's own hostname redirects
         to https, and never forwards — per the pre-review, a plaintext request to an app's
@@ -167,7 +206,10 @@ class ALBClient:
 
         Floored at _HOST_REDIRECT_PRIORITY_FLOOR, always below _PATH_RULE_PRIORITY_FLOOR
         (R5) — see create_listener_rule's docstring for why a path rule must never be
-        allowed to outrank this."""
+        allowed to outrank this. Reclaims any pre-existing path rule below the floor
+        first, so a custom-domain redirect created after an old-style path rule still
+        outranks it."""
+        self._reclaim_path_rules_below_floor(listener_arn)
         return self._create_rule_with_retry(
             listener_arn,
             conditions=[{'Field': 'host-header', 'Values': [hostname]}],
@@ -199,8 +241,10 @@ class ALBClient:
         host-mode hostname on this infra, is created (and priority-swapped into place)
         once, and is a plain idempotent lookup on every later deploy. This also keeps :80
         rule consumption to one rule per infra instead of one per app (ALB caps a
-        listener's rule count).
+        listener's rule count). Reclaims any pre-existing path rule below the floor
+        first (R5) — called before, not from inside, the lock acquisition below.
         """
+        self._reclaim_path_rules_below_floor(listener_arn)
         wildcard_host = f"*.{dns_label}.{base_domain}"
         with _get_listener_lock(listener_arn):
             existing_rules = self.client.describe_rules(ListenerArn=listener_arn).get('Rules', [])
@@ -245,16 +289,26 @@ class ALBClient:
         Called both right after creating the redirect rule and every time
         ensure_host_redirect_rule finds it already existing but not at 1 — see R1's note
         above on why this must be idempotent and repeatable, not just a one-shot swap at
-        creation time."""
+        creation time.
+
+        R5: the displaced rule's new priority must respect its own kind — a path rule
+        (no host-header condition) displaced from priority 1 must land at or above
+        _PATH_RULE_PRIORITY_FLOOR, not merely at "any free slot", or it would still sit
+        in the low band and outrank a host-redirect rule created later. A displaced
+        host-type rule (another host-header-conditioned rule, vanishingly unlikely but
+        not impossible) stays in the low band, floor 1, same as before.
+        """
         rule_at_1 = next(
             (r for r in existing_rules if r.get('Priority') == '1' and r['RuleArn'] != rule_arn), None,
         )
         priorities = [{'RuleArn': rule_arn, 'Priority': 1}]
         if rule_at_1 is not None:
+            is_path_rule = any(c.get('Field') == 'path-pattern' for c in rule_at_1.get('Conditions', []))
+            displaced_floor = _PATH_RULE_PRIORITY_FLOOR if is_path_rule else _HOST_REDIRECT_PRIORITY_FLOOR
             # An atomic priority swap: the rule currently at 1 moves to a priority
             # get_next_priority guarantees free right now, so there is never a moment
             # both rules claim the same priority nor a moment priority 1 is unclaimed.
-            displaced_priority = self.get_next_priority(listener_arn)
+            displaced_priority = self.get_next_priority(listener_arn, floor=displaced_floor)
             priorities.append({'RuleArn': rule_at_1['RuleArn'], 'Priority': displaced_priority})
         self.client.set_rule_priorities(RulePriorities=priorities)
         logger.info(f"Reseated host-redirect rule {rule_arn} to priority 1 on {listener_arn}")

@@ -190,11 +190,33 @@ def attach_custom_domain(*, infrastructure_id, application_id, hostname: str, ce
     return {"host_forward_rule_arn": host_forward_rule_arn, "host_redirect_rule_arn": host_redirect_rule_arn}
 
 
-def _detach_route(route) -> bool:
-    """Returns True only once the ALB side is confirmed clean (or there was never
-    anything to detach from) — the row is deleted only then. A route left behind after a
-    failed AWS call must still be findable on the next retry (security review R2), not
-    silently gone while its rule/certificate may still be live."""
+_ALREADY_DETACHED_ERROR_CODES = {"LoadBalancerNotFound"}
+
+
+def _is_already_detached_error(error_code: str, *, infra_tearing_down: bool) -> bool:
+    """True for AWS errors that mean "there is nothing left to detach", so
+    _detach_route should proceed to delete the route row instead of leaving it wedged
+    in place forever (security review re-verification item 4).
+
+    LoadBalancerNotFound always qualifies: the load balancer being gone means there is
+    no listener, rule, or certificate to detach from, full stop. AccessDenied only
+    qualifies when infra_tearing_down is set — an AssumeRole failure at any other time
+    is more likely a real permission problem worth surfacing and retrying, not evidence
+    the role was deliberately deleted post-exit."""
+    if error_code in _ALREADY_DETACHED_ERROR_CODES:
+        return True
+    return error_code == "AccessDenied" and infra_tearing_down
+
+
+def _detach_route(route, *, infra_tearing_down: bool = False) -> bool:
+    """Returns True once the ALB side is confirmed clean, there was never anything to
+    detach from, or the AWS error itself proves nothing is left to detach (see
+    _is_already_detached_error) — the row is deleted in all three cases. A route left
+    behind after any other failed AWS call must still be findable on the next retry
+    (security review R2), not silently gone while its rule/certificate may still be
+    live."""
+    from botocore.exceptions import ClientError
+
     from api.models.infrastructure import Infrastructure
 
     try:
@@ -216,6 +238,15 @@ def _detach_route(route) -> bool:
                 alb.delete_rule(route.host_forward_rule_arn)
             if route.host_redirect_rule_arn:
                 alb.delete_rule(route.host_redirect_rule_arn)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if not _is_already_detached_error(code, infra_tearing_down=infra_tearing_down):
+                logger.warning("ALB detach failed for custom domain %s (will retry)", route.hostname, exc_info=True)
+                return False
+            logger.info(
+                "custom domain %s: treating AWS error %s as already detached "
+                "(infra_tearing_down=%s)", route.hostname, code, infra_tearing_down,
+            )
         except Exception:
             logger.warning("ALB detach failed for custom domain %s (will retry)", route.hostname, exc_info=True)
             return False
@@ -224,18 +255,22 @@ def _detach_route(route) -> bool:
     return True
 
 
-def detach_custom_domain(infrastructure_id, hostname: str) -> bool:
+def detach_custom_domain(infrastructure_id, hostname: str, *, infra_tearing_down: bool = False) -> bool:
     """Idempotent: no route for this (infrastructure_id, hostname) is success (nothing
     to do), not an error. Scoped by both fields, not hostname alone (security review R2)
     — a hostname freed by a DISABLED row can be reclaimed by a different infrastructure,
     and a stale/retried detach call for the OLD owner must never touch the NEW owner's
-    current attachment of the same hostname."""
+    current attachment of the same hostname.
+
+    infra_tearing_down is asserted by infrastructure-service, the only service whose
+    Infrastructure row carries dns_teardown_requested_at/exited_at — see
+    _is_already_detached_error."""
     from api.models.custom_domain_route import CustomDomainRoute
 
     route = CustomDomainRoute.objects.filter(infrastructure_id=infrastructure_id, hostname=hostname).first()
     if route is None:
         return True
-    return _detach_route(route)
+    return _detach_route(route, infra_tearing_down=infra_tearing_down)
 
 
 def detach_custom_domains_for_application(application_id) -> list[str]:

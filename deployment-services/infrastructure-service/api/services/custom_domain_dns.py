@@ -90,11 +90,43 @@ class _Deadline:
         return min(_PER_CALL_TIMEOUT_SECONDS, self.remaining())
 
 
+# RFC 6052's well-known NAT64 prefix synthesizes an IPv6 address from an embedded IPv4
+# one. The prefix itself can read as globally routable to ipaddress.is_global while
+# wrapping a private/loopback IPv4 target (e.g. 64:ff9b::7f00:1 embeds 127.0.0.1) —
+# security review re-verification item 5. Denied outright rather than unwrapped-and-
+# checked, since it has no legitimate use as an authoritative nameserver address here.
+_NAT64_WELL_KNOWN_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _embedded_ipv4(ip_obj: "ipaddress.IPv6Address") -> "ipaddress.IPv4Address | None":
+    """The IPv4 address embedded in an IPv4-mapped (::ffff:a.b.c.d) or the deprecated
+    IPv4-compatible (::a.b.c.d) IPv6 address, or None if `ip_obj` carries neither. Both
+    forms let an IPv6 literal look globally routable while a naive is_global check on
+    the wrapper never inspects the IPv4 address it actually routes to."""
+    if not isinstance(ip_obj, ipaddress.IPv6Address):
+        return None
+    if ip_obj.ipv4_mapped is not None:
+        return ip_obj.ipv4_mapped
+    packed = ip_obj.packed
+    # ::0.0.0.0 (unspecified) and ::0.0.0.1 (loopback) share this all-zero prefix but
+    # are not IPv4-compatible addresses (RFC 4291 §2.5.5.1) — excluded so `::1` is
+    # never misread as embedding the public address 0.0.0.1.
+    if packed[:12] == b"\x00" * 12 and int(ip_obj) > 1:
+        return ipaddress.IPv4Address(packed[12:])
+    return None
+
+
 def _is_global_ip(ip: str) -> bool:
     try:
-        return ipaddress.ip_address(ip).is_global
+        ip_obj = ipaddress.ip_address(ip)
     except ValueError:
         return False
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj in _NAT64_WELL_KNOWN_PREFIX:
+        return False
+    embedded_ipv4 = _embedded_ipv4(ip_obj)
+    if embedded_ipv4 is not None:
+        ip_obj = embedded_ipv4
+    return ip_obj.is_global
 
 
 def _zone_nameservers(hostname: str, deadline: _Deadline) -> list[str]:

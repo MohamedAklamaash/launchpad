@@ -290,9 +290,14 @@ class CustomDomain(models.Model):
         return locked.verification_failure_count >= MAX_CONSECUTIVE_VERIFICATION_FAILURES
 
     def record_verification_success(self) -> None:
-        if self.verification_failure_count == 0:
-            return
+        """Always stamps last_verified_at, even when verification_failure_count was
+        already 0 — the common case. An early return here previously skipped the DB
+        write on the common path, so revalidate_validated_domains's oldest-first
+        ordering (by last_verified_at) never advanced for healthy domains and starved
+        them of re-checks in favor of domains that happened to have failed once."""
+        now = timezone.now()
         CustomDomain.objects.filter(pk=self.pk).update(
-            verification_failure_count=0, last_verified_at=timezone.now(),
+            verification_failure_count=0, last_verified_at=now,
         )
         self.verification_failure_count = 0
+        self.last_verified_at = now

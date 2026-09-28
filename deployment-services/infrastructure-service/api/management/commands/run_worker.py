@@ -331,11 +331,6 @@ CERT_CHECK_INTERVAL_SECONDS = int(os.environ.get('INFRA_CERT_CHECK_INTERVAL_SECO
 # custom domain is a slow-moving condition (a customer transferring a domain away, letting
 # a TXT record lapse), not one that needs sub-minute detection.
 CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS = int(os.environ.get('INFRA_CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS', '300'))
-# Hard ceiling dispatch will wait for the custom-domain check before giving up on this
-# tick and moving on — well under CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS's own Redis lock
-# TTL (~295s default), so a stalled check's lock has already expired by the time this
-# fires, and well under it so dispatch itself is never meaningfully starved.
-CUSTOM_DOMAIN_CHECK_HARD_TIMEOUT_SECONDS = int(os.environ.get('INFRA_CUSTOM_DOMAIN_CHECK_HARD_TIMEOUT_SECONDS', '60'))
 # The running/queued job refreshes its lock this often; must be well under DB_LOCK_STALENESS_SECONDS
 # so a live job never looks crashed to the reaper or acquire_db_lock.
 LOCK_HEARTBEAT_SECONDS = int(os.environ.get('INFRA_LOCK_HEARTBEAT_SECONDS', '60'))
@@ -509,15 +504,21 @@ class Command(BaseCommand):
 
         provision_pool = ThreadPoolExecutor(max_workers=MAX_PROVISION_WORKERS, thread_name_prefix='provision')
         destroy_pool = ThreadPoolExecutor(max_workers=MAX_DESTROY_WORKERS, thread_name_prefix='destroy')
-        # F1b part 3b (security review B1): a customer-controlled hostname's authoritative
-        # DNS is an attacker-reachable surface. custom_domain_dns.py bounds a single
-        # lookup to its own hard deadline, but running the whole tick inline on this
-        # dispatch thread would still let any bug in that bound (or an OS-level stall
-        # dnspython's own timeout can't fully guarantee against) block every
-        # provision/destroy dispatch fleet-wide for as long as it stalls. One dedicated
-        # worker thread, with dispatch bounded by CUSTOM_DOMAIN_CHECK_HARD_TIMEOUT_SECONDS
-        # below, keeps dispatch responsive even if the check itself never returns.
+        # F1b part 3b (security review B1, then a focused re-verification): a
+        # customer-controlled hostname's authoritative DNS is an attacker-reachable
+        # surface. custom_domain_dns.py bounds a single lookup to its own hard deadline,
+        # but running the whole tick inline on this dispatch thread would still let any
+        # bug in that bound (or an OS-level stall dnspython's own timeout can't fully
+        # guarantee against) block every provision/destroy dispatch fleet-wide for as
+        # long as it stalls. One dedicated worker thread — and, per the re-verification,
+        # dispatch never calls future.result() on it either: a stuck run would otherwise
+        # still block dispatch for up to that wait. Dispatch only ever checks
+        # custom_domain_future.done() (see the tick below) and skips resubmitting while
+        # a previous run is still in flight; a done future's exception is logged via the
+        # done-callback below, never awaited.
         custom_domain_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='custom-domain-check')
+        custom_domain_future: Future | None = None
+        custom_domain_check_started_at: float | None = None
         pending_futures: list[Future] = []
 
         logger.info(f"Infrastructure worker {worker_id} started "
@@ -702,8 +703,9 @@ class Command(BaseCommand):
             """Runs on custom_domain_pool's own dedicated thread — never on the dispatch
             thread — so a stalled authoritative-DNS lookup (or a bug in its deadline
             enforcement) can only block this one thread, not provision/destroy dispatch.
-            See CUSTOM_DOMAIN_CHECK_HARD_TIMEOUT_SECONDS at the call site for the bound
-            dispatch itself waits on."""
+            Dispatch never waits on this future either (see the tick's own comment) —
+            any exception raised here is only ever observed via the done-callback
+            (_log_custom_domain_check_exception), never propagated to a caller."""
             from api.services.custom_domain_service import CustomDomainService
             try:
                 service = CustomDomainService()
@@ -795,26 +797,24 @@ class Command(BaseCommand):
                 # sweep expired PENDING claims. Same fleet-wide rate limit as the checks
                 # above — one worker per interval, never inside a dispatched job's lock
                 # (each domain's own AssumeRole + DNS/ACM calls are independent of any
-                # infra's provisioning lock). Submitted to its own thread with a hard
-                # wait ceiling (security review B1) rather than run inline — see
-                # run_custom_domain_checks's docstring.
+                # infra's provisioning lock). Submitted to its own thread; dispatch never
+                # calls .result()/blocks on it (security review re-verification item 2 —
+                # a future.result(timeout=...) here still blocks dispatch for up to that
+                # timeout on every stall). Only .done() is checked, and a still-running
+                # previous submission means this tick is skipped outright rather than
+                # queuing a second one behind it.
                 if time.monotonic() - last_custom_domain_check >= CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS:
                     last_custom_domain_check = time.monotonic()
-                    if r.set(custom_domain_check_lock_key, worker_id,
-                             nx=True, ex=max(CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS - 5, 10)):
-                        future = custom_domain_pool.submit(run_custom_domain_checks)
-                        try:
-                            future.result(timeout=CUSTOM_DOMAIN_CHECK_HARD_TIMEOUT_SECONDS)
-                        except concurrent.futures.TimeoutError:
-                            logger.error(
-                                "custom-domain re-validation/sweep exceeded its %ss hard "
-                                "timeout; dispatch continues — the stuck call keeps "
-                                "running on its own thread and the Redis lock above "
-                                "bounds how soon another worker retries",
-                                CUSTOM_DOMAIN_CHECK_HARD_TIMEOUT_SECONDS,
-                            )
-                        except Exception:
-                            logger.exception("custom-domain re-validation/sweep failed")
+                    custom_domain_future, custom_domain_check_started_at = dispatch_custom_domain_check(
+                        redis_client=r,
+                        lock_key=custom_domain_check_lock_key,
+                        interval_seconds=CUSTOM_DOMAIN_CHECK_INTERVAL_SECONDS,
+                        pool=custom_domain_pool,
+                        task_fn=run_custom_domain_checks,
+                        worker_id=worker_id,
+                        previous_future=custom_domain_future,
+                        previous_started_at=custom_domain_check_started_at,
+                    )
 
                 # Always drain destroy queue first (non-blocking), then provision
                 had_destroy = dispatch_destroy()
@@ -850,3 +850,41 @@ def _log_future_exception(future: Future, infra_id: str, op: str):
     exc = future.exception()
     if exc:
         logger.error(f"Unhandled exception in {op} task for {infra_id}: {exc}", exc_info=exc)
+
+
+def _log_custom_domain_check_exception(future: Future):
+    exc = future.exception()
+    if exc:
+        logger.error("Unhandled exception in custom-domain re-validation/sweep task: %s", exc, exc_info=exc)
+
+
+def dispatch_custom_domain_check(*, redis_client, lock_key, interval_seconds, pool, task_fn,
+                                  worker_id, previous_future, previous_started_at,
+                                  now_fn=time.monotonic):
+    """Decides whether to submit a new custom-domain check this tick.
+
+    Security review re-verification item 2: dispatch must never block waiting on a
+    previous run (no future.result()/exception(timeout=...)) — a stuck DNS/ACM call
+    would otherwise stall every provision/destroy dispatch fleet-wide. This checks
+    only .done() and skips resubmission outright when a previous run is still in
+    flight, logging so the stall is visible.
+
+    Returns (future, started_at) — unchanged from the (previous_future,
+    previous_started_at) inputs when nothing new was submitted this tick.
+    """
+    if previous_future is not None and not previous_future.done():
+        logger.warning(
+            "custom-domain re-validation/sweep still running from a "
+            "previous tick (started %.0fs ago) — skipping this tick "
+            "rather than waiting on it",
+            now_fn() - previous_started_at,
+        )
+        return previous_future, previous_started_at
+
+    if not redis_client.set(lock_key, worker_id, nx=True, ex=max(interval_seconds - 5, 10)):
+        return previous_future, previous_started_at
+
+    started_at = now_fn()
+    future = pool.submit(task_fn)
+    future.add_done_callback(_log_custom_domain_check_exception)
+    return future, started_at

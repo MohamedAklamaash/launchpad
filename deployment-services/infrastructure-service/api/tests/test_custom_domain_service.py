@@ -229,7 +229,7 @@ def test_verify_conflict_detaches_on_lost_race(make_infra):
          pytest.raises(CustomDomainConflictError):
         service.verify_domain(infra.user.id, infra.id, domain.id)
 
-    detach.assert_called_once_with(infra.id, domain.hostname)
+    detach.assert_called_once_with(infra, domain.hostname)
     domain.refresh_from_db()
     assert domain.status == "PENDING"
 
@@ -248,7 +248,7 @@ def test_delete_pending_domain_disables_and_clears_cert(make_infra):
     with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True) as detach:
         result = service.delete_domain(infra.user.id, infra.id, domain.id)
 
-    detach.assert_called_once_with(infra.id, domain.hostname)
+    detach.assert_called_once_with(infra, domain.hostname)
     assert result.status == "DISABLED"
     assert result.cert_arn is None
     client = cert_bootstrap._shared_fake_acm()
@@ -267,7 +267,7 @@ def test_delete_validated_domain_detaches_and_disables(make_infra):
         result = service.delete_domain(infra.user.id, infra.id, domain.id)
 
     assert result.status == "DISABLED"
-    detach.assert_called_once_with(infra.id, domain.hostname)
+    detach.assert_called_once_with(infra, domain.hostname)
 
 
 def test_delete_is_idempotent_on_already_disabled(make_infra):
@@ -439,7 +439,117 @@ def test_revalidate_disables_after_three_consecutive_failures(make_infra):
 
     domain.refresh_from_db()
     assert domain.status == "DISABLED"
-    detach.assert_called_once_with(infra.id, domain.hostname)
+    detach.assert_called_once_with(infra, domain.hostname)
+
+
+
+# ── Item 6: HostnameAlreadyValidated's compensating detach must check its own outcome ──
+
+def test_verify_logs_when_compensating_detach_is_not_confirmed_after_lost_race(make_infra, caplog):
+    """Two infrastructures claim the same hostname; the winner validates first. The
+    loser's verify_domain gets as far as _attach before mark_validated's IntegrityError
+    (HostnameAlreadyValidatedError) fires — the compensating _detach must have its
+    outcome checked and logged (security review re-verification item 6), not assumed."""
+    winner_infra = make_infra()
+    loser_infra = make_infra()
+    service = CustomDomainService()
+
+    winner_domain, winner_token, _ = _claim(service, winner_infra.user, winner_infra)
+    _publish_txt(winner_domain, winner_token)
+    with patch("api.services.custom_domain_service.CustomDomainService._attach", return_value={}):
+        service.verify_domain(winner_infra.user.id, winner_infra.id, winner_domain.id)
+
+    with patch("shared.resilience.http_client.ResilientHttpClient.get", return_value=_ok_app_lookup(loser_infra.id)):
+        loser_domain, loser_token, _ = service.claim_domain(
+            loser_infra.user.id, loser_infra.id, uuid.uuid4(), winner_domain.hostname,
+        )
+    _publish_txt(loser_domain, loser_token)
+
+    with (
+        patch("api.services.custom_domain_service.CustomDomainService._attach", return_value={}),
+        patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=False) as detach,
+        caplog.at_level("WARNING"),
+        pytest.raises(CustomDomainConflictError),
+    ):
+        service.verify_domain(loser_infra.user.id, loser_infra.id, loser_domain.id)
+
+    detach.assert_called_once_with(loser_infra, loser_domain.hostname)
+    assert any("compensating detach not confirmed" in r.message for r in caplog.records)
+    loser_domain.refresh_from_db()
+    assert loser_domain.status == "PENDING"
+
+
+# ── Item 4: DISABLING must not wedge forever when the customer's role/ALB is already
+# gone because the infra tore down or exited ────────────────────────────────────────
+
+def test_teardown_marks_disabled_when_cert_delete_denied_after_infra_exited(make_infra):
+    from botocore.exceptions import ClientError
+    from django.utils import timezone
+
+    infra = make_infra()
+    service = CustomDomainService()
+    domain, _token, _record = _claim(service, infra.user, infra)
+    domain.mark_disabling()
+    infra.exited_at = timezone.now()
+    infra.save(update_fields=["exited_at"])
+
+    access_denied = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "role gone"}}, "AssumeRole",
+    )
+    with patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True), \
+         patch("api.services.custom_domain_service.assume_role_credentials_only", side_effect=access_denied):
+        service._teardown(infra, domain)
+
+    domain.refresh_from_db()
+    assert domain.status == "DISABLED"
+    assert domain.cert_arn is None
+
+
+def test_teardown_reraises_access_denied_when_infra_is_not_tearing_down(make_infra):
+    from botocore.exceptions import ClientError
+
+    infra = make_infra()
+    service = CustomDomainService()
+    domain, _token, _record = _claim(service, infra.user, infra)
+    domain.mark_disabling()
+
+    access_denied = ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "role gone"}}, "AssumeRole",
+    )
+    with (
+        patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True),
+        patch("api.services.custom_domain_service.assume_role_credentials_only", side_effect=access_denied),
+        pytest.raises(ClientError),
+    ):
+        service._teardown(infra, domain)
+
+    domain.refresh_from_db()
+    assert domain.status == "DISABLING"
+
+
+def test_teardown_reraises_other_client_errors_even_when_infra_exited(make_infra):
+    from botocore.exceptions import ClientError
+    from django.utils import timezone
+
+    infra = make_infra()
+    service = CustomDomainService()
+    domain, _token, _record = _claim(service, infra.user, infra)
+    domain.mark_disabling()
+    infra.exited_at = timezone.now()
+    infra.save(update_fields=["exited_at"])
+
+    throttled = ClientError(
+        {"Error": {"Code": "Throttling", "Message": "slow down"}}, "AssumeRole",
+    )
+    with (
+        patch("api.services.custom_domain_service.CustomDomainService._detach", return_value=True),
+        patch("api.services.custom_domain_service.assume_role_credentials_only", side_effect=throttled),
+        pytest.raises(ClientError),
+    ):
+        service._teardown(infra, domain)
+
+    domain.refresh_from_db()
+    assert domain.status == "DISABLING"
 
 
 def test_revalidate_does_not_disable_after_one_or_two_failures(make_infra):
@@ -457,6 +567,101 @@ def test_revalidate_does_not_disable_after_one_or_two_failures(make_infra):
     domain.refresh_from_db()
     assert domain.status == "VALIDATED"
     assert domain.verification_failure_count == 2
+
+
+# ── Item 3 (fairness): stamp last_verified_at on every success, order oldest-first,
+# cap domains processed per infrastructure per tick ─────────────────────────────────
+
+def _claim_and_verify(service, infra, hostname, app_id=None):
+    with patch("shared.resilience.http_client.ResilientHttpClient.get", return_value=_ok_app_lookup(infra.id)):
+        domain, token, _record = service.claim_domain(infra.user.id, infra.id, app_id or uuid.uuid4(), hostname)
+    _publish_txt(domain, token)
+    with patch("api.services.custom_domain_service.CustomDomainService._attach", return_value={}):
+        service.verify_domain(infra.user.id, infra.id, domain.id)
+    domain.refresh_from_db()
+    return domain
+
+
+def test_revalidate_stamps_last_verified_at_even_when_failure_count_already_zero(make_infra):
+    infra = make_infra()
+    service = CustomDomainService()
+    domain = _claim_and_verify(service, infra, "already-healthy.example.com")
+    stamped_at_verify = domain.last_verified_at
+    assert domain.verification_failure_count == 0
+
+    service.revalidate_validated_domains()
+
+    domain.refresh_from_db()
+    assert domain.last_verified_at is not None
+    assert domain.last_verified_at >= stamped_at_verify
+
+
+def test_revalidate_orders_oldest_checked_first(make_infra):
+    from django.utils import timezone
+
+    infra = make_infra()
+    service = CustomDomainService()
+    never_checked = _claim_and_verify(service, infra, "never-checked.example.com")
+    recently_checked = _claim_and_verify(service, infra, "recently-checked.example.com")
+    stale_checked = _claim_and_verify(service, infra, "stale-checked.example.com")
+
+    from api.models.custom_domain import CustomDomain
+
+    CustomDomain.objects.filter(pk=never_checked.pk).update(last_verified_at=None)
+    CustomDomain.objects.filter(pk=recently_checked.pk).update(last_verified_at=timezone.now())
+    CustomDomain.objects.filter(pk=stale_checked.pk).update(
+        last_verified_at=timezone.now() - __import__("datetime").timedelta(days=1)
+    )
+
+    call_order = []
+
+    def _record_call(domain, **kwargs):
+        call_order.append(domain.hostname)
+        return True
+
+    with patch("api.services.custom_domain_service.custom_domain_dns.verify_ownership_token",
+               side_effect=_record_call):
+        service.revalidate_validated_domains()
+
+    assert call_order == [
+        never_checked.hostname, stale_checked.hostname, recently_checked.hostname,
+    ]
+
+
+def test_revalidate_caps_domains_processed_per_infrastructure_per_tick(make_infra):
+    from api.services.custom_domain_service import MAX_DOMAINS_PER_INFRA_PER_TICK
+    from django.utils import timezone
+
+    busy_infra = make_infra()
+    quiet_infra = make_infra()
+    service = CustomDomainService()
+
+    busy_domains = [
+        _claim_and_verify(service, busy_infra, f"busy-{i}.example.com")
+        for i in range(MAX_DOMAINS_PER_INFRA_PER_TICK + 5)
+    ]
+    quiet_domain = _claim_and_verify(service, quiet_infra, "quiet.example.com")
+
+    from api.models.custom_domain import CustomDomain
+
+    # All of busy_infra's domains are older (never re-checked) than quiet_infra's, so
+    # oldest-first ordering alone would starve quiet_infra without the per-infra cap.
+    CustomDomain.objects.filter(pk__in=[d.pk for d in busy_domains]).update(last_verified_at=None)
+    CustomDomain.objects.filter(pk=quiet_domain.pk).update(last_verified_at=timezone.now())
+
+    call_order = []
+
+    def _record_call(domain, **kwargs):
+        call_order.append(domain.hostname)
+        return True
+
+    with patch("api.services.custom_domain_service.custom_domain_dns.verify_ownership_token",
+               side_effect=_record_call):
+        service.revalidate_validated_domains(time_budget_seconds=3600)
+
+    busy_calls = [h for h in call_order if h.startswith("busy-")]
+    assert len(busy_calls) == MAX_DOMAINS_PER_INFRA_PER_TICK
+    assert quiet_domain.hostname in call_order
 
 
 # ── R4: claim/verify refused once the infra is tearing down or has exited ──────────────

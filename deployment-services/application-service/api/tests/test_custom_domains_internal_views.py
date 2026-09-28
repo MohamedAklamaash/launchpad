@@ -86,7 +86,22 @@ def test_detach_returns_200_when_confirmed_clean():
 
     assert response.status_code == 200
     assert response.data == {"detached": True}
-    mock_detach.assert_called_once_with(infra_id, "app.example.com")
+    mock_detach.assert_called_once_with(infra_id, "app.example.com", infra_tearing_down=False)
+
+
+def test_detach_forwards_infra_tearing_down_flag():
+    infra_id = uuid.uuid4()
+    request = factory.post(
+        "/api/v1/internal/custom-domains/detach/",
+        {"infrastructure_id": str(infra_id), "hostname": "app.example.com", "infra_tearing_down": True},
+        format="json",
+    )
+
+    with patch("api.views.custom_domains_internal.detach_custom_domain", return_value=True) as mock_detach:
+        response = custom_domain_detach(request)
+
+    assert response.status_code == 200
+    mock_detach.assert_called_once_with(infra_id, "app.example.com", infra_tearing_down=True)
 
 
 def test_detach_returns_502_when_aws_side_not_confirmed():
