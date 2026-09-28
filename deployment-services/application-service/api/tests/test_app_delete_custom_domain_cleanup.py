@@ -67,6 +67,7 @@ def _stub_queue(monkeypatch):
     mock_enqueue = MagicMock()
     monkeypatch.setattr("api.services.application_service.DeploymentQueue.enqueue_cleanup", mock_enqueue)
     monkeypatch.setattr("api.services.application_service.ApplicationEventProducer.publish_application_deleted", MagicMock())
+    monkeypatch.setattr("api.services.application_service.DeploymentLock", MagicMock())
     return mock_enqueue
 
 
