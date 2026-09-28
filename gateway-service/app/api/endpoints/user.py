@@ -26,15 +26,25 @@ class UserResponse(BaseModel):
     updated_at: str
 
 
-@router.get("/", summary="Search users by username or email",
-            response_model=list[UserResponse])
+class UserSearchResult(BaseModel):
+    user_id: str
+    user_name: str
+    email: str
+    profile_url: str | None = None
+
+
+@router.get("/", summary="Search users by username or email, scoped to the caller's own infras",
+            response_model=list[UserSearchResult])
 async def user_search(q: str, request: Request):
     """
-    Query param `q` (required) — matched against `user_name` and `email`.
+    Query param `q` (required, minimum 3 characters) — matched against `user_name` and
+    `email`. Results are limited to users who share an infra with the caller and to
+    minimal fields; the caller is derived from the `Authorization` bearer token.
     """
     return await proxy_request(f"{settings.USER_SERVICE_URL}/api/v1/users/", request)
 
 
-@router.get("/{user_id}", summary="Get a user by ID", response_model=UserResponse)
+@router.get("/{user_id}", summary="Get a user by ID — the caller may only fetch their own record",
+            response_model=UserResponse)
 async def user_get(user_id: str = Path(pattern=USER_ID_PATTERN), *, request: Request):
     return await proxy_request(f"{settings.USER_SERVICE_URL}/api/v1/users/{user_id}", request)

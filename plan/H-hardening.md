@@ -27,13 +27,59 @@ custom-domain attach with a clear error.
 
 ## H3 — Unauthenticated identity endpoints
 
-- user-service `GET /users/:userId` and `GET /users?q=` (`user.controller.ts`) have no
-  auth; the gateway exposes search publicly (`gateway-service/app/api/endpoints/user.py`),
-  so anyone can enumerate users by email.
-- The notification route `/notifications/user/{user_id}` passes a caller-chosen user id.
-- Audit every identity-service and notification-service route for the same pattern
-  (id from path/body, no verified caller). Fix: derive the caller from a verified token;
-  scope lookups to what the caller may see.
+**Status: done** (`fix/h3-identity-authz`).
+
+user-service `GET /users/:userId` and `GET /users?q=` (`user.controller.ts`) have no
+auth; the gateway exposes search publicly (`gateway-service/app/api/endpoints/user.py`),
+so anyone can enumerate users by email. The notification route
+`/notifications/user/{user_id}` passes a caller-chosen user id. Audit every
+identity-service and notification-service route for the same pattern (id from
+path/body, no verified caller). Fix: derive the caller from a verified token; scope
+lookups to what the caller may see.
+
+**Decisions**
+
+Root cause: `user-service` and `notification-service` both already carried `JWT_SECRET`
+in their env schema (`config/env.ts`) and already used it to gate the Swagger docs
+(`middleware/docs-auth.middleware.ts`) — but nothing verified a token on the actual data
+routes. Per `CLAUDE.md`, the gateway does not verify JWTs and passes `Authorization`
+through unchanged, so once a route reached the gateway with no auth dependency of its
+own, it was reachable by anyone. Each service now verifies its own caller locally
+(`src/utils/resolve-caller.ts`, one per service — not lifted into `@launchpad/common`,
+since that would add `jsonwebtoken` to the shared package's dependency graph and touch
+the root lockfile for no reuse benefit; every other JWT check in this codebase, e.g.
+`docs-auth.middleware.ts`, is already duplicated per service the same way).
+
+Audit table — every identity-service/notification-service route, before vs. after:
+
+| Route | Before | After |
+|---|---|---|
+| `GET /users/:userId` (user-service) | No auth; any caller could fetch any user's full profile by id. | Requires a verified token. 403 unless `userId === token.sub` — no admin carve-out (member lists already exist via auth-service's `/invited-users`, scoped to infras the caller owns). |
+| `GET /users?q=` (user-service) | No auth; any caller could enumerate users by name/email substring, full profile returned. | Requires a verified token and `q.trim().length >= 3`. Results are scoped to users who share at least one infra with the caller (fetches the caller's own row by `sub`, intersects `infra_id`) — role alone (e.g. "any super_admin") isn't sufficient since every infra creator is a super_admin of their own tenant. Returns only `user_id`, `user_name`, `email`, `profile_url` (never `infra_id`, `role`, `invited_by`, `metadata`). If the caller's own record hasn't replicated yet, returns `[]` rather than erroring. No product feature calls this today (verified against `launchpad-frontend/lib/api/*` and every other service — Django's `application_service.py` constructs a `user_client` but never calls it), so this is forward-looking scoping for an eventual invite-by-search flow, not a fix for a broken caller. |
+| `GET /notifications/user/:userId` (notification-service) | No auth; `userId` was fully caller-chosen — anyone could read any user's notifications by guessing/incrementing an id. | Route replaced with `GET /notifications/me` (service and gateway) — no target-user parameter at all; the id comes only from the verified token's `sub`. Nothing called the old shape (same grep), so there was no compatibility reason to keep a path param and compare it to `sub` instead. |
+| `POST /auth/update-password` (auth-service) | Not itself in the original ask, but same bug class: `email` came from the request body with no token check at all, despite Swagger claiming `bearerAuth`. `oldPassword` gated *which* account's password changed but not *whose* — any caller who knew (or brute-forced) a valid `email` + `oldPassword` pair could act on it without ever authenticating as that user. | Requires a verified token; the account acted on is `token.sub` (looked up via `InvitedUser.findByPk`, same pattern as the existing token-based `resetPassword`). `email` is no longer accepted in the body at all. `oldPassword` is still required as proof of current-credential possession. |
+| `POST /auth/register`, `GET/DELETE /auth/invited-users*`, `POST /auth/revoke` (auth-service) | Reviewed — already correct. | No change. These already verify the token inline per-controller and derive the caller/target scope from it (`RegisterInvitedUser`/`RemoveMemberFromOrg` via `superAdminMiddleware` + infra ownership; `RevokeRefreshToken` via `resolveRevokeCallerId`, fixed in PR #85). This is the pattern the H3 fixes above were matched to. |
+| `POST /auth/forgot-password` | Returns `{ otp }` in the response body; the gateway's `ForgotPasswordResponse` model claims "dev-only" but `PasswordService.requestPasswordReset` doesn't gate the echo on `NODE_ENV`. | **Not fixed here** — no caller-identity spoofing involved (it's a pre-auth flow by design, matching `reset-password`/`verify-reset-otp`), so it's out of H3's scope. Flagged as a separate follow-up: gate the `otp` echo behind `NODE_ENV !== 'production'`, matching `RegisterInvitedUser`'s existing pattern for its OTP. |
+| `POST /auth/login`, `/forgot-password`, `/verify-reset-otp`, `/reset-password`, `/refresh`, GitHub OAuth routes, health/docs routes | Reviewed — legitimately unauthenticated (pre-session flows, proven by OTP/reset-token/refresh-token possession instead) or exempt (health, docs, favicon). | No change. |
+
+Gateway changes were route/model shape only — `gateway-service/app/api/endpoints/user.py`
+(new `UserSearchResult` model for the minimal search response), `notification.py` (route
+renamed to `/me`, dropping the `user_id` path param this file's own H5 write-up
+documented — see H5's decisions above, now stale on that one point), and `auth.py`
+(`UpdatePasswordBody` drops `email`). The gateway itself still does not verify JWTs;
+enforcement lives entirely in the services that own the data, consistent with
+`CLAUDE.md`. `user.py`'s remaining `/{user_id}` path param keeps H5's
+`Path(pattern=...)` constraint.
+
+No frontend changes: grepped `launchpad-frontend` for every changed route
+(`/users`, `/users?q=`, `/notifications/user`, `/notifications/me`, `update-password`)
+and found zero callers, so nothing to update there and no compatibility constraint on
+the route/body shape changes above.
+
+CI gap found and fixed in passing: `user-service`'s `test` script was
+`echo "No tests yet"` and wasn't run in `.github/workflows/ci.yml` at all. Added real
+tests and a `Unit tests (user-service)` CI step (`check-identity` job) alongside the
+existing `auth-service`/`notification-service` steps.
 
 ## H4 — Truncated-UUID resource names
 

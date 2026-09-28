@@ -169,11 +169,17 @@ export const ResetPassword = async (req: Request, res: Response) => {
     }
 };
 
+// The caller may only change their own password. `oldPassword` still proves possession
+// of the current credential, but the account acted on comes from the verified access
+// token's `sub` — never from a body-supplied email, which would let any bearer of a
+// still-valid token (or a forged body on an unauthenticated call) target another account.
 export const UpdatePassword = async (req: Request, res: Response) => {
     try {
-        const { email, oldPassword, newPassword } = req.body;
+        const token = getAuthHeader(req);
+        const payload = verifyAccessToken(token);
+        const { oldPassword, newPassword } = req.body;
         const success = await invitedUserFacade.updatePassword({
-            email,
+            user_id: payload.sub,
             old_password: oldPassword,
             new_password: newPassword,
         });

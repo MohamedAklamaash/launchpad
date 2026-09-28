@@ -269,7 +269,10 @@ authRouter.post(
  * @swagger
  * /api/v1/auth/update-password:
  *   post:
- *     summary: Update password (authenticated)
+ *     summary: Update the caller's own password
+ *     description: >
+ *       The account acted on is always the caller from the verified access token —
+ *       there is no way to target another user's password.
  *     tags: [Auth]
  *     security: [{ bearerAuth: [] }]
  *     requestBody:
@@ -278,9 +281,8 @@ authRouter.post(
  *         application/json:
  *           schema:
  *             type: object
- *             required: [email, oldPassword, newPassword]
+ *             required: [oldPassword, newPassword]
  *             properties:
- *               email: { type: string, format: email, example: user@example.com }
  *               oldPassword: { type: string, minLength: 6, example: oldSecret123 }
  *               newPassword: { type: string, minLength: 6, example: newSecret456 }
  *     responses:
@@ -289,7 +291,7 @@ authRouter.post(
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/SuccessBoolean' }
- *       401: { description: Wrong old password }
+ *       401: { description: No valid access token, or wrong old password }
  */
 authRouter.post(
     '/update-password',

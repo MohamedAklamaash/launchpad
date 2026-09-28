@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { GetUserNotifications } from '@/controllers/notification.controller';
+import { GetMyNotifications } from '@/controllers/notification.controller';
 
 export const notificationRouter: Router = Router();
 
@@ -19,17 +19,14 @@ export const notificationRouter: Router = Router();
  *         metadata: { type: object }
  *         created_at: { type: integer, description: Unix timestamp ms }
  *
- * /api/v1/notifications/user/{userId}:
+ * /api/v1/notifications/me:
  *   get:
- *     summary: Get all notifications for a user
+ *     summary: Get all notifications for the caller
+ *     description: >
+ *       There is no target-user parameter — the caller's identity comes only from the
+ *       verified access token, so a caller can never read another user's notifications.
  *     tags: [Notifications]
  *     security: [{ bearerAuth: [] }]
- *     parameters:
- *       - in: path
- *         name: userId
- *         required: true
- *         schema: { type: string }
- *         example: 018e1234-abcd-7000-8000-000000000001
  *     responses:
  *       200:
  *         description: List of notifications
@@ -38,7 +35,7 @@ export const notificationRouter: Router = Router();
  *             schema:
  *               type: array
  *               items: { $ref: '#/components/schemas/Notification' }
- *       400: { description: User ID is required }
+ *       401: { description: No valid access token }
  *       500: { description: Internal server error }
  */
-notificationRouter.get('/user/:userId', GetUserNotifications);
+notificationRouter.get('/me', GetMyNotifications);

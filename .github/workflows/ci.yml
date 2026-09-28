@@ -106,6 +106,9 @@ jobs:
       - name: Unit tests (notification-service)
         run: pnpm --filter notification-service test
 
+      - name: Unit tests (user-service)
+        run: pnpm --filter user-service test
+
   test-python:
     name: Tests (deployment-services)
     runs-on: ubuntu-latest

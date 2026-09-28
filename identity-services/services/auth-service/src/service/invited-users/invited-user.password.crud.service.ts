@@ -93,9 +93,9 @@ export class PasswordService extends BaseService {
     }
 
     public async updatePassword(input: InvitedUserUpdatePasswordInput) {
-        const { email, old_password: oldPassword, new_password: newPassword } = input;
+        const { user_id: userId, old_password: oldPassword, new_password: newPassword } = input;
         return sequelize.transaction(async (transaction) => {
-            const user = await InvitedUser.findOne({ where: { email }, transaction });
+            const user = await InvitedUser.findByPk(userId, { transaction });
             if (!user) throw new HttpError(404, 'User not found');
 
             const valid = await comparePassword(oldPassword, user.password_hash);

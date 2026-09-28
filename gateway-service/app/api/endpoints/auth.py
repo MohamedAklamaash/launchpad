@@ -39,7 +39,6 @@ class ResetPasswordBody(BaseModel):
     newPassword: str = Field(min_length=6, example="newSecret123")
 
 class UpdatePasswordBody(BaseModel):
-    email: str = Field(example="user@example.com")
     oldPassword: str = Field(min_length=6, example="oldSecret123")
     newPassword: str = Field(min_length=6, example="newSecret456")
 
