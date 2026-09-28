@@ -114,45 +114,45 @@ async def application_create(body: AppCreateBody, request: Request):
 
 
 @router.get("/{app_id}", summary="Get application details", response_model=AppDetailResponse)
-async def application_get(app_id: str, request: Request):
+async def application_get(app_id: uuid.UUID, request: Request):
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/", request)
 
 
 @router.delete("/{app_id}", summary="Delete an application", status_code=204)
-async def application_delete(app_id: str, request: Request):
+async def application_delete(app_id: uuid.UUID, request: Request):
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/", request)
 
 
 @router.patch("/{app_id}/update", summary="Update application configuration",
               response_model=AppUpdateResponse)
-async def application_update(app_id: str, body: AppUpdateBody, request: Request):
+async def application_update(app_id: uuid.UUID, body: AppUpdateBody, request: Request):
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/update/", request)
 
 
 @router.post("/{app_id}/deploy", summary="Queue application for deployment",
              response_model=QueuedResponse, status_code=202)
-async def application_deploy(app_id: str, request: Request):
+async def application_deploy(app_id: uuid.UUID, request: Request):
     """No request body required."""
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deploy/", request)
 
 
 @router.post("/{app_id}/retry", summary="Retry a failed deployment",
              response_model=QueuedResponse, status_code=202)
-async def application_retry(app_id: str, request: Request):
+async def application_retry(app_id: uuid.UUID, request: Request):
     """No request body required. Cleans up partial AWS resources then re-queues."""
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/retry/", request)
 
 
 @router.post("/{app_id}/sleep", summary="Put application to sleep",
              response_model=SleepResponse)
-async def application_sleep(app_id: str, request: Request):
+async def application_sleep(app_id: uuid.UUID, request: Request):
     """No request body required. Scales ECS desired count to 0."""
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/sleep/", request)
 
 
 @router.post("/{app_id}/wake", summary="Wake application from sleep",
              response_model=WakeResponse)
-async def application_wake(app_id: str, request: Request):
+async def application_wake(app_id: uuid.UUID, request: Request):
     """No request body required. Restores ECS desired count."""
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/wake/", request)
 
@@ -230,7 +230,7 @@ class WebhookSecretResponse(BaseModel):
 
 @router.post("/{app_id}/webhook-secret", summary="Issue or rotate GitHub webhook secret",
              response_model=WebhookSecretResponse)
-async def application_rotate_webhook_secret(app_id: str, request: Request):
+async def application_rotate_webhook_secret(app_id: uuid.UUID, request: Request):
     """Generates a fresh per-app HMAC secret. The secret is returned ONCE."""
     return await proxy_request(
         f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/webhook-secret/", request,
@@ -263,7 +263,7 @@ webhook_router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 
 
 @webhook_router.post("/github/{app_id}", summary="GitHub push webhook receiver", status_code=202)
-async def application_github_webhook(app_id: str, request: Request):
+async def application_github_webhook(app_id: uuid.UUID, request: Request):
     """
     Called by GitHub. Must include `X-GitHub-Event` and `X-Hub-Signature-256`.
     Trailing slash on upstream is required so Django doesn't 301-redirect the POST body.

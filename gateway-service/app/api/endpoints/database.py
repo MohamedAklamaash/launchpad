@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
@@ -39,7 +41,7 @@ class DatabaseDeleteBody(BaseModel):
 
 
 @router.get("/", summary="List databases in an infrastructure", response_model=list[DatabaseResponse])
-async def database_list(infra_id: str, request: Request):
+async def database_list(infra_id: UUID, request: Request):
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/databases/", request,
     )
@@ -48,7 +50,7 @@ async def database_list(infra_id: str, request: Request):
 @router.post(
     "/", summary="Create a managed database", response_model=DatabaseResponse, status_code=202,
 )
-async def database_create(infra_id: str, body: DatabaseCreateBody, request: Request):
+async def database_create(infra_id: UUID, body: DatabaseCreateBody, request: Request):
     """Requires the environment to be ACTIVE. Returns 422 with a refresh-script hint if
     Launchpad's IAM role in the customer account hasn't picked up the required permissions."""
     return await proxy_request(
@@ -57,7 +59,7 @@ async def database_create(infra_id: str, body: DatabaseCreateBody, request: Requ
 
 
 @router.get("/{database_id}", summary="Get a database", response_model=DatabaseResponse)
-async def database_get(infra_id: str, database_id: str, request: Request):
+async def database_get(infra_id: UUID, database_id: UUID, request: Request):
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/databases/{database_id}/", request,
     )
@@ -66,7 +68,7 @@ async def database_get(infra_id: str, database_id: str, request: Request):
 @router.delete(
     "/{database_id}", summary="Delete a database", response_model=DatabaseResponse, status_code=202,
 )
-async def database_delete(infra_id: str, database_id: str, body: DatabaseDeleteBody, request: Request):
+async def database_delete(infra_id: UUID, database_id: UUID, body: DatabaseDeleteBody, request: Request):
     """Takes a final snapshot before the underlying resource is destroyed. Works from ERROR."""
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/databases/{database_id}/", request,

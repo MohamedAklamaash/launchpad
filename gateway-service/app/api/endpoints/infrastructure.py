@@ -75,7 +75,7 @@ async def list_capabilities(request: Request):
 
 
 @router.get("/{infra_id}", summary="Get infrastructure details", response_model=InfraResponse)
-async def infrastructure_get(infra_id: str, request: Request):
+async def infrastructure_get(infra_id: UUID, request: Request):
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/", request)
 
 
@@ -90,7 +90,7 @@ class ProvisioningLogsResponse(BaseModel):
 
 @router.get("/{infra_id}/logs", summary="Provisioning logs for an infrastructure",
             response_model=ProvisioningLogsResponse)
-async def infrastructure_logs(infra_id: str, request: Request):
+async def infrastructure_logs(infra_id: UUID, request: Request):
     """Owner only — invited users get 403. Redacted terraform output plus the last failure reason."""
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/logs/", request)
 
@@ -172,21 +172,21 @@ async def infrastructure_costs(infra_id: UUID, request: Request):
 
 
 @router.delete("/{infra_id}", summary="Delete an infrastructure", status_code=204)
-async def infrastructure_delete(infra_id: str, request: Request):
+async def infrastructure_delete(infra_id: UUID, request: Request):
     """Triggers Terraform destroy. Returns 409 if active applications exist."""
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/", request)
 
 
 @router.patch("/{infra_id}/update", summary="Update infrastructure configuration",
               response_model=InfraResponse)
-async def infrastructure_update(infra_id: str, body: InfraUpdateBody, request: Request):
+async def infrastructure_update(infra_id: UUID, body: InfraUpdateBody, request: Request):
     """Partial update — does not re-provision AWS resources."""
     return await proxy_request(f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/update/", request)
 
 
 @router.delete("/{infra_id}/users/{user_id}", summary="Remove an invited user from an infrastructure",
                status_code=204)
-async def infrastructure_remove_user(infra_id: str, user_id: str, request: Request):
+async def infrastructure_remove_user(infra_id: UUID, user_id: UUID, request: Request):
     """Owner only. Removes the target user from the infrastructure's invited_users list."""
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/users/{user_id}/", request
@@ -195,7 +195,7 @@ async def infrastructure_remove_user(infra_id: str, user_id: str, request: Reque
 
 @router.post("/{infra_id}/reprovision", summary="Re-provision an infrastructure",
              status_code=202)
-async def infrastructure_reprovision(infra_id: str, request: Request):
+async def infrastructure_reprovision(infra_id: UUID, request: Request):
     """Resets environment status to PENDING and re-queues Terraform. Use after a failed provision or ERROR state."""
     return await proxy_request(
         f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/reprovision/", request
