@@ -21,7 +21,7 @@ from aws.container_config import generate_nginx_config, inject_routing_envs
 from django.conf import settings
 from shared.enums.orchestrator import ComputeType
 
-from api.common.naming import app_slug, ecs_log_group, require_k8s_safe_slug
+from api.common.naming import app_slug, ecs_log_group_for, require_k8s_safe_slug
 from api.k8s.deployer import NGINX_IMAGE, NGINX_PORT, namespace_for
 from api.models.application import Application
 from api.models.deployment import Deployment
@@ -77,6 +77,11 @@ def _task_definition_json(application: Application, env_keys: list[str], shape: 
     slug = app_slug(application.name)
     family = f"{slug}-task"
     port = shape["port"] or application.port
+    # H4: the app's own stored log group, falling back to the legacy shared-per-slug
+    # name for a row that deployed before that field existed — never a fresh
+    # `ecs_log_group(slug)` call, which would render the wrong group for any app on
+    # the new per-infra+per-app hashed scheme.
+    log_group = ecs_log_group_for(application)
     env_vars = inject_routing_envs([{"name": k, "value": REDACTED} for k in env_keys], slug)
     nginx_config = generate_nginx_config(slug, port)
     container_definitions = [
@@ -92,7 +97,7 @@ def _task_definition_json(application: Application, env_keys: list[str], shape: 
             },
             "logConfiguration": {
                 "logDriver": "awslogs",
-                "options": {"awslogs-group": ecs_log_group(slug), "awslogs-stream-prefix": "app"},
+                "options": {"awslogs-group": log_group, "awslogs-stream-prefix": "app"},
             },
         },
         {
@@ -103,7 +108,7 @@ def _task_definition_json(application: Application, env_keys: list[str], shape: 
             "environment": [{"name": "NGINX_CONFIG_B64", "value": base64.b64encode(nginx_config.encode()).decode()}],
             "logConfiguration": {
                 "logDriver": "awslogs",
-                "options": {"awslogs-group": ecs_log_group(slug), "awslogs-stream-prefix": "nginx"},
+                "options": {"awslogs-group": log_group, "awslogs-stream-prefix": "nginx"},
             },
         },
     ]

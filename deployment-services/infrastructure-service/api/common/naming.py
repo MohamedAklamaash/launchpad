@@ -9,4 +9,10 @@ def unique_suffix(infra_id) -> str:
 
 
 def environment_name(infra_id) -> str:
+    # H4 review: the leading `str(infra_id)[:8]` here is a UUIDv7 prefix and would be a
+    # uniqueness key on its own, but it isn't one — `unique_suffix` (a full-id hash,
+    # never a slice) is what actually disambiguates two environment names, so two
+    # infras created in the same ~65s window still get distinct names even though
+    # their prefixes match. Left as-is: it's purely a human-readable label prefix, and
+    # renaming it would move a live Terraform-managed resource name.
     return f"infra-{str(infra_id)[:8]}-{unique_suffix(infra_id)}"

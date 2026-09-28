@@ -533,3 +533,31 @@ DNS** account (`infra/platform-dns`).
       `RemoveListenerCertificates` a `DeleteCertificate` stops being rejected) matches the
       assumption that a bare retry on the next tick is enough, rather than needing a
       short explicit delay between detach and delete.
+
+## H4 truncated-UUID resource names
+
+- [ ] `CreateTargetGroup` on an existing name with **matching** settings: confirm it
+      returns a plain success carrying the pre-existing target group's ARN, with no
+      `DuplicateTargetGroupNameException` — this is the branch
+      `ALBClient._verify_target_group_ownership` has to fire on for the ownership check
+      to mean anything; it was built and tested only against `api/mock/mock_session.py`,
+      which always raises Duplicate on a repeat name (the differing-settings variant).
+- [ ] `CreateTargetGroup` on an existing name with **differing** settings (e.g. the
+      `HealthCheckPath` a host-mode-routing switch sets vs. the default `/`): confirm
+      `DuplicateTargetGroupNameException` is actually what's raised, matching the mock.
+- [ ] `DescribeTags` called immediately after `CreateTargetGroup(Tags=...)` on the same
+      target group returns those same tags with no propagation delay — if there is one,
+      confirm the ownership check's 3-attempt/0.1s-0.2s retry (`_verify_target_group_ownership`)
+      is actually long enough to clear it; if not, the retry budget needs to grow, not
+      just exist.
+- [ ] A brand-new app's first real deploy creates `/ecs/{slug}-{hash}-task` (not the
+      legacy `/ecs/{slug}-task`), both containers (app + nginx sidecar) stream to it,
+      and the runtime-logs panel tails from the value stored on
+      `Application.log_group_name` rather than the legacy name.
+- [ ] A pre-H4 app (deployed before this PR, `log_group_name` still null) redeploys and
+      confirm its logs keep landing in the same `/ecs/{slug}-task` group it always used
+      — no gap in its log history across the upgrade. Separately: after
+      `0035_backfill_legacy_log_group_name` runs against a real production-shaped
+      dataset, spot-check that `log_group_name` actually got set for a real pre-F3 app
+      row (one with `task_definition_arn` set but no `Deployment` rows), not just in the
+      unit test.

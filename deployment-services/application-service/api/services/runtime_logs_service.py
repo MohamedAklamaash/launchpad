@@ -21,7 +21,7 @@ from kubernetes.client.rest import ApiException
 from shared.enums.orchestrator import ComputeType
 from shared.enums.user_role import UserRole
 
-from api.common.naming import app_slug, ecs_log_group, require_k8s_safe_slug
+from api.common.naming import app_slug, ecs_log_group_for, require_k8s_safe_slug
 from api.k8s.deployer import cluster_name_from_arn, k8s_apis, namespace_for
 from api.models.application import Application
 from api.models.environment import Environment
@@ -172,7 +172,11 @@ class RuntimeLogsService:
     def _tail_ecs(self, session, app, env, infra, container, minutes, cursor, user_id, deadline) -> LogsResult:
         slug = app_slug(app.name)
         family = f"{slug}-task"
-        log_group = ecs_log_group(slug)
+        # H4: the app's own stored log group (falling back to the legacy shared name
+        # for a row that deployed before that field existed) — B1's stream binding
+        # already keeps two infras from reading each other's tasks even when they
+        # share a group; this is what makes a post-H4 deploy stop sharing one at all.
+        log_group = ecs_log_group_for(app)
         service_name = f"{slug}-service"
 
         if cursor:

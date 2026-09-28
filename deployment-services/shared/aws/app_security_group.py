@@ -5,7 +5,15 @@ logger = logging.getLogger(__name__)
 
 
 def app_security_group_name(infra_id) -> str:
-    """Deterministic per-infra Fargate app SG name, shared by every app in the infra."""
+    """Deterministic per-infra Fargate app SG name, shared by every app in the infra.
+
+    H4 review: `infra_id[:8]` is a UUIDv7 prefix and would be a uniqueness key on its
+    own, but `suffix` (a full-id hash, never a slice) is what actually disambiguates
+    two infras' names — two created in the same ~65s window still get distinct SG
+    names even though their prefixes match. Left as-is: renaming it would orphan the
+    security group already attached to every running app's ECS service in every
+    already-provisioned infra.
+    """
     infra_id = str(infra_id)
     suffix = hashlib.md5(infra_id.encode()).hexdigest()[:8]
     return f"infra-{infra_id[:8]}-{suffix}-fargate-sg"

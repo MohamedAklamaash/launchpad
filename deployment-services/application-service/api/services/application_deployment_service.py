@@ -10,6 +10,7 @@ from aws.ecr import ECRClient
 from aws.ecs import ECSClient
 from aws.session import create_boto3_session
 from aws.tags import app_tags, as_key_value_tags, infra_tags
+from aws.tags import target_group_tags as _target_group_tags
 from botocore.exceptions import ClientError
 from shared.aws.app_security_group import (
     app_security_group_name,
@@ -26,7 +27,10 @@ from api.common.host_url import (
     infra_host_ready,
 )
 from api.common.naming import app_slug as _slug
+from api.common.naming import ecs_log_group as _legacy_ecs_log_group
 from api.common.naming import image_tag as _image_tag
+from api.common.naming import new_ecs_log_group as _new_ecs_log_group
+from api.common.naming import target_group_name as _target_group_name
 from api.k8s.deployer import EKSDeployer
 from api.models import Application, Environment
 from api.repositories.infrastructure import InfrastructureRepository
@@ -482,7 +486,30 @@ class ApplicationDeploymentService:
         ecr = ECRClient(session)
         logs = session.client('logs')
 
-        log_group_name = f"/ecs/{_slug(application.name)}-task"
+        # H4: an app that already has a stored log group keeps it — never move a
+        # running app's logs to a new group. An app that has completed at least one
+        # deploy before deployed under the legacy, slug-only name before this field
+        # existed; recompute that same legacy name rather than minting a new one out
+        # from under it. Only a genuinely new app (never completed a deploy) computes
+        # the new per-infra+per-app hashed name. Either way the result is persisted
+        # once, so every later deploy/rollback/backfill of this row — and every reader
+        # (runtime logs, cleanup, exit inventory) via `ecs_log_group_for` — reads the
+        # stored value back instead of re-deriving it; this never renames a live
+        # resource, since the legacy branch persists the exact string it already used.
+        #
+        # "Has completed a deploy before" is `_has_succeeded_before` — a stored
+        # task_definition_arn/service_arn, or (since ApplicationRetryDeployView resets
+        # both of those on a live row without deleting it) Deployment history.
+        if application.log_group_name:
+            log_group_name = application.log_group_name
+        else:
+            log_group_name = (
+                _legacy_ecs_log_group(_slug(application.name)) if self._has_succeeded_before(application)
+                else _new_ecs_log_group(application)
+            )
+            application.log_group_name = log_group_name
+            application.save(update_fields=['log_group_name'])
+
         try:
             logs.create_log_group(logGroupName=log_group_name)
             logger.info(f"Created log group {log_group_name}")
@@ -525,6 +552,7 @@ class ApplicationDeploymentService:
             secrets=db_secrets,
             tags=app_tags(application.infrastructure_id, _slug(application.name)),
             host_mode=host_mode, app_hostname=app_hostname,
+            log_group=log_group_name,
         )
 
         logger.info(f"Created task definition {task_def_arn}")
@@ -555,12 +583,20 @@ class ApplicationDeploymentService:
                     raise
                 logger.info("Stored TG ARN no longer exists, creating new one")
 
-        # Include infra ID suffix to prevent name collisions across infrastructures
-        infra_suffix = str(application.infrastructure_id)[:8]
-        tg_name = f"{_slug(application.name)}-{infra_suffix}-tg"[:32]
+        # H4: named from a hash of both the infrastructure id and the application id
+        # (api/common/naming.py:target_group_name), never a UUID prefix — a truncated
+        # infra id repeats every ~65s platform-wide, and two infras deployed within
+        # that window with the same app slug would land on the exact same name, which
+        # CreateTargetGroup treats as "reuse this one" (see ALBClient.create_target_group's
+        # DuplicateTargetGroupNameException handling below) rather than an error.
+        tg_name = _target_group_name(application)
         target_group_arn = alb.create_target_group(
             name=tg_name, vpc_id=environment.vpc_id, port=80,
-            tags=app_tags(application.infrastructure_id, _slug(application.name)),
+            # H4 C1: launchpad:app-id (this row's own id) in addition to app_tags()'s
+            # name-shaped keys — the ownership check's expected tags, so it doesn't
+            # rely solely on the name hash to distinguish a recreated app from its
+            # predecessor.
+            tags=_target_group_tags(application.infrastructure_id, _slug(application.name), application.id),
             health_check_path=health_check_path,
         )
         logger.info(f"Created target group {target_group_arn}")
@@ -1104,3 +1140,33 @@ class ApplicationDeploymentService:
         return Deployment.objects.filter(
             application=application, status=Deployment.STATUS_SUCCEEDED, tag_source=Deployment.TAG_SOURCE_RESOLVED_SHA,
         ).order_by('-created_at').first()
+
+    def _has_succeeded_before(self, application: Application) -> bool:
+        """H4: whether this app has ever completed a deploy — the signal
+        `_create_task_definition` uses to decide the legacy vs. new-hashed log group
+        name.
+
+        `deployment_url` is checked first: it is set only by a fully successful deploy
+        (`deploy_application`'s step 9) and `ApplicationRetryDeployView` does not reset
+        it (it resets `status`, `error_message`, `service_arn`, `task_definition_arn`,
+        `target_group_arn`, `listener_rule_arn`, `runtime_refs` — not this field, and
+        not `build_id`), so it survives every reset that field's own siblings don't. A
+        stored `task_definition_arn`/`service_arn` is checked next (an app deployed
+        before Deployment history existed — migration 0029 added that table with no
+        backfill — or whose `_record_deployment` call silently failed, since that write
+        is best-effort and never fails the deploy it describes, would otherwise have
+        neither of those and no Deployment row either). Falls back to Deployment
+        history last, for the case none of the above cover: a retry queued in the
+        narrow window between `ApplicationRetryDeployView` resetting the ARN fields and
+        a worker picking up the resulting job — `deployment_url` from the app's PRIOR
+        successful deploy already closes that for the common case, but a Deployment row
+        is the final backstop.
+
+        (`api/migrations/0035_backfill_legacy_log_group_name.py` persists
+        `log_group_name` directly for every row this method would already call
+        "has succeeded before" as of this PR shipping, so this method only matters
+        for a row that somehow still has no stored name after that migration ran.)"""
+        if application.deployment_url or application.task_definition_arn or application.service_arn:
+            return True
+        from api.models.deployment import Deployment
+        return Deployment.objects.filter(application=application, status=Deployment.STATUS_SUCCEEDED).exists()

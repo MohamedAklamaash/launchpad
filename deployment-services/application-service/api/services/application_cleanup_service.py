@@ -3,7 +3,7 @@ import logging
 from aws.alb import ALBClient
 from aws.session import create_boto3_session
 
-from api.common.naming import app_slug
+from api.common.naming import ecs_log_group_for
 from api.k8s.deployer import delete_runtime_resources
 from api.models import Application, Environment
 
@@ -55,7 +55,7 @@ class ApplicationCleanupService:
                 self._deregister_task_definition(session, application.task_definition_arn)
             
             # Step 5: Delete CloudWatch Log Group
-            self._delete_log_group(session, application.name)
+            self._delete_log_group(session, application)
             
             logger.info(f"Successfully cleaned up AWS resources for application {application.name}")
             
@@ -121,6 +121,9 @@ class ApplicationCleanupService:
         except Exception as e:
             logger.error(f"Failed to deregister task definition: {e}")
     
-    def _delete_log_group(self, session, app_name):
-        """Keep log groups for debugging — just log and skip."""
-        logger.info(f"Keeping log group /ecs/{app_slug(app_name)}-task for debugging")
+    def _delete_log_group(self, session, application):
+        """Keep log groups for debugging — just log and skip. H4: reads the app's own
+        stored log group name (falling back to the legacy shared name for a row that
+        never got one), not a re-derived slug-only name — otherwise this would log the
+        wrong group for any app deployed under the new per-infra+per-app hashed name."""
+        logger.info(f"Keeping log group {ecs_log_group_for(application)} for debugging")
