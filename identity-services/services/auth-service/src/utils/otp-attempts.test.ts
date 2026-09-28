@@ -22,18 +22,132 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 
 // otp-attempts.ts opens a real ioredis connection at module load (lazyConnect defers
 // the actual socket until the first command) — mock Redis.prototype directly so no
-// command here ever touches the network, the same way other tests mock a class
-// prototype (e.g. InvitedUserFacade.prototype) instead of the concrete instance.
+// command here ever touches the network, and mock sequelize.query so the DB-backed
+// attempt cap never touches a live Postgres either.
 const Redis = (await import('ioredis')).default;
-const { otpAttempts } = await import('@/utils/otp-attempts');
+const { sequelize } = await import('@/db/sequalize');
+const { otpAttempts, MAX_OTP_ATTEMPTS, NIL_INVITED_USER_ID } = await import('@/utils/otp-attempts');
 
-// Re-implements exactly what INCR_WITH_WINDOW_SCRIPT does server-side, against a plain
-// Map instead of Redis — INCR then, only on the first increment, set a TTL — so these
-// tests exercise otpAttempts's real call sequencing (claimAttempt calling eval with the
-// right key/args) without needing a live Redis.
-const withStore = () => {
+interface FakeAccount {
+    id: string;
+    email: string;
+    user_name: string;
+    role: string;
+    roles: Record<string, string>;
+    infra_id: string[];
+    created_at: Date;
+    failed_otp_attempts: number;
+}
+
+// Models the single atomic UPDATE ... RETURNING (claimAttempt) and the plain reset
+// UPDATE (resetAttempts) against a Map instead of Postgres — window-expiry (a live
+// concern for real concurrent traffic) is out of scope here since it needs wall-clock
+// Postgres semantics to test meaningfully; this exercises otpAttempts's own call
+// sequencing and per-account isolation.
+const withAccountsStore = (accounts: FakeAccount[]) => {
+    const byEmail = new Map(accounts.map((a) => [a.email, { ...a }]));
+    const byId = new Map(accounts.map((a) => [a.id, byEmail.get(a.email)!]));
+
+    const querySpy = mock.method(
+        sequelize,
+        'query',
+        async (sql: string, opts: { replacements?: Record<string, string> }) => {
+            if (sql.includes('RETURNING')) {
+                const row = byEmail.get(opts.replacements!.email);
+                if (!row) return [];
+                row.failed_otp_attempts += 1;
+                return [{ ...row }];
+            }
+            const row = byId.get(opts.replacements!.userId);
+            if (row) row.failed_otp_attempts = 0;
+            return [];
+        },
+    );
+
+    return { restore: () => querySpy.mock.restore() };
+};
+
+const account = (overrides: Partial<FakeAccount> = {}): FakeAccount => ({
+    id: 'user-1',
+    email: 'a@example.com',
+    user_name: 'a',
+    role: 'user',
+    roles: { 'infra-1': 'user' },
+    infra_id: ['infra-1'],
+    created_at: new Date('2026-01-01T00:00:00Z'),
+    failed_otp_attempts: 0,
+    ...overrides,
+});
+
+test('claimAttempt returns null for an email with no account, without incrementing anything', async () => {
+    const { restore } = withAccountsStore([account()]);
+    try {
+        const claim = await otpAttempts.claimAttempt('ghost@example.com');
+        assert.equal(claim, null);
+    } finally {
+        restore();
+    }
+});
+
+test('claimAttempt returns the account row and an incrementing attempt count', async () => {
+    const { restore } = withAccountsStore([account()]);
+    try {
+        const first = await otpAttempts.claimAttempt('a@example.com');
+        const second = await otpAttempts.claimAttempt('a@example.com');
+        assert.equal(first?.userId, 'user-1');
+        assert.equal(first?.attempts, 1);
+        assert.equal(second?.attempts, 2);
+    } finally {
+        restore();
+    }
+});
+
+test('the first MAX_OTP_ATTEMPTS claims stay at or under the cap, the next one exceeds it', async () => {
+    const { restore } = withAccountsStore([account()]);
+    try {
+        let last;
+        for (let i = 0; i < MAX_OTP_ATTEMPTS; i++) {
+            last = await otpAttempts.claimAttempt('a@example.com');
+            assert.ok(last!.attempts <= MAX_OTP_ATTEMPTS, `claim ${i + 1} should be within cap`);
+        }
+        const overCap = await otpAttempts.claimAttempt('a@example.com');
+        assert.ok(overCap!.attempts > MAX_OTP_ATTEMPTS);
+    } finally {
+        restore();
+    }
+});
+
+test('resetAttempts zeroes the counter for that account only', async () => {
+    const { restore } = withAccountsStore([
+        account(),
+        account({ id: 'user-2', email: 'b@example.com' }),
+    ]);
+    try {
+        for (let i = 0; i < MAX_OTP_ATTEMPTS; i++) await otpAttempts.claimAttempt('a@example.com');
+        await otpAttempts.claimAttempt('b@example.com');
+
+        await otpAttempts.resetAttempts('user-1');
+
+        const afterReset = await otpAttempts.claimAttempt('a@example.com');
+        const other = await otpAttempts.claimAttempt('b@example.com');
+        assert.equal(afterReset?.attempts, 1);
+        assert.equal(other?.attempts, 2);
+    } finally {
+        restore();
+    }
+});
+
+test('NIL_INVITED_USER_ID is a well-formed UUID distinct from any real account id', () => {
+    assert.match(
+        NIL_INVITED_USER_ID,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+});
+
+// ── shouldThrottleForgotPassword: unchanged, still Redis-backed ────────────────────
+
+const withRedisStore = () => {
     const store = new Map<string, { value: number; expiresAt?: number }>();
-
     const evalMock = mock.method(
         Redis.prototype,
         'eval',
@@ -49,112 +163,11 @@ const withStore = () => {
             return count;
         },
     );
-    const del = mock.method(Redis.prototype, 'del', async function (key: string) {
-        return store.delete(key) ? 1 : 0;
-    });
-
-    return {
-        store,
-        restore: () => {
-            evalMock.mock.restore();
-            del.mock.restore();
-        },
-    };
+    return { restore: () => evalMock.mock.restore() };
 };
 
-test('keyFor prefers the account id over the email', () => {
-    assert.equal(otpAttempts.keyFor('user-1', 'a@example.com'), 'otp-attempts:user:user-1');
-});
-
-test('keyFor falls back to a normalized email when there is no account id', () => {
-    assert.equal(
-        otpAttempts.keyFor(undefined, 'A@Example.com'),
-        'otp-attempts:email:a@example.com',
-    );
-    assert.equal(otpAttempts.keyFor(null, 'a@example.com'), 'otp-attempts:email:a@example.com');
-});
-
-test('claimAttempt allows the first 5 claims and rejects the 6th', async () => {
-    const { restore } = withStore();
-    try {
-        const key = otpAttempts.keyFor('user-1', 'a@example.com');
-        for (let i = 0; i < 5; i++) {
-            assert.equal(
-                await otpAttempts.claimAttempt(key),
-                true,
-                `claim ${i + 1} should succeed`,
-            );
-        }
-        assert.equal(await otpAttempts.claimAttempt(key), false);
-    } finally {
-        restore();
-    }
-});
-
-test('claimAttempt increments unconditionally — two claims in a row cost two slots', async () => {
-    // This is the shape of the fix for the check-then-act race: the caller must claim
-    // unconditionally, before it knows whether the guess is right, wrong, or for an
-    // account that doesn't even exist. Verified via the observable effect: two claims
-    // leave only 3 of the 5 slots remaining, not 4.
-    const { restore } = withStore();
-    try {
-        const key = otpAttempts.keyFor('user-1', 'a@example.com');
-        assert.equal(await otpAttempts.claimAttempt(key), true);
-        assert.equal(await otpAttempts.claimAttempt(key), true);
-        assert.equal(await otpAttempts.claimAttempt(key), true);
-        assert.equal(await otpAttempts.claimAttempt(key), true);
-        assert.equal(await otpAttempts.claimAttempt(key), true);
-        // That's 5 claims total (2 + 3) — the 6th must fail.
-        assert.equal(await otpAttempts.claimAttempt(key), false);
-    } finally {
-        restore();
-    }
-});
-
-test('clearAttempts resets the counter for that key only', async () => {
-    const { restore } = withStore();
-    try {
-        const key = otpAttempts.keyFor('user-1', 'a@example.com');
-        for (let i = 0; i < 5; i++) await otpAttempts.claimAttempt(key);
-        assert.equal(await otpAttempts.claimAttempt(key), false);
-
-        await otpAttempts.clearAttempts(key);
-        assert.equal(await otpAttempts.claimAttempt(key), true);
-    } finally {
-        restore();
-    }
-});
-
-test('the cap is shared across purposes for the same account (no purpose suffix in the key)', async () => {
-    const { restore } = withStore();
-    try {
-        // Both authenticateWithOTP and verifyResetOTP compute the same key for the same
-        // user id — this is what keeps an attacker from getting 5 register-OTP guesses
-        // and a separate 5 password-reset-OTP guesses against one account.
-        const key = otpAttempts.keyFor('user-1', 'a@example.com');
-        for (let i = 0; i < 5; i++) await otpAttempts.claimAttempt(key);
-        assert.equal(await otpAttempts.claimAttempt(key), false);
-    } finally {
-        restore();
-    }
-});
-
-test('attempts are scoped per account — one user hitting the cap does not affect another', async () => {
-    const { restore } = withStore();
-    try {
-        const victim = otpAttempts.keyFor('user-victim', 'victim@example.com');
-        const other = otpAttempts.keyFor('user-other', 'other@example.com');
-        for (let i = 0; i < 5; i++) await otpAttempts.claimAttempt(victim);
-
-        assert.equal(await otpAttempts.claimAttempt(victim), false);
-        assert.equal(await otpAttempts.claimAttempt(other), true);
-    } finally {
-        restore();
-    }
-});
-
 test('shouldThrottleForgotPassword allows a single request, then blocks within the minute window', async () => {
-    const { restore } = withStore();
+    const { restore } = withRedisStore();
     try {
         assert.equal(await otpAttempts.shouldThrottleForgotPassword('a@example.com'), false);
         assert.equal(await otpAttempts.shouldThrottleForgotPassword('a@example.com'), true);
@@ -164,7 +177,7 @@ test('shouldThrottleForgotPassword allows a single request, then blocks within t
 });
 
 test('shouldThrottleForgotPassword throttles per email, not globally', async () => {
-    const { restore } = withStore();
+    const { restore } = withRedisStore();
     try {
         assert.equal(await otpAttempts.shouldThrottleForgotPassword('victim@example.com'), false);
         assert.equal(await otpAttempts.shouldThrottleForgotPassword('victim@example.com'), true);
@@ -175,7 +188,7 @@ test('shouldThrottleForgotPassword throttles per email, not globally', async () 
 });
 
 test('shouldThrottleForgotPassword normalizes email casing to the same bucket', async () => {
-    const { restore } = withStore();
+    const { restore } = withRedisStore();
     try {
         assert.equal(await otpAttempts.shouldThrottleForgotPassword('A@Example.com'), false);
         assert.equal(await otpAttempts.shouldThrottleForgotPassword('a@example.com'), true);

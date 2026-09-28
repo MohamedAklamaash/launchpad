@@ -97,6 +97,14 @@ class Application(models.Model):
     # currently-running app's logs are never split across two group names.
     log_group_name = models.CharField(max_length=512, null=True, blank=True)
 
+    # H7 residual from H4: the ECS task-definition family this app's first deploy
+    # created, once it carries the same per-infra+per-app hash discriminator as
+    # `log_group_name` instead of the legacy `{slug}-task` name shared by any two
+    # infras whose apps happen to share a slug. Null for a row that deployed before
+    # this field existed — those keep using the legacy name forever (see
+    # api/common/naming.py:ecs_task_family_for), never backfilled.
+    task_family = models.CharField(max_length=255, null=True, blank=True)
+
     # Kubernetes object handles for EKS deploys; null for ECS (ARN columns above).
     runtime_refs = models.JSONField(null=True, blank=True)
     

@@ -16,6 +16,16 @@ const applyPendingSchemaPatches = async () => {
     await sequelize.query(
         "ALTER TABLE invited_user_otp ADD COLUMN IF NOT EXISTS purpose VARCHAR(255) NOT NULL DEFAULT 'register'",
     );
+    // H7: the OTP guess-attempt cap moved off Redis (which failed closed on an outage)
+    // onto this account row, claimed with one atomic UPDATE ... RETURNING in
+    // otp-attempts.ts. Every existing row defaults to attempts=0/no window, which is
+    // exactly the state a never-attempted account should be in.
+    await sequelize.query(
+        'ALTER TABLE invited_users ADD COLUMN IF NOT EXISTS failed_otp_attempts INTEGER NOT NULL DEFAULT 0',
+    );
+    await sequelize.query(
+        'ALTER TABLE invited_users ADD COLUMN IF NOT EXISTS otp_attempts_window_start TIMESTAMPTZ',
+    );
 };
 
 export const initModels = async () => {

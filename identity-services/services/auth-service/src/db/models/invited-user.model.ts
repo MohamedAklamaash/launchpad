@@ -17,11 +17,26 @@ export interface InvitedUserAttributes {
     opt_id: string;
     created_at: Date;
     updated_at: Date;
+    // H7: the OTP guess-attempt cap, moved off Redis onto this row so an outage of
+    // Redis no longer fails OTP login/reset closed — see src/utils/otp-attempts.ts.
+    // Claimed with a raw UPDATE ... RETURNING there, never through this model's own
+    // query methods, so a Sequelize-level race can't reintroduce the check-then-act
+    // bug the atomic UPDATE exists to close.
+    failed_otp_attempts: number;
+    otp_attempts_window_start: Date | null;
 }
 
 export type InvitedUserCreationAttributes = Optional<
     InvitedUserAttributes,
-    'id' | 'created_at' | 'updated_at' | 'forgot_password' | 'is_authenticated' | 'opt_id' | 'roles'
+    | 'id'
+    | 'created_at'
+    | 'updated_at'
+    | 'forgot_password'
+    | 'is_authenticated'
+    | 'opt_id'
+    | 'roles'
+    | 'failed_otp_attempts'
+    | 'otp_attempts_window_start'
 >;
 
 export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreationAttributes> {
@@ -38,6 +53,8 @@ export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreatio
     declare opt_id: string;
     declare created_at: Date;
     declare updated_at: Date;
+    declare failed_otp_attempts: number;
+    declare otp_attempts_window_start: Date | null;
 }
 
 InvitedUser.init(
@@ -100,6 +117,15 @@ InvitedUser.init(
             type: DataTypes.DATE,
             allowNull: false,
             defaultValue: DataTypes.NOW,
+        },
+        failed_otp_attempts: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 0,
+        },
+        otp_attempts_window_start: {
+            type: DataTypes.DATE,
+            allowNull: true,
         },
     },
     {

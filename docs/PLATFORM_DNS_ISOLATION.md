@@ -72,10 +72,18 @@ supports this — `ApplicationConfig` does not currently expose a separate Redis
 for the writer, since no other process in this service uses one either. Wiring it through
 is a small follow-up once an ACL-aware Redis deployment exists to test against).
 
-Not wired into `infra/.docker` — the shared `redis-server --requirepass` command line
-can't run an ACL user alongside it without an `aclfile`, which would change how every
-other service in this compose file authenticates to Redis. Apply the `ACL SETUSER` above
-by hand against a real deployment's Redis when testing this.
+**Wired into `infra/.docker` (H7), opt-in.** Set `DNS_WRITER_REDIS_PASSWORD` in
+`infra/.docker/.env` and `infra/.docker/init/redis-entrypoint.sh` (the redis service's
+entrypoint) renders an `aclfile` at container start instead of the plain
+`--requirepass` line — the `default` user keeps `REDIS_PASSWORD`, the exact same
+password every other service in the compose file already authenticates with, and a
+`launchpad_dns_writer` user is added with the same `~platform_dns:*` scope as the
+`ACL SETUSER` above. Leave the variable unset (the default) and nothing changes: the
+entrypoint falls back to the original `redis-server --requirepass "$REDIS_PASSWORD"`
+line verbatim. Verified against a real `redis:7` container: the default user still
+authenticates with `REDIS_PASSWORD`, `launchpad_dns_writer` gets `NOPERM` on `infra:*`
+and `OK` on `platform_dns:*`. `docker compose config` confirms no other service's
+environment changes when the variable is set.
 
 ## RabbitMQ
 
@@ -129,6 +137,19 @@ for the writer's environment once a broker with a real vhost/user setup exists t
 against — `RABBITMQ_URL` is currently shared with every other process in this service
 (it carries no AWS/DB secret, so sharing it is lower risk than the Postgres/AWS
 credentials, but a dedicated user is still strictly better).
+
+**Wired into `infra/.docker` (H7), opt-in.** A one-shot `rabbitmq-init` compose service
+(`infra/.docker/init/rabbitmq-dns-writer-init.sh`) runs after `rabbitmq` is healthy and,
+only when `DNS_WRITER_RABBITMQ_PASSWORD` is set in `infra/.docker/.env`, calls the
+management HTTP API to `PUT` a `launchpad_dns_writer` user and the exact permission
+patterns shown above on the existing `/` vhost — the same idempotent shape as
+`rabbitmqctl add_user`/`set_permissions`, over HTTP so no extra tooling is needed in the
+init container. `RABBITMQ_DEFAULT_USER`/`RABBITMQ_DEFAULT_PASS` (`guest`/`guest` by
+default) are untouched: this only ever adds one more user, never a `definitions.json`
+import, which could otherwise redefine the default user's own permissions or existence
+on load. Leave the variable unset (the default) and the init container exits 0
+immediately, adding nothing. `docker compose config` confirms no other service's
+`RABBITMQ_URL` changes either way.
 
 **Local dev (`infra/.docker`):** not configured — the compose stack's single RabbitMQ user
 (`guest`/`guest` or whatever `RABBITMQ_URL` in `.env` points at) is shared by every service,

@@ -28,8 +28,11 @@ from api.common.host_url import (
 )
 from api.common.naming import app_slug as _slug
 from api.common.naming import ecs_log_group as _legacy_ecs_log_group
+from api.common.naming import ecs_task_family as _legacy_ecs_task_family
+from api.common.naming import ecs_task_family_for as _ecs_task_family_for
 from api.common.naming import image_tag as _image_tag
 from api.common.naming import new_ecs_log_group as _new_ecs_log_group
+from api.common.naming import new_ecs_task_family as _new_ecs_task_family
 from api.common.naming import target_group_name as _target_group_name
 from api.k8s.deployer import EKSDeployer
 from api.models import Application, Environment
@@ -526,16 +529,42 @@ class ApplicationDeploymentService:
         #
         # "Has completed a deploy before" is `_has_succeeded_before` — a stored
         # task_definition_arn/service_arn, or (since ApplicationRetryDeployView resets
-        # both of those on a live row without deleting it) Deployment history.
+        # both of those on a live row without deleting it) Deployment history. Computed
+        # at most once (memoized here) since both blocks below may need it and it can
+        # run a Deployment query — an app with both names already stored never calls it
+        # at all.
+        succeeded_before_cache: list[bool] = []
+
+        def succeeded_before() -> bool:
+            if not succeeded_before_cache:
+                succeeded_before_cache.append(self._has_succeeded_before(application))
+            return succeeded_before_cache[0]
+
         if application.log_group_name:
             log_group_name = application.log_group_name
         else:
             log_group_name = (
-                _legacy_ecs_log_group(_slug(application.name)) if self._has_succeeded_before(application)
+                _legacy_ecs_log_group(_slug(application.name)) if succeeded_before()
                 else _new_ecs_log_group(application)
             )
             application.log_group_name = log_group_name
             application.save(update_fields=['log_group_name'])
+
+        # H7 residual from H4: identical pattern to log_group_name above — an app that
+        # already has a stored task family keeps it, an app that has deployed before
+        # (but predates this field) recomputes the same legacy `{slug}-task` name it
+        # already used, and only a genuinely new app mints the new hashed family. The
+        # family also names the app container inside the task definition, so
+        # `_create_ecs_service`'s `container_name` reads this same stored value back.
+        if application.task_family:
+            task_family = application.task_family
+        else:
+            task_family = (
+                _legacy_ecs_task_family(_slug(application.name)) if succeeded_before()
+                else _new_ecs_task_family(application)
+            )
+            application.task_family = task_family
+            application.save(update_fields=['task_family'])
 
         try:
             logs.create_log_group(logGroupName=log_group_name)
@@ -568,7 +597,7 @@ class ApplicationDeploymentService:
         envs = {**base_envs, **db_env, 'PORT': str(application.port)}
 
         task_def_arn = ecs.create_task_definition(
-            family=f"{_slug(application.name)}-task",
+            family=task_family,
             image=image_uri,
             cpu=application.alloted_cpu,
             memory=application.alloted_memory,
@@ -709,7 +738,7 @@ class ApplicationDeploymentService:
             target_group_arn=application.target_group_arn,
             subnet_ids=subnet_ids,
             security_group_ids=security_group_ids,
-            container_name=f"{_slug(application.name)}-task",
+            container_name=_ecs_task_family_for(application),
             container_port=application.port,
             use_nginx=True,
             tags=app_tags(application.infrastructure_id, _slug(application.name)),

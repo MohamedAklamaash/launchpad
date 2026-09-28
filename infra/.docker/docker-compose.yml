@@ -65,11 +65,18 @@ services:
     image: redis:7
     container_name: redis
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # H7 (dns_writer isolation): unset by default — see redis-entrypoint.sh and
+      # docs/PLATFORM_DNS_ISOLATION.md. Opting in changes nothing about how any other
+      # service authenticates; the `default` user keeps REDIS_PASSWORD either way.
+      DNS_WRITER_REDIS_PASSWORD: ${DNS_WRITER_REDIS_PASSWORD:-}
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-entrypoint.sh"]
     ports:
       - "${REDIS_PORT}:6379"
     volumes:
       - redis_data:/data
+      - ./init/redis-entrypoint.sh:/usr/local/bin/redis-entrypoint.sh:ro
     networks:
       - backend
     healthcheck:
@@ -98,6 +105,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # H7 (dns_writer isolation): one-shot, opt-in. Adds a `launchpad_dns_writer`
+  # RabbitMQ user scoped to its own queues/exchange via the management HTTP API —
+  # guest is never touched, and with DNS_WRITER_RABBITMQ_PASSWORD unset this is a
+  # no-op exit 0. See init/rabbitmq-dns-writer-init.sh and
+  # docs/PLATFORM_DNS_ISOLATION.md.
+  rabbitmq-init:
+    image: curlimages/curl:8.10.1
+    container_name: rabbitmq-init
+    restart: "no"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      DNS_WRITER_RABBITMQ_PASSWORD: ${DNS_WRITER_RABBITMQ_PASSWORD:-}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./init/rabbitmq-dns-writer-init.sh:/rabbitmq-dns-writer-init.sh:ro
+    networks:
+      - backend
+    entrypoint: ["/bin/sh", "/rabbitmq-dns-writer-init.sh"]
 
   prometheus:
     image: prom/prometheus:latest

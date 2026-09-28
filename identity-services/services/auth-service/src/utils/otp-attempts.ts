@@ -1,22 +1,10 @@
 import Redis from 'ioredis';
+import { QueryTypes } from 'sequelize';
 import { redisConfig } from '@/client/redis';
+import { sequelize } from '@/db/sequalize';
 
 const redis = new Redis(redisConfig);
 
-// A 6-digit OTP has only 1,000,000 possible values — without a cap, an attacker can
-// script through them against a single still-valid code. This bounds guesses using the
-// same Redis instance already wired for BullMQ, no new infra.
-const MAX_ATTEMPTS = 5;
-// Matches invited-user.base.service.ts's createOTP expiry — the attempt counter can
-// never meaningfully outlive the OTP it's guarding.
-const ATTEMPT_WINDOW_SECONDS = 10 * 60;
-
-// Increments KEYS[1] and, only on the very first increment (i.e. the key was absent or
-// had just expired), sets its TTL. Both steps run as one atomic unit inside Redis's
-// single-threaded script execution — no other client's command can interleave between
-// the INCR and the EXPIRE, and no two concurrent callers can ever both observe count==1
-// for the same key. This is what makes "claim a slot" safe to call from N concurrent
-// requests: each one gets a distinct, strictly increasing count.
 const INCR_WITH_WINDOW_SCRIPT = `
 local count = redis.call('INCR', KEYS[1])
 if count == 1 then
@@ -28,29 +16,99 @@ return count
 const incrementWithWindow = async (key: string, windowSeconds: number): Promise<number> =>
     Number(await redis.eval(INCR_WITH_WINDOW_SCRIPT, 1, key, String(windowSeconds)));
 
-export const otpAttempts = {
-    // One shared budget per account (or, for an email with no account, per email) —
-    // not per purpose. A register OTP and a password-reset OTP outstanding on the same
-    // account at once must not double an attacker's guess budget; see B3 in
-    // plan/H-hardening.md. Prefer the account id whenever it's known — an email is a
-    // caller-supplied string with no canonical casing, while the id is exact.
-    keyFor(userId: string | null | undefined, email: string): string {
-        return userId ? `otp-attempts:user:${userId}` : `otp-attempts:email:${email.toLowerCase()}`;
-    },
+// A 6-digit OTP has only 1,000,000 possible values — without a cap, an attacker can
+// script through them against a single still-valid code.
+export const MAX_OTP_ATTEMPTS = 5;
+// Matches invited-user.base.service.ts's createOTP expiry — the attempt counter can
+// never meaningfully outlive the OTP it's guarding.
+const ATTEMPT_WINDOW_MINUTES = 10;
 
-    // Atomically claims one attempt slot and reports whether the caller may proceed.
+// A row id that can never belong to a real account (Postgres's nil UUID) — every
+// unknown-email OTP lookup is bound to this instead of short-circuiting, so the query
+// it runs (and the round trip it takes) has the same shape as a known account's,
+// whether or not `email` is actually registered.
+export const NIL_INVITED_USER_ID = '00000000-0000-0000-0000-000000000000';
+
+interface ClaimRow {
+    id: string;
+    email: string;
+    user_name: string;
+    role: string;
+    roles: Record<string, string>;
+    infra_id: string[];
+    created_at: Date;
+    failed_otp_attempts: number;
+}
+
+export interface OTPAttemptClaim {
+    userId: string;
+    email: string;
+    user_name: string;
+    role: string;
+    roles: Record<string, string>;
+    infra_id: string[];
+    created_at: Date;
+    attempts: number;
+}
+
+export const otpAttempts = {
+    // Atomically claims one guess-attempt slot for the account owning `email` — H7: an
+    // outage of Redis (the previous home for this counter) used to fail every OTP
+    // login/reset closed; moving the counter into the same Postgres transaction the
+    // rest of the flow already depends on removes that separate availability coupling.
+    //
+    // One statement does two things at once: its WHERE clause is the only place that
+    // decides whether `email` is a real account, and its SET clause claims the slot —
+    // so the exact same query, with the exact same round trip, runs whether or not the
+    // account exists. A zero-row result (no account) means nothing was incremented,
+    // simply because there was no row for the UPDATE to touch: unknown emails are never
+    // counted, as a direct consequence of ordinary set-based UPDATE semantics rather
+    // than a separate existence check the caller has to remember to skip.
+    //
     // MUST be called before the OTP guess is evaluated, not after a failed one:
     // checking "attempts remaining" as a separate read-then-act step lets N requests in
     // flight at once all observe attempts remaining and all get to try a guess before
-    // any of them is recorded — this claims the slot unconditionally, whether the guess
-    // that follows turns out right or wrong, real account or not.
-    async claimAttempt(key: string): Promise<boolean> {
-        const count = await incrementWithWindow(key, ATTEMPT_WINDOW_SECONDS);
-        return count <= MAX_ATTEMPTS;
+    // any of them is recorded. Because the increment and the window reset happen inside
+    // one UPDATE, Postgres's own row lock serializes concurrent claims against the same
+    // account — no two callers can ever observe the same resulting count.
+    async claimAttempt(email: string): Promise<OTPAttemptClaim | null> {
+        const rows = await sequelize.query<ClaimRow>(
+            `UPDATE invited_users SET
+                failed_otp_attempts = CASE
+                    WHEN otp_attempts_window_start IS NULL
+                      OR otp_attempts_window_start < NOW() - INTERVAL '${ATTEMPT_WINDOW_MINUTES} minutes'
+                    THEN 1
+                    ELSE failed_otp_attempts + 1
+                END,
+                otp_attempts_window_start = CASE
+                    WHEN otp_attempts_window_start IS NULL
+                      OR otp_attempts_window_start < NOW() - INTERVAL '${ATTEMPT_WINDOW_MINUTES} minutes'
+                    THEN NOW()
+                    ELSE otp_attempts_window_start
+                END
+             WHERE email = :email
+             RETURNING id, email, user_name, role, roles, infra_id, created_at, failed_otp_attempts`,
+            { replacements: { email }, type: QueryTypes.SELECT },
+        );
+        const row = rows[0];
+        if (!row) return null;
+        return {
+            userId: row.id,
+            email: row.email,
+            user_name: row.user_name,
+            role: row.role,
+            roles: row.roles,
+            infra_id: row.infra_id,
+            created_at: row.created_at,
+            attempts: row.failed_otp_attempts,
+        };
     },
 
-    async clearAttempts(key: string): Promise<void> {
-        await redis.del(key);
+    async resetAttempts(userId: string): Promise<void> {
+        await sequelize.query(
+            'UPDATE invited_users SET failed_otp_attempts = 0, otp_attempts_window_start = NULL WHERE id = :userId',
+            { replacements: { userId }, type: QueryTypes.UPDATE },
+        );
     },
 
     // Per-email throttle on how often a new reset code can be requested at all — separate
@@ -59,7 +117,8 @@ export const otpAttempts = {
     // forgot-password to stockpile outstanding codes or spam the target's inbox. Fixed
     // window counters (1/60s, 5/hour); the caller must skip silently on a throttle hit —
     // this must never change forgot-password's response, which is what keeps it from
-    // revealing whether `email` is registered.
+    // revealing whether `email` is registered. Kept on Redis (unlike the attempt cap
+    // above) and fails OPEN on a Redis error — see requestPasswordReset's call site.
     async shouldThrottleForgotPassword(email: string): Promise<boolean> {
         const normalized = email.toLowerCase();
         const [perMinute, perHour] = await Promise.all([

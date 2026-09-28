@@ -21,7 +21,12 @@ from aws.container_config import generate_nginx_config, inject_routing_envs
 from django.conf import settings
 from shared.enums.orchestrator import ComputeType
 
-from api.common.naming import app_slug, ecs_log_group_for, require_k8s_safe_slug
+from api.common.naming import (
+    app_slug,
+    ecs_log_group_for,
+    ecs_task_family_for,
+    require_k8s_safe_slug,
+)
 from api.k8s.deployer import NGINX_IMAGE, NGINX_PORT, namespace_for
 from api.models.application import Application
 from api.models.deployment import Deployment
@@ -75,7 +80,11 @@ def _env_keys_and_source(application: Application) -> tuple[list[str], dict]:
 
 def _task_definition_json(application: Application, env_keys: list[str], shape: dict) -> str:
     slug = app_slug(application.name)
-    family = f"{slug}-task"
+    # H7 residual from H4: the app's own stored task family, falling back to the
+    # legacy shared-per-slug name for a row that deployed before that field existed —
+    # never a fresh `f"{slug}-task"` guess, which would render the wrong family for
+    # any app on the new per-infra+per-app hashed scheme.
+    family = ecs_task_family_for(application)
     port = shape["port"] or application.port
     # H4: the app's own stored log group, falling back to the legacy shared-per-slug
     # name for a row that deployed before that field existed — never a fresh
