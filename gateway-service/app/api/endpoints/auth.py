@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
@@ -71,7 +73,9 @@ async def auth_list_invited_users(request: Request):
 
 
 @router.delete("/invited-users/{user_id}", summary="Remove a member from the org (deletes account only if last org)")
-async def auth_remove_member(user_id: str, request: Request):
+async def auth_remove_member(user_id: UUID, request: Request):
+    """`user_id` is an `InvitedUser.id` (auth-service), a UUID primary key — not
+    user-service's `User.user_id`, which is an untyped string column (see user.py)."""
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/invited-users/{user_id}", request)
 
 
