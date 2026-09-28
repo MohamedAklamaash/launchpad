@@ -78,14 +78,17 @@ def test_non_integer_host_readiness_version_is_discarded(consumer, make_infra):
 
 
 @pytest.mark.django_db
-def test_unmaterialized_infra_is_requeued_then_ackable_once_it_exists(consumer, make_infra, monkeypatch):
-    monkeypatch.setattr("api.messaging.consumers.infrastructure.time.sleep", lambda *_: None)
+def test_unmaterialized_infra_is_requeued_then_ackable_once_it_exists(consumer, make_infra):
     infra_id = str(uuid.uuid4())
     consumer._retry_counts = {}
 
     payload = {"infra_id": infra_id, "host_readiness_version": 1, "dns_synced": True, "https_ready": True}
     ch = _deliver(consumer, payload)
     ch.basic_nack.assert_called_once_with(delivery_tag=1, requeue=True)
+    # H6 (hardening): the retry delay must use ch.connection.sleep, never a bare
+    # time.sleep — this callback runs on the pika BlockingConnection's own I/O thread,
+    # and a bare sleep there starves the heartbeat and can drop the connection.
+    ch.connection.sleep.assert_called_once_with(1)
 
     infra = make_infra(id=infra_id)
     ch2 = _deliver(consumer, payload)

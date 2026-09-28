@@ -1,6 +1,5 @@
 import json
 import logging
-import time
 import uuid
 
 from api.common.envs.application import app_config
@@ -95,7 +94,9 @@ class EnvironmentEventConsumer:
                         retry_count + 1, self.MAX_RETRIES, delay,
                         extra={"correlation_id": correlation_id, "infrastructure_id": infra_id},
                     )
-                    time.sleep(delay)
+                    # H6: NOT time.sleep — starves the pika connection's heartbeat.
+                    # See InfraExitedEventConsumer.callback (H2) for the full writeup.
+                    ch.connection.sleep(delay)
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
                 return
 
@@ -167,7 +168,9 @@ class EnvironmentEventConsumer:
                     retry_count + 1, self.MAX_RETRIES, delay,
                     extra={"correlation_id": correlation_id, "environment_id": env_id, "error": str(exc)},
                 )
-                time.sleep(delay)
+                # H6: NOT time.sleep — starves the pika connection's heartbeat.
+                # See InfraExitedEventConsumer.callback (H2) for the full writeup.
+                ch.connection.sleep(delay)
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def _reconcile_databases(self, env, databases: list):

@@ -85,6 +85,10 @@ def _error_response(e: Exception):
 @csrf_exempt
 @api_view(['GET', 'POST'])
 @rate_limited('databases', limit=settings.RATE_BUDGET_DATABASES_LIMIT, window=settings.RATE_BUDGET_DATABASES_WINDOW_SECONDS)
+@rate_limited(
+    'databases_write', limit=settings.RATE_BUDGET_DATABASES_WRITE_LIMIT,
+    window=settings.RATE_BUDGET_DATABASES_WRITE_WINDOW_SECONDS, methods=('POST',),
+)
 def database_list_create(request: HttpRequest, infra_id):
     if request.method == 'GET':
         try:
@@ -124,6 +128,10 @@ def database_list_create(request: HttpRequest, infra_id):
 @csrf_exempt
 @api_view(['GET', 'DELETE'])
 @rate_limited('databases', limit=settings.RATE_BUDGET_DATABASES_LIMIT, window=settings.RATE_BUDGET_DATABASES_WINDOW_SECONDS)
+@rate_limited(
+    'databases_write', limit=settings.RATE_BUDGET_DATABASES_WRITE_LIMIT,
+    window=settings.RATE_BUDGET_DATABASES_WRITE_WINDOW_SECONDS, methods=('DELETE',),
+)
 def database_detail(request: HttpRequest, infra_id, database_id):
     if request.method == 'GET':
         try:

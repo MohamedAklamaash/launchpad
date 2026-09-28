@@ -1,7 +1,6 @@
 import json
 import logging
 import threading
-import time
 
 import pika
 from api.models import Application
@@ -69,7 +68,9 @@ class ApplicationEventConsumer:
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         except Exception:
             logger.exception(f"Error processing application event ({routing_key}) — requeueing")
-            time.sleep(1)
+            # H6: NOT time.sleep — starves the pika connection's heartbeat. See
+            # application-service's InfraExitedEventConsumer.callback (H2) for the writeup.
+            ch.connection.sleep(1)
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
     
     def start(self):

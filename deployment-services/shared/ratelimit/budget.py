@@ -62,14 +62,22 @@ def customer_call_budget(user_id, bucket: str, limit: int, window: int):
         raise HttpError(message="Rate limiter unavailable", status_code=503) from e
 
 
-def rate_limited(bucket: str, limit: int, window: int):
+def rate_limited(bucket: str, limit: int, window: int, methods: tuple[str, ...] | None = None):
     """DRF view decorator enforcing customer_call_budget, keyed on the authenticated
     user resolved by shared.middleware.authentication.JWTAuthMiddleware. Apply directly
-    to the view function, underneath @api_view, so it runs before any DB/AWS work."""
+    to the view function, underneath @api_view, so it runs before any DB/AWS work.
+
+    `methods`, if given, restricts this budget to requests whose method is in the set —
+    any other method passes straight through uncharged. This lets a tighter,
+    write-specific bucket stack on top of a view's general read+write bucket (H6:
+    `databases_write` on top of `databases`) without a GET also consuming the tighter
+    budget."""
 
     def decorator(view_func):
         @wraps(view_func)
         def wrapped(request, *args, **kwargs):
+            if methods is not None and request.method not in methods:
+                return view_func(request, *args, **kwargs)
             try:
                 retry_after = customer_call_budget(request.user.id, bucket, limit, window)
             except HttpError as e:
