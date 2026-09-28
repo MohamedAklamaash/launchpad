@@ -49,7 +49,11 @@ export const signAccessToken = (payload: AccessTokenPayload, expiresIn?: string)
 
 export const verifyAccessToken = (token: string): AccessTokenPayload => {
     try {
-        return jwt.verify(token, ACCESS_TOKEN) as AccessTokenPayload;
+        // Pinning the algorithm closes algorithm-confusion attacks: without it,
+        // jsonwebtoken accepts whatever `alg` the token header declares as long as some
+        // key material validates it, rather than only the one this service ever signs
+        // with.
+        return jwt.verify(token, ACCESS_TOKEN, { algorithms: ['HS256'] }) as AccessTokenPayload;
     } catch {
         throw new HttpError(401, 'Invalid access token');
     }
@@ -75,5 +79,5 @@ export const signRefreshToken = (payload: RefreshTokenPayload): string => {
 };
 
 export const verifyRefreshToken = (payload: string): RefreshTokenPayload => {
-    return jwt.verify(payload, REFRESH_TOKEN) as RefreshTokenPayload;
+    return jwt.verify(payload, REFRESH_TOKEN, { algorithms: ['HS256'] }) as RefreshTokenPayload;
 };

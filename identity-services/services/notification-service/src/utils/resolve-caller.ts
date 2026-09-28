@@ -31,7 +31,7 @@ export const resolveCaller = (req: Request): CallerPayload => {
 
     let payload: CallerPayload;
     try {
-        payload = jwt.verify(token, env.JWT_SECRET) as CallerPayload;
+        payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as CallerPayload;
     } catch {
         throw new HttpError(401, 'Invalid or expired access token');
     }

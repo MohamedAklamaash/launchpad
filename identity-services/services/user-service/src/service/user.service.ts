@@ -49,6 +49,7 @@ class UserService {
         query: string;
         limit?: number;
         excludeIds?: string[];
+        infraIds?: string[];
     }): Promise<User[]> {
         const query = params.query.trim();
         if (query.length === 0) {
@@ -58,6 +59,7 @@ class UserService {
         return this.repository.searchByQuery(query, {
             limit: params.limit,
             excludeIds: params.excludeIds,
+            infraIds: params.infraIds,
         });
     }
 

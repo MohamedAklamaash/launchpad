@@ -24,7 +24,9 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 
 // This test drives the real service layer (not the facade) so it exercises the actual
 // attempt-cap wiring around the OTP lookup, mocking only the Sequelize boundary
-// (transaction + model statics) and otpAttempts — never a live Postgres/Redis.
+// (transaction + model statics) and, for most tests, otpAttempts — never a live
+// Postgres/Redis. The concurrency test near the bottom mocks Redis instead of
+// otpAttempts, to exercise the real atomic-claim logic under Promise.all.
 const { sequelize } = await import('@/db/sequalize');
 const { InvitedUser, UserOTP, RefreshToken } = await import('@/db');
 const { otpAttempts } = await import('@/utils/otp-attempts');
@@ -55,10 +57,10 @@ const withTransactionMock = () =>
 const authService = new InvitedUserAuthService();
 const passwordService = new PasswordService();
 
-test('authenticateWithOTP: cap already exhausted invalidates the OTP and rejects before checking the guess', async () => {
+test('authenticateWithOTP: cap already exhausted invalidates the OTP (outside any transaction) and rejects before checking the guess', async () => {
     const txSpy = withTransactionMock();
     const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({ ...fakeUser }));
-    const hasAttemptsSpy = mock.method(otpAttempts, 'hasAttemptsRemaining', async () => false);
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => false);
     const destroySpy = mock.method(UserOTP, 'destroy', async () => 1);
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => {
         throw new Error('must not evaluate the guess once the cap is hit');
@@ -69,38 +71,73 @@ test('authenticateWithOTP: cap already exhausted invalidates the OTP and rejects
             () => authService.authenticateWithOTP({ email: 'a@example.com', otp: '000000' }),
             (error: unknown) => error instanceof HttpError && error.statusCode === 429,
         );
-        assert.equal(hasAttemptsSpy.mock.callCount(), 1);
-        assert.deepEqual(hasAttemptsSpy.mock.calls[0].arguments, ['register', 'a@example.com']);
-        assert.equal(destroySpy.mock.callCount(), 1);
+        assert.equal(claimSpy.mock.callCount(), 1);
         assert.equal(findOtpSpy.mock.callCount(), 0);
+
+        // B2: the invalidating destroy must not be part of the transaction that the 429
+        // (thrown right after, in the same code path) would otherwise roll back — that
+        // only holds if this call never received a `transaction` option at all.
+        assert.equal(destroySpy.mock.callCount(), 1);
+        const destroyArgs = destroySpy.mock.calls[0].arguments[0] as Record<string, unknown>;
+        assert.equal('transaction' in destroyArgs, false);
+        assert.deepEqual(destroyArgs.where, { invited_user_id: 'user-1', purpose: 'register' });
     } finally {
         txSpy.mock.restore();
         findUserSpy.mock.restore();
-        hasAttemptsSpy.mock.restore();
+        claimSpy.mock.restore();
         destroySpy.mock.restore();
         findOtpSpy.mock.restore();
     }
 });
 
-test('authenticateWithOTP: a wrong guess records a failed attempt and does not consume the cap check twice', async () => {
+test('authenticateWithOTP: an unknown email still claims an attempt and gets the same 400 as a wrong guess (no enumeration)', async () => {
+    const findUserSpy = mock.method(InvitedUser, 'findOne', async () => null);
+    let claimedKey: string | undefined;
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async (key: string) => {
+        claimedKey = key;
+        return true;
+    });
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => {
+        throw new Error('must not query for an OTP with no account to own it');
+    });
+
+    try {
+        await assert.rejects(
+            () => authService.authenticateWithOTP({ email: 'ghost@example.com', otp: '000000' }),
+            (error: unknown) => error instanceof HttpError && error.statusCode === 400,
+        );
+        assert.equal(claimSpy.mock.callCount(), 1);
+        // R3: keyed on the email itself, since there's no account id to key on.
+        assert.equal(claimedKey, otpAttempts.keyFor(undefined, 'ghost@example.com'));
+        assert.equal(findOtpSpy.mock.callCount(), 0);
+    } finally {
+        findUserSpy.mock.restore();
+        claimSpy.mock.restore();
+        findOtpSpy.mock.restore();
+    }
+});
+
+test('authenticateWithOTP: a wrong guess is rejected and only matches the register purpose', async () => {
     const txSpy = withTransactionMock();
     const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({ ...fakeUser }));
-    const hasAttemptsSpy = mock.method(otpAttempts, 'hasAttemptsRemaining', async () => true);
-    const recordSpy = mock.method(otpAttempts, 'recordFailedAttempt', async () => undefined);
-    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => null);
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => true);
+    let otpQuery: Record<string, unknown> | undefined;
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async (opts: { where: object }) => {
+        otpQuery = opts.where as Record<string, unknown>;
+        return null;
+    });
 
     try {
         await assert.rejects(
             () => authService.authenticateWithOTP({ email: 'a@example.com', otp: 'wrong0' }),
             (error: unknown) => error instanceof HttpError && error.statusCode === 400,
         );
-        assert.equal(recordSpy.mock.callCount(), 1);
-        assert.deepEqual(recordSpy.mock.calls[0].arguments, ['register', 'a@example.com']);
+        assert.equal(claimSpy.mock.callCount(), 1);
+        assert.equal(otpQuery?.purpose, 'register');
     } finally {
         txSpy.mock.restore();
         findUserSpy.mock.restore();
-        hasAttemptsSpy.mock.restore();
-        recordSpy.mock.restore();
+        claimSpy.mock.restore();
         findOtpSpy.mock.restore();
     }
 });
@@ -108,7 +145,7 @@ test('authenticateWithOTP: a wrong guess records a failed attempt and does not c
 test('authenticateWithOTP: a correct guess clears the attempt counter', async () => {
     const txSpy = withTransactionMock();
     const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({ ...fakeUser }));
-    const hasAttemptsSpy = mock.method(otpAttempts, 'hasAttemptsRemaining', async () => true);
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => true);
     const clearSpy = mock.method(otpAttempts, 'clearAttempts', async () => undefined);
     const otpRecord = { async destroy() {} };
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => otpRecord);
@@ -125,21 +162,77 @@ test('authenticateWithOTP: a correct guess clears the attempt counter', async ()
         });
         assert.ok(result.accessToken);
         assert.equal(clearSpy.mock.callCount(), 1);
-        assert.deepEqual(clearSpy.mock.calls[0].arguments, ['register', 'a@example.com']);
+        assert.equal(
+            clearSpy.mock.calls[0].arguments[0],
+            otpAttempts.keyFor('user-1', 'a@example.com'),
+        );
     } finally {
         txSpy.mock.restore();
         findUserSpy.mock.restore();
-        hasAttemptsSpy.mock.restore();
+        claimSpy.mock.restore();
         clearSpy.mock.restore();
         findOtpSpy.mock.restore();
         refreshSpy.mock.restore();
     }
 });
 
-test('verifyResetOTP: cap already exhausted invalidates the OTP and rejects before checking the guess', async () => {
+test('authenticateWithOTP: only 5 of 6 concurrent guesses ever reach the OTP lookup (B1 — no check-then-act race)', async () => {
+    const Redis = (await import('ioredis')).default;
+    const store = new Map<string, { value: number; expiresAt?: number }>();
+    const evalSpy = mock.method(
+        Redis.prototype,
+        'eval',
+        async function (_script: string, _n: number, key: string, windowSeconds: string) {
+            const existing = store.get(key);
+            const isLive = existing && (!existing.expiresAt || existing.expiresAt > Date.now());
+            const count = (isLive ? existing.value : 0) + 1;
+            store.set(key, {
+                value: count,
+                expiresAt:
+                    count === 1 ? Date.now() + Number(windowSeconds) * 1000 : existing?.expiresAt,
+            });
+            return count;
+        },
+    );
+    const delSpy = mock.method(Redis.prototype, 'del', async () => 1);
+
     const txSpy = withTransactionMock();
     const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({ ...fakeUser }));
-    const hasAttemptsSpy = mock.method(otpAttempts, 'hasAttemptsRemaining', async () => false);
+    let otpLookups = 0;
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => {
+        otpLookups += 1;
+        return null; // every guess is wrong — only the count of attempts reaching here matters
+    });
+    const destroySpy = mock.method(UserOTP, 'destroy', async () => 1);
+
+    try {
+        const results = await Promise.allSettled(
+            Array.from({ length: 6 }, () =>
+                authService.authenticateWithOTP({ email: 'a@example.com', otp: '000000' }),
+            ),
+        );
+
+        const statusCodes = results.map((r) =>
+            r.status === 'rejected' && r.reason instanceof HttpError ? r.reason.statusCode : null,
+        );
+        assert.equal(statusCodes.filter((c) => c === 400).length, 5);
+        assert.equal(statusCodes.filter((c) => c === 429).length, 1);
+        assert.equal(otpLookups, 5);
+        assert.equal(destroySpy.mock.callCount(), 1);
+    } finally {
+        evalSpy.mock.restore();
+        delSpy.mock.restore();
+        txSpy.mock.restore();
+        findUserSpy.mock.restore();
+        findOtpSpy.mock.restore();
+        destroySpy.mock.restore();
+    }
+});
+
+test('verifyResetOTP: cap already exhausted invalidates the OTP (outside any transaction) and rejects before checking the guess', async () => {
+    const txSpy = withTransactionMock();
+    const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({ ...fakeUser }));
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => false);
     const destroySpy = mock.method(UserOTP, 'destroy', async () => 1);
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => {
         throw new Error('must not evaluate the guess once the cap is hit');
@@ -150,39 +243,89 @@ test('verifyResetOTP: cap already exhausted invalidates the OTP and rejects befo
             () => passwordService.verifyResetOTP({ email: 'a@example.com', otp: '000000' }),
             (error: unknown) => error instanceof HttpError && error.statusCode === 429,
         );
-        assert.deepEqual(hasAttemptsSpy.mock.calls[0].arguments, [
-            'password-reset',
-            'a@example.com',
-        ]);
-        assert.equal(destroySpy.mock.callCount(), 1);
         assert.equal(findOtpSpy.mock.callCount(), 0);
+        assert.equal(destroySpy.mock.callCount(), 1);
+        const destroyArgs = destroySpy.mock.calls[0].arguments[0] as Record<string, unknown>;
+        assert.equal('transaction' in destroyArgs, false);
+        assert.deepEqual(destroyArgs.where, {
+            invited_user_id: 'user-1',
+            purpose: 'password-reset',
+        });
     } finally {
         txSpy.mock.restore();
         findUserSpy.mock.restore();
-        hasAttemptsSpy.mock.restore();
+        claimSpy.mock.restore();
         destroySpy.mock.restore();
         findOtpSpy.mock.restore();
     }
 });
 
-test('verifyResetOTP: a wrong guess records a failed attempt', async () => {
+test('verifyResetOTP: an unknown email still claims an attempt and gets the same 400 as a wrong guess', async () => {
+    const findUserSpy = mock.method(InvitedUser, 'findOne', async () => null);
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => true);
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => {
+        throw new Error('must not query for an OTP with no account to own it');
+    });
+
+    try {
+        await assert.rejects(
+            () => passwordService.verifyResetOTP({ email: 'ghost@example.com', otp: '000000' }),
+            (error: unknown) => error instanceof HttpError && error.statusCode === 400,
+        );
+        assert.equal(findOtpSpy.mock.callCount(), 0);
+    } finally {
+        findUserSpy.mock.restore();
+        claimSpy.mock.restore();
+        findOtpSpy.mock.restore();
+    }
+});
+
+test('verifyResetOTP: a wrong guess is rejected and only matches the password-reset purpose', async () => {
     const txSpy = withTransactionMock();
     const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({ ...fakeUser }));
-    const hasAttemptsSpy = mock.method(otpAttempts, 'hasAttemptsRemaining', async () => true);
-    const recordSpy = mock.method(otpAttempts, 'recordFailedAttempt', async () => undefined);
-    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => null);
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => true);
+    let otpQuery: Record<string, unknown> | undefined;
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async (opts: { where: object }) => {
+        otpQuery = opts.where as Record<string, unknown>;
+        return null;
+    });
 
     try {
         await assert.rejects(
             () => passwordService.verifyResetOTP({ email: 'a@example.com', otp: 'wrong0' }),
             (error: unknown) => error instanceof HttpError && error.statusCode === 400,
         );
-        assert.deepEqual(recordSpy.mock.calls[0].arguments, ['password-reset', 'a@example.com']);
+        assert.equal(otpQuery?.purpose, 'password-reset');
     } finally {
         txSpy.mock.restore();
         findUserSpy.mock.restore();
-        hasAttemptsSpy.mock.restore();
-        recordSpy.mock.restore();
+        claimSpy.mock.restore();
+        findOtpSpy.mock.restore();
+    }
+});
+
+test('verifyResetOTP: a register-purpose OTP cannot be redeemed through this endpoint', async () => {
+    // B3's cross-purpose bug: without a purpose filter, any live code for this user —
+    // regardless of which flow minted it — would match here.
+    const txSpy = withTransactionMock();
+    const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({ ...fakeUser }));
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => true);
+    const findOtpSpy = mock.method(
+        UserOTP,
+        'findOne',
+        async (opts: { where: { purpose: string } }) =>
+            opts.where.purpose === 'password-reset' ? null : { async destroy() {} },
+    );
+
+    try {
+        await assert.rejects(
+            () => passwordService.verifyResetOTP({ email: 'a@example.com', otp: '123456' }),
+            (error: unknown) => error instanceof HttpError && error.statusCode === 400,
+        );
+    } finally {
+        txSpy.mock.restore();
+        findUserSpy.mock.restore();
+        claimSpy.mock.restore();
         findOtpSpy.mock.restore();
     }
 });
@@ -190,7 +333,7 @@ test('verifyResetOTP: a wrong guess records a failed attempt', async () => {
 test('verifyResetOTP: a correct guess clears the attempt counter and mints a password_reset-scoped token', async () => {
     const txSpy = withTransactionMock();
     const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({ ...fakeUser }));
-    const hasAttemptsSpy = mock.method(otpAttempts, 'hasAttemptsRemaining', async () => true);
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => true);
     const clearSpy = mock.method(otpAttempts, 'clearAttempts', async () => undefined);
     const otpRecord = { async destroy() {} };
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => otpRecord);
@@ -203,11 +346,14 @@ test('verifyResetOTP: a correct guess clears the attempt counter and mints a pas
         });
         assert.equal(verifyAccessToken(token).scope, 'password_reset');
         assert.equal(clearSpy.mock.callCount(), 1);
-        assert.deepEqual(clearSpy.mock.calls[0].arguments, ['password-reset', 'a@example.com']);
+        assert.equal(
+            clearSpy.mock.calls[0].arguments[0],
+            otpAttempts.keyFor('user-1', 'a@example.com'),
+        );
     } finally {
         txSpy.mock.restore();
         findUserSpy.mock.restore();
-        hasAttemptsSpy.mock.restore();
+        claimSpy.mock.restore();
         clearSpy.mock.restore();
         findOtpSpy.mock.restore();
     }

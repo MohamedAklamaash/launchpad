@@ -6,8 +6,21 @@ import { RefreshToken } from './models/refresh-token.model';
 import { InvitedUser } from './models/invited-user.model';
 import { User } from './models/user.model';
 
+// sequelize.sync() below creates missing tables but never alters existing ones (see
+// memory/auth-service-no-migrations.md — this service has no migration framework), so a
+// new column on an already-created table is silently ignored unless applied here by
+// hand. IF NOT EXISTS makes this safe to run on every boot: a no-op once the column is
+// there, and the one thing that actually adds it on an existing `invited_user_otp` table
+// the first time this version deploys.
+const applyPendingSchemaPatches = async () => {
+    await sequelize.query(
+        "ALTER TABLE invited_user_otp ADD COLUMN IF NOT EXISTS purpose VARCHAR(255) NOT NULL DEFAULT 'register'",
+    );
+};
+
 export const initModels = async () => {
     await sequelize.sync();
+    await applyPendingSchemaPatches();
 };
 
 export { UserOTP, PasswordSettings, RefreshToken, InvitedUser, User };
