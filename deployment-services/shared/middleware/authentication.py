@@ -70,11 +70,8 @@ class JWTAuthMiddleware:
                 {"message": "Invalid or expired token", "details": None},
                 status=401
             )
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error in JWTAuthMiddleware")
-            return JsonResponse(
-                {"message": "Internal Server Error", "details": str(e)},
-                status=500
-            )
+            return JsonResponse({"message": "Internal Server Error"}, status=500)
 
         return self.get_response(request)
