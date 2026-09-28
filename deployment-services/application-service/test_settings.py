@@ -77,3 +77,13 @@ EKS_MAX_APP_MEMORY = float(os.environ.get('EKS_MAX_APP_MEMORY', '256'))
 
 MAX_SNI_CERTIFICATES_PER_LISTENER = 24
 INFRASTRUCTURE_SERVICE_URL = "http://localhost:8002"
+
+# H1: test-only key for Application.envs encryption (api/fields.py), generated fresh each
+# test run rather than a fixed literal — a committed key-shaped string gets flagged by
+# secret scanners (and is exactly the "copy this into prod" trap load_keys guards
+# against) even when it's genuinely only ever used by pytest. See core/settings.py for the
+# real MODE=dev/prod key-loading rules, which this file bypasses entirely (test_settings is
+# not core.settings).
+from cryptography.fernet import Fernet as _Fernet
+
+APP_ENVS_ENCRYPTION_KEYS = (_Fernet.generate_key().decode(),)

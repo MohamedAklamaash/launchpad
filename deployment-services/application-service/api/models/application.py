@@ -4,6 +4,7 @@ from django.conf import settings
 from django.db import models
 from shared.utils.uuid import uuid7_pk
 
+from api.fields import EncryptedJSONField
 from api.models.infrastructure import Infrastructure
 
 
@@ -46,7 +47,10 @@ class Application(models.Model):
     start_command = models.CharField(max_length=255, blank=True, null=True)
     install_command = models.CharField(max_length=255, blank=True, null=True)
 
-    envs = models.JSONField(default=dict, null=True, blank=True)
+    # Fernet ciphertext at rest (H1) — see api/fields.py and migration
+    # 0037_encrypt_application_envs. Every read decrypts, every write encrypts; nothing
+    # about the Python-level dict interface changes.
+    envs = EncryptedJSONField(default=dict, null=True, blank=True)
     metadata = models.JSONField(default=dict, null=True, blank=True)
     # Explicit opt-in list of Database (read-model) ids this app injects credentials
     # for. Attach does not auto-redeploy — the next deploy picks up the new set.

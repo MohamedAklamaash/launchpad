@@ -46,6 +46,52 @@ def _wait_for_db(max_wait: int = 60, interval: int = 3) -> bool:
     return False
 
 
+def _envs_decryption_canary() -> None:
+    """H1 security review (REC2): a wrong or missing APP_ENVS_ENCRYPTION_KEYS must fail
+    the process at startup, not surface as a 500 on the first request that touches an
+    Application row. Reads one row's raw envs column and tries to decrypt it.
+
+    Silently returns (does not crash) when there is nothing yet to verify: the table
+    doesn't exist (fresh install, or a `migrate` run that hasn't reached 0036 yet — that
+    run's own `ready()` call happens before its migrations apply), the table is reachable
+    but empty, or the value is plain JSON text rather than ciphertext
+    (`EnvsNotMigratedError` — a schema/data-state question, not a key question; verified
+    against real Postgres that a still-`jsonb` column reads through Django's connection as
+    JSON text, not a `dict`, so this is the branch that actually catches it in practice).
+    Anything else that fails to decrypt is exactly what this check exists to catch.
+    """
+    from django.db import connection
+    from django.db.utils import DatabaseError
+
+    from api.fields import EnvsDecryptionError, EnvsNotMigratedError, decrypt_value
+    from api.models.application import Application
+
+    table = Application._meta.db_table
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT envs FROM {table} WHERE envs IS NOT NULL LIMIT 1")
+            row = cursor.fetchone()
+    except DatabaseError:
+        return
+    finally:
+        connection.close()
+
+    if row is None:
+        return
+
+    try:
+        decrypt_value(row[0])
+    except EnvsNotMigratedError:
+        return
+    except EnvsDecryptionError:
+        logger.critical(
+            "APP_ENVS_ENCRYPTION_KEYS cannot decrypt an existing Application.envs row — "
+            "refusing to start. Check the configured key(s) match what encrypted existing "
+            "data (see rotate_envs_encryption_key / repair_envs_encryption)."
+        )
+        raise
+
+
 class ApiConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "api"
@@ -56,6 +102,7 @@ class ApiConfig(AppConfig):
 
         from api.common.envs.application import app_config
         enforce_dev_mode_safety(app_config.mode, "application-service", logger)
+        _envs_decryption_canary()
 
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return

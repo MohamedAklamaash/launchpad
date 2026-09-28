@@ -36,6 +36,9 @@ class ApplicationEventProducer:
 
     @staticmethod
     def publish_application_updated(app):
+        # H1: envs is never published — infrastructure-service's read-model
+        # (api/models/application.py there) has no envs column and its consumer never
+        # reads the key, so this was a pure plaintext leak onto the wire with no reader.
         ApplicationEventProducer._publish("application.updated", {
             "id": str(app.id),
             "name": app.name,
@@ -45,7 +48,6 @@ class ApplicationEventProducer:
             "port": app.port,
             "project_branch": app.project_branch,
             "dockerfile_path": app.dockerfile_path,
-            "envs": app.envs,
         })
 
     @staticmethod

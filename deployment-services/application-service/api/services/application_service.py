@@ -229,7 +229,9 @@ class ApplicationService:
 
     def delete_application(self, user_id: str, app_id: str):
         """Delete application DB record immediately; enqueue AWS cleanup async."""
-        app = self.app_repo.get_by_id(app_id)
+        # H1 security review (REC2): deletion never reads envs — deferring it means an
+        # app whose envs value doesn't decrypt can still be deleted.
+        app = self.app_repo.get_by_id(app_id, defer_envs=True)
         if not app:
             raise PermissionError("Application not found")
 
