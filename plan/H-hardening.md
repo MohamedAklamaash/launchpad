@@ -6,8 +6,12 @@ review before merge — same process as the features.
 
 ## H1 — Encrypt `Application.envs` at rest
 
-`Application.envs` (`application-service/api/models/application.py`) is a plaintext
-`JSONField`. F3 (H7) and F6 (H6) were designed around that rather than fixing it.
+**Status: done** (mock-first; pending independent security review before merge).
+
+`Application.envs` (`application-service/api/models/application.py`) was a plaintext
+`JSONField`. F3 (H7) and F6 (H6) were designed around that rather than fixing it; this
+item fixes it without touching either design (both already re-derive shape/values from
+the live `envs` dict rather than storing a copy, so the field swap is transparent to them).
 
 - Envelope-free field-level encryption with a platform key (`cryptography` Fernet via
   `MultiFernet` so keys rotate without a flag day); key from env, required outside dev.
@@ -16,6 +20,521 @@ review before merge — same process as the features.
   manifest), rollback, exit inventory, the API (which already returns values to the owner
   only) — so no new plaintext copy appears anywhere.
 - Rotation command re-encrypting under the newest key.
+
+### Files
+
+- `application-service/api/fields.py` — `EncryptedJSONField` (a `TextField` subclass:
+  DB-level JSON queries on `envs` were never used, confirmed by grep, so giving that up for
+  opaque ciphertext costs nothing today) plus the `EnvsDecryptionError` hierarchy
+  (`EnvsNotMigratedError`, `EnvsJSONQuotedTokenError`) and the encrypt/decrypt helpers
+  `rotate_envs_encryption_key`, `repair_envs_encryption`, and migration `0037` share
+  (`multifernet`, `encrypt_value`, `decrypt_value`, `looks_like_json_quoted_token` — all
+  public: the security review's first pass had the migration import a `_`-prefixed
+  "private" helper from this module, which is now the wrong smell to leave in place for
+  three call sites doing the same thing).
+- `application-service/api/common/envs_encryption.py` — `load_keys(raw, is_dev)`: parses
+  `APP_ENVS_ENCRYPTION_KEYS`, validates every entry is a real Fernet key, refuses the
+  derived dev-mode fallback key outside dev mode, and holds that key. No key-shaped literal
+  is committed here (see Decision 8) — `DEV_FALLBACK_KEY` is derived at import time from
+  `sha256(b"launchpad-dev-only-envs-key")`, a human-readable, clearly-non-secret constant.
+  Kept free of Django imports so `core/settings.py` can call it the same way it already
+  calls `shared.mode.is_dev_mode`.
+- `application-service/api/models/application.py` — `envs` is `EncryptedJSONField` (same
+  `default=dict, null=True, blank=True` as before).
+- `application-service/api/migrations/0037_encrypt_application_envs.py` — see *Migration*.
+  Renumbered twice at rebase as other H-items merged first and claimed the same numbers
+  for unrelated changes: `0034` → `0036` (H4 (#92) claimed `0034`/`0035` for a log-group
+  backfill) → `0037` (H2 (#93) then claimed `0036` for `Infrastructure.exited_at`).
+  Currently depends on `0036_infrastructure_exited_at`.
+- `application-service/api/management/commands/rotate_envs_encryption_key.py` —
+  compare-and-swap, keyset-batched (see *R2* below).
+- `application-service/api/management/commands/repair_envs_encryption.py` — new (see *R1*).
+- `application-service/api/apps.py` — `_envs_decryption_canary()`, called from
+  `ApiConfig.ready()` (see *RECOMMENDED 2*).
+- `application-service/api/repositories/application.py`,
+  `api/services/application_service.py` — `.defer('envs')` on the list and delete paths
+  (see *RECOMMENDED 2*).
+- `application-service/api/views/application.py` — the PATCH view returns a generic 500
+  for `EnvsDecryptionError`, not a 400 with the exception text (see *RECOMMENDED 3*).
+- `application-service/api/messaging/producer/producer.py` —
+  `publish_application_updated` no longer puts `envs` on the `application.updated` event.
+  It was a pure plaintext leak onto RabbitMQ with no reader: infrastructure-service's
+  `Application` read-model (`infrastructure-service/api/models/application.py`) has no
+  `envs` column, and its consumer (`api/messaging/consumer/application_consumer.py`)
+  never read the key from the payload it received. Grep of both services for `envs`
+  confirmed no other RabbitMQ event, cache, or cross-service read-model ever carried it.
+- `application-service/core/settings.py`, `test_settings.py`, `env.example` —
+  `APP_ENVS_ENCRYPTION_KEYS` wiring.
+- `deployment-services/requirements.txt` — `cryptography==50.0.1` pinned explicitly (was
+  already present transitively; `pip-audit -r requirements.txt` is clean).
+- `application-service/api/tests/test_envs_encryption.py` — 38 tests, see *Tests*.
+
+### Migration
+
+One migration, two operations in a single (atomic) transaction:
+
+1. `AlterField` changes the column from `jsonb` to `text`. Postgres's own
+   `ALTER COLUMN ... TYPE text USING envs::text` cast only changes representation — the
+   column holds plain JSON text immediately after this step, not ciphertext.
+2. `RunPython` (`encrypt_existing_envs`) walks every row with a raw cursor — not the ORM,
+   since by this point in the migration graph the model's field is already
+   `EncryptedJSONField`, so `Application.objects` would try to decrypt text that isn't
+   ciphertext yet — and replaces the plaintext JSON text with its Fernet ciphertext,
+   byte-for-byte (no `json.loads`/`json.dumps` round trip; the cast already guarantees
+   valid JSON text, and encrypting it as-is is simpler than reformatting it first).
+
+Because both steps run inside one migration's transaction, there is no committed state,
+anywhere, where the column is `text` and holds plaintext. The reverse
+(`decrypt_existing_envs`) runs before the `AlterField` reverse (Django unapplies operations
+in reverse list order), so the cast back to `jsonb` always sees valid JSON text.
+
+**Rollback:** reversing this migration requires `APP_ENVS_ENCRYPTION_KEYS` to still
+include whatever key encrypted each row — do not drop a key from that setting until every
+row that could have used it has gone through `rotate_envs_encryption_key`. A *code*
+rollback (redeploying the previous release) without also unapplying this migration is
+unsafe: the old code's plain `JSONField` would read Fernet ciphertext as if it were the
+env dict itself. Roll back code and migration together, in that order (migration first,
+then code), or not at all.
+
+This in-place approach (rather than add-column/backfill/rename-column) was chosen because
+the whole thing is one atomic transaction on the DB side regardless — a partial failure
+rolls back the `ALTER` too, so there's no window where a second migration step could be
+required to finish cleaning up. The cost is an `ACCESS EXCLUSIVE` lock on `api_application` for the duration, which is
+acceptable for this table's size in a self-hosted control plane; a much larger deployment
+should re-evaluate.
+
+### Security review follow-ups
+
+An independent review of the first pass (APPROVE WITH FIXES) found the deploy runbook
+above was not actually enforceable, rotation had a lost-update bug, and asked for
+defense-in-depth around a wrong key and a few narrower fixes. All addressed; details below,
+folded into *Decisions*, *Tests*, and *Release notes*.
+
+**R1 — old/new code overlap can leave the column in a state neither version reads
+correctly, and it needs to be detectable and repairable, not just avoided.** Two shapes:
+
+- *A JSON-quoted Fernet token.* Old (pre-H1) code's `envs` field is still
+  `django.db.models.JSONField`. Its `from_db_value` swallows a JSON parse failure and
+  returns the raw string instead of raising
+  (`except json.JSONDecodeError: return value`), so old code reading an already-migrated
+  ciphertext column gets the token back as a plain Python `str`. If old code then does a
+  full `.save()` (not one scoped with `update_fields` excluding `envs`), `JSONField`'s
+  `get_prep_value` re-serializes that `str` as a JSON string — `json.dumps("gAAAA...")` —
+  wrapping the token in quotes.
+
+  **Empirical finding, not assumed:** this does *not* actually make the row
+  undecryptable. `Fernet.decrypt` calls `base64.urlsafe_b64decode` with its default
+  `validate=False`, which silently discards any character outside the base64 alphabet —
+  including the two `"` the quoting adds — so `MultiFernet.decrypt()` called directly on
+  a quoted token succeeds and returns the original plaintext unchanged. Verified in
+  `test_a_json_quoted_token_would_decrypt_if_we_let_it`. This is the opposite of what R1
+  assumed ("never decrypts") and is reported here rather than silently built around: the
+  fix keeps the detector anyway (see below), but the *severity* of this specific shape is
+  lower than originally stated — it is a malformed value that happens to still read
+  correctly today, not silent data loss.
+
+  `EncryptedJSONField` still treats a quoted token as an error
+  (`EnvsJSONQuotedTokenError`, checked *before* the decrypt attempt in `decrypt_value` —
+  not in an `except InvalidToken` branch, precisely so the lenient base64 parsing never
+  gets a chance to paper over it) because that leniency is a `base64`/`cryptography`
+  implementation detail, not part of Fernet's documented contract, and the stored value is
+  malformed regardless of whether it currently happens to decrypt.
+- *Plaintext JSON.* Old code's PATCH handler writes a real, unencrypted dict into what is
+  now a ciphertext-only column — this one is exactly as serious as it sounds: a genuine
+  secret sitting in plaintext. `EncryptedJSONField` already refused to silently accept
+  this (Decision 6); R1 is about giving an operator a way to fix it instead of only being
+  told it's broken.
+
+  `manage.py repair_envs_encryption` (`--dry-run` supported) detects both shapes with a
+  raw cursor (keyset-batched, same as rotation) and repairs them: unwraps + re-rotates a
+  quoted token onto the newest key, encrypts a plaintext dict. A row that already decrypts
+  cleanly is left untouched (`ok`); anything that is neither valid ciphertext, a quoted
+  token, nor plain JSON is reported as `unrepairable` and never written to.
+
+  The runbook (*Release notes*) is rewritten to actually prevent the overlap rather than
+  assume a `pkill`-style stop holds: `deployment-worker.service` has `Restart=always`, so
+  killing the worker process without `systemctl stop`/`disable` just gets it restarted
+  mid-migration by systemd. The rewritten runbook uses `systemctl stop` (and disables the
+  unit for the maintenance window) for the worker, stops every web replica, and states
+  explicitly that an overlap here is silent, permanent data corruption (until
+  `repair_envs_encryption` is run) — not merely a temporary outage. The same discipline
+  applies to a rollback (migration + code together, per the *Migration* section above).
+
+**R2 — the rotation command had a lost-update bug.** The original
+`rotate_envs_encryption_key` read every row's ciphertext, decrypted it, and wrote the
+result back with `Application.objects.filter(pk=app_id).update(envs=decrypted_dict)`. If a
+real request (an owner's PATCH, or another rotation run) changed that row's `envs` between
+the read and the write, the blind `.update()` would silently overwrite that change with
+data decrypted from the stale read — a lost update, invisible to everyone. Fixed:
+
+- Rotates ciphertext directly with `MultiFernet.rotate(raw)` (decrypt-then-re-encrypt of
+  the *same plaintext bytes* under the newest key) instead of a decrypt-to-dict →
+  `json.dumps` → re-encrypt round trip — one fewer place a formatting difference or a
+  second lost update could sneak in.
+- Writes with a compare-and-swap: `UPDATE ... SET envs = %s WHERE id = %s AND envs = %s`,
+  the last parameter being the exact ciphertext this process just read. Zero rows affected
+  means something changed the row since the read; counted as `changed_concurrently` and
+  reported, never silently treated as success. Re-running the command picks up whatever it
+  skipped.
+- Reads in fixed-size batches ordered by `id` (keyset pagination) instead of one
+  `SELECT * FROM api_application` pulling every row into memory.
+
+`repair_envs_encryption` uses the same CAS-write, keyset-batch pattern.
+`test_rotate_reports_changed_concurrently_and_does_not_clobber_it` simulates the exact
+race directly against `Command._rotate_one`.
+
+**R3 — plaintext can remain outside the `envs` column itself.** Three sub-findings:
+
+- *Postgres dead tuples / WAL / replicas / PITR backups.* The migration's `UPDATE`s
+  (encrypting existing rows) leave the pre-encryption plaintext in dead tuples until
+  vacuumed, and in any WAL segment, streaming replica, or PITR/base backup taken around
+  that time. Runbook now includes `VACUUM FULL api_application` immediately after the
+  migration (same maintenance window — it takes an `ACCESS EXCLUSIVE` lock, same as the
+  migration itself, so there's no additional availability cost beyond extending that
+  window) and instructions to treat any backup/WAL archive from before the migration as
+  containing plaintext secrets, with an explicit expiry.
+- *Pre-fix `application.updated` RabbitMQ messages.* Checked directly rather than assumed:
+  `infrastructure-service/api/messaging/consumer/application_consumer.py`'s queue
+  (`infrastructure-service.application-events`, bound to the `application_events`
+  exchange) is declared with no `x-dead-letter-exchange` argument — grepped the whole repo
+  for `dead.letter`/`x-dead`/`dlq` and found only two *unrelated* DLQs (the Redis
+  deployment-job queue, `inspect_dlq.py`; the platform-DNS dispatch queue), neither
+  bound to `application_events`. A malformed `application.updated` message (the only nack
+  path that used `requeue=False`, at `application_consumer.py:67-69`) is therefore
+  **dropped by RabbitMQ, not routed anywhere** — there is no `application_events` DLQ for
+  `inspect_dlq.py`, or anything else, to purge. **This means the review's specific
+  instruction ("inspect+purge with inspect_dlq.py, give exact commands") describes
+  infrastructure that does not exist in this codebase** — implemented the corrected,
+  narrower finding instead of inventing a command against a nonexistent queue: pre-fix
+  `envs` values could still be present in the RabbitMQ broker's own persistent message
+  store (durable queue, on disk) for however long messages sat unconsumed, and in any
+  backup/snapshot of that broker's data directory — the same class of risk as Postgres's
+  WAL, and the runbook says so, with the same mark-and-expire guidance. Reported to the
+  reviewer rather than silently built around.
+- Both of the above are now explicit runbook steps, not left implicit.
+
+### RECOMMENDED follow-ups (all applied)
+
+1. **`load_keys` refuses the known-weak dev-mode fallback key outside dev.** Originally
+   also refused a fixed literal committed in `test_settings.py` for pytest; GitGuardian
+   flagged both key-shaped literals in CI (correctly — a key-shaped string in source is a
+   secret-scanner hit regardless of intended use). Fixed per Decision 8: `test_settings.py`
+   now generates its key at import time (`Fernet.generate_key()`, fresh every process, no
+   literal to flag) instead of holding a fixed one, which also means there's no longer a
+   fixed "committed test key" to refuse — `_KNOWN_WEAK_KEYS` now holds only the derived
+   dev-mode fallback. `load_keys` still raises if that key appears in
+   `APP_ENVS_ENCRYPTION_KEYS` and `is_dev` is false.
+   `test_dev_fallback_key_is_derived_deterministically` re-derives it independently and
+   compares, and `test_settings_key_is_generated_not_a_committed_literal` asserts the test
+   key is a valid, distinct Fernet key rather than the fixed string this used to be.
+2. **`.defer('envs')` on paths that don't need it, plus a startup canary.** The list
+   endpoint (`ApplicationRepository.get_all_for_user`) and delete flow
+   (`ApplicationService.delete_application` → `ApplicationRepository.get_by_id(...,
+   defer_envs=True)` and `.delete()`) now defer the column, so one row with an
+   undecryptable `envs` value can't take down an unrelated list or block deleting the very
+   row that needs deleting. `QuerySet.delete()` re-evaluates the exact queryset passed to
+   it (`Collector.collect()` forces it to check for cascading relations) — deferring on
+   that queryset is what actually matters; the read a caller did earlier doesn't carry
+   over to a fresh `.filter(...).delete()` built inside the repository, which is what the
+   original code did. `_envs_decryption_canary()` (`api/apps.py`, called from
+   `ApiConfig.ready()`) reads one row and tries to decrypt it at process startup: skips
+   silently when the table doesn't exist yet or is empty (fresh install / an in-progress
+   `migrate` run, whose own `ready()` call happens before that run's migrations apply) or
+   when the column isn't migrated yet (`EnvsNotMigratedError` — a schema question, not a
+   key question), and raises (crashing startup, logged `CRITICAL`) for any other decrypt
+   failure — a wrong or missing key fails at deploy time, not on the first real request.
+3. **The PATCH view (`ApplicationUpdateView`) no longer turns `EnvsDecryptionError` into a
+   400 with the exception text.** It's a server-side data/key problem, not a bad request.
+   Caught before the existing `except ValueError` (which it would otherwise match, being a
+   `ValueError` subclass): logs `app id` at `ERROR` and returns a generic 500.
+4. **`EncryptedJSONField.to_python` raises `django.core.exceptions.ValidationError`, not
+   `EnvsDecryptionError`.** `to_python` is the form/admin validation path
+   (`full_clean()`), never the DB read path (`from_db_value` handles that) — Django field
+   convention is `ValidationError` for bad input there, not an internal exception
+   surfacing as an unhandled 500.
+5. **`pip-audit -r requirements.txt`: no known vulnerabilities** (re-run after this pass;
+   see *Tests*).
+
+### Decisions
+
+1. **Never derived from `SECRET_KEY`/`JWT_SECRET`.** Those already sign
+   sessions/CSRF/the F3 content hash and authenticate service-to-service calls; a
+   compromise of one secret must not compromise the other. `APP_ENVS_ENCRYPTION_KEYS` is
+   its own env var, comma-separated, newest first.
+2. **Key loading follows the `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN` pattern**
+   (infrastructure-service `core/settings.py`): required and validated (a real Fernet key)
+   outside `MODE=dev`; `MODE=dev` falls back to one fixed, publicly-known key with a loud
+   `logger.warning`, never silently.
+3. **Not a `JSONField`.** `EncryptedJSONField` is a `TextField` subclass. An encrypted
+   value is opaque text, so `filter(envs__key=...)`-style DB-level JSON queries become
+   impossible — acceptable because nothing in the codebase does that today (checked by
+   grep before deciding).
+4. **F3's content hash needs no change.** `deployment_snapshot.snapshot_env` hashes
+   whatever `application.envs` returns — always a plain `dict`, since the field decrypts
+   before any Python code sees it — so the hash is identical before and after the
+   encrypt/decrypt round trip. Verified directly in
+   `test_snapshot_hash_is_unchanged_by_the_encrypt_decrypt_round_trip`.
+5. **`rotate_envs_encryption_key` idempotency is checked against the newest key alone**
+   (a single `Fernet(keys[0]).decrypt`, not `MultiFernet`) — a row already encrypted under
+   the newest key is left untouched and reported as `already_current`, so a second run
+   writes nothing. Rows are re-encrypted with `QuerySet.update()`, not `.save()`, so
+   rotation never bumps `updated_at` or fires model signals.
+6. **Post-migration plaintext is a hard error, not a fallback.** `EncryptedJSONField`'s
+   read path raises `EnvsDecryptionError` (never returns the raw column value) when
+   nothing in `APP_ENVS_ENCRYPTION_KEYS` decrypts it — during normal operation that can
+   only mean a key was removed before every row using it was rotated, or tampering. It
+   also raises (rather than crashing with an `AttributeError`) if the column value isn't
+   even text — the signature of running new code against a database that hasn't had
+   migration `0037` applied yet.
+7. **Django admin needed its own fix.** `Application` is registered in `api/admin.py`
+   with the default `ModelAdmin` (no custom form, no `exclude`). A bare `TextField` would
+   have given admin a free-text `CharField`: the widget would render `str(decrypted_dict)`
+   and, on any save (even one that never touches `envs`), write that Python-repr string
+   back through `get_prep_value` as a JSON *string* — silently turning every admin-touched
+   app's `envs` into a `str` for every later reader. `EncryptedJSONField.formfield()`
+   returns `forms.JSONField` (exactly what `models.JSONField.formfield()` already does),
+   so admin validates/round-trips real JSON and `cleaned_data["envs"]` stays a dict.
+   Covered by `test_admin_form_round_trips_a_dict_not_a_string`.
+8. **No key-shaped literal committed to the repo.** GitGuardian flagged
+   `DEV_FALLBACK_KEY` and `test_settings.py`'s fixed test key in CI — correctly: a valid
+   Fernet key sitting in source is a secret-scanner hit whether or not it's meant to
+   protect anything real. `DEV_FALLBACK_KEY` is now derived at import time
+   (`base64.urlsafe_b64encode(sha256(b"launchpad-dev-only-envs-key"))`) from a
+   human-readable, obviously-non-secret constant — every `MODE=dev` process still derives
+   the identical key (required: it's a shared fallback), but nothing key-shaped appears in
+   source for a scanner to catch. `test_settings.py` generates its key with
+   `Fernet.generate_key()` at import time instead of holding a fixed literal — fresh every
+   test run, never committed, and `load_keys` no longer needs to special-case it as a
+   second "known-weak" key at all (see RECOMMENDED 1).
+
+### Tests (`api/tests/test_envs_encryption.py`, 40 tests; full suite 555 passed)
+
+Round trip through the ORM; ciphertext genuinely on disk (raw SQL read, no plaintext, no
+key names); empty dict and `NULL` both round-trip correctly; rotation (old key decrypts,
+`rotate_envs_encryption_key` re-encrypts under the newest, re-running is a no-op, removing
+the old key afterwards still reads); `--dry-run` reports without writing; the migration's
+`encrypt_existing_envs`/`decrypt_existing_envs` functions against a row seeded as
+pre-migration plaintext (and its reverse); a post-migration non-ciphertext value raises
+`EnvsDecryptionError` on read; `load_keys` startup-failure behavior (missing key outside
+dev raises, dev fallback warns, a malformed key is rejected, comma-parsing keeps order);
+the F3 snapshot hash unchanged across the round trip; the admin form issue (Decision 7);
+no plaintext env value reaches `caplog` through a real `_create_task_definition` call
+(real `ECSClient`, mocked boto3 client, matching the pattern in
+`test_immutable_image_tag.py`/`test_host_mode_deploy_wiring.py`; a positive assertion that
+the env-logging line actually fired comes first, so the negative assertion means
+something).
+
+Security review follow-ups, 26 additional tests: a JSON-quoted token raises
+`EnvsJSONQuotedTokenError` on read, and a paired test pins the empirical finding that it
+would actually decrypt if the check didn't run first
+(`test_a_json_quoted_token_would_decrypt_if_we_let_it`); `EnvsNotMigratedError` for plain
+JSON *text* — the shape real Postgres actually produces through Django's connection for a
+still-`jsonb` column, confirmed empirically (`test_not_migrated_error_for_plain_json_text`)
+after the first version of this check, based on a wrong assumption about what type
+`from_db_value` would receive, made `manage.py migrate` itself unable to run (see the
+*Migration verified against real Postgres* section) — plus a defensive fallback test for
+the originally-assumed (and now confirmed unreachable in practice) non-string-type case;
+`repair_envs_encryption` repairing a quoted token, a plaintext dict, leaving a healthy row
+untouched, reporting `unrepairable` without writing, and `--dry-run`; the rotation
+command's CAS behavior under a simulated concurrent write
+(`test_rotate_reports_changed_concurrently_and_does_not_clobber_it`) and that it uses
+`MultiFernet.rotate()` rather than a decrypt/json/re-encrypt round trip; `load_keys` refusing the derived dev-fallback key outside dev, that the fallback
+re-derives deterministically, and that `test_settings.py`'s key is a freshly generated,
+valid Fernet key rather than a fixed literal (Decision 8); delete and list both
+succeeding against a corrupted row (`.defer('envs')`, with `DeploymentLock` stubbed so
+the delete path has no live Redis dependency — CI runs application-service tests with no
+Redis available), and that a deferred field still raises on the lazy load if actually
+accessed; the startup canary skipping an empty table, skipping a pre-migration value (both
+mocked and, separately, a real plain-JSON-text row exercising the actual bug above),
+passing on a healthy row, and raising + logging `CRITICAL` on a wrong key; the PATCH view
+returning a generic 500 (not 400 with `str(e)`) with the app id logged; `to_python` raising
+`ValidationError` for bad input and passing `None`/dicts through unchanged.
+
+Existing suites re-run as regression evidence rather than duplicated: `test_rollback.py`
+(38 tests, several asserting a seeded secret never appears in rollback previews/history)
+and `test_exit_inventory.py` (asserts the same for the exit inventory) both still pass
+unchanged against the new field.
+
+**Verification run (final, after rebasing onto H2/H3/H4/H5 on `main` and renumbering the
+migration to `0037`):** application-service `pytest -q` — 555 passed (grew across three
+rebases — 447 → 471 → 505 → 555 — as H2/H4/H5's own unrelated tests landed on `main`; this
+change's own tests stayed at 40 throughout). infrastructure-service `pytest -q` — 880
+passed (unaffected; confirms the read-model/consumer have no `envs` dependency).
+gateway-service `pytest -q` — 84 passed (unaffected; grew from 52 as H3/H5's own tests
+landed, also unrelated to this change). `ruff check deployment-services gateway-service` —
+clean. `python -m compileall` (both services) — clean. `iam_policy/generate.py --check` —
+clean (untouched by this change; run per `CLAUDE.md`'s standing CI list). `manage.py
+makemigrations api --check` — no changes detected (migration `0037`, depending on H2's
+`0036_infrastructure_exited_at`, matches what Django would generate — re-verified at each
+of the two renumberings). `pip-audit -r requirements.txt` — no known vulnerabilities
+(re-run after this pass).
+
+**CI (PR #94) caught two more issues local runs hadn't hit:** a `Tests (deployment-services)`
+failure and a GitGuardian secret-scan hit — neither reproducible with the local scripted
+env-var setup used throughout this file, both real.
+
+- `test_delete_application_succeeds_when_envs_is_corrupted` connected to `localhost:6379`
+  and failed with `redis.exceptions.ConnectionError` — CI's runner has no Redis.
+  `ApplicationService.delete_application` acquires `DeploymentLock` (Redis-backed) before
+  deleting; every other test in this suite that exercises that path already stubs it
+  (`test_app_delete_custom_domain_cleanup.py`), this one didn't. Fixed the same way:
+  `monkeypatch.setattr("api.services.application_service.DeploymentLock", MagicMock())`.
+  Re-ran the whole file, and the full application-service suite, with
+  `REDIS_HOST=127.0.0.2` (a non-routable address, so any live connection attempt fails
+  immediately rather than hanging) — all pass, proving no live Redis dependency remains.
+- GitGuardian flagged `DEV_FALLBACK_KEY` and `test_settings.py`'s fixed key as committed
+  secrets. Fixed per Decision 8 above (derive the dev key from a non-secret constant,
+  generate the test key at import time) — no key-shaped literal remains anywhere in the
+  diff.
+
+**Migration verified against real Postgres, not just SQLite — twice, and the second pass
+found a real bug the first pass and the whole SQLite-backed suite could not have caught.**
+pytest never exercises the migration directly (`conftest.py` builds tables from model
+state, `MIGRATION_MODULES = {"api": None}`) — the unit tests above call its
+`encrypt_existing_envs`/`decrypt_existing_envs` functions directly against a SQLite-backed
+`TextField`, which proves the encryption logic but not the Postgres `jsonb`↔`text` cast,
+and SQLite has no native jsonb type at all to diverge from in the first place.
+
+First pass (before the security review, migration numbered `0034` at the time): ran
+`migrate api 0033` (full prior history), inserted three rows via raw SQL matching that
+schema (`jsonb`, one with a seeded secret, one `{}`, one `NULL`), ran `migrate api 0034`,
+confirmed via `psql` that the column is now `text`, every non-null value is Fernet
+ciphertext, and neither the secret nor any key name appears anywhere in the table;
+confirmed via the ORM that all three rows decrypt correctly; ran `migrate api 0033`
+(reverse) and confirmed via `psql` the column is `jsonb` again holding the original
+plaintext JSON, byte-identical to what was seeded.
+
+Second pass (after the security review's `_envs_decryption_canary`, and after renumbering
+to `0036` post-H4): re-ran the same sequence against a fresh container, migrating through
+H4's own `0034`/`0035` first. `manage.py migrate api 0036` **crashed before applying
+anything**, in `_envs_decryption_canary()` (`ready()` runs before the requested command,
+including `migrate` itself), with `EnvsDecryptionError`, not the `EnvsNotMigratedError`
+the canary was written to expect. Root cause: `EnvsNotMigratedError`'s original detection
+(`not isinstance(raw, (str, bytes))`) assumed a still-`jsonb` column would hand
+`from_db_value` a Python `dict` — checked directly with a standalone `psycopg2` connection
+and that assumption is correct for psycopg2 on its own, but **not through Django's
+connection**: confirmed with `django.db.connection.cursor()` against the same row that raw
+`jsonb` comes back as plain JSON *text*, because Django's own `JSONField.from_db_value`
+does its own `json.loads` and Django's postgres backend doesn't rely on (or leaves disabled)
+psycopg2's default jsonb-to-object typecasting. `decrypt_value` therefore took the "is
+text, try to decrypt it" branch on a genuinely pre-migration row and raised the generic
+`EnvsDecryptionError` the canary treats as a real key failure — meaning **the canary as
+originally written would have made it impossible to ever run this migration**: `migrate`
+itself invokes `ready()` before touching the schema, so it would crash on step 3 of the
+runbook every time, on every database that had any data in it. Fixed by changing the
+detection to "is this valid JSON text, not ciphertext" (`_is_plain_json`) rather than "is
+this the wrong Python type" — this also correctly folds in R1's plaintext-corruption case,
+which is the same observable shape and needs the same "not a key problem" treatment (see
+the updated `EnvsNotMigratedError` docstring in `api/fields.py`). Re-ran the full sequence
+after the fix: `migrate api 0035` → seed → `migrate api 0036` succeeds, ciphertext on disk,
+ORM decrypts correctly, reverse to `0035` restores the original plaintext `jsonb`.
+Regression test: `test_envs_decryption_canary_skips_a_real_pre_migration_row` (seeds a
+plain-JSON-text value, no mocking, so it exercises the real code path the mocked
+`test_envs_decryption_canary_skips_pre_migration_rows` does not). Container discarded
+after each pass.
+
+(The migration was renumbered a third time, to `0037`, after H2 (#93) also landed and
+claimed `0036` for `Infrastructure.exited_at` — an unrelated model, no further conflict
+with the above; `makemigrations api --check` re-verified clean at each renumbering.)
+
+This is flagged explicitly for the reviewer: it is the kind of bug that only manifests
+against the real database engine and only at the exact moment the migration itself runs,
+and the project's own SQLite-backed test harness cannot exercise it — real-database
+verification before merge is not optional for this change.
+
+**Rotation and repair's compare-and-swap also verified against real Postgres, not just
+SQLite.** The CAS `UPDATE ... WHERE id = %s AND envs = %s` passes `id` back as whatever a
+raw cursor returned it — a `uuid.UUID` object on Postgres, not the hex string SQLite uses —
+and psycopg2 needs an adapter registered to bind a `UUID` object as a query parameter.
+Rather than assume Django's postgres backend registers one (it does,
+`psycopg2.extras.register_uuid()`, in `get_new_connection`), checked directly: seeded three
+rows via the ORM under one key, ran `manage.py rotate_envs_encryption_key` against a real
+Postgres database with `(NEW, OLD)` configured — `rotated=3`; ran it again — `rotated=0
+already_current=3 changed_concurrently=0`; wrote plain JSON into one row via `psql`, ran
+`manage.py repair_envs_encryption` — `plaintext_repaired=1`, confirmed via `psql` that the
+row is ciphertext again. All against the id-as-`UUID`-object path this branch had not
+previously exercised outside SQLite.
+
+### Release notes
+
+- **New required env var:** `APP_ENVS_ENCRYPTION_KEYS` on application-service, outside
+  `MODE=dev`. Generate with
+  `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+  Startup fails immediately (before serving traffic) if unset outside dev — same failure
+  mode as a missing `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN`.
+- **Migration is stop-the-world — a `pkill`-style stop is not enough, and an overlap is
+  silent, permanent data corruption, not merely an outage (R1).** Old code (`JSONField`)
+  reading the post-migration `text` column gets `json.loads(<fernet token>)`, which fails
+  and (per `JSONField.from_db_value`) hands the app the raw ciphertext string as if it were
+  the value — old code's business logic then does whatever it does with a string where it
+  expected a dict, and a subsequent full `.save()` writes a JSON-quoted version of that
+  string back (see *R1* above: this specific shape happens to still decrypt, by accident
+  of lenient base64 parsing, but is still detected as an error and worth avoiding). New
+  code reading the still-`jsonb` pre-migration column gets a `dict`/`list` handed to
+  `decrypt_value`, which raises `EnvsNotMigratedError` (a subclass of `EnvsDecryptionError`)
+  — every request touching an `Application` breaks until the migration finishes. Runbook:
+  1. `systemctl stop deployment-worker` **and** `systemctl disable deployment-worker` for
+     the maintenance window — `deployment-worker.service` has `Restart=always`; a bare
+     `pkill run_worker` gets the process restarted by systemd within `RestartSec=10`,
+     re-opening the overlap window mid-migration. Stop every web replica the same way
+     (whatever process manager/orchestrator runs gunicorn in that environment — no web
+     systemd unit is checked into this repo to name here).
+  2. Set `APP_ENVS_ENCRYPTION_KEYS` in the environment the migration will run from — the
+     `RunPython` step needs it to encrypt existing rows, and it imports `api.fields`, so
+     run it from the new release's checkout.
+  3. Run `migrate`.
+  4. `VACUUM FULL api_application` (R3) — the migration's `UPDATE`s leave pre-encryption
+     plaintext in dead tuples until vacuumed. Takes its own `ACCESS EXCLUSIVE` lock; run it
+     in the same window as the migration rather than adding a second one later. (`VACUUM
+     FULL` also rewrites the table, so this is the point to budget for that on a large
+     table, not just the migration's own lock.)
+  5. Re-enable and start `deployment-worker`, then start web replicas, then
+     `systemctl enable deployment-worker` again.
+  6. If step 1 wasn't followed exactly (an overlap did happen): run
+     `manage.py repair_envs_encryption --dry-run` first, then without `--dry-run`, before
+     resuming normal traffic — do not assume the stale window "just" caused errors, since
+     R1's second shape (a real PATCH landing during the overlap) writes genuine plaintext.
+
+  Same discipline for a *rollback*: unapplying this migration needs the same stop, and
+  rolling back the code without also unapplying the migration is unsafe in the same way
+  the *Migration* section above describes — do not do one without the other.
+- **Mark pre-migration backups as containing plaintext (R3).** Any Postgres base backup,
+  WAL archive, or logical dump taken before this migration ran holds every application's
+  `envs` values in plaintext (jsonb), regardless of what the live table looks like now.
+  Tag them, apply an explicit expiry no longer than the org's standard secret-rotation
+  window, and don't restore from one without re-running `repair_envs_encryption` (or,
+  simpler: re-running the whole migration) against the restored copy before it serves
+  traffic.
+- **`application.updated` RabbitMQ messages published before this fix (R3) — corrected
+  finding.** The security review asked for an "inspect and purge" step against an
+  `application_events` DLQ via `inspect_dlq.py`. That DLQ doesn't exist:
+  `infrastructure-service`'s `application_consumer.py` declares its queue with no
+  `x-dead-letter-exchange`, so a nacked malformed message
+  (`application_consumer.py:67-69`) is dropped by RabbitMQ, not stored anywhere;
+  `inspect_dlq.py` operates on an unrelated Redis queue (the deployment-job DLQ). A
+  pre-fix `envs` value can still be present in the RabbitMQ broker's own persistent
+  message store for however long a message sat unconsumed, and in any snapshot/backup of
+  that broker's data directory — treat those the same as Postgres WAL/backups above
+  (mark, expire); there is no purge command to run against a queue that isn't there.
+- **Key rotation runbook (R2: now lost-update-safe):** prepend the new key to
+  `APP_ENVS_ENCRYPTION_KEYS`, redeploy, run `manage.py rotate_envs_encryption_key`
+  (`--dry-run` first to preview counts), confirm `rotated=0 already_current=<total>
+  changed_concurrently=0` on a second run — if `changed_concurrently` is nonzero, re-run
+  again before removing the retired key — then remove the retired key on the next deploy.
+  Concurrent traffic during rotation is safe by design (R2); this does not need the
+  stop-the-world treatment the migration does.
+- **Risks / follow-ups for the security reviewer:** (1) the migration's `ACCESS EXCLUSIVE`
+  lock duration on `api_application`, and now also `VACUUM FULL`'s, scale with row count
+  and average `envs` size — fine today, worth a `pg_stat_activity` check before running
+  against a much larger table later; (2) `rotate_envs_encryption_key` and
+  `repair_envs_encryption` batch reads (keyset pagination, 500 rows/batch) but still
+  re-check every row in the table on every run — fine at current scale, would want a
+  "since last run" watermark before it isn't; (3) the startup canary
+  (`_envs_decryption_canary`) checks exactly one row, chosen by no particular ordering
+  (`LIMIT 1` with no `ORDER BY`) — if a table has one corrupted row among many, this canary
+  has no guarantee of finding it; it catches "the configured key doesn't work at all" far
+  more reliably than "one specific row is corrupted", which is what
+  `repair_envs_encryption --dry-run` is for.
 
 ## H2 — Enforce exit in application-service
 

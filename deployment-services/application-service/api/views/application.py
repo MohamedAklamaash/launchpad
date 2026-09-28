@@ -14,6 +14,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from api.fields import EnvsDecryptionError
 from api.models.application import Application
 from api.repositories.application import ApplicationRepository
 from api.services.application_service import ApplicationService
@@ -256,6 +257,13 @@ class ApplicationUpdateView(APIView):
             return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
+        except EnvsDecryptionError:
+            # H1 security review (REC3): this is a server-side data/key problem, not a
+            # bad request — EnvsDecryptionError is a ValueError subclass, so it must be
+            # caught here, before the plain ValueError handler below turns it into a 400
+            # with the exception text in the response body.
+            logger.error("envs decryption failed for application %s", pk)
+            return Response({"error": "Internal server error"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:

@@ -326,3 +326,15 @@ INFRASTRUCTURE_SERVICE_URL = os.environ.get('INFRASTRUCTURE_SERVICE_URL', 'http:
 # for EKS host mode are confirmed; until then every EKS app stays on path URLs and
 # `host_url_status` reports `eks_host_mode_disabled`.
 EKS_HOST_MODE_ENABLED = os.environ.get('EKS_HOST_MODE_ENABLED', 'False').lower() == 'true'
+
+# H1: Application.envs is Fernet ciphertext at rest (api/fields.py,
+# migration 0037_encrypt_application_envs). Comma-separated, newest first — MultiFernet
+# encrypts under the first entry and decrypts under any of them, so rotate_envs_encryption_key
+# can move existing rows onto a newly-prepended key without a flag day. MODE=dev falls back
+# to a fixed, publicly-known key (load_keys logs a warning); every other deployment must set
+# this explicitly, same as LAUNCHPAD_PLATFORM_PRINCIPAL_ARN in infrastructure-service.
+from api.common.envs_encryption import load_keys as _load_envs_encryption_keys
+
+APP_ENVS_ENCRYPTION_KEYS = _load_envs_encryption_keys(
+    os.environ.get('APP_ENVS_ENCRYPTION_KEYS', ''), is_dev_mode(app_config.mode),
+)
