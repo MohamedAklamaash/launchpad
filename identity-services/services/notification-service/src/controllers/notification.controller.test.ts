@@ -27,6 +27,13 @@ const signToken = (sub: string) =>
         process.env.JWT_SECRET as string,
     );
 
+const signPasswordResetToken = (sub: string) =>
+    jwt.sign(
+        { sub, email: `${sub}@example.com`, user_name: sub, role: 'user', scope: 'password_reset' },
+        process.env.JWT_SECRET as string,
+        { expiresIn: '5m' },
+    );
+
 const fakeRequest = (authorization: string | undefined) =>
     ({ headers: { authorization } }) as unknown as Request;
 
@@ -82,6 +89,24 @@ test("GetMyNotifications: only the caller's own notifications are fetched — th
         assert.equal(getStatus(), 200);
         assert.equal(queriedUserId, 'user-a');
         assert.equal((getBody() as Array<{ user_id: string }>)[0].user_id, 'user-a');
+    } finally {
+        getSpy.mock.restore();
+    }
+});
+
+test('GetMyNotifications: a password_reset token cannot be used to read notifications', async () => {
+    const getSpy = mock.method(notificationService, 'getByUser', async () => []);
+    try {
+        const { res } = fakeResponse();
+        const { next, getError } = fakeNext();
+        await GetMyNotifications(
+            fakeRequest(`Bearer ${signPasswordResetToken('user-a')}`),
+            res,
+            next,
+        );
+        const error = getError();
+        assert.ok(error instanceof HttpError && error.statusCode === 401);
+        assert.equal(getSpy.mock.callCount(), 0);
     } finally {
         getSpy.mock.restore();
     }

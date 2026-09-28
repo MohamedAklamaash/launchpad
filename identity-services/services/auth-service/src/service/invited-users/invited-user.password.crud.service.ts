@@ -3,6 +3,7 @@ import { InvitedUser, UserOTP, PasswordSettings } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { hashPassword, comparePassword } from '@/utils/handle-password';
 import { signAccessToken, verifyAccessToken } from '@/utils/handle-token';
+import { otpAttempts } from '@/utils/otp-attempts';
 import { Op } from 'sequelize';
 import { HttpError, FORGOT_PASSWORD_EVENT } from '@launchpad/common';
 import {
@@ -13,15 +14,22 @@ import {
 } from '@/types/auth.invited_user.types';
 import { userAuthenticationQueue } from '@/messaging/producer/user-created.message';
 
+const RESET_OTP_PURPOSE = 'password-reset';
+
 export class PasswordService extends BaseService {
-    public async requestPasswordReset(input: InvitedUserForgotPasswordInput) {
+    // Never returns the OTP, and never distinguishes "no such account" / "account has
+    // no infra" from success — the caller (ForgotPassword controller) responds
+    // identically either way, so this method's only observable effect for an unknown
+    // email is that no email gets sent. Doing that here (rather than in the controller)
+    // keeps the secret from ever crossing back over the HTTP boundary at all.
+    public async requestPasswordReset(input: InvitedUserForgotPasswordInput): Promise<void> {
         const { email, infra_id } = input;
-        return sequelize.transaction(async (transaction) => {
+        await sequelize.transaction(async (transaction) => {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
-            if (!user) throw new HttpError(404, 'User not found');
+            if (!user) return;
 
             const targetInfraId = infra_id || user.infra_id[0];
-            if (!targetInfraId) throw new HttpError(400, 'User belongs to no infra');
+            if (!targetInfraId) return;
 
             const otp = await this.createOTP(user.id, targetInfraId, transaction);
 
@@ -33,8 +41,6 @@ export class PasswordService extends BaseService {
                 source: 'forgot-password',
                 user_name: user.user_name,
             });
-
-            return otp.otp;
         });
     }
 
@@ -44,13 +50,22 @@ export class PasswordService extends BaseService {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
             if (!user) throw new HttpError(404, 'User not found');
 
+            if (!(await otpAttempts.hasAttemptsRemaining(RESET_OTP_PURPOSE, email))) {
+                await UserOTP.destroy({ where: { invited_user_id: user.id }, transaction });
+                throw new HttpError(429, 'Too many attempts — request a new code');
+            }
+
             const otpRecord = await UserOTP.findOne({
                 where: { invited_user_id: user.id, otp, expires_at: { [Op.gt]: new Date() } },
                 transaction,
             });
-            if (!otpRecord) throw new HttpError(400, 'Invalid or expired OTP');
+            if (!otpRecord) {
+                await otpAttempts.recordFailedAttempt(RESET_OTP_PURPOSE, email);
+                throw new HttpError(400, 'Invalid or expired OTP');
+            }
 
             await otpRecord.destroy({ transaction });
+            await otpAttempts.clearAttempts(RESET_OTP_PURPOSE, email);
 
             // Return a short-lived reset token specifically for password reset
             return signAccessToken(

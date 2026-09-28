@@ -2,8 +2,10 @@
 uuid.UUID (rejecting a malformed id with a 422 before proxy_request ever fires) or
 carries an explicit character-class Path(pattern=...) constraint. A bare `str` path
 param would let a decoded '%2F', '%3F', '%23', or '..' change the upstream request
-line — see app/api/endpoints/user.py and notification.py for the two ids that are
-not UUID-keyed upstream and are pattern-constrained instead.
+line — see app/api/endpoints/user.py for `/users/{user_id}`, the one id that is not
+UUID-keyed upstream and is pattern-constrained instead. (notification.py's
+`/notifications/user/{user_id}` — the other non-UUID id at the time H5 landed — was
+replaced by H3 with `/notifications/me`, which has no id path param at all.)
 
 This test walks the live route table so a future route with a raw `str` id param
 fails CI rather than silently reopening the confused-deputy hole.
@@ -142,11 +144,12 @@ def test_non_uuid_user_id_still_rejects_path_breaking_characters(monkeypatch, ba
 
     monkeypatch.setattr(proxy, "proxy_request", _fail)
     monkeypatch.setattr("app.api.endpoints.user.proxy_request", _fail, raising=False)
-    monkeypatch.setattr("app.api.endpoints.notification.proxy_request", _fail, raising=False)
 
     client = _client()
     assert client.get(f"/users/{bad_value}").status_code in (404, 422)
-    assert client.get(f"/notifications/user/{bad_value}").status_code in (404, 422)
+    # notification.py has no id path param any more (H3 replaced /user/{user_id} with
+    # /me) — nothing left here to path-break.
+    assert client.get(f"/notifications/user/{bad_value}").status_code == 404
 
 
 def test_well_formed_non_uuid_user_id_still_proxies(monkeypatch):

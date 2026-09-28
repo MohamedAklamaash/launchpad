@@ -1,5 +1,5 @@
 import { HttpError } from '@launchpad/common';
-import { verifyAccessToken, verifyRefreshToken } from '@/utils/handle-token';
+import { verifySessionToken, verifyRefreshToken } from '@/utils/handle-token';
 
 // Resolves the caller's own userId from a verified credential, never from anything the
 // request body claims. POST /api/v1/auth/revoke has no path/body parameter for a target
@@ -18,7 +18,10 @@ export const resolveRevokeCallerId = (
     const accessToken = authHeader?.split(' ')[1];
     if (accessToken) {
         try {
-            return verifyAccessToken(accessToken).sub;
+            // verifySessionToken rejects a narrow-scope token (e.g. a password_reset
+            // token) the same way it rejects an invalid one — either way, fall through
+            // to the refresh token below rather than letting it revoke sessions.
+            return verifySessionToken(accessToken).sub;
         } catch {
             // Fall through to the refresh token below.
         }

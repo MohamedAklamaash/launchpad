@@ -22,6 +22,13 @@ const signToken = (sub: string) =>
         process.env.JWT_SECRET as string,
     );
 
+const signPasswordResetToken = (sub: string) =>
+    jwt.sign(
+        { sub, email: `${sub}@example.com`, user_name: sub, role: 'user', scope: 'password_reset' },
+        process.env.JWT_SECRET as string,
+        { expiresIn: '5m' },
+    );
+
 const makeUser = (overrides: Partial<User>): User => ({
     user_id: 'user-a',
     user_name: 'user-a',
@@ -116,6 +123,36 @@ test('GetUserById: a caller can fetch their own profile', async () => {
     } finally {
         getSpy.mock.restore();
     }
+});
+
+test('GetUserById: a password_reset token cannot be used to read a profile', async () => {
+    const getSpy = mock.method(userService, 'getUserById', async () => makeUser({}));
+    try {
+        const { res } = fakeResponse();
+        const { next, getError } = fakeNext();
+        await GetUserById(
+            fakeRequest(`Bearer ${signPasswordResetToken('user-a')}`, { userId: 'user-a' }),
+            res,
+            next,
+        );
+        const error = getError();
+        assert.ok(error instanceof HttpError && error.statusCode === 401);
+        assert.equal(getSpy.mock.callCount(), 0);
+    } finally {
+        getSpy.mock.restore();
+    }
+});
+
+test('SearchUsers: a password_reset token cannot be used to search', async () => {
+    const { res } = fakeResponse();
+    const { next, getError } = fakeNext();
+    await SearchUsers(
+        fakeRequest(`Bearer ${signPasswordResetToken('user-a')}`, {}, { q: 'john' }),
+        res,
+        next,
+    );
+    const error = getError();
+    assert.ok(error instanceof HttpError && error.statusCode === 401);
 });
 
 test('SearchUsers: unauthenticated request is rejected with 401', async () => {

@@ -34,6 +34,12 @@ const { HttpError } = await import('@launchpad/common');
 const accessTokenFor = (sub: string) =>
     signAccessToken({ sub, email: `${sub}@example.com`, user_name: sub, role: 'user' });
 
+const passwordResetTokenFor = (sub: string) =>
+    signAccessToken(
+        { sub, email: `${sub}@example.com`, user_name: sub, role: 'user', scope: 'password_reset' },
+        '5m',
+    );
+
 const fakeRequest = (authorization: string | undefined, body: Record<string, unknown>) =>
     ({ headers: { authorization }, body }) as unknown as Request;
 
@@ -99,6 +105,27 @@ test('a body-supplied email cannot redirect the update to another account', asyn
         assert.equal(getStatus(), 200);
         assert.equal(targetUserId, 'user-a');
         assert.notEqual(targetUserId, 'user-b');
+    } finally {
+        updateSpy.mock.restore();
+    }
+});
+
+test('a password_reset token cannot be used to update a password', async () => {
+    const updateSpy = mock.method(InvitedUserFacade.prototype, 'updatePassword', async () => true);
+    try {
+        const { res } = fakeResponse();
+        await assert.rejects(
+            () =>
+                UpdatePassword(
+                    fakeRequest(`Bearer ${passwordResetTokenFor('user-a')}`, {
+                        oldPassword: 'old-secret',
+                        newPassword: 'new-secret',
+                    }),
+                    res,
+                ),
+            (error: unknown) => error instanceof HttpError && error.statusCode === 401,
+        );
+        assert.equal(updateSpy.mock.callCount(), 0);
     } finally {
         updateSpy.mock.restore();
     }

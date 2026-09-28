@@ -3,9 +3,12 @@ import { InvitedUser, UserOTP, RefreshToken } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { comparePassword } from '@/utils/handle-password';
 import { verifyRefreshToken } from '@/utils/handle-token';
+import { otpAttempts } from '@/utils/otp-attempts';
 import { Op } from 'sequelize';
 import { HttpError } from '@launchpad/common';
 import { InvitedUserLoginInput, AuthenticateUserInput } from '@/types/auth.invited_user.types';
+
+const REGISTRATION_OTP_PURPOSE = 'register';
 
 export class InvitedUserAuthService extends BaseService {
     public async login(input: Omit<InvitedUserLoginInput, 'infra_id'>) {
@@ -35,19 +38,32 @@ export class InvitedUserAuthService extends BaseService {
 
     public async authenticateWithOTP(input: AuthenticateUserInput) {
         const { email, otp } = input;
+
         return sequelize.transaction(async (transaction) => {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
             if (!user) throw new HttpError(404, 'User not found');
+
+            if (!(await otpAttempts.hasAttemptsRemaining(REGISTRATION_OTP_PURPOSE, email))) {
+                // The cap is hit — invalidate whatever OTP is outstanding so the
+                // attacker's next guess (even a correct one) can't land, and the
+                // legitimate user has to request a fresh code.
+                await UserOTP.destroy({ where: { invited_user_id: user.id }, transaction });
+                throw new HttpError(429, 'Too many attempts — request a new code');
+            }
 
             const otpRecord = await UserOTP.findOne({
                 where: { invited_user_id: user.id, otp, expires_at: { [Op.gt]: new Date() } },
                 transaction,
             });
-            if (!otpRecord) throw new HttpError(400, 'Invalid or expired OTP');
+            if (!otpRecord) {
+                await otpAttempts.recordFailedAttempt(REGISTRATION_OTP_PURPOSE, email);
+                throw new HttpError(400, 'Invalid or expired OTP');
+            }
 
             user.is_authenticated = true;
             await user.save({ transaction });
             await otpRecord.destroy({ transaction });
+            await otpAttempts.clearAttempts(REGISTRATION_OTP_PURPOSE, email);
 
             const refreshToken = await this.createRefreshToken(user.id, transaction);
             return this.buildAuthResponse(user, refreshToken.token_id);

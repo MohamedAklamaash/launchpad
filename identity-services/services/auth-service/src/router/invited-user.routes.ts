@@ -6,6 +6,7 @@ import {
     RemoveMemberFromOrg,
     LoginUser,
     AuthenticateOTP,
+    AuthenticateOTPWithBody,
     ForgotPassword,
     VerifyResetOTP,
     ResetPassword,
@@ -148,7 +149,12 @@ authRouter.post('/login', validateRequest({ body: loginSchema.shape.body }), Log
  * @swagger
  * /api/v1/auth/authenticate-with-otp:
  *   get:
- *     summary: Verify email OTP after registration
+ *     summary: Verify email OTP after registration (magic-link form)
+ *     description: >
+ *       Only the link in the verification email should use this — a clickable email
+ *       link has to be a GET, which means the OTP sits in the URL (access logs,
+ *       browser history, proxies). A form or script submitting the OTP directly
+ *       should use `POST /authenticate-with-otp` instead.
  *     tags: [Auth]
  *     parameters:
  *       - in: query
@@ -167,7 +173,8 @@ authRouter.post('/login', validateRequest({ body: loginSchema.shape.body }), Log
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/AuthTokens' }
- *       401: { description: Invalid or expired OTP }
+ *       400: { description: Invalid or expired OTP }
+ *       429: { description: Too many failed attempts — request a new code }
  */
 authRouter.get(
     '/authenticate-with-otp',
@@ -177,9 +184,47 @@ authRouter.get(
 
 /**
  * @swagger
+ * /api/v1/auth/authenticate-with-otp:
+ *   post:
+ *     summary: Verify email OTP after registration
+ *     description: >
+ *       Preferred over the GET variant for anything that isn't a clicked email link —
+ *       keeps the OTP out of the URL/access logs.
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email, otp]
+ *             properties:
+ *               email: { type: string, format: email, example: user@example.com }
+ *               otp: { type: string, minLength: 6, maxLength: 6, example: "123456" }
+ *     responses:
+ *       200:
+ *         description: OTP verified, returns tokens
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/AuthTokens' }
+ *       400: { description: Invalid or expired OTP }
+ *       429: { description: Too many failed attempts — request a new code }
+ */
+authRouter.post(
+    '/authenticate-with-otp',
+    validateRequest({ body: otpSchema.shape.query }),
+    AuthenticateOTPWithBody,
+);
+
+/**
+ * @swagger
  * /api/v1/auth/forgot-password:
  *   post:
- *     summary: Request a password reset OTP via email
+ *     summary: Request a password reset code via email
+ *     description: >
+ *       Always responds the same way whether or not `email` belongs to an account —
+ *       the response never reveals account existence, and never contains the code.
+ *       The code (if any) is only ever delivered by email.
  *     tags: [Auth]
  *     requestBody:
  *       required: true
@@ -191,14 +236,14 @@ authRouter.get(
  *             properties:
  *               email: { type: string, format: email, example: user@example.com }
  *     responses:
- *       200:
- *         description: OTP sent to email
+ *       202:
+ *         description: Generic acknowledgement — identical for a known or unknown email
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
- *                 otp: { type: string, example: "482910" }
+ *                 message: { type: string }
  */
 authRouter.post(
     '/forgot-password',
@@ -228,7 +273,8 @@ authRouter.post(
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/SuccessBoolean' }
- *       401: { description: Invalid OTP }
+ *       400: { description: Invalid or expired OTP }
+ *       429: { description: Too many failed attempts — request a new code }
  */
 authRouter.post(
     '/verify-reset-otp',
