@@ -186,13 +186,28 @@ def test_eks_config_validates_account_id(eks_cidrs):
             TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, bad)
 
 
-def test_eks_config_refuses_empty_or_open_cidrs(settings):
-    settings.EKS_PUBLIC_ACCESS_CIDRS = []
+@pytest.mark.parametrize("bad_cidrs", [
+    [],
+    ["203.0.113.0/24", "0.0.0.0/0"],
+    ["::/0"],
+    ["0.0.0.0/1", "128.0.0.0/1"],
+    ["10.0.0.0/15"],
+    ["not-a-cidr"],
+])
+def test_eks_config_refuses_empty_invalid_or_open_cidrs(settings, bad_cidrs):
+    settings.EKS_PUBLIC_ACCESS_CIDRS = bad_cidrs
     with pytest.raises(ValueError, match="EKS_PUBLIC_ACCESS_CIDRS"):
         TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, ACCOUNT_ID)
-    settings.EKS_PUBLIC_ACCESS_CIDRS = ["203.0.113.0/24", "0.0.0.0/0"]
-    with pytest.raises(ValueError, match="EKS_PUBLIC_ACCESS_CIDRS"):
-        TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, ACCOUNT_ID)
+
+
+@pytest.mark.parametrize("good_cidrs", [
+    ["203.0.113.0/24"],
+    ["203.0.113.0/32", "198.51.0.0/16"],
+])
+def test_eks_config_accepts_narrow_cidrs(settings, good_cidrs):
+    settings.EKS_PUBLIC_ACCESS_CIDRS = good_cidrs
+    config = TerraformWorker._generate_config(VARS, *ARGS, ComputeType.EKS, ACCOUNT_ID)
+    assert "public_access_cidrs" in config
 
 
 @pytest.mark.django_db

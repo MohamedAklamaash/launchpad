@@ -18,8 +18,8 @@ class InfraCreateBody(BaseModel):
         example="ecs_fargate",
         description="Compute target: ecs_fargate (default) or eks. Immutable after creation.",
     )
-    max_cpu: float = Field(example=4096, description="Total CPU units ceiling across all apps (1024 = 1 vCPU)")
-    max_memory: float = Field(example=8192, description="Total memory ceiling in MB across all apps")
+    max_cpu: float = Field(example=4, description="Total vCPU ceiling across all apps")
+    max_memory: float = Field(example=8, description="Total memory ceiling in GB across all apps")
     code: str = Field(example="123456789012", description="AWS Account ID where infrastructure will be provisioned")
     metadata: dict[str, str] | None = Field(
         default=None,
@@ -29,15 +29,15 @@ class InfraCreateBody(BaseModel):
 
 class InfraUpdateBody(BaseModel):
     name: str | None = Field(default=None, example="prod-infra-v2")
-    max_cpu: float | None = Field(default=None, example=8192, description="New CPU units ceiling")
-    max_memory: float | None = Field(default=None, example=16384, description="New memory ceiling in MB")
+    max_cpu: float | None = Field(default=None, example=8, description="New vCPU ceiling")
+    max_memory: float | None = Field(default=None, example=16, description="New memory ceiling in GB")
 
 class InfraResponse(BaseModel):
     id: str
     name: str
     cloud_provider: str
-    max_cpu: float
-    max_memory: float
+    max_cpu: float = Field(description="Total vCPU ceiling across all apps")
+    max_memory: float = Field(description="Total memory ceiling in GB across all apps")
     is_cloud_authenticated: bool = Field(description="Whether Launchpad successfully assumed the IAM role")
     code: str = Field(description="AWS Account ID")
     metadata: dict[str, Any] = {}

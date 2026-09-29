@@ -15,6 +15,7 @@ from pathlib import Path
 
 from api.common.envs.application import app_config
 from api.common.envs.database import DatabaseConfig
+from api.validators import validate_eks_public_access_cidrs
 from core.allowed_hosts_config import get_allowed_hosts
 from shared.mode import is_dev_mode
 
@@ -71,6 +72,13 @@ DATABASE_INSTANCE_CLASSES = {
 DATABASE_MIN_STORAGE_GB = 20
 DATABASE_MAX_STORAGE_GB = 1000
 MAX_DATABASES_PER_INFRA = int(os.environ.get('MAX_DATABASES_PER_INFRA', '10'))
+
+# Sanity ceiling on Infrastructure.max_cpu/max_memory (vCPU / GB, the same units
+# application-service validates alloted_cpu/alloted_memory against). These were never
+# validated server-side; a caller could set an arbitrary or negative ceiling that no app
+# could ever be scheduled under, or one large enough to be meaningless as a cap.
+INFRA_MAX_CPU_VCPU = float(os.environ.get('INFRA_MAX_CPU_VCPU', '256'))
+INFRA_MAX_MEMORY_GB = float(os.environ.get('INFRA_MAX_MEMORY_GB', '2048'))
 
 # Per-user budget for the databases endpoints (F0) — see shared.ratelimit.budget. Keyed
 # on request.user.id, independent of the gateway's per-IP limit and of other features'
@@ -312,10 +320,24 @@ REDIS_DB = app_config.redis_db
 # dispatch (the reaper/startup recovery re-enqueue independently of the create-time check).
 EKS_ENABLED = os.environ.get('EKS_ENABLED', 'False').lower() == 'true'
 # Comma-separated CIDRs allowed to reach an EKS cluster's public API endpoint.
-# Provisioning hard-refuses an empty list or 0.0.0.0/0 (consumed in Phase 3).
+# validate_eks_public_access_cidrs (api/services/terraform_worker.py's EKS config
+# generation) hard-refuses an empty, malformed, or 0.0.0.0/0-equivalent list at
+# provision time; the check below catches the same misconfiguration at boot instead of
+# letting every EKS provision fail 2s in with no earlier signal.
 EKS_PUBLIC_ACCESS_CIDRS = [
     c.strip() for c in os.environ.get('EKS_PUBLIC_ACCESS_CIDRS', '').split(',') if c.strip()
 ]
+# MODE=dev never runs a real Terraform apply (see TerraformWorker.provision's mock path),
+# so a placeholder/empty list there is harmless; every other deployment must set this
+# correctly before the platform can provision any EKS infrastructure.
+if EKS_ENABLED and not is_dev_mode(app_config.mode):
+    try:
+        validate_eks_public_access_cidrs(EKS_PUBLIC_ACCESS_CIDRS)
+    except ValueError as exc:
+        raise ValueError(
+            f"EKS_ENABLED=true requires a valid EKS_PUBLIC_ACCESS_CIDRS (got "
+            f"{os.environ.get('EKS_PUBLIC_ACCESS_CIDRS', '')!r}): {exc}"
+        ) from exc
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/

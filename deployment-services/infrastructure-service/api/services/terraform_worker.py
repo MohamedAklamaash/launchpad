@@ -1,4 +1,3 @@
-import ipaddress
 import json
 import logging
 import os
@@ -38,7 +37,7 @@ from api.services.platform_dns.teardown import (
     delete_acm_certificate_after_listener_removed,
     request_and_await_dns_teardown,
 )
-from api.validators import validate_database_name
+from api.validators import validate_database_name, validate_eks_public_access_cidrs
 from botocore.exceptions import ClientError
 from django.conf import settings
 from django.db import transaction
@@ -55,7 +54,6 @@ MAX_RETRIES = 3
 MOCK_PROVISION_DELAY_SECONDS = 4
 EKS_SUPPORTED_CLUSTER_VERSIONS = {"1.29", "1.30", "1.31"}
 DEFAULT_EKS_CLUSTER_VERSION = "1.31"
-MIN_PUBLIC_ACCESS_PREFIXLEN = 16
 MAX_LOG_CHARS = 256_000
 MAX_ERROR_CHARS = 8_000
 
@@ -575,21 +573,10 @@ output "alb_security_group_id" {{ value = module.vpc.alb_security_group_id }}{ht
                 f"Unsupported EKS cluster_version {cluster_version!r}; "
                 f"allowed: {sorted(EKS_SUPPORTED_CLUSTER_VERSIONS)}"
             )
+        # Shared with core/settings.py's startup check (api.validators is Django-free, so
+        # both call the same function instead of drifting inline copies).
+        validate_eks_public_access_cidrs(settings.EKS_PUBLIC_ACCESS_CIDRS)
         public_access_cidrs = list(settings.EKS_PUBLIC_ACCESS_CIDRS)
-        if not public_access_cidrs:
-            raise ValueError("EKS_PUBLIC_ACCESS_CIDRS must be a non-empty list")
-        for cidr in public_access_cidrs:
-            # A literal "0.0.0.0/0" check is not enough: ["0.0.0.0/1", "128.0.0.0/1"]
-            # covers the whole internet, as does IPv6 ::/0. Refuse on prefix width.
-            try:
-                network = ipaddress.ip_network(str(cidr), strict=True)
-            except ValueError as exc:
-                raise ValueError(f"EKS_PUBLIC_ACCESS_CIDRS contains an invalid CIDR: {cidr}") from exc
-            if network.prefixlen < MIN_PUBLIC_ACCESS_PREFIXLEN:
-                raise ValueError(
-                    f"EKS_PUBLIC_ACCESS_CIDRS entry {cidr} is too broad "
-                    f"(prefix must be /{MIN_PUBLIC_ACCESS_PREFIXLEN} or narrower)"
-                )
         provisioner_role_arn = f"arn:aws:iam::{account_id}:role/LaunchpadDeploymentRole"
 
         return f"""
