@@ -21,17 +21,20 @@ ALB_POLL_INTERVAL_SECONDS = 15
 ALB_TIMEOUT_MARKER = "EKS_BOOTSTRAP_ALB_TIMED_OUT"
 
 # The deploy role's access entry (infra/aws/modules/eks/main.tf) grants AmazonEKSEditPolicy
-# scoped to namespaces app-* and launchpad-bootstrap. Namespace creation is cluster-scoped
-# and can never be granted by a namespace-scoped access policy. Rather than widen the access
-# entry to cluster scope (which would hand the deploy role edit rights over every namespace,
-# including kube-system), the entry gets a Kubernetes group instead, and this cluster-admin
-# bootstrap step grants that group a narrow ClusterRole: get+create on namespaces only, no
-# update/delete/list/patch and no other resource. Creating a namespace confers no rights
-# inside it: the deploy role's actual permissions still come entirely from the app-*-scoped
-# EKSEditPolicy access entry, so a namespace the deploy role creates outside app-* (which
-# application-service's deployer never asks for) would be empty and inert to it.
+# scoped to namespaces app-* and launchpad-bootstrap. Two things the deployer
+# (application-service api/k8s/deployer.py) does are out of that policy's reach: creating and
+# deleting its app-{slug} namespace (cluster-scoped), and creating the namespace's
+# ResourceQuota and LimitRange (Kubernetes `edit`, and even `admin`, only read those, since
+# they are meant to be the cluster admin's guardrail on the namespace). Rather than widen the
+# access entry, the entry gets a Kubernetes group, and this cluster-admin bootstrap step
+# grants that group a ClusterRole for exactly those verbs. RBAC can't limit a cluster-scoped
+# grant to a name prefix, so a ValidatingAdmissionPolicy does it: any write by the group to
+# namespaces, resourcequotas or limitranges outside app-* is denied at admission, which
+# keeps the deploy role away from kube-system and every non-app namespace.
 DEPLOYER_GROUP = "launchpad:deployers"
 NAMESPACE_CREATOR_CLUSTER_ROLE = "launchpad-namespace-creator"
+APP_NAMESPACE_PREFIX = "app-"
+DEPLOYER_NAMESPACE_GUARD = "launchpad-deployers-app-namespaces-only"
 
 
 class EksBootstrapError(Exception):
@@ -227,16 +230,76 @@ def _enable_network_policy_enforcement(api, lines: list):
 
 def _ensure_namespace_creator_rbac(api, lines: list):
     """Grants the deploy role's Kubernetes group (bound via kubernetes_groups on its EKS
-    access entry, infra/aws/modules/eks/main.tf) exactly enough cluster scope to create its
-    own per-app namespace: get+create on namespaces, nothing else. See DEPLOYER_GROUP's
-    module docstring for why this can't just be a wider access policy."""
+    access entry, infra/aws/modules/eks/main.tf) the cluster-scoped verbs the deployer needs,
+    and installs the admission guard confining them to app-*. See DEPLOYER_GROUP's comment.
+
+    Replaces rather than get-or-creates: a cluster bootstrapped before a rule change must
+    pick up the new rules on the next provision, and the guard must exist before the grant
+    is ever usable, so it is applied first."""
+    admission = k8s.AdmissionregistrationV1Api(api)
+    guarded = ["namespaces", "resourcequotas", "limitranges"]
+    policy = k8s.V1ValidatingAdmissionPolicy(
+        metadata=k8s.V1ObjectMeta(name=DEPLOYER_NAMESPACE_GUARD),
+        spec=k8s.V1ValidatingAdmissionPolicySpec(
+            failure_policy="Fail",
+            match_constraints=k8s.V1MatchResources(
+                resource_rules=[
+                    k8s.V1NamedRuleWithOperations(
+                        api_groups=[""],
+                        api_versions=["v1"],
+                        operations=["CREATE", "UPDATE", "DELETE"],
+                        resources=guarded,
+                    )
+                ]
+            ),
+            match_conditions=[
+                k8s.V1MatchCondition(
+                    name="is-launchpad-deployer",
+                    expression=f"'{DEPLOYER_GROUP}' in request.userInfo.groups",
+                )
+            ],
+            validations=[
+                k8s.V1Validation(
+                    expression=(
+                        "request.resource.resource == 'namespaces'"
+                        f" ? (object != null ? object : oldObject).metadata.name.startsWith('{APP_NAMESPACE_PREFIX}')"
+                        f" : request.namespace.startsWith('{APP_NAMESPACE_PREFIX}')"
+                    ),
+                    message=f"launchpad deployers may only manage {APP_NAMESPACE_PREFIX}* namespaces",
+                )
+            ],
+        ),
+    )
+    _create_or_replace(
+        lambda: admission.create_validating_admission_policy(policy),
+        lambda: admission.replace_validating_admission_policy(DEPLOYER_NAMESPACE_GUARD, policy),
+        f"ValidatingAdmissionPolicy/{DEPLOYER_NAMESPACE_GUARD}",
+        lines,
+    )
+    policy_binding = k8s.V1ValidatingAdmissionPolicyBinding(
+        metadata=k8s.V1ObjectMeta(name=DEPLOYER_NAMESPACE_GUARD),
+        spec=k8s.V1ValidatingAdmissionPolicyBindingSpec(
+            policy_name=DEPLOYER_NAMESPACE_GUARD, validation_actions=["Deny"],
+        ),
+    )
+    _create_or_replace(
+        lambda: admission.create_validating_admission_policy_binding(policy_binding),
+        lambda: admission.replace_validating_admission_policy_binding(DEPLOYER_NAMESPACE_GUARD, policy_binding),
+        f"ValidatingAdmissionPolicyBinding/{DEPLOYER_NAMESPACE_GUARD}",
+        lines,
+    )
+
     rbac = k8s.RbacAuthorizationV1Api(api)
     cluster_role = k8s.V1ClusterRole(
         metadata=k8s.V1ObjectMeta(name=NAMESPACE_CREATOR_CLUSTER_ROLE),
-        rules=[k8s.V1PolicyRule(api_groups=[""], resources=["namespaces"], verbs=["get", "create"])],
+        rules=[
+            k8s.V1PolicyRule(api_groups=[""], resources=["namespaces"], verbs=["get", "create", "delete"]),
+            k8s.V1PolicyRule(api_groups=[""], resources=["resourcequotas", "limitranges"], verbs=["get", "create"]),
+        ],
     )
-    _get_or_create(
+    _create_or_replace(
         lambda: rbac.create_cluster_role(cluster_role),
+        lambda: rbac.replace_cluster_role(NAMESPACE_CREATOR_CLUSTER_ROLE, cluster_role),
         f"ClusterRole/{NAMESPACE_CREATOR_CLUSTER_ROLE}",
         lines,
     )
@@ -250,6 +313,17 @@ def _ensure_namespace_creator_rbac(api, lines: list):
         f"ClusterRoleBinding/{NAMESPACE_CREATOR_CLUSTER_ROLE}",
         lines,
     )
+
+
+def _create_or_replace(create, replace, kind: str, lines: list):
+    try:
+        create()
+        lines.append(f"[k8s] created {kind}")
+    except ApiException as e:
+        if e.status != 409:
+            raise
+        replace()
+        lines.append(f"[k8s] replaced {kind}")
 
 
 def _ensure_ingress_class(api, group_name: str, lines: list):

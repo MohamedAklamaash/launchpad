@@ -54,29 +54,33 @@ def test_enable_network_policy_is_idempotent_when_already_enabled(monkeypatch):
     core.create_namespaced_config_map.assert_not_called()
 
 
-def test_ensure_namespace_creator_rbac_grants_exactly_get_and_create_on_namespaces(monkeypatch):
-    """The deploy role's access entry is namespace-scoped to app-* (infra/aws/modules/eks/
-    main.tf) and namespace creation is cluster-scoped, so this ClusterRole is the only thing
-    letting the deploy role create its own app-{slug} namespace. It must not grant anything
-    else: no update/delete/list/patch, no other resource. Creating a namespace is the only
-    cluster-scoped action the deploy role legitimately needs."""
-    rbac = MagicMock()
+def _rbac_and_admission(monkeypatch):
+    rbac, admission = MagicMock(), MagicMock()
     monkeypatch.setattr(eb.k8s, "RbacAuthorizationV1Api", lambda api: rbac)
+    monkeypatch.setattr(eb.k8s, "AdmissionregistrationV1Api", lambda api: admission)
+    return rbac, admission
+
+
+def test_ensure_namespace_creator_rbac_grants_only_the_deployers_cluster_scoped_needs(monkeypatch):
+    """The deploy role's access entry is namespace-scoped to app-* (infra/aws/modules/eks/
+    main.tf). This ClusterRole covers only what that can't: its own namespace's lifecycle
+    and the quota/limit guardrails `edit` can't write. No list/update/patch, no other
+    resource."""
+    rbac, _ = _rbac_and_admission(monkeypatch)
 
     eb._ensure_namespace_creator_rbac(object(), [])
 
     (cluster_role,) = rbac.create_cluster_role.call_args.args
     assert cluster_role.metadata.name == eb.NAMESPACE_CREATOR_CLUSTER_ROLE
-    assert len(cluster_role.rules) == 1
-    rule = cluster_role.rules[0]
-    assert rule.api_groups == [""]
-    assert rule.resources == ["namespaces"]
-    assert set(rule.verbs) == {"get", "create"}
+    grants = {(tuple(r.api_groups), tuple(r.resources)): set(r.verbs) for r in cluster_role.rules}
+    assert grants == {
+        (("",), ("namespaces",)): {"get", "create", "delete"},
+        (("",), ("resourcequotas", "limitranges")): {"get", "create"},
+    }
 
 
 def test_ensure_namespace_creator_rbac_binds_the_deployer_group(monkeypatch):
-    rbac = MagicMock()
-    monkeypatch.setattr(eb.k8s, "RbacAuthorizationV1Api", lambda api: rbac)
+    rbac, _ = _rbac_and_admission(monkeypatch)
 
     eb._ensure_namespace_creator_rbac(object(), [])
 
@@ -89,17 +93,48 @@ def test_ensure_namespace_creator_rbac_binds_the_deployer_group(monkeypatch):
     assert subject.name == eb.DEPLOYER_GROUP
 
 
-def test_ensure_namespace_creator_rbac_is_idempotent_on_rerun(monkeypatch):
-    rbac = MagicMock()
+def test_admission_guard_confines_every_granted_resource_to_app_namespaces(monkeypatch):
+    """RBAC can't scope a cluster-wide grant by name prefix; the admission policy is what
+    keeps the deploy role out of kube-system. It must cover every resource the ClusterRole
+    grants, apply only to the deployer group, and deny (not warn/audit)."""
+    rbac, admission = _rbac_and_admission(monkeypatch)
+
+    eb._ensure_namespace_creator_rbac(object(), [])
+
+    (policy,) = admission.create_validating_admission_policy.call_args.args
+    (cluster_role,) = rbac.create_cluster_role.call_args.args
+    granted = {res for rule in cluster_role.rules for res in rule.resources}
+    (rule,) = policy.spec.match_constraints.resource_rules
+    assert set(rule.resources) == granted
+    assert set(rule.operations) == {"CREATE", "UPDATE", "DELETE"}
+    assert policy.spec.failure_policy == "Fail"
+    (condition,) = policy.spec.match_conditions
+    assert eb.DEPLOYER_GROUP in condition.expression
+    (validation,) = policy.spec.validations
+    assert "startsWith('app-')" in validation.expression
+    (binding,) = admission.create_validating_admission_policy_binding.call_args.args
+    assert binding.spec.policy_name == policy.metadata.name
+    assert binding.spec.validation_actions == ["Deny"]
+
+
+def test_ensure_namespace_creator_rbac_replaces_existing_rules_on_rerun(monkeypatch):
+    """A cluster bootstrapped with older rules must pick up the current ones on reprovision."""
+    rbac, admission = _rbac_and_admission(monkeypatch)
     rbac.create_cluster_role.side_effect = _conflict()
     rbac.create_cluster_role_binding.side_effect = _conflict()
-    monkeypatch.setattr(eb.k8s, "RbacAuthorizationV1Api", lambda api: rbac)
+    admission.create_validating_admission_policy.side_effect = _conflict()
+    admission.create_validating_admission_policy_binding.side_effect = _conflict()
 
     lines = []
     eb._ensure_namespace_creator_rbac(object(), lines)
 
+    rbac.replace_cluster_role.assert_called_once()
+    admission.replace_validating_admission_policy.assert_called_once()
+    admission.replace_validating_admission_policy_binding.assert_called_once()
     assert lines == [
-        f"[k8s] ClusterRole/{eb.NAMESPACE_CREATOR_CLUSTER_ROLE} already exists",
+        f"[k8s] replaced ValidatingAdmissionPolicy/{eb.DEPLOYER_NAMESPACE_GUARD}",
+        f"[k8s] replaced ValidatingAdmissionPolicyBinding/{eb.DEPLOYER_NAMESPACE_GUARD}",
+        f"[k8s] replaced ClusterRole/{eb.NAMESPACE_CREATOR_CLUSTER_ROLE}",
         f"[k8s] ClusterRoleBinding/{eb.NAMESPACE_CREATOR_CLUSTER_ROLE} already exists",
     ]
 
