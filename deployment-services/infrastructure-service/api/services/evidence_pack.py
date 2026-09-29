@@ -270,6 +270,13 @@ def _drift_summary_markdown(drift: dict) -> str:
                 "principal other than Launchpad assume the role, or widen who Launchpad's own "
                 "statement trusts."
             )
+    if trust.get("sibling_external_ids"):
+        lines.append(
+            f"  This role's trust statement also lists "
+            f"{_plural(trust['sibling_external_ids'], 'other ExternalId', 'other ExternalIds')} — "
+            "expected when this AWS account hosts more than one Launchpad infrastructure "
+            "and not counted as drift."
+        )
     return "\n".join(lines)
 
 

@@ -169,6 +169,11 @@ class TrustPolicyDiff:
     external_id_matches: bool = False
     extra_statements: list[dict] = field(default_factory=list)
     identical: bool = False
+    # Other ExternalIds trusted on the same statement, alongside infra.id — a second
+    # Launchpad infrastructure sharing this AWS account's role (Infrastructure.code
+    # isn't unique). Legitimate, not drift: reported as a count, never folded into
+    # extra_statements.
+    sibling_external_ids: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -179,6 +184,7 @@ class TrustPolicyDiff:
             "external_id_matches": self.external_id_matches,
             "extra_statements": self.extra_statements,
             "identical": self.identical,
+            "sibling_external_ids": self.sibling_external_ids,
         }
 
 
@@ -295,9 +301,13 @@ def _is_narrow_assume_role_statement(statement: dict, platform_principal_arn: st
     return _as_list(principal.get("AWS")) == [platform_principal_arn]
 
 
-def _external_id_from_statement(statement: dict) -> str | None:
+def _external_ids_from_statement(statement: dict) -> list[str]:
+    """`sts:ExternalId` is a bare string for a single-infra role, or a list once a
+    second Launchpad infrastructure lands in the same AWS account and the onboarding
+    script merges its id into the same statement (`create_aws_role.sh`'s any-of
+    StringEquals). Normalise to a list either way."""
     condition = statement.get("Condition") or {}
-    return (condition.get("StringEquals") or {}).get("sts:ExternalId")
+    return _as_list((condition.get("StringEquals") or {}).get("sts:ExternalId"))
 
 
 def _summarize_trust_statement(statement: dict) -> dict:
@@ -321,19 +331,25 @@ def _diff_trust_policy(iam, infra, platform_principal_arn: str) -> TrustPolicyDi
     # "Exactly one" is the requirement: a second narrowly-shaped statement (e.g. a
     # duplicate, or one with a different/missing ExternalId) is exactly as much a
     # security-relevant extra as a wildcard one — prefer whichever narrow statement
-    # actually carries the right ExternalId for the informational fields below, so a
-    # correct-and-an-extra pairing doesn't get misreported as fully matching.
+    # actually carries this infra's ExternalId (possibly alongside others — see
+    # sibling_external_ids) for the informational fields below, so a correct-and-an-extra
+    # pairing doesn't get misreported as fully matching.
     primary = None
     if narrow:
-        primary = next((s for s in narrow if _external_id_from_statement(s) == str(infra.id)), narrow[0])
+        primary = next((s for s in narrow if str(infra.id) in _external_ids_from_statement(s)), narrow[0])
 
     extra_statements = [_summarize_trust_statement(s) for s in covering if s is not primary]
 
+    sibling_external_ids = 0
     if primary is not None:
         principal_matches = True
-        external_id = _external_id_from_statement(primary)
-        external_id_present = external_id is not None
-        external_id_matches = external_id == str(infra.id)
+        external_ids = _external_ids_from_statement(primary)
+        external_id_present = bool(external_ids)
+        external_id_matches = str(infra.id) in external_ids
+        # Any other ExternalId trusted on this same statement belongs to a sibling
+        # Launchpad infrastructure in this account, not to a stray or unexpected grant —
+        # reported separately, never counted against `identical`.
+        sibling_external_ids = len([e for e in external_ids if e != str(infra.id)])
     else:
         principal_matches = False
         external_id_present = False
@@ -354,6 +370,7 @@ def _diff_trust_policy(iam, infra, platform_principal_arn: str) -> TrustPolicyDi
         external_id_matches=external_id_matches,
         extra_statements=extra_statements,
         identical=identical,
+        sibling_external_ids=sibling_external_ids,
     )
 
 
