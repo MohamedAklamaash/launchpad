@@ -362,7 +362,7 @@ def test_ecs_query_construction_and_dimensions(make_stack, monkeypatch):
     assert req_count["MetricStat"]["Stat"] == "Sum"
     alb_dims = {d["Name"]: d["Value"] for d in req_count["MetricStat"]["Metric"]["Dimensions"]}
     assert alb_dims["LoadBalancer"] == "app/lb/abc123"
-    assert alb_dims["TargetGroup"] == "tg/def456"
+    assert alb_dims["TargetGroup"] == "targetgroup/tg/def456"
 
     p50 = by_id["latency_p50_ms"]
     p95 = by_id["latency_p95_ms"]
@@ -456,7 +456,7 @@ def test_eks_discovers_target_group_by_controller_tags(make_stack, monkeypatch):
     by_id = {q["Id"]: q for q in queries}
     dims = {d["Name"]: d["Value"] for d in by_id["request_count"]["MetricStat"]["Metric"]["Dimensions"]}
     assert dims["LoadBalancer"] == "app/shared-alb/xyz"
-    assert dims["TargetGroup"] == "k8s-appapi-abcdef/123"
+    assert dims["TargetGroup"] == "targetgroup/k8s-appapi-abcdef/123"
 
 
 @pytest.mark.django_db
@@ -474,3 +474,17 @@ def test_eks_no_target_group_match_marks_alb_series_unavailable(make_stack, monk
         assert result.unavailable[key] == "target_group_not_found"
     for key in metrics_mod.CPU_MEM_KEYS:
         assert result.unavailable[key] == "eks_container_metrics_not_enabled"
+
+
+def test_alb_dimension_values_match_cloudwatch_format():
+    """Real AWS: CloudWatch lists TargetGroup=targetgroup/<name>/<id> and
+    LoadBalancer=app/<name>/<id>. The prefix-stripped TG value matched no metrics."""
+    from api.services.app_metrics_service import _alb_dim_value, _tg_dim_value
+
+    assert _tg_dim_value(
+        "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/dummy-backend-e3a4b290-tg/c878730344e93648"
+    ) == "targetgroup/dummy-backend-e3a4b290-tg/c878730344e93648"
+    assert _alb_dim_value(
+        "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/infra-alb/f7d156009cc5f64a"
+    ) == "app/infra-alb/f7d156009cc5f64a"
+

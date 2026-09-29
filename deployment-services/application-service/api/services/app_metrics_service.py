@@ -416,9 +416,12 @@ def _alb_dim_value(arn: str | None) -> str | None:
 
 
 def _tg_dim_value(arn: str | None) -> str | None:
-    if not arn:
+    # CloudWatch's TargetGroup dimension keeps the "targetgroup/" prefix
+    # ("targetgroup/<name>/<id>"), unlike LoadBalancer's ("app/<name>/<id>", no
+    # "loadbalancer/"). Dropping it matched nothing: every ALB series came back empty.
+    if not arn or ":targetgroup/" not in arn:
         return None
-    return arn.split(":targetgroup/", 1)[-1] if ":targetgroup/" in arn else None
+    return "targetgroup/" + arn.split(":targetgroup/", 1)[-1]
 
 
 def _cpu_mem_queries(dims: list, period: int) -> list:
