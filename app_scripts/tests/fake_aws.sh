@@ -99,6 +99,9 @@ for tag in role["Role"].get("Tags", []):
 print("None")
 PYEOF
         ;;
+      *MaxSessionDuration*)
+        python3 -c "import json;print(json.load(open('$ROLE_FILE'))['Role'].get('MaxSessionDuration', 3600))"
+        ;;
       *)
         echo "fake_aws.sh: unhandled get-role query: $QUERY" >&2
         exit 1
@@ -113,9 +116,26 @@ PYEOF
     # it as JSON here so a regression back to shorthand fails this test loudly.
     TAGS_JSON=$(_flag --tags "$@")
     python3 - "$ROLE_FILE" "$TAGS_JSON" <<'PYEOF'
-import json, sys
+import json, re, sys
+
 role_file, tags_json = sys.argv[1], sys.argv[2]
 new_tags = json.loads(tags_json)
+
+# Real IAM's TagRole rejects a tag Value containing any character outside this set
+# (notably: no comma) with a ValidationError, before the call ever takes effect.
+# Enforced here so a regression back to a comma-joined value fails this test the same
+# way it fails against real AWS, instead of silently "working" against the stub.
+_ALLOWED_TAG_VALUE = re.compile(r"^[A-Za-z0-9 _.:/=+\-@]*$")
+for tag in new_tags:
+    if not _ALLOWED_TAG_VALUE.match(tag["Value"]):
+        print(
+            f"An error occurred (ValidationError) when calling the TagRole operation: "
+            f"Value '{tag['Value']}' failed to satisfy constraint: Member must satisfy "
+            "regular expression pattern: [\\p{L}\\p{Z}\\p{N}_.:/=+\\-@]*",
+            file=sys.stderr,
+        )
+        sys.exit(255)
+
 with open(role_file) as f:
     role = json.load(f)
 tags = [t for t in role["Role"].get("Tags", []) if t["Key"] not in {nt["Key"] for nt in new_tags}]
@@ -181,6 +201,17 @@ PYEOF
     else
       cat "$POLICY_FILE"
     fi
+    ;;
+
+  iam.get-policy-version)
+    if [ ! -f "$POLICY_DOC_FILE" ]; then
+      echo '{"Error":{"Code":"NoSuchEntity"}}' >&2
+      exit 254
+    fi
+    # create_aws_role.sh only ever asks for --query 'PolicyVersion.Document' --output
+    # json; the state file already holds exactly that document (see create-policy /
+    # create-policy-version below), so there's no wrapper to add.
+    cat "$POLICY_DOC_FILE"
     ;;
 
   iam.list-policy-versions)

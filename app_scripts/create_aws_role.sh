@@ -112,6 +112,7 @@ PLATFORM_PRINCIPAL_ARN="arn:aws:iam::${TRUSTED_ACCOUNT_ID}:user/${PLATFORM_USER}
 ROLE_EXISTS=0
 EXISTING_EXTERNAL_IDS=""
 EXISTING_COMPUTE_TYPES=""
+LEGACY_EKS_DETECTED=""
 
 if [ "$MOCK_MODE" != "1" ] && aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
   ROLE_EXISTS=1
@@ -130,9 +131,37 @@ if [ "$MOCK_MODE" != "1" ] && aws iam get-role --role-name "${ROLE_NAME}" >/dev/
   EXISTING_EXTERNAL_IDS=$(aws iam get-role --role-name "${ROLE_NAME}" --query "$EXTERNAL_ID_QUERY" --output text)
   [ "$EXISTING_EXTERNAL_IDS" = "None" ] && EXISTING_EXTERNAL_IDS=""
 
+  # A "+" separator, not "," — IAM tag values only allow letters, digits, spaces, and
+  # `_ . : / = + - @` (see the tag-write below); a comma-joined value is rejected by
+  # TagRole outright.
   COMPUTE_TYPES_TAG_QUERY="Role.Tags[?Key=='launchpad:compute-types'].Value | [0]"
   EXISTING_COMPUTE_TYPES=$(aws iam get-role --role-name "${ROLE_NAME}" --query "$COMPUTE_TYPES_TAG_QUERY" --output text)
   [ "$EXISTING_COMPUTE_TYPES" = "None" ] && EXISTING_COMPUTE_TYPES=""
+
+  # A role created before this tag existed carries no record of which compute types it
+  # already serves — trusting only the tag would let this run's ecs_fargate policy
+  # silently replace an already-installed EKS document. Detect EKS independently from
+  # the role's live state: the EKS statements in policy.json are the only ones that
+  # ever grant an "eks:" action, so finding one in the currently attached policy (or
+  # finding the 2h max session duration only an EKS run ever sets) is proof enough on
+  # its own, with no dependence on the tag.
+  EXISTING_MAX_SESSION=$(aws iam get-role --role-name "${ROLE_NAME}" --query 'Role.MaxSessionDuration' --output text)
+  if [ "${EXISTING_MAX_SESSION:-0}" -ge 7200 ] 2>/dev/null; then
+    LEGACY_EKS_DETECTED="eks"
+  fi
+  if [ -z "$LEGACY_EKS_DETECTED" ] && aws iam get-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1; then
+    # Errors past this point are NOT suppressed: the policy was just confirmed to
+    # exist, so a failure reading its document is a real problem (permissions,
+    # throttling), not evidence the EKS grant is absent. Assuming "not EKS" on a read
+    # failure would silently strip an already-granted infra's EKS access exactly the
+    # way the comma-tag and single-ExternalId bugs did.
+    CURRENT_DEFAULT_VERSION=$(aws iam get-policy --policy-arn "${POLICY_ARN}" --query 'Policy.DefaultVersionId' --output text)
+    CURRENT_POLICY_DOCUMENT=$(aws iam get-policy-version --policy-arn "${POLICY_ARN}" \
+      --version-id "${CURRENT_DEFAULT_VERSION}" --query 'PolicyVersion.Document' --output json)
+    case "$CURRENT_POLICY_DOCUMENT" in
+      *'"eks:'*) LEGACY_EKS_DETECTED="eks" ;;
+    esac
+  fi
 fi
 
 # Prints each non-empty argument exactly once, in first-seen order — used below to
@@ -152,7 +181,7 @@ _dedupe_tokens() {
 # Word-splitting is intentional here: _dedupe_tokens wants each existing compute type
 # as its own positional argument, and none of them ever contain whitespace.
 # shellcheck disable=SC2046,SC2086
-MERGED_COMPUTE_TYPES=$(_dedupe_tokens $(printf '%s' "$EXISTING_COMPUTE_TYPES" | tr ',' ' ') "$COMPUTE_TYPE")
+MERGED_COMPUTE_TYPES=$(_dedupe_tokens $(printf '%s' "$EXISTING_COMPUTE_TYPES" | tr '+' ' ') "$LEGACY_EKS_DETECTED" "$COMPUTE_TYPE")
 # Never downgrade: if any infra this role already serves (or this run requests) is EKS,
 # install the EKS policy document (a strict superset) and keep the 2h max session — see
 # the APPLY IAM section below. A role that only ever serves ecs_fargate infras is
@@ -167,8 +196,8 @@ if [ "$EFFECTIVE_COMPUTE_TYPE" != "$COMPUTE_TYPE" ]; then
 fi
 COMPUTE_TYPE="$EFFECTIVE_COMPUTE_TYPE"
 # shellcheck disable=SC2086
-MERGED_COMPUTE_TYPES_CSV=$(printf '%s,' $MERGED_COMPUTE_TYPES)
-MERGED_COMPUTE_TYPES_CSV="${MERGED_COMPUTE_TYPES_CSV%,}"
+MERGED_COMPUTE_TYPES_TAG_VALUE=$(printf '%s+' $MERGED_COMPUTE_TYPES)
+MERGED_COMPUTE_TYPES_TAG_VALUE="${MERGED_COMPUTE_TYPES_TAG_VALUE%+}"
 
 ########################################
 # POLICY DOCUMENTS
@@ -549,13 +578,18 @@ else
 
   # Records which compute types this role serves so a later run for a different infra
   # (possibly a different compute type) can compute the same union again next time.
-  # --tags must be given as JSON, not the `Key=...,Value=...` shorthand: the shorthand
-  # parser splits on every comma, so a union value like "ecs_fargate,eks" would be
-  # misread as a second key/value pair (or rejected outright) instead of one tag value.
-  echo "Tagging role with served compute types (${MERGED_COMPUTE_TYPES_CSV})..."
+  # Two IAM constraints, both hard failures if violated:
+  #   - --tags must be given as JSON, not the `Key=...,Value=...` shorthand: the
+  #     shorthand parser splits on every comma, so a union value would be misread as a
+  #     second key/value pair (or rejected outright) instead of one tag value.
+  #   - the tag VALUE itself may only contain letters, digits, spaces, and
+  #     `_ . : / = + - @` — a comma is rejected by TagRole with ValidationError even
+  #     inside a syntactically valid JSON string, which is why the value is "+"-joined
+  #     above, not comma-joined.
+  echo "Tagging role with served compute types (${MERGED_COMPUTE_TYPES_TAG_VALUE})..."
   aws iam tag-role \
     --role-name "${ROLE_NAME}" \
-    --tags "[{\"Key\": \"launchpad:compute-types\", \"Value\": \"${MERGED_COMPUTE_TYPES_CSV}\"}]"
+    --tags "[{\"Key\": \"launchpad:compute-types\", \"Value\": \"${MERGED_COMPUTE_TYPES_TAG_VALUE}\"}]"
 
   echo "Ensuring deployment policy (latest permissions)..."
   if aws iam get-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1; then

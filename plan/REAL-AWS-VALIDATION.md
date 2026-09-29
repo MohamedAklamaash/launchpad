@@ -650,3 +650,12 @@ against `aws iam get-role` have never executed against the real AWS CLI/IAM back
       documented `update-assume-role-policy` command, confirm the *other* infra's
       `AssumeRole` still succeeds and the removed infra's does not, then delete the role
       per Step 3 once it's the last one and confirm no residual grant survives.
+- [ ] `aws iam get-policy-version --query 'PolicyVersion.Document' --output json` returns
+      real IAM's decoded JSON with `"eks:` substrings intact when the attached policy
+      grants EKS actions — this is the legacy-role compute-type inference path (no
+      `launchpad:compute-types` tag needed), tested only against `fake_aws.sh`.
+- [ ] A `+`-joined `launchpad:compute-types` tag value (e.g. `ecs_fargate+eks`) round-trips
+      through `TagRole` and back out through `GetRole` unchanged. (The comma-joined
+      value this replaces was confirmed on real AWS to fail `TagRole` with
+      `ValidationError` — that's what triggered this fix; the `+` replacement itself is
+      unverified against real AWS.)

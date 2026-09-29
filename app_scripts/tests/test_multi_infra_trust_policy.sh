@@ -122,7 +122,7 @@ test_compute_type_union_never_downgrades() {
   policy_after_eks=$(cat "$STATE_DIR/last-applied-policy-document.json")
   assert_contains "$policy_after_eks" "eks:CreateCluster" "adding an eks infra installs the eks policy document"
   assert_contains "$role_after_eks" '"MaxSessionDuration": 7200' "adding an eks infra raises max session duration to 2h"
-  assert_contains "$role_after_eks" "ecs_fargate,eks" "compute-types tag records the union"
+  assert_contains "$role_after_eks" "ecs_fargate+eks" "compute-types tag records the union (+ separated: IAM tag values reject commas)"
 
   run_create_role "infra-aaaa" "ecs_fargate"
   local role_after_refresh policy_after_refresh
@@ -134,9 +134,106 @@ test_compute_type_union_never_downgrades() {
   teardown
 }
 
+# ── Test 4: a legacy, untagged role that already serves EKS ────────────────────────
+# (created by a script version from before the launchpad:compute-types tag existed)
+# must not be downgraded just because the tag is missing. The script infers this two
+# independent ways (an "eks:" action in the live policy document, OR a 2h max session)
+# — each seed below isolates one signal by deliberately leaving the other one absent,
+# so a regression that breaks just one detection path still fails a test.
+
+_seed_legacy_role() {
+  # $1: MaxSessionDuration to seed. $2: "with_eks_actions" or "ecs_only" for the seeded
+  # policy document.
+  cat > "$STATE_DIR/role.json" <<JSON
+{
+  "Role": {
+    "AssumeRolePolicyDocument": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": {"AWS": "arn:aws:iam::221082203366:user/aklamaash-terraform"},
+          "Action": "sts:AssumeRole",
+          "Condition": {"StringEquals": {"sts:ExternalId": "infra-legacy"}}
+        }
+      ]
+    },
+    "MaxSessionDuration": $1,
+    "Tags": []
+  }
+}
+JSON
+  echo '{"DefaultVersionId": "v1"}' > "$STATE_DIR/policy.json"
+  if [ "$2" = "with_eks_actions" ]; then
+    cat > "$STATE_DIR/policy-document.json" <<'JSON'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["ec2:*", "ecs:*"], "Resource": "*"},
+    {"Effect": "Allow", "Action": ["eks:CreateCluster", "eks:List*", "eks:Describe*"], "Resource": "*"}
+  ]
+}
+JSON
+  else
+    cat > "$STATE_DIR/policy-document.json" <<'JSON'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": ["ec2:*", "ecs:*"], "Resource": "*"}
+  ]
+}
+JSON
+  fi
+}
+
+test_legacy_role_detected_via_policy_document_alone() {
+  # MaxSessionDuration is left at the ecs_fargate default (3600): if detection relied
+  # on the max-session signal, this would wrongly look like an ecs_fargate-only role.
+  # Only the policy document's own "eks:" actions can catch it here.
+  setup
+  _seed_legacy_role 3600 with_eks_actions
+
+  run_create_role "infra-new" "ecs_fargate"
+
+  local trust role policy
+  trust=$(cat "$STATE_DIR/last-applied-trust-policy.json")
+  role=$(cat "$STATE_DIR/role.json")
+  policy=$(cat "$STATE_DIR/last-applied-policy-document.json")
+
+  assert_contains "$trust" '"infra-legacy"' "legacy infra's ExternalId survives an untagged legacy role's first post-fix run"
+  assert_contains "$trust" '"infra-new"' "new infra's ExternalId is added alongside the legacy one"
+  assert_contains "$policy" "eks:CreateCluster" "an untagged legacy role's already-installed EKS grant (detected from the policy document) is not stripped by an ecs_fargate-only run"
+  assert_contains "$role" '"MaxSessionDuration": 7200' "detecting EKS from the policy document alone still raises max session duration to 2h"
+  assert_contains "$role" "eks" "the compute-types tag is backfilled with the inferred eks type"
+
+  teardown
+}
+
+test_legacy_role_detected_via_max_session_alone() {
+  # The policy document has no "eks:" action at all: if detection relied on the
+  # document, this would wrongly look like an ecs_fargate-only role. Only the existing
+  # 2h max session duration can catch it here.
+  setup
+  _seed_legacy_role 7200 ecs_only
+
+  run_create_role "infra-new" "ecs_fargate"
+
+  local policy role
+  policy=$(cat "$STATE_DIR/last-applied-policy-document.json")
+  role=$(cat "$STATE_DIR/role.json")
+
+  assert_contains "$policy" "eks:CreateCluster" "detecting EKS from a 2h max session alone still installs the eks policy document"
+  assert_contains "$role" '"MaxSessionDuration": 7200' "the pre-existing 2h max session is preserved, not lowered back to the ecs_fargate default"
+  assert_contains "$role" "eks" "the compute-types tag is backfilled with the inferred eks type"
+
+  teardown
+}
+
 test_single_to_list_merge
 test_dedupe_same_infra
 test_compute_type_union_never_downgrades
+test_legacy_role_detected_via_policy_document_alone
+test_legacy_role_detected_via_max_session_alone
 
 echo ""
 if [ "$FAILURES" -gt 0 ]; then
