@@ -574,7 +574,7 @@ class Command(BaseCommand):
                         else NotificationService.send_database_create_failure
                     notify(str(infra.user_id), str(infra.id), infra.name, db.error_message or 'Unknown error', db.name)
 
-        def run_provision(infra_id, lock_token):
+        def run_provision(infra_id, lock_token, retry_count=0):
             infra = None
             try:
                 infra = Infrastructure.objects.get(id=infra_id)
@@ -602,7 +602,7 @@ class Command(BaseCommand):
                     ).values_list('id', 'status')
                 }
 
-                TerraformWorker.provision(infra_id)
+                TerraformWorker.provision(infra_id, retry_count=retry_count)
                 env = Environment.objects.get(infrastructure_id=infra_id)
                 _notify_database_outcomes(infra, pending_dbs)
                 # A run whose only purpose was reconciling database rows already gets its
@@ -722,15 +722,20 @@ class Command(BaseCommand):
             if not job:
                 return False
             infra_id = job['infra_id']
+            # Jobs queued before this counter existed (or by any caller that doesn't set
+            # it) carry no "retry_count" key — treat those as a first attempt.
+            retry_count = job.get('retry_count', 0)
             lock_token = _new_lock_token()
             if not InfraQueue.acquire_db_lock(infra_id, lock_token):
                 logger.warning(f"Could not acquire lock for {infra_id}, re-enqueueing")
-                InfraQueue.enqueue_provision(infra_id)
+                # Not a provisioning attempt — just couldn't grab the lock yet — so the
+                # retry counter carries over unchanged rather than resetting or advancing.
+                InfraQueue.enqueue_provision(infra_id, retry_count=retry_count)
                 return False
             heartbeat = LockHeartbeat(infra_id, lock_token)
             heartbeat.start()
             try:
-                future: Future = provision_pool.submit(run_provision, infra_id, lock_token)
+                future: Future = provision_pool.submit(run_provision, infra_id, lock_token, retry_count)
                 future.add_done_callback(lambda f: (heartbeat.stop(), _log_future_exception(f, infra_id, 'provision')))
                 pending_futures.append(future)
                 return True

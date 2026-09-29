@@ -662,7 +662,14 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
 
     @staticmethod
     def _is_transient_error(error: str) -> bool:
-        """Check if error is transient and retryable"""
+        """Check if error is transient and retryable.
+
+        State-lock contention (someone else's apply/output-read holding the DynamoDB
+        lock row, or the lock table itself being throttled) is transient the same way a
+        network blip is: retrying without doing anything destructive is always safe, and
+        a first provision must never take the destroy-rollback path over a lock it just
+        needs to wait out.
+        """
         transient_patterns = [
             "RequestLimitExceeded",
             "Throttling",
@@ -672,7 +679,16 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             "timeout",
             "timed out",
             "TooManyRequests",
-            "ResourceInUseException"
+            "ResourceInUseException",
+            # Terraform state-lock contention (DynamoDB-backed backend) — covers both
+            # "Error acquiring the state lock" and a bare lock-table condition failure.
+            "state lock",
+            "conditionalcheckfailedexception",
+            # Lock-table throttling — "Throttling" above already covers ThrottlingException.
+            "provisionedthroughputexceededexception",
+            # "connection"/"timeout" above already cover connection resets and i/o/TLS
+            # handshake timeouts; this one is a distinct Go http client failure shape.
+            "requesterror: send request failed",
         ]
         return any(pattern.lower() in error.lower() for pattern in transient_patterns)
     
@@ -915,7 +931,7 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 )
             from api.services.infra_queue import InfraQueue
             InfraQueue.release_lock(str(infra_id))
-            InfraQueue.enqueue_provision(str(infra_id))
+            InfraQueue.enqueue_provision(str(infra_id), retry_count=retry_count + 1)
             return
 
         # Permanent failure from here: an environment that has ever gone ACTIVE has live

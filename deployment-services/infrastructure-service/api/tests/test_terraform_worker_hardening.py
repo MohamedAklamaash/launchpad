@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import call, patch
 
 import pytest
+from api.services.log_redaction import redact_provisioning_text
 from api.services.terraform_worker import (
     MAX_RETRIES,
     OUTPUT_FETCH_EXHAUSTED_MESSAGE,
@@ -111,6 +112,39 @@ def test_exec_tf_env_is_exactly_the_allowlist():
         "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "AWS_SHARED_CREDENTIALS_FILE",
         "AWS_CONFIG_FILE", "TF_IN_AUTOMATION", "TF_INPUT", "TF_PLUGIN_CACHE_DIR",
     }
+
+
+# ---- state-lock contention and network blips are transient, never a permanent failure ----
+
+@pytest.mark.parametrize("error_text", [
+    "Error acquiring the state lock",
+    "ConditionalCheckFailedException: the conditional request failed",
+    "state lock",
+    "ProvisionedThroughputExceededException",
+    "ThrottlingException: rate exceeded on lock table",
+    "connection reset by peer",
+    "dial tcp 10.0.0.1:443: i/o timeout",
+    "net/http: TLS handshake timeout",
+    "RequestError: send request failed",
+])
+def test_is_transient_error_recognizes_lock_contention_and_network_blips(error_text):
+    assert TerraformWorker._is_transient_error(error_text) is True
+
+
+def test_tf_result_classifies_state_lock_stderr_as_transient():
+    """The real path: `_exec_tf` runs raw terraform stderr through `_is_transient_error`
+    via `_tf_result`. A lock timeout must classify as transient so `_handle_provision_failure`
+    retries instead of destroying freshly-created resources over a lock it only needed to
+    wait out."""
+    result = TerraformWorker._tf_result(
+        False, [], CREDENTIALS,
+        error=(
+            "Error: Error acquiring the state lock\n\n"
+            "Error message: ConditionalCheckFailedException: The conditional request failed\n"
+            "Lock Info:\n  ID: abc\n  Who: worker@host\n  Operation: OperationTypeApply\n"
+        ),
+    )
+    assert result["transient"] is True
 
 
 # ---- #5 first_activated_at stamped once ----
@@ -247,7 +281,7 @@ def test_output_fetch_exhausted_transient_on_first_provision_requeues(make_infra
             str(infra.id), {"logs": "[COMMAND] apply ok"}, TF_VARS, CREDENTIALS,
             "us-east-1", "123456789012",
         )
-    Q.enqueue_provision.assert_called_once_with(str(infra.id))
+    Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=1)
     env.refresh_from_db()
     assert saved is False
     assert env.status == "PROVISIONING"
@@ -299,13 +333,14 @@ def test_failure_on_activated_environment_skips_destroy_and_restores_active(make
 
 
 def test_transient_failure_on_activated_environment_still_retries(make_infra_env):
-    """Retrying never destroys anything, so a live env's transient errors must still retry."""
+    """Retrying never destroys anything, so a live env's transient errors must still retry.
+    The requeue must carry the incremented retry count so MAX_RETRIES is reachable."""
     infra, env = make_infra_env(status="UPDATING", first_activated_at=timezone.now())
     with patch("api.services.infra_queue.InfraQueue") as Q, \
             patch.object(TerraformWorker, "_exec_tf",
                          side_effect=AssertionError("retry path must not destroy")):
         _handle_failure(infra, TRANSIENT_FAILURE, retry_count=0)
-    Q.enqueue_provision.assert_called_once_with(str(infra.id))
+    Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=1)
     env.refresh_from_db()
     assert env.status == "UPDATING"
 
@@ -316,9 +351,23 @@ def test_transient_failure_on_never_activated_environment_still_retries(make_inf
             patch.object(TerraformWorker, "_exec_tf",
                          side_effect=AssertionError("retry path must not destroy")):
         _handle_failure(infra, TRANSIENT_FAILURE, retry_count=0)
-    Q.enqueue_provision.assert_called_once_with(str(infra.id))
+    Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=1)
     env.refresh_from_db()
     assert env.status == "PROVISIONING"
+
+
+def test_transient_retry_count_increments_across_successive_requeues(make_infra_env):
+    """Each successive transient failure must advance the counter by exactly one, so a
+    fixed number of retries is actually reachable instead of resetting forever."""
+    infra, env = make_infra_env()
+    for attempt in range(MAX_RETRIES):
+        with patch("api.services.infra_queue.InfraQueue") as Q, \
+                patch.object(TerraformWorker, "_exec_tf",
+                             side_effect=AssertionError("retry path must not destroy")):
+            _handle_failure(infra, TRANSIENT_FAILURE, retry_count=attempt)
+        Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=attempt + 1)
+        env.refresh_from_db()
+        assert env.status == "PROVISIONING"
 
 
 def test_permanent_failure_on_never_activated_environment_still_rolls_back(make_infra_env):
@@ -333,6 +382,11 @@ def test_permanent_failure_on_never_activated_environment_still_rolls_back(make_
 
 
 def test_exhausted_transient_retries_on_never_activated_environment_rolls_back(make_infra_env):
+    """Once retry_count actually reaches MAX_RETRIES (only reachable because the queue now
+    carries the counter), a still-failing transient error must stop requeueing forever and
+    park the environment in ERROR with a non-empty, redactor-passed message — never a raw,
+    unredacted exception string (see `test_run_worker_never_emails_a_raw_exception_string`
+    for the same invariant on the run_worker side)."""
     infra, env = make_infra_env()
     with patch("api.services.infra_queue.InfraQueue") as Q, \
             patch.object(TerraformWorker, "_exec_tf",
@@ -341,3 +395,5 @@ def test_exhausted_transient_retries_on_never_activated_environment_rolls_back(m
     Q.enqueue_provision.assert_not_called()
     env.refresh_from_db()
     assert env.status == "ERROR"
+    assert env.error_message
+    assert env.error_message == redact_provisioning_text(env.error_message).text

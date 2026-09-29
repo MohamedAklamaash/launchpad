@@ -1,5 +1,7 @@
+import json
 import uuid
 from datetime import timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -352,3 +354,60 @@ def test_reissue_endpoint_returns_404_for_non_member(make_infra):
     )
     response = _reissue(infra, outsider)
     assert response.status_code == 404
+
+
+# ---- transient-retry counter carried through the Redis job payload ----
+
+class _FakeQueueRedis:
+    """Stand-in for the one redis-py surface InfraQueue.enqueue_provision uses — no
+    fakeredis dependency exists in this codebase (see test_rate_budget.py)."""
+
+    def __init__(self):
+        self.pushed = None
+
+    def exists(self, key):
+        return False
+
+    def rpush(self, queue, payload):
+        self.pushed = json.loads(payload)
+
+    def setex(self, key, ttl, value):
+        pass
+
+
+def test_enqueue_provision_carries_retry_count_in_job_payload():
+    from api.services.infra_queue import InfraQueue
+
+    fake = _FakeQueueRedis()
+    with patch("api.services.infra_queue._redis", return_value=fake):
+        InfraQueue.enqueue_provision("infra-1", retry_count=2)
+    assert fake.pushed["retry_count"] == 2
+
+
+def test_enqueue_provision_defaults_retry_count_to_zero():
+    """Every existing caller that doesn't pass retry_count enqueues a fresh attempt —
+    and a job consumed from a queue that predates this field reads back as 0 too
+    (see dispatch_provision's `job.get('retry_count', 0)` below)."""
+    from api.services.infra_queue import InfraQueue
+
+    fake = _FakeQueueRedis()
+    with patch("api.services.infra_queue._redis", return_value=fake):
+        InfraQueue.enqueue_provision("infra-1")
+    assert fake.pushed["retry_count"] == 0
+
+
+def test_retry_count_wired_through_dispatch_and_run_provision():
+    """dispatch_provision/run_provision are closures inside the management command and
+    cannot be driven in isolation (see test_run_worker_never_emails_a_raw_exception_string
+    in test_terraform_worker_redaction.py); hold the wiring invariant at the source so a
+    future edit can't silently drop the retry counter back to 0."""
+    from api.management.commands import run_worker
+
+    source = Path(run_worker.__file__).read_text()
+    assert "retry_count = job.get('retry_count', 0)" in source
+    assert "provision_pool.submit(run_provision, infra_id, lock_token, retry_count)" in source
+    assert "def run_provision(infra_id, lock_token, retry_count=0):" in source
+    assert "TerraformWorker.provision(infra_id, retry_count=retry_count)" in source
+    # The lock-acquire-failure requeue must preserve the count, not reset it — it isn't
+    # a provisioning attempt at all, just a wait for the lock.
+    assert "InfraQueue.enqueue_provision(infra_id, retry_count=retry_count)" in source
