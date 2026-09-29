@@ -725,3 +725,57 @@ def test_mock_verify_reports_clean_with_no_aws_calls(make_nuke_run):
     boto_client.assert_not_called()
     assert result == {"mock": True}
     assert ctx.run.leftovers == []
+
+
+def test_apps_step_fails_when_application_service_refuses():
+    """Real AWS: a 403 from application-service parsed as a dict without "errors" and
+    the apps step reported success with nothing deleted."""
+    from api.services import nuke_worker
+
+    response = MagicMock(status_code=403, text='{"detail":"Authentication credentials were not provided."}')
+    response.json.return_value = {"detail": "Authentication credentials were not provided."}
+    with patch.object(nuke_worker, "ResilientHttpClient") as client_cls:
+        client_cls.return_value.post.return_value = response
+        with pytest.raises(RuntimeError, match="HTTP 403"):
+            nuke_worker._nuke_applications("01a0eaf1-1c80-7fc2-b2d2-eda435072025")
+
+
+def test_verify_ignores_a_nat_gateway_already_in_deleted_state(make_nuke_run):
+    """Real AWS: terraform destroy had deleted the NAT gateway, but the tagging API still
+    listed it (NAT gateways stay describable as "deleted" for ~1h) and verify failed the run."""
+    from api.services.nuke_worker import _NukeContext, _tagged_leftovers
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+    gone = "arn:aws:ec2:us-east-1:123456789012:natgateway/nat-gone"
+    live = "arn:aws:ec2:us-east-1:123456789012:natgateway/nat-live"
+    tagging = MagicMock()
+    tagging.get_paginator.return_value.paginate.return_value = [
+        {"ResourceTagMappingList": [{"ResourceARN": gone}, {"ResourceARN": live}]}
+    ]
+    ec2 = MagicMock()
+    ec2.describe_nat_gateways.side_effect = lambda NatGatewayIds: {
+        "NatGateways": [{"State": "deleted" if NatGatewayIds == ["nat-gone"] else "available"}]
+    }
+    clients = {"resourcegroupstaggingapi": tagging, "ec2": ec2}
+    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
+        leftovers = _tagged_leftovers(ctx, str(infra.id))
+
+    assert [item["id"] for item in leftovers] == [live]
+
+
+@pytest.mark.parametrize("module,view", [
+    ("api.views.custom_domain_internal", "custom_domain_disable_for_application"),
+    ("api.views.infrastructure_internal", "infrastructure_exit_status"),
+])
+def test_internal_views_need_no_user_only_the_internal_token(module, view):
+    """Machine-to-machine views: no user JWT is ever sent, so the production default
+    IsAuthenticated would 403 every call. The internal token is the trust boundary."""
+    import importlib
+
+    from rest_framework.permissions import AllowAny
+
+    cls = getattr(importlib.import_module(module), view).cls
+    assert list(cls.authentication_classes) == []
+    assert list(cls.permission_classes) == [AllowAny]
+

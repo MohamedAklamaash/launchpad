@@ -308,6 +308,12 @@ def _nuke_applications(infra_id: str) -> dict:
     except Exception as e:
         raise RuntimeError(f"application-service unreachable: {e}") from e
 
+    # A non-2xx here (e.g. 403) used to parse as a dict without "errors" and read as
+    # success — seen on real AWS: the step reported success, no app was deleted.
+    if response.status_code >= 300:
+        raise RuntimeError(
+            f"application-service refused the nuke call (HTTP {response.status_code}): {response.text[:300]}"
+        )
     result = response.json()
     if result.get("errors"):
         raise RuntimeError(f"{len(result['errors'])} application(s) failed cleanup: {result['errors']}")
@@ -677,12 +683,38 @@ def _tagged_leftovers(ctx: _NukeContext, infra_id: str) -> list:
         for page in paginator.paginate(TagFilters=[{"Key": TAG_INFRA_KEY, "Values": [infra_id]}]):
             for resource in page.get("ResourceTagMappingList", []):
                 arn = resource["ResourceARN"]
+                if _is_deleted_tombstone(ctx, arn):
+                    continue
                 leftovers.append({"type": arn.split(":")[2] if ":" in arn else "unknown", "id": arn,
                                    "reason": f"still tagged {TAG_INFRA_KEY}={infra_id}"})
     except ClientError as e:
         _raise_if_access_denied(e)
         raise
     return leftovers
+
+
+def _is_deleted_tombstone(ctx: _NukeContext, arn: str) -> bool:
+    """The tagging API keeps listing some already-deleted resources for a while: a NAT
+    gateway stays describable in state "deleted" for about an hour, a terminated
+    instance similarly. Seen on real AWS right after a nuke's terraform destroy — those
+    are gone, not leftovers."""
+    resource = arn.split(":", 5)[-1]
+    kind, _, resource_id = resource.partition("/")
+    ec2 = None
+    try:
+        if kind == "natgateway":
+            ec2 = ctx.boto_client("ec2")
+            gateways = ec2.describe_nat_gateways(NatGatewayIds=[resource_id])["NatGateways"]
+            return not gateways or gateways[0]["State"] == "deleted"
+        if kind == "instance":
+            ec2 = ctx.boto_client("ec2")
+            reservations = ec2.describe_instances(InstanceIds=[resource_id])["Reservations"]
+            states = [i["State"]["Name"] for r in reservations for i in r["Instances"]]
+            return not states or all(state == "terminated" for state in states)
+    except ClientError as e:
+        _raise_if_access_denied(e)
+        return e.response.get("Error", {}).get("Code", "").endswith(".NotFound")
+    return False
 
 
 def _untagged_leftovers(ctx: _NukeContext, infra_id: str) -> list:

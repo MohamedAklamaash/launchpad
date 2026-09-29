@@ -9,7 +9,12 @@ endpoint does the AWS-side effect infrastructure-service's nuke worker is decidi
 from django.views.decorators.csrf import csrf_exempt
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from api.services.application_service import ApplicationService
@@ -19,9 +24,15 @@ class NukeApplicationsRequestSerializer(serializers.Serializer):
     infrastructure_id = serializers.UUIDField()
 
 
+# Machine-to-machine only: no user JWT is ever sent, so the default IsAuthenticated
+# permission turned every call into a 403 (seen on real AWS for the nuke call). The
+# trust boundary is X-INTERNAL-TOKEN, enforced by shared/middleware/internal_auth.py
+# on every /api/v1/internal/ path; the gateway exposes no route to them.
 @extend_schema(exclude=True)
 @csrf_exempt
 @api_view(['POST'])
+@authentication_classes([])
+@permission_classes([AllowAny])
 def nuke_applications(request):
     """Internal only. Force-deletes every Application on this infrastructure — AWS/
     Kubernetes cleanup then the DB row, per app, synchronously — and returns a summary.

@@ -185,3 +185,22 @@ def test_deregister_task_definition_delete_failure_is_non_fatal():
 
     # Must not raise — a best-effort improvement, never the thing that fails a cleanup.
     ApplicationCleanupService()._deregister_task_definition(session, "arn:x")
+
+
+@pytest.mark.parametrize("module,view", [
+    ("api.views.nuke_internal", "nuke_applications"),
+    ("api.views.custom_domains_internal", "custom_domain_attach"),
+    ("api.views.custom_domains_internal", "custom_domain_detach"),
+])
+def test_internal_views_need_no_user_only_the_internal_token(module, view):
+    """Seen on real AWS: these calls carry X-INTERNAL-TOKEN and no user JWT, and the
+    production default IsAuthenticated answered 403 ("Authentication credentials were
+    not provided"). Test settings relax that default, so assert the views' own
+    declaration instead. The token itself is enforced by InternalAuthMiddleware."""
+    import importlib
+
+    from rest_framework.permissions import AllowAny
+
+    cls = getattr(importlib.import_module(module), view).cls
+    assert list(cls.authentication_classes) == []
+    assert list(cls.permission_classes) == [AllowAny]
