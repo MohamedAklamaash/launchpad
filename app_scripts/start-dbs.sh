@@ -11,6 +11,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DOCKER_DIR="$ROOT_DIR/infra/.docker"
 COMPOSE_FILE="$DOCKER_DIR/docker-compose.infra.yml"
 
+# The local-driver volumes bind these host paths and docker refuses to create them.
+mkdir -p "$DOCKER_DIR"/volumes/{postgres,mysql,mongo,redis,rabbitmq}
+
 echo "Starting infra stack from $COMPOSE_FILE ..."
 docker compose -f "$COMPOSE_FILE" up -d
 

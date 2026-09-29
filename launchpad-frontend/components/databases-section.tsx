@@ -21,8 +21,8 @@ const ENGINE_OPTIONS: { value: DatabaseEngine; label: string }[] = [
 ];
 
 const ENGINE_VERSIONS: Record<DatabaseEngine, string[]> = {
-  postgres: ['15.10', '16.6', '17.2'],
-  mysql: ['8.0.39'],
+  postgres: ['17', '16', '15'],
+  mysql: ['8.4', '8.0'],
   redis: ['7.1'],
   docdb: ['5.0.0'],
 };

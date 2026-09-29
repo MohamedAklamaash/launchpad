@@ -101,6 +101,10 @@ def request_dns_reconcile(infrastructure_id, *, coalesce: bool = True) -> None:
     producer = _get_producer()
     try:
         producer.connect()
+        # A topic exchange drops messages with no bound queue, so a reconcile published
+        # before the writer's first start (e.g. right after the first provision) would be
+        # lost for good. Declaring the writer's queue here too makes it wait instead.
+        producer.declare_queue(queue=DNS_RECONCILE_QUEUE, routing_key=DNS_RECONCILE_ROUTING_KEY)
     except Exception:
         logger.warning("platform DNS reconcile producer connect failed for %s", infra_id, exc_info=True)
     producer.publish(DNS_RECONCILE_ROUTING_KEY, {"infrastructure_id": infra_id, "attempt": 0})

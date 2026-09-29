@@ -139,7 +139,7 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./volumes/prometheus:/prometheus
+      - prometheus_data:/prometheus
     networks:
       - backend
 
@@ -153,7 +153,7 @@ services:
     ports:
       - "3001:3000"
     volumes:
-      - ./volumes/grafana:/var/lib/grafana
+      - grafana_data:/var/lib/grafana
     networks:
       - backend
     depends_on:
@@ -433,3 +433,5 @@ volumes:
       type: none
       o: bind
       device: ./volumes/rabbitmq
+  prometheus_data:
+  grafana_data:

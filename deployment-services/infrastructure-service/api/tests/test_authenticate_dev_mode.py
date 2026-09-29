@@ -29,7 +29,7 @@ def make_user(db):
 def make_infra(db, make_user):
     from api.models.infrastructure import Infrastructure
 
-    def _make(*, is_mock=False, code="123456789012", metadata=None):
+    def _make(*, is_mock=False, code="123456789012", metadata=None, compute_type="ecs_fargate"):
         infra = Infrastructure.objects.create(
             user=make_user(),
             name=f"infra-{uuid.uuid4()}",
@@ -38,6 +38,7 @@ def make_infra(db, make_user):
             max_memory=2.0,
             code=code,
             metadata=metadata,
+            compute_type=compute_type,
         )
         if is_mock:
             # is_mock is editable=False; set directly and persist.
@@ -76,10 +77,11 @@ def test_dev_mode_synthesizes_creds_and_never_calls_boto3(make_infra):
     assert not _CRED_KEYS & infra.metadata.keys()
 
 
-def test_prod_mode_calls_real_sts_assume_role(make_infra):
+@pytest.mark.parametrize("compute_type,duration", [("ecs_fargate", 3600), ("eks", 7200)])
+def test_prod_mode_calls_real_sts_assume_role(make_infra, compute_type, duration):
     import datetime
 
-    infra = make_infra(is_mock=False, metadata={})
+    infra = make_infra(is_mock=False, metadata={}, compute_type=compute_type)
     fake_sts = MagicMock()
     fake_sts.assume_role.return_value = {
         "Credentials": {
@@ -96,7 +98,7 @@ def test_prod_mode_calls_real_sts_assume_role(make_infra):
 
     boto3_mock.client.assert_called_once()
     fake_sts.assume_role.assert_called_once()
-    assert fake_sts.assume_role.call_args.kwargs["DurationSeconds"] == 7200
+    assert fake_sts.assume_role.call_args.kwargs["DurationSeconds"] == duration
     assert creds["aws_access_key_id"] == "AKIAREAL"
 
     infra.refresh_from_db()

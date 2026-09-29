@@ -33,6 +33,9 @@ GRANT CONNECT ON DATABASE infrastructure_db TO launchpad_dns_writer;
 GRANT USAGE ON SCHEMA public TO launchpad_dns_writer;
 
 GRANT SELECT ON api_infrastructure TO launchpad_dns_writer;
+-- publish_host_readiness bumps the per-infra ordering counter under SELECT ... FOR UPDATE,
+-- which Postgres only allows with UPDATE on at least one column. Scope it to that column.
+GRANT UPDATE (host_readiness_version) ON api_infrastructure TO launchpad_dns_writer;
 GRANT SELECT ON environments TO launchpad_dns_writer;
 GRANT SELECT ON api_infrastructurecertificate TO launchpad_dns_writer;
 

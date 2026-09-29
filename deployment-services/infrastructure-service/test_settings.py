@@ -67,8 +67,8 @@ EKS_PUBLIC_ACCESS_CIDRS = [
 LOGGING_CONFIG = None
 
 DATABASE_ENGINE_VERSIONS = {
-    "postgres": {"15.10", "16.6", "17.2"},
-    "mysql": {"8.0.39"},
+    "postgres": {"15", "16", "17"},
+    "mysql": {"8.0", "8.4"},
     "redis": {"7.1"},
     "docdb": {"5.0.0"},
 }

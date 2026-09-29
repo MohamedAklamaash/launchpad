@@ -9,6 +9,42 @@ appends its own items here.** Tick them when the dedicated accounts exist.
 Accounts needed: one **customer** test account (runs `create_aws_role.sh`), one **platform
 DNS** account (`infra/platform-dns`).
 
+
+## Run 1 — 2026-09-29, account 403260035234 (us-east-1)
+
+Single account playing customer + platform + DNS (the design wants separate accounts; the
+IAM guard results below don't depend on that). Verified on real AWS:
+
+- **Onboarding (ECS):** `create_aws_role.sh` created role + policy v4; callback 202; AssumeRole
+  with ExternalId OK; `policy_version=4`. **Bug found:** the first provision raced IAM
+  propagation (state-bucket AccessDenied) — fixed with a bounded retry.
+- **ECS provision:** VPC, NAT, ALB, cluster, state bucket + lock table — ACTIVE in ~8 min.
+- **F5 evidence pack:** live drift `identical` for policy and trust policy; attaching
+  `ReadOnlyAccess` flips `identical=false` and lists it under `other_policies`.
+- **F0 budget:** 60 databases-list calls pass, the rest get 429.
+- **F4 costs:** a fresh account returns `User not enabled for cost explorer access`; it was
+  reported as a missing IAM grant — fixed (`cost_explorer_not_enabled`). Actual cost data
+  still to verify once Cost Explorer is enabled (~24h).
+- **Managed DB:** **bug found:** every pinned RDS minor was retired, so Postgres/MySQL
+  creation always failed — fixed (major versions). Postgres `16` → RDS `16.13`, encrypted,
+  private, credentials in Secrets Manager.
+- **F1b cert bootstrap:** ACM `*.{label}.launchpad.aklamaash.me` requested, tagged.
+- **Platform DNS terraform + IAM guard:** two-label CNAME ✓, `*` wildcard ✓; apex TXT ✗,
+  single-label ✗, NS delegation ✗, non-CNAME ✗ — all as designed.
+- **DNS writer:** **bugs found:** it inherited the shared `.env` (could never start
+  isolated), a reconcile published before its first start was dropped, and its DB role
+  lacked UPDATE on `host_readiness_version` — all fixed. After the fixes: identity
+  verified, edge/wildcard/validation records written and INSYNC, readiness mirrored.
+- **H1:** env vars stored as Fernet ciphertext; canary absent from the DB.
+- **F6 exit export:** zip has inventory, terraform + backend.hcl, redacted task def; no
+  canary or platform key; stale `auth_time` → 401 `reauth_required`.
+
+Blocked on the account, not the code:
+- **App deploy (F2, F3, H4, host URLs, custom domains):** new accounts start with every
+  CodeBuild concurrency quota at 0 (`StartBuild`: "Cannot have more than 0 builds in
+  queue"). Increase requested (Linux/Small → 2).
+- **TLS issuance:** needs the `launchpad` NS delegation at `aklamaash.me`.
+
 ## Onboarding and policy
 
 - [ ] `create_aws_role.sh` first-time bootstrap with `LAUNCHPAD_COMPUTE_TYPE=ecs_fargate`
