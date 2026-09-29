@@ -118,6 +118,18 @@ class MockClient:
 
     def create_service(self, **kwargs):
         name = kwargs.get("serviceName", "app-service")
+        # Real ECS CreateService validates every `loadBalancers` entry: a target group
+        # with no associated load balancer yet raises InvalidParameterException, and it
+        # is never health-checked either way — see
+        # ApplicationDeploymentService._create_ecs_service_with_routing, the fix this
+        # enforces against.
+        for lb in kwargs.get("loadBalancers") or []:
+            tg_arn = lb.get("targetGroupArn")
+            if tg_arn and not self._target_group_load_balancer_arns(tg_arn):
+                raise self.exceptions.InvalidParameterException(
+                    f"The target group with targetGroupArn {tg_arn} does not have an "
+                    "associated load balancer"
+                )
         # A create after a delete (the rollback recreate path) is a fresh, ACTIVE
         # service — it must stop showing up as deleted to describe_services/update_service.
         self._deleted_services.discard(name)
@@ -169,13 +181,17 @@ class MockClient:
         names = kwargs.get("Names") or []
         groups = []
         for arn in arns:
-            groups.append({"TargetGroupArn": arn, "VpcId": self._mock_vpc_id})
+            groups.append({
+                "TargetGroupArn": arn, "VpcId": self._mock_vpc_id,
+                "LoadBalancerArns": self._target_group_load_balancer_arns(arn),
+            })
         for name in names:
             existing = self._target_groups.get(name)
             if existing:
                 groups.append({
                     "TargetGroupArn": existing["arn"], "TargetGroupName": name,
                     "VpcId": existing["vpc_id"],
+                    "LoadBalancerArns": self._target_group_load_balancer_arns(existing["arn"]),
                 })
             else:
                 groups.append(
@@ -183,9 +199,22 @@ class MockClient:
                         "TargetGroupArn": self._arn(f"targetgroup/{name}/{_suffix(name)}"),
                         "TargetGroupName": name,
                         "VpcId": self._mock_vpc_id,
+                        "LoadBalancerArns": [],
                     }
                 )
         return {"TargetGroups": groups}
+
+    def _target_group_load_balancer_arns(self, target_group_arn: str) -> list:
+        """Real ALB populates a target group's LoadBalancerArns once some listener rule
+        on that load balancer forwards to it — modelled here by scanning every rule this
+        mock has created for a forward Action pointed at this target group, matching
+        real DescribeTargetGroups without tracking an explicit attach/detach step."""
+        for rules in self._listener_rules.values():
+            for rule in rules:
+                for action in rule.get("Actions", []):
+                    if action.get("Type") == "forward" and action.get("TargetGroupArn") == target_group_arn:
+                        return [self._arn("loadbalancer/app/mock-alb/attached")]
+        return []
 
     def describe_tags(self, **kwargs):
         arns = kwargs.get("ResourceArns") or []
