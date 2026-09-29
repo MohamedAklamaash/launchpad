@@ -10,7 +10,6 @@ import uuid
 from pathlib import Path
 
 import boto3
-from botocore.exceptions import ClientError
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from api.common import naming
 from api.common.envs.application import app_config
@@ -40,6 +39,7 @@ from api.services.platform_dns.teardown import (
     request_and_await_dns_teardown,
 )
 from api.validators import validate_database_name
+from botocore.exceptions import ClientError
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone

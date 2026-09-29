@@ -3,9 +3,8 @@
 from unittest.mock import patch
 
 import pytest
-from botocore.exceptions import ClientError
-
 from api.services.terraform_worker import TerraformWorker
+from botocore.exceptions import ClientError
 
 
 def _denied():
