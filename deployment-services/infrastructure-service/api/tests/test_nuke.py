@@ -99,7 +99,7 @@ def test_start_succeeds_for_owner_with_matching_name(factory, make_infra_env):
     assert resp.status_code == 202
     assert resp.data["status"] == "PENDING"
     assert [s["key"] for s in resp.data["steps"]] == [
-        "apps", "databases", "terraform_teardown", "leftovers", "shared_resources", "verify",
+        "apps", "databases", "terraform_teardown", "leftovers", "state_backend", "verify", "deployment_role",
     ]
 
 
@@ -127,9 +127,13 @@ def test_start_409s_when_already_running(factory, make_infra_env):
 
 
 def test_start_resumes_a_failed_run_instead_of_creating_a_new_one(factory, make_infra_env):
+    """A real failed nuke run parks Environment at ERROR (see
+    nuke_worker._park_environment_error), not DESTROYING — this reproduces that state
+    directly rather than the unrealistic ACTIVE a failed run never actually leaves
+    behind."""
     from api.models.nuke_run import NukeRun, initial_steps
 
-    owner, infra, _env = make_infra_env(name="prod-infra")
+    owner, infra, _env = make_infra_env(name="prod-infra", env_status="ERROR")
     steps = initial_steps()
     steps[0]["status"] = "success"
     steps[0]["detail"] = {"deleted_count": 2}
@@ -143,6 +147,7 @@ def test_start_resumes_a_failed_run_instead_of_creating_a_new_one(factory, make_
     resumed = NukeRun.objects.get(id=run.id)
     assert resumed.status == "PENDING"
     assert resumed.leftovers == []
+
     assert resumed.steps[0]["status"] == "success"  # apps step's prior success is preserved
 
 
@@ -219,8 +224,9 @@ def _patch_all_steps_success(monkeypatch, calls):
     monkeypatch.setattr(nw._NukeContext, "step_databases", lambda self: _record("databases")(self))
     monkeypatch.setattr(nw._NukeContext, "step_terraform_teardown", lambda self: _record("terraform_teardown")(self))
     monkeypatch.setattr(nw._NukeContext, "step_leftovers", lambda self: _record("leftovers")(self))
-    monkeypatch.setattr(nw._NukeContext, "step_shared_resources", lambda self: _record("shared_resources")(self))
+    monkeypatch.setattr(nw._NukeContext, "step_state_backend", lambda self: _record("state_backend")(self))
     monkeypatch.setattr(nw._NukeContext, "step_verify", lambda self: _record("verify")(self))
+    monkeypatch.setattr(nw._NukeContext, "step_deployment_role", lambda self: _record("deployment_role")(self))
 
 
 def test_worker_runs_steps_in_order_and_completes(make_nuke_run, monkeypatch):
@@ -234,7 +240,9 @@ def test_worker_runs_steps_in_order_and_completes(make_nuke_run, monkeypatch):
     with patch("api.services.nuke_worker.NotificationService"):
         NukeWorker.run(str(infra.id))
 
-    assert calls == ["apps", "databases", "terraform_teardown", "leftovers", "shared_resources", "verify"]
+    assert calls == [
+        "apps", "databases", "terraform_teardown", "leftovers", "state_backend", "verify", "deployment_role",
+    ]
     run.refresh_from_db()
     assert run.status == "COMPLETED"
     assert all(s["status"] == "success" for s in run.steps)
@@ -242,13 +250,42 @@ def test_worker_runs_steps_in_order_and_completes(make_nuke_run, monkeypatch):
     assert NukeRun.objects.filter(id=run.id).exists()  # survives the infra row's deletion
 
 
-def test_worker_resume_skips_already_succeeded_steps(make_nuke_run, monkeypatch):
+def test_worker_refuses_to_delete_rows_while_platform_dns_is_still_live(make_nuke_run, monkeypatch):
+    """Mirrors run_worker.py's run_destroy: live platform DNS state is the point past
+    which the Infrastructure row must not be deleted, or a Route53 record could be left
+    pointing at nothing."""
+    from api.models.infrastructure import Infrastructure
+    from api.services.nuke_worker import NukeWorker
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    calls = []
+    _patch_all_steps_success(monkeypatch, calls)
+
+    with patch("api.services.platform_dns.teardown.has_live_dns_state", return_value=True), \
+         patch("api.services.nuke_worker.NotificationService") as notify:
+        NukeWorker.run(str(infra.id))
+
+    run.refresh_from_db()
+    assert run.status == "FAILED"
+    assert any(l["type"] == "platform_dns" for l in run.leftovers)
+    assert Infrastructure.objects.filter(id=infra.id).exists()
+    notify.send_destroy_failure.assert_called_once()
+
+
+def test_worker_resume_skips_only_the_resumable_steps(make_nuke_run, monkeypatch):
+    """apps/databases/terraform_teardown/leftovers are skipped once already "success".
+    state_backend/verify/deployment_role always re-run, even if a prior attempt already
+    marked them "success" — the last-infra decision and the leftover scan must reflect
+    the account's current state on every attempt, not the first one."""
     from api.models.nuke_run import NukeRun
     from api.services.nuke_worker import NukeWorker
 
     _owner, infra, _env, run = make_nuke_run(name="prod-infra")
     run.set_step("apps", "success", {"deleted_count": 1})
     run.set_step("databases", "success", {"snapshots_deleted": []})
+    run.set_step("terraform_teardown", "success", {"status": "DESTROYED"})
+    run.set_step("leftovers", "success", {})
+    run.set_step("state_backend", "success", {"action": "kept"})  # must still re-run
     run.save(update_fields=["steps"])
 
     calls = []
@@ -256,9 +293,7 @@ def test_worker_resume_skips_already_succeeded_steps(make_nuke_run, monkeypatch)
     with patch("api.services.nuke_worker.NotificationService"):
         NukeWorker.run(str(infra.id))
 
-    assert "apps" not in calls
-    assert "databases" not in calls
-    assert calls == ["terraform_teardown", "leftovers", "shared_resources", "verify"]
+    assert calls == ["state_backend", "verify", "deployment_role"]
     assert NukeRun.objects.get(id=run.id).status == "COMPLETED"
 
 
@@ -266,7 +301,7 @@ def test_worker_failed_step_stops_the_run_and_notifies_failure(make_nuke_run, mo
     import api.services.nuke_worker as nw
     from api.services.nuke_worker import NukeWorker
 
-    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    _owner, infra, env, run = make_nuke_run(name="prod-infra", env_status="DESTROYING")
     calls = []
     _patch_all_steps_success(monkeypatch, calls)
 
@@ -284,6 +319,28 @@ def test_worker_failed_step_stops_the_run_and_notifies_failure(make_nuke_run, mo
     assert run.step("databases")["status"] == "failed"
     assert "rds is angry" in run.step("databases")["detail"]
     notify.send_destroy_failure.assert_called_once()
+
+    env.refresh_from_db()
+    assert env.status == "ERROR"  # not left at DESTROYING — see _park_environment_error
+
+
+def test_worker_failure_parks_environment_error_so_a_retry_is_not_blocked(make_nuke_run, monkeypatch):
+    """Regression: before _park_environment_error, a step failure left Environment at
+    DESTROYING (set by start_nuke), so start_nuke's own PROVISIONING/UPDATING/DESTROYING
+    guard 409'd every retry, and the reaper's DESTROYING filter would silently re-drive
+    the stuck row as a plain destroy — no leftovers/state_backend/deployment_role, and it
+    deletes the Infrastructure row on success. ERROR sits outside both."""
+    import api.services.nuke_worker as nw
+    from api.services.nuke_worker import NukeWorker
+
+    owner, infra, _env, _run = make_nuke_run(name="prod-infra")
+    monkeypatch.setattr(nw._NukeContext, "step_apps", lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with patch("api.services.nuke_worker.NotificationService"):
+        NukeWorker.run(str(infra.id))
+
+    resp = _start(APIRequestFactory(), owner, str(infra.id), "prod-infra")
+    assert resp.status_code == 202
 
 
 def test_worker_leftovers_after_verify_marks_run_failed(make_nuke_run, monkeypatch):
@@ -415,10 +472,55 @@ def test_databases_step_access_denied_raises_policy_refresh(make_nuke_run):
         _cleanup_database_snapshots(ctx)
 
 
-# ── shared resources: last-infra vs shared decision ─────────────────────────────
+# ── terraform teardown ──────────────────────────────────────────────────────────
 
-def test_shared_resources_keeps_role_when_other_infra_shares_the_account(make_nuke_run):
-    from api.services.nuke_worker import _manage_shared_resources, _NukeContext
+def test_terraform_teardown_best_effort_deletes_app_sg_before_destroy(make_nuke_run):
+    """Whether AWS's DeleteVpc tolerates a leftover non-default security group is
+    unverified (see the PR notes) — deleting it before terraform runs removes the
+    question for the case it matters."""
+    from api.services.nuke_worker import _NukeContext, _run_terraform_teardown
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+
+    with patch("api.services.nuke_worker._delete_app_security_group") as delete_sg, \
+         patch("api.services.terraform_worker.TerraformWorker.destroy") as destroy:
+        def _fake_destroy(infra_id, nuke=False):
+            from api.models.environment import Environment
+            Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYED")
+        destroy.side_effect = _fake_destroy
+
+        _run_terraform_teardown(ctx)
+
+    delete_sg.assert_called_once_with(ctx, str(infra.id))
+    destroy.assert_called_once()
+
+
+def test_terraform_teardown_survives_app_sg_delete_failure(make_nuke_run):
+    """The pre-destroy SG delete is best-effort — a DependencyViolation or any other
+    failure must not stop terraform from running; the leftovers step's own pass is the
+    authoritative one."""
+    from api.services.nuke_worker import _NukeContext, _run_terraform_teardown
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+
+    with patch("api.services.nuke_worker._delete_app_security_group", side_effect=RuntimeError("DependencyViolation")), \
+         patch("api.services.terraform_worker.TerraformWorker.destroy") as destroy:
+        def _fake_destroy(infra_id, nuke=False):
+            from api.models.environment import Environment
+            Environment.objects.filter(infrastructure_id=infra_id).update(status="DESTROYED")
+        destroy.side_effect = _fake_destroy
+
+        _run_terraform_teardown(ctx)  # must not raise
+
+    destroy.assert_called_once()
+
+
+# ── deployment role + state backend: last-infra vs shared decision ─────────────
+
+def test_deployment_role_keeps_role_and_edits_trust_when_other_infra_shares_the_account(make_nuke_run):
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
 
     owner, infra, _env, run = make_nuke_run(name="prod-infra")
     from api.models.infrastructure import Infrastructure
@@ -436,21 +538,20 @@ def test_shared_resources_keeps_role_when_other_infra_shares_the_account(make_nu
             }}}],
         }},
     }
-    with patch.object(_NukeContext, "boto_client", lambda self, service: fake_iam if service == "iam" else MagicMock()):
-        result = _manage_shared_resources(ctx)
+    with patch.object(_NukeContext, "boto_client", return_value=fake_iam):
+        result = _manage_deployment_role(ctx)
 
-    assert result["role"]["action"] == "kept"
-    assert "shared with 1 other" in result["role"]["reason"]
-    assert result["role"]["trust_updated"] is True
+    assert result["action"] == "kept"
+    assert "shared with 1 other" in result["reason"]
+    assert result["trust_updated"] is True
     fake_iam.update_assume_role_policy.assert_called_once()
     written_doc = fake_iam.update_assume_role_policy.call_args.kwargs["PolicyDocument"]
     assert str(infra.id) not in written_doc
     assert "other-external-id" in written_doc
-    assert result["state_backend"]["action"] == "kept"
 
 
-def test_shared_resources_deletes_role_and_state_backend_when_last_infra(make_nuke_run):
-    from api.services.nuke_worker import _manage_shared_resources, _NukeContext
+def test_deployment_role_deletes_role_and_policy_when_last_infra(make_nuke_run):
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
 
     _owner, infra, _env, run = make_nuke_run(name="prod-infra")
     ctx = _NukeContext(infra=infra, run=run)
@@ -461,25 +562,17 @@ def test_shared_resources_deletes_role_and_state_backend_when_last_infra(make_nu
     }
     fake_iam.list_role_policies.return_value = {"PolicyNames": []}
     fake_iam.list_policy_versions.return_value = {"Versions": [{"VersionId": "v1", "IsDefaultVersion": True}]}
-    fake_s3 = MagicMock()
-    fake_s3.get_paginator.return_value.paginate.return_value = [{"Versions": [], "DeleteMarkers": []}]
-    fake_dynamodb = MagicMock()
 
-    clients = {"iam": fake_iam, "s3": fake_s3, "dynamodb": fake_dynamodb}
-    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
-        result = _manage_shared_resources(ctx)
+    with patch.object(_NukeContext, "boto_client", return_value=fake_iam):
+        result = _manage_deployment_role(ctx)
 
     fake_iam.detach_role_policy.assert_called_once()
     fake_iam.delete_role.assert_called_once_with(RoleName="LaunchpadDeploymentRole")
-    assert result["role"]["action"] == "deleted"
-    fake_s3.delete_bucket.assert_called_once()
-    fake_dynamodb.delete_table.assert_called_once()
-    assert result["state_backend"]["bucket_deleted"] is True
-    assert result["state_backend"]["table_deleted"] is True
+    assert result["action"] == "deleted"
 
 
-def test_shared_resources_keeps_role_with_unexpected_attached_policy(make_nuke_run):
-    from api.services.nuke_worker import _manage_shared_resources, _NukeContext
+def test_deployment_role_keeps_role_with_unexpected_attached_policy(make_nuke_run):
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
 
     _owner, infra, _env, run = make_nuke_run(name="prod-infra")
     ctx = _NukeContext(infra=infra, run=run)
@@ -489,16 +582,64 @@ def test_shared_resources_keeps_role_with_unexpected_attached_policy(make_nuke_r
         "AttachedPolicies": [{"PolicyName": "SomeoneElsePolicy", "PolicyArn": "arn:aws:iam::123456789012:policy/SomeoneElsePolicy"}],
     }
     fake_iam.list_role_policies.return_value = {"PolicyNames": []}
-    fake_s3 = MagicMock()
-    fake_s3.get_paginator.return_value.paginate.return_value = [{"Versions": [], "DeleteMarkers": []}]
-    clients = {"iam": fake_iam, "s3": fake_s3, "dynamodb": MagicMock()}
 
-    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
-        result = _manage_shared_resources(ctx)
+    with patch.object(_NukeContext, "boto_client", return_value=fake_iam):
+        result = _manage_deployment_role(ctx)
 
     fake_iam.delete_role.assert_not_called()
-    assert result["role"]["action"] == "kept"
-    assert "unexpected" in result["role"]["reason"]
+    assert result["action"] == "kept"
+    assert "unexpected" in result["reason"]
+
+
+def test_deployment_role_mock_mode_never_touches_boto3(make_nuke_run):
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra", is_mock=True)
+    ctx = _NukeContext(infra=infra, run=run)
+    with patch("api.services.nuke_worker.boto3.client") as boto_client:
+        result = _manage_deployment_role(ctx)
+
+    boto_client.assert_not_called()
+    assert result == {"mock": True}
+
+
+def test_state_backend_kept_when_other_infra_shares_the_account_and_region(make_nuke_run):
+    from api.services.nuke_worker import _manage_state_backend, _NukeContext
+
+    owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    from api.models.infrastructure import Infrastructure
+    Infrastructure.objects.create(
+        user=owner, name="other-infra", cloud_provider="aws", max_cpu=1, max_memory=1,
+        code=infra.code, metadata={"aws_region": "us-east-1"},
+    )
+
+    ctx = _NukeContext(infra=infra, run=run)
+    with patch("api.services.nuke_worker.boto3.client") as boto_client:
+        result = _manage_state_backend(ctx)
+
+    boto_client.assert_not_called()
+    assert result["action"] == "kept"
+    assert "shared with 1 other" in result["reason"]
+
+
+def test_state_backend_deleted_when_last_infra_in_account_and_region(make_nuke_run):
+    from api.services.nuke_worker import _manage_state_backend, _NukeContext
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+
+    fake_s3 = MagicMock()
+    fake_s3.get_paginator.return_value.paginate.return_value = [{"Versions": [], "DeleteMarkers": []}]
+    fake_dynamodb = MagicMock()
+    clients = {"s3": fake_s3, "dynamodb": fake_dynamodb}
+
+    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
+        result = _manage_state_backend(ctx)
+
+    fake_s3.delete_bucket.assert_called_once()
+    fake_dynamodb.delete_table.assert_called_once()
+    assert result["bucket_deleted"] is True
+    assert result["table_deleted"] is True
 
 
 # ── verify ───────────────────────────────────────────────────────────────────────

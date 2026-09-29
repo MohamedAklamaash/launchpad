@@ -5,11 +5,27 @@ run_worker.py's dispatch_destroy routing on job["action"]), so it can never race
 terraform apply/destroy against the same customer account.
 
 Step order (api/models/nuke_run.py:NUKE_STEP_DEFINITIONS):
-  apps -> databases -> terraform_teardown -> leftovers -> shared_resources -> verify
+  apps -> databases -> terraform_teardown -> leftovers -> state_backend -> verify
+  -> deployment_role
 
-Every step is safe to re-run: NukeWorker.run() skips a step whose stored status is
-already "success", so a retry after a mid-run failure resumes instead of repeating
-finished work. mock mode (infra.is_mock or MODE=dev) simulates every step with no AWS
+`deployment_role` runs LAST, after `verify` — it is the credential every earlier step
+(including verify's own AWS calls) authenticates with, so deleting or editing it any
+earlier would strand every later step (and any retry) with a dead AssumeRole. See
+`_manage_deployment_role`.
+
+apps/databases/terraform_teardown/leftovers are resumable: a retry skips one already
+marked "success". state_backend/verify/deployment_role are never skipped — the
+last-infra-vs-shared decision and the leftover scan must reflect the account's current
+state on every attempt, not whatever was true the first time this run reached them.
+
+Every failure path parks Environment.status to ERROR (mirroring TerraformWorker.
+destroy()'s own failure branch): ERROR falls outside the periodic reaper's
+DESTROYING/PROVISIONING/UPDATING filter, so a failed nuke is never silently re-picked-up
+and re-driven as a plain destroy (which has no step tracking and would delete the
+Infrastructure row without ever running leftovers/state_backend/deployment_role), and
+NukeService.start_nuke already accepts ERROR as a retryable state.
+
+mock mode (infra.is_mock or MODE=dev) simulates every AWS-touching step with no boto3
 calls, mirroring TerraformWorker's own mock branches — steps that only touch the local
 DB (apps, databases-as-snapshot-cleanup) still run for real even in mock mode, since
 they have no AWS side effect to fake.
@@ -61,6 +77,15 @@ def _raise_if_access_denied(error: ClientError):
         ) from error
 
 
+def _park_environment_error(infra_id: str, message: str) -> None:
+    """Called on every nuke failure path. Mirrors TerraformWorker.destroy()'s own
+    failure branch — see this module's docstring for why ERROR (not leaving
+    Environment at DESTROYING) matters here."""
+    Environment.objects.filter(infrastructure_id=infra_id).update(
+        status="ERROR", error_message=_capped_error(message),
+    )
+
+
 class NukeWorker:
     @staticmethod
     def run(infra_id: str) -> None:
@@ -81,26 +106,29 @@ class NukeWorker:
         run.save(update_fields=['status', 'started_at', 'updated_at'])
 
         ctx = _NukeContext(infra=infra, run=run)
-        for key, step_fn in ctx.STEPS:
-            if not NukeWorker._run_step(ctx, key, step_fn):
+        for key, step_fn, resumable in ctx.STEPS:
+            if not NukeWorker._run_step(ctx, key, step_fn, resumable):
                 return
 
         if run.leftovers:
             run.status = 'FAILED'
             run.finished_at = timezone.now()
             run.save(update_fields=['status', 'finished_at', 'updated_at'])
+            _park_environment_error(infra_id, f"{len(run.leftovers)} resource(s) still present after nuke")
             NukeWorker._notify_failure(infra, f"{len(run.leftovers)} resource(s) still present after nuke")
             return
 
         NukeWorker._finalize_success(infra, run)
 
     @staticmethod
-    def _run_step(ctx: "_NukeContext", key: str, step_fn) -> bool:
+    def _run_step(ctx: "_NukeContext", key: str, step_fn, resumable: bool) -> bool:
         """Runs one step, persists its outcome, and returns whether the run should
-        continue to the next step."""
+        continue to the next step. `resumable` steps are skipped outright if already
+        marked "success" from a prior attempt; non-resumable steps (state_backend,
+        verify, deployment_role) always re-execute — see the module docstring."""
         run = ctx.run
         existing = run.step(key)
-        if existing and existing['status'] == 'success':
+        if resumable and existing and existing['status'] == 'success':
             return True
 
         run.set_step(key, 'running', None)
@@ -112,6 +140,7 @@ class NukeWorker:
             run.status = 'FAILED'
             run.finished_at = timezone.now()
             run.save(update_fields=['steps', 'status', 'finished_at', 'updated_at'])
+            _park_environment_error(str(ctx.infra.id), f"{key}: policy refresh required")
             NukeWorker._notify_failure(ctx.infra, f"{key}: policy refresh required")
             return False
         except Exception as e:
@@ -120,6 +149,7 @@ class NukeWorker:
             run.status = 'FAILED'
             run.finished_at = timezone.now()
             run.save(update_fields=['steps', 'status', 'finished_at', 'updated_at'])
+            _park_environment_error(str(ctx.infra.id), f"{key}: {e}")
             NukeWorker._notify_failure(ctx.infra, f"{key}: {e}")
             return False
 
@@ -132,11 +162,29 @@ class NukeWorker:
 
     @staticmethod
     def _finalize_success(infra: Infrastructure, run: NukeRun) -> None:
+        """The point of no return for the Infrastructure row — mirrors run_worker.py's
+        run_destroy, which treats live platform DNS state the same way: refuse to
+        delete rows while a record could still be pointing at nothing."""
+        from api.services.platform_dns.teardown import has_live_dns_state
+
+        infra_id = str(infra.id)
+        if has_live_dns_state(infra_id):
+            run.leftovers.append({
+                "type": "platform_dns", "id": infra_id,
+                "reason": "platform DNS records for this infrastructure are still live",
+            })
+            run.status = 'FAILED'
+            run.finished_at = timezone.now()
+            run.save(update_fields=['leftovers', 'status', 'finished_at', 'updated_at'])
+            _park_environment_error(infra_id, "platform DNS records are still live")
+            NukeWorker._notify_failure(infra, "platform DNS records are still live")
+            return
+
         run.status = 'COMPLETED'
         run.finished_at = timezone.now()
         run.save(update_fields=['status', 'finished_at', 'updated_at'])
 
-        user_id, name, infra_id = infra.user_id, infra.name, str(infra.id)
+        user_id, name = infra.user_id, infra.name
         with transaction.atomic():
             Environment.objects.filter(infrastructure_id=infra_id).delete()
             infra.delete()
@@ -214,19 +262,29 @@ class _NukeContext:
     def step_leftovers(self) -> dict:
         return _cleanup_out_of_terraform_leftovers(self)
 
-    def step_shared_resources(self) -> dict:
-        return _manage_shared_resources(self)
+    def step_state_backend(self) -> dict:
+        return _manage_state_backend(self)
 
     def step_verify(self) -> dict:
         return _verify_nothing_left(self)
 
+    def step_deployment_role(self) -> dict:
+        return _manage_deployment_role(self)
+
+    # (key, fn, resumable). apps/databases/terraform_teardown/leftovers are the
+    # expensive/slow AWS-touching steps — skipped outright on a resumed run once
+    # already "success". state_backend/verify/deployment_role are cheap to re-run and
+    # must reflect the account's current state on every attempt (another infra may
+    # have nuked in the meantime; a customer may have fixed the thing verify flagged) —
+    # see the module docstring for why deployment_role in particular must run last.
     STEPS: ClassVar = [
-        ("apps", lambda ctx: ctx.step_apps()),
-        ("databases", lambda ctx: ctx.step_databases()),
-        ("terraform_teardown", lambda ctx: ctx.step_terraform_teardown()),
-        ("leftovers", lambda ctx: ctx.step_leftovers()),
-        ("shared_resources", lambda ctx: ctx.step_shared_resources()),
-        ("verify", lambda ctx: ctx.step_verify()),
+        ("apps", lambda ctx: ctx.step_apps(), True),
+        ("databases", lambda ctx: ctx.step_databases(), True),
+        ("terraform_teardown", lambda ctx: ctx.step_terraform_teardown(), True),
+        ("leftovers", lambda ctx: ctx.step_leftovers(), True),
+        ("state_backend", lambda ctx: ctx.step_state_backend(), False),
+        ("verify", lambda ctx: ctx.step_verify(), False),
+        ("deployment_role", lambda ctx: ctx.step_deployment_role(), False),
     ]
 
 
@@ -292,6 +350,20 @@ def _cleanup_database_snapshots(ctx: _NukeContext) -> dict:
 # ── terraform teardown (custom domains, EKS orphans, terraform destroy) ────────────
 
 def _run_terraform_teardown(ctx: _NukeContext) -> dict:
+    # Best-effort, before terraform's own VPC destroy runs: it is genuinely unclear
+    # whether AWS's DeleteVpc tolerates a non-default security group still present in
+    # it (see the PR's "unverified on real AWS" notes) — deleting it here removes the
+    # question entirely for the case it matters, and is a harmless no-op otherwise. The
+    # leftovers step below still runs its own pass afterward as the authoritative one
+    # (this can't yet see whatever the apps step just tore down finish draining).
+    if not ctx.mock:
+        try:
+            _delete_app_security_group(ctx, str(ctx.infra.id))
+        except PolicyRefreshRequiredForNuke:
+            raise
+        except Exception as e:
+            logger.warning(f"Nuke: pre-destroy app SG delete failed for {ctx.infra.id} (non-fatal): {e}")
+
     TerraformWorker.destroy(str(ctx.infra.id), nuke=True)
     env = Environment.objects.filter(infrastructure_id=ctx.infra.id).first()
     if env is None:
@@ -429,35 +501,38 @@ def _delete_app_log_groups(ctx: _NukeContext) -> list:
     return deleted
 
 
-# ── shared resources (Terraform state backend, deployment role/policy) ─────────────
+# ── state backend (Terraform S3 bucket + DynamoDB lock table) ──────────────────────
 
 def _other_infras_same_account(infra: Infrastructure):
     return list(Infrastructure.objects.filter(code=infra.code).exclude(id=infra.id))
 
 
-def _manage_shared_resources(ctx: _NukeContext) -> dict:
+def _manage_state_backend(ctx: _NukeContext) -> dict:
     if ctx.mock:
         return {"mock": True}
 
-    infra = ctx.infra
-    others = _other_infras_same_account(infra)
-    result = {}
-
-    if others:
-        result["role"] = {"action": "kept", "reason": f"shared with {len(others)} other infrastructure(s)"}
-        result["role"].update(_remove_external_id_from_trust(ctx, infra, str(infra.id)))
-    else:
-        result["role"] = _delete_deployment_role_and_policy(ctx)
-
+    others = _other_infras_same_account(ctx.infra)
     same_region_others = [o for o in others if (o.metadata or {}).get("aws_region", "us-west-2") == ctx.region]
     if same_region_others:
-        result["state_backend"] = {
-            "action": "kept", "reason": f"shared with {len(same_region_others)} other infrastructure(s) in this region",
+        return {
+            "action": "kept",
+            "reason": f"shared with {len(same_region_others)} other infrastructure(s) in this region",
         }
-    else:
-        result["state_backend"] = _delete_state_backend(ctx)
+    return _delete_state_backend(ctx)
 
-    return result
+
+# ── deployment role/policy — runs LAST (see module docstring) ──────────────────────
+
+def _manage_deployment_role(ctx: _NukeContext) -> dict:
+    if ctx.mock:
+        return {"mock": True}
+
+    others = _other_infras_same_account(ctx.infra)
+    if others:
+        result = {"action": "kept", "reason": f"shared with {len(others)} other infrastructure(s)"}
+        result.update(_remove_external_id_from_trust(ctx, ctx.infra, str(ctx.infra.id)))
+        return result
+    return _delete_deployment_role_and_policy(ctx)
 
 
 def _remove_external_id_from_trust(ctx: _NukeContext, infra: Infrastructure, external_id: str) -> dict:
@@ -623,10 +698,10 @@ def _untagged_leftovers(ctx: _NukeContext, infra_id: str) -> list:
     if _iam_role_exists(iam, role_name):
         leftovers.append({"type": "iam_role", "id": role_name, "reason": "still present"})
 
-    shared_step = ctx.run.step("shared_resources") or {}
-    shared_detail = shared_step.get("detail") or {}
-    if (shared_detail.get("role") or {}).get("action") == "deleted" and _iam_role_exists(iam, _ROLE_NAME):
-        leftovers.append({"type": "iam_role", "id": _ROLE_NAME, "reason": "expected deleted but still present"})
+    # LaunchpadDeploymentRole itself is intentionally NOT checked here: deployment_role
+    # (the step that deletes it) runs AFTER this one, precisely so this verify pass can
+    # still authenticate with it — see the module docstring. Its own delete_role call
+    # succeeding (or NoSuchEntity) is the verification for that resource.
 
     for db in Database.objects.filter(environment__infrastructure_id=infra_id):
         if db.engine == "redis" or not db.final_snapshot_id:

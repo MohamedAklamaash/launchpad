@@ -33,6 +33,7 @@ export function NukeInfrastructureDialog({ open, onOpenChange, infraId, infraNam
   const [confirmText, setConfirmText] = useState('');
   const [starting, setStarting] = useState(false);
   const [status, setStatus] = useState<NukeStatus | null>(null);
+  const [checkingExisting, setCheckingExisting] = useState(false);
   const notifiedRef = useRef(false);
 
   const poll = useCallback(async () => {
@@ -44,13 +45,28 @@ export function NukeInfrastructureDialog({ open, onOpenChange, infraId, infraNam
     }
   }, [infraId]);
 
+  // On open, a run may already exist for this infra — e.g. the owner navigated away
+  // mid-run, or is reopening after an earlier failure — in which case the progress
+  // view (with Retry, if it failed) is what they need, not the confirm form again.
   useEffect(() => {
     if (!open) {
       setConfirmText('');
       setStatus(null);
+      setCheckingExisting(false);
       notifiedRef.current = false;
       return;
     }
+    let cancelled = false;
+    setCheckingExisting(true);
+    infrastructureApi.getNukeStatus(infraId)
+      .then((existing) => { if (!cancelled) setStatus(existing); })
+      .catch(() => { /* 404: no run yet — stay on the confirm form */ })
+      .finally(() => { if (!cancelled) setCheckingExisting(false); });
+    return () => { cancelled = true; };
+  }, [open, infraId]);
+
+  useEffect(() => {
+    if (!open) return;
     if (!status || status.status === 'PENDING' || status.status === 'RUNNING') {
       const interval = setInterval(poll, POLL_MS);
       return () => clearInterval(interval);
@@ -92,7 +108,14 @@ export function NukeInfrastructureDialog({ open, onOpenChange, infraId, infraNam
           </DialogTitle>
         </DialogHeader>
 
-        {!status && (
+        {checkingExisting && !status && (
+          <div className="flex items-center gap-2 py-6 justify-center text-muted-foreground">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <p className="text-xs">Checking for an existing run…</p>
+          </div>
+        )}
+
+        {!status && !checkingExisting && (
           <div className="space-y-4">
             <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 space-y-2">
               <p className="text-xs text-foreground font-medium">This destroys everything, not just the environment:</p>

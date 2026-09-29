@@ -2,15 +2,19 @@ from django.db import models
 from shared.utils.uuid import uuid7_pk
 
 # Ordered (key, label) pairs for every step a nuke run tracks. Fixed order — the worker
-# executes them in exactly this sequence and each one is independently idempotent, so a
-# resumed run can skip any step already marked "success".
+# (api/services/nuke_worker.py) executes them in exactly this sequence. The first four
+# are independently idempotent and skipped on a resumed run once already "success"; the
+# last three (state_backend, verify, deployment_role) always re-run — see that module's
+# docstring for why, and specifically why deployment_role is last (it's the credential
+# every earlier step, including verify's own AWS calls, authenticates with).
 NUKE_STEP_DEFINITIONS = [
     ("apps", "Delete applications"),
     ("databases", "Delete pre-existing database snapshots"),
     ("terraform_teardown", "Tear down custom domains, EKS orphans, and Terraform-managed infrastructure (no final DB snapshot)"),
-    ("leftovers", "Remove CodeBuild project/role, log groups, ECR repository, and task definitions"),
-    ("shared_resources", "Remove or update shared account resources (Terraform state backend, deployment role)"),
+    ("leftovers", "Remove CodeBuild project/role, log groups, and app security group"),
+    ("state_backend", "Remove or keep the shared Terraform state backend"),
     ("verify", "Verify nothing Launchpad created is left in the account"),
+    ("deployment_role", "Remove or update the shared deployment role"),
 ]
 
 
