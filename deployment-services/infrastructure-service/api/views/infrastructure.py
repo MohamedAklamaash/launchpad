@@ -37,6 +37,8 @@ class InfraResponseSerializer(serializers.Serializer):
     required_policy_version = serializers.IntegerField(help_text="Lowest policy version this infra's compute_type must be at")
     policy_refresh_required = serializers.BooleanField(help_text="True when the customer should re-run the Refresh policy script")
     exited_at = serializers.DateTimeField(allow_null=True, help_text="Set once the owner completes the exit flow (F6); never cleared")
+    platform_account_id = serializers.CharField(help_text="Launchpad platform AWS account ID; the customer's trust policy must name this as principal")
+    platform_user = serializers.CharField(help_text="Launchpad platform IAM user name; the customer's trust policy must name this as principal")
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
 

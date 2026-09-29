@@ -20,6 +20,7 @@ interface Props {
 
 export function PolicyRefreshDialog({ open, onOpenChange, infraId, deniedActions }: Props) {
   const [apiKey, setApiKey] = useState<string | null>(null);
+  const [platformPrincipal, setPlatformPrincipal] = useState<{ accountId: string; user: string } | null>(null);
   const [issuing, setIssuing] = useState(false);
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -27,7 +28,11 @@ export function PolicyRefreshDialog({ open, onOpenChange, infraId, deniedActions
   const handleGenerateKey = async () => {
     setIssuing(true);
     try {
+      // Read-only fetch before the key issue: issuing revokes any prior key, so a
+      // failure here must not burn one.
+      const infra = await infrastructureApi.get(infraId);
       const { api_key } = await infrastructureApi.issueScriptApiKey();
+      setPlatformPrincipal({ accountId: infra.platform_account_id, user: infra.platform_user });
       setApiKey(api_key);
     } catch (error: unknown) {
       const err = error as { response?: { data?: { error?: string } } };
@@ -46,18 +51,23 @@ export function PolicyRefreshDialog({ open, onOpenChange, infraId, deniedActions
   };
 
   const close = (o: boolean) => {
-    if (!o) setApiKey(null);
+    if (!o) {
+      setApiKey(null);
+      setPlatformPrincipal(null);
+    }
     onOpenChange(o);
   };
 
   const onboardingMisconfig = getOnboardingMisconfiguration();
   let refreshScript: ReturnType<typeof resolveOnboardingScript> | null = null;
-  if (apiKey && !onboardingMisconfig) {
+  if (apiKey && platformPrincipal && !onboardingMisconfig) {
     try {
       refreshScript = resolveOnboardingScript('refresh', [
         `export LAUNCHPAD_INFRA_ID=${infraId}`,
         `export LAUNCHPAD_CALLBACK_URL=${API_GATEWAY_URL}/api/infrastructures/policy-refresh/callback`,
         `export LAUNCHPAD_API_KEY=${apiKey}`,
+        `export LAUNCHPAD_PLATFORM_ACCOUNT_ID=${platformPrincipal.accountId}`,
+        `export LAUNCHPAD_PLATFORM_USER=${platformPrincipal.user}`,
       ]);
     } catch {
       refreshScript = null;

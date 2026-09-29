@@ -15,6 +15,11 @@ CREATE_ROLE_SH="$REPO_ROOT/app_scripts/create_aws_role.sh"
 
 FAILURES=0
 
+# Fake platform principal for the whole file. create_aws_role.sh now requires these to
+# be set explicitly (no hardcoded default) outside LAUNCHPAD_MOCK=1.
+PLATFORM_ACCOUNT_ID="210987654321"
+PLATFORM_USER="launchpad-platform"
+
 pass() { echo "ok - $1"; }
 fail() { echo "FAIL - $1"; FAILURES=$((FAILURES + 1)); }
 
@@ -43,7 +48,10 @@ run_create_role() {
     FAKE_AWS_STATE="$STATE_DIR"
     LAUNCHPAD_EXTERNAL_ID="$1"
     LAUNCHPAD_COMPUTE_TYPE="$2"
+    LAUNCHPAD_PLATFORM_ACCOUNT_ID="$PLATFORM_ACCOUNT_ID"
+    LAUNCHPAD_PLATFORM_USER="$PLATFORM_USER"
     export PATH FAKE_AWS_STATE LAUNCHPAD_EXTERNAL_ID LAUNCHPAD_COMPUTE_TYPE
+    export LAUNCHPAD_PLATFORM_ACCOUNT_ID LAUNCHPAD_PLATFORM_USER
     bash "$CREATE_ROLE_SH"
   ) >"$STATE_DIR/last-run.log" 2>&1
 }
@@ -74,7 +82,7 @@ test_single_to_list_merge() {
   assert_contains "$trust" '"infra-aaaa"' "second run keeps the first infra's ExternalId"
   assert_contains "$trust" '"infra-bbbb"' "second run adds the new infra's ExternalId"
   assert_contains "$trust" '"sts:AssumeRole"' "action is still exactly sts:AssumeRole"
-  assert_contains "$trust" 'aklamaash-terraform' "principal is still the platform user"
+  assert_contains "$trust" "$PLATFORM_USER" "principal is still the platform user"
 
   python3 - "$STATE_DIR/last-applied-trust-policy.json" <<'PYEOF'
 import json, sys
@@ -152,7 +160,7 @@ _seed_legacy_role() {
       "Statement": [
         {
           "Effect": "Allow",
-          "Principal": {"AWS": "arn:aws:iam::221082203366:user/aklamaash-terraform"},
+          "Principal": {"AWS": "arn:aws:iam::${PLATFORM_ACCOUNT_ID}:user/${PLATFORM_USER}"},
           "Action": "sts:AssumeRole",
           "Condition": {"StringEquals": {"sts:ExternalId": "infra-legacy"}}
         }
@@ -229,11 +237,92 @@ test_legacy_role_detected_via_max_session_alone() {
   teardown
 }
 
+# ── Test 5: LAUNCHPAD_PLATFORM_ACCOUNT_ID / _USER have no hardcoded default ────────
+# A stale hardcoded default here previously built a trust policy naming the wrong AWS
+# principal, which IAM rejects with "MalformedPolicyDocument: Invalid principal". See
+# app_scripts/create_aws_role.sh. Outside LAUNCHPAD_MOCK=1 both must be required.
+
+test_missing_platform_account_id_fails_outside_mock() {
+  setup
+  set +e
+  (
+    PATH="$TMP_BIN:$PATH"
+    FAKE_AWS_STATE="$STATE_DIR"
+    LAUNCHPAD_EXTERNAL_ID="infra-aaaa"
+    LAUNCHPAD_PLATFORM_USER="$PLATFORM_USER"
+    unset LAUNCHPAD_PLATFORM_ACCOUNT_ID
+    export PATH FAKE_AWS_STATE LAUNCHPAD_EXTERNAL_ID LAUNCHPAD_PLATFORM_USER
+    bash "$CREATE_ROLE_SH"
+  ) >"$STATE_DIR/last-run.log" 2>&1
+  local exit_code=$?
+  set -e
+
+  [ "$exit_code" -ne 0 ] && pass "missing LAUNCHPAD_PLATFORM_ACCOUNT_ID exits non-zero" \
+    || fail "missing LAUNCHPAD_PLATFORM_ACCOUNT_ID should have exited non-zero"
+  assert_contains "$(cat "$STATE_DIR/last-run.log")" "LAUNCHPAD_PLATFORM_ACCOUNT_ID is required" \
+    "error message names the missing variable"
+
+  teardown
+}
+
+test_missing_platform_user_fails_outside_mock() {
+  setup
+  set +e
+  (
+    PATH="$TMP_BIN:$PATH"
+    FAKE_AWS_STATE="$STATE_DIR"
+    LAUNCHPAD_EXTERNAL_ID="infra-aaaa"
+    LAUNCHPAD_PLATFORM_ACCOUNT_ID="$PLATFORM_ACCOUNT_ID"
+    unset LAUNCHPAD_PLATFORM_USER
+    export PATH FAKE_AWS_STATE LAUNCHPAD_EXTERNAL_ID LAUNCHPAD_PLATFORM_ACCOUNT_ID
+    bash "$CREATE_ROLE_SH"
+  ) >"$STATE_DIR/last-run.log" 2>&1
+  local exit_code=$?
+  set -e
+
+  [ "$exit_code" -ne 0 ] && pass "missing LAUNCHPAD_PLATFORM_USER exits non-zero" \
+    || fail "missing LAUNCHPAD_PLATFORM_USER should have exited non-zero"
+  assert_contains "$(cat "$STATE_DIR/last-run.log")" "LAUNCHPAD_PLATFORM_USER is required" \
+    "error message names the missing variable"
+
+  teardown
+}
+
+test_mock_mode_falls_back_to_dev_placeholder_principal() {
+  # Mirrors core/settings.py's own MODE=dev placeholder
+  # (arn:aws:iam::000000000000:user/dev-placeholder) so mock mode stays self-consistent
+  # without requiring the platform vars.
+  setup
+  set +e
+  (
+    LAUNCHPAD_MOCK=1
+    LAUNCHPAD_ACCOUNT_ID="123456789012"
+    LAUNCHPAD_EXTERNAL_ID="infra-mock"
+    unset LAUNCHPAD_PLATFORM_ACCOUNT_ID LAUNCHPAD_PLATFORM_USER
+    export LAUNCHPAD_MOCK LAUNCHPAD_ACCOUNT_ID LAUNCHPAD_EXTERNAL_ID
+    bash "$CREATE_ROLE_SH"
+  ) >"$STATE_DIR/last-run.log" 2>&1
+  local exit_code=$?
+  set -e
+  local log
+  log=$(cat "$STATE_DIR/last-run.log")
+
+  [ "$exit_code" -eq 0 ] && pass "mock mode succeeds without the platform vars" \
+    || { fail "mock mode should not require the platform vars"; echo "$log"; }
+  assert_contains "$log" "Platform account: 000000000000" "mock mode defaults to the dev-placeholder account"
+  assert_contains "$log" "Platform user:    dev-placeholder" "mock mode defaults to the dev-placeholder user"
+
+  teardown
+}
+
 test_single_to_list_merge
 test_dedupe_same_infra
 test_compute_type_union_never_downgrades
 test_legacy_role_detected_via_policy_document_alone
 test_legacy_role_detected_via_max_session_alone
+test_missing_platform_account_id_fails_outside_mock
+test_missing_platform_user_fails_outside_mock
+test_mock_mode_falls_back_to_dev_placeholder_principal
 
 echo ""
 if [ "$FAILURES" -gt 0 ]; then

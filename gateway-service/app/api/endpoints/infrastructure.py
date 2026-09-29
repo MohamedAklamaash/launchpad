@@ -41,6 +41,8 @@ class InfraResponse(BaseModel):
     is_cloud_authenticated: bool = Field(description="Whether Launchpad successfully assumed the IAM role")
     code: str = Field(description="AWS Account ID")
     metadata: dict[str, Any] = {}
+    platform_account_id: str = Field(description="Launchpad platform AWS account ID; the customer's trust policy must name this as principal")
+    platform_user: str = Field(description="Launchpad platform IAM user name; the customer's trust policy must name this as principal")
     created_at: str
     updated_at: str
 

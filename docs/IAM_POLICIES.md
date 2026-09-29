@@ -21,6 +21,8 @@ export LAUNCHPAD_INFRA_ID=<your-infra-uuid>
 export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
 export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/onboarding/callback
 export LAUNCHPAD_ONBOARDING_TOKEN=<one-time-token>
+export LAUNCHPAD_PLATFORM_ACCOUNT_ID=<launchpad-platform-account-id>
+export LAUNCHPAD_PLATFORM_USER=<launchpad-platform-iam-user>
 curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
 ```
 
@@ -47,7 +49,10 @@ presents it on AssumeRole, so a trust policy without it will fail with `AccessDe
 
 Create role `LaunchpadDeploymentRole` with this trust policy. Replace
 `<YOUR_INFRA_ID>` with the infrastructure UUID shown in the dashboard (this is the
-`ExternalId`):
+`ExternalId`), and `<PLATFORM_ACCOUNT_ID>` / `<PLATFORM_USER>` with the values shown
+on your infrastructure's detail page (also the `LAUNCHPAD_PLATFORM_ACCOUNT_ID` /
+`LAUNCHPAD_PLATFORM_USER` the dashboard's generated script exports). These are not
+fixed and must not be hardcoded, since they can be rotated on the platform side:
 
 ```json
 {
@@ -56,7 +61,7 @@ Create role `LaunchpadDeploymentRole` with this trust policy. Replace
     {
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::221082203366:user/aklamaash-terraform"
+        "AWS": "arn:aws:iam::<PLATFORM_ACCOUNT_ID>:user/<PLATFORM_USER>"
       },
       "Action": "sts:AssumeRole",
       "Condition": {
@@ -68,8 +73,9 @@ Create role `LaunchpadDeploymentRole` with this trust policy. Replace
 ```
 
 **Important**: 
-- Platform Account ID: `221082203366`
-- Platform User: `aklamaash-terraform`
+- Platform Account ID / User: shown on your infrastructure's detail page in the
+  dashboard. Ask your Launchpad admin if you're setting this up without dashboard
+  access
 - Role Name: `LaunchpadDeploymentRole` (exact name required)
 - `sts:ExternalId`: your infrastructure UUID (required — prevents confused-deputy abuse)
 
@@ -230,17 +236,21 @@ the dashboard pins it to a specific commit and injects the env vars.
 1. **Create the policy**: IAM → Policies → Create policy → paste the deployment policy
    JSON above → name it `LaunchpadDeploymentPolicy`.
 2. **Create the role**: IAM → Roles → Create role → "AWS account" → "Another AWS account"
-   → Account ID `221082203366`. **Check "Require external ID"** and enter your
-   infrastructure UUID. Attach `LaunchpadDeploymentPolicy`. Name the role
-   `LaunchpadDeploymentRole`.
+   → Account ID `<PLATFORM_ACCOUNT_ID>` (shown on your infrastructure's detail page).
+   **Check "Require external ID"** and enter your infrastructure UUID. Attach
+   `LaunchpadDeploymentPolicy`. Name the role `LaunchpadDeploymentRole`.
 3. **Verify the trust policy** matches the JSON above (principal scoped to
-   `aklamaash-terraform` and the `sts:ExternalId` condition present).
+   `<PLATFORM_USER>` and the `sts:ExternalId` condition present).
 
 ### Using AWS CLI
 
 ```bash
 # Your infrastructure UUID from the dashboard — also used as the ExternalId.
 INFRA_ID=<YOUR_INFRA_ID>
+
+# Platform account/user shown on your infrastructure's detail page.
+PLATFORM_ACCOUNT_ID=<PLATFORM_ACCOUNT_ID>
+PLATFORM_USER=<PLATFORM_USER>
 
 # Create trust policy file (note the ExternalId condition — required)
 cat > trust-policy.json <<EOF
@@ -250,7 +260,7 @@ cat > trust-policy.json <<EOF
     {
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::221082203366:user/aklamaash-terraform"
+        "AWS": "arn:aws:iam::${PLATFORM_ACCOUNT_ID}:user/${PLATFORM_USER}"
       },
       "Action": "sts:AssumeRole",
       "Condition": {
@@ -486,8 +496,9 @@ The policy grants broad permissions within specific services. This is necessary 
 ### Trust Policy Security
 
 The trust policy is restricted to:
-- **Specific Account**: `221082203366` (Launchpad platform)
-- **Specific User**: `aklamaash-terraform` (not account root)
+- **Specific Account**: the Launchpad platform account (shown on your infrastructure's
+  detail page as `platform_account_id`)
+- **Specific User**: the Launchpad platform IAM user (`platform_user`; not account root)
 - **Specific ExternalId**: your infrastructure UUID — the backend must present this exact
   value on AssumeRole, which blocks confused-deputy abuse even if someone learns your
   account ID and role name

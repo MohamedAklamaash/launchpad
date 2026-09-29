@@ -139,6 +139,8 @@ export default function NewInfrastructurePage() {
       `export LAUNCHPAD_ONBOARDING_TOKEN=${createdInfra.onboarding_token}`,
       `export LAUNCHPAD_EXTERNAL_ID=${createdInfra.id}`,
       `export LAUNCHPAD_COMPUTE_TYPE=${createdInfra.compute_type}`,
+      `export LAUNCHPAD_PLATFORM_ACCOUNT_ID=${createdInfra.platform_account_id}`,
+      `export LAUNCHPAD_PLATFORM_USER=${createdInfra.platform_user}`,
       ...mockEnv,
     ]
     : [];
