@@ -1,4 +1,5 @@
-FROM public.ecr.aws/docker/library/node:22-alpine AS deps
+ARG BASE_REGISTRY=public.ecr.aws/docker/library
+FROM ${BASE_REGISTRY}/node:22-alpine AS deps
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
@@ -14,7 +15,7 @@ RUN pnpm --filter @launchpad/common build
 COPY services/auth-service ./services/auth-service
 RUN pnpm --filter auth-service build
 
-FROM public.ecr.aws/docker/library/node:22-alpine AS final
+FROM ${BASE_REGISTRY}/node:22-alpine AS final
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./

@@ -1,4 +1,5 @@
-FROM public.ecr.aws/docker/library/node:22-alpine AS deps
+ARG BASE_REGISTRY=public.ecr.aws/docker/library
+FROM ${BASE_REGISTRY}/node:22-alpine AS deps
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 COPY package.json pnpm-lock.yaml ./
@@ -9,7 +10,7 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
-FROM public.ecr.aws/docker/library/node:22-alpine AS final
+FROM ${BASE_REGISTRY}/node:22-alpine AS final
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
