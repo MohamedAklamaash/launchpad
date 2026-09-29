@@ -409,7 +409,7 @@ Blocked on the account, not the code:
       Ingress object into that one shared ALB's listener rules — i.e. that two apps on the
       same infra, each with their own exact-host Ingress rule, do not collide or shadow one
       another the way an accidental wildcard or path overlap would.
-- [ ] **B1 (security review, revised): per-Ingress `listen-ports` honoured inside a shared
+- [x] **B1 (security review, revised): per-Ingress `listen-ports` honoured inside a shared
       `IngressGroup` in EKS Auto Mode.** The first B1 fix attempt (`listenPorts:
       [{HTTP:80},{HTTPS:443}]` on the shared `IngressClassParams` plus an out-of-band boto3
       `:80` redirect rule to intercept the resulting plaintext forward) was rejected by a
@@ -437,6 +437,12 @@ Blocked on the account, not the code:
       unconditionally returns both a `:80` and a `:443` listener, so no mock-mode test can
       exercise the controller actually withholding or creating either — every assertion
       about listen-port scoping and precedence in this item is real-cluster-only.**
+      **Verified 2026-09-29** (EKS 1.31 Auto Mode, infra e2e-eks, app e2e-kube): after a
+      host-mode deploy the group ALB's :443 listener has the `{slug}-host` rule
+      (host-header = the app hostname), and :80 has only the path Ingress's
+      `/e2e-kube`, `/e2e-kube/*` rules, with no host-header rule. `https://<host>/` serves 200 with the
+      wildcard ACM cert; `http://<host>/` hits the :80 default (404), never the app.
+      Not yet covered: the two-apps-per-infra collision item above.
 - [ ] **B1: `apply_eks_tls` is what must first establish the group ALB's `:443` listener,
       ahead of any app.** Removing `listenPorts` from the `IngressClassParams` patch
       (previous item) left nothing else to declare `:443` before an app's own host Ingress
