@@ -3,7 +3,8 @@
 Path mode (host_mode=False, the default) must stay byte-identical to what shipped before
 F1b — GOLDEN_PATH_MODE is main's own output (verified byte-identical at write time), not a
 hand-transcribed copy, so a stray character here fails the same way a real regression
-would. Host mode drops the 301/rewrite/X-Forwarded-Prefix/ROOT_PATH machinery and adds the
+would. Its one deliberate change since is `absolute_redirect off;` (the EKS sidecar-port
+leak). Host mode drops the 301/rewrite/X-Forwarded-Prefix/ROOT_PATH machinery and adds the
 dedicated health path in lockstep with aws/alb.py and the k8s readiness probe.
 """
 import shutil
@@ -39,6 +40,12 @@ http {
 
     server {
         listen 80;
+
+        # Relative Location on nginx's own redirects (/myapp -> /myapp/). An
+        # absolute one bakes in nginx's own listen port and scheme: on EKS that's the
+        # sidecar's unreachable port 18080, and behind a TLS ALB listener it downgrades
+        # the client to http.
+        absolute_redirect off;
 
         # ALB health check
         location = / {
@@ -91,6 +98,12 @@ http {
 
 def test_path_mode_nginx_config_is_byte_identical_to_golden():
     assert generate_nginx_config("myapp", 8000) == GOLDEN_PATH_MODE
+
+
+def test_path_mode_redirects_are_relative_so_the_sidecar_port_never_leaks():
+    """EKS e2e-kube incident: /e2e-kube 301'd to http://<alb>:18080/e2e-kube/, the sidecar's
+    own listen port, which the ALB never exposes."""
+    assert "absolute_redirect off;" in generate_nginx_config("myapp", 8000, listen_port=18080)
 
 
 def test_path_mode_is_the_default():

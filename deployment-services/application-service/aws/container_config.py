@@ -26,7 +26,7 @@ def generate_nginx_config(app_name, backend_port, listen_port=80, host_mode=Fals
     """NGINX config for one app's sidecar.
 
     Path mode (host_mode=False, the default): strips the /{app_name} prefix and injects
-    X-Forwarded-Prefix, exactly as before F1b — byte-identical output, pinned by
+    X-Forwarded-Prefix, exactly as before F1b, plus relative redirects — pinned by
     test_container_config.py's golden test. The ALB Ingress controller cannot rewrite
     paths (rewrite-target is nginx-ingress-only), so this sidecar is load-bearing on EKS as
     well as ECS.
@@ -166,6 +166,12 @@ http {{
 
     server {{
         listen {listen_port};
+
+        # Relative Location on nginx's own redirects (/{app_name} -> /{app_name}/). An
+        # absolute one bakes in nginx's own listen port and scheme: on EKS that's the
+        # sidecar's unreachable port 18080, and behind a TLS ALB listener it downgrades
+        # the client to http.
+        absolute_redirect off;
 
         # ALB health check
         location = / {{

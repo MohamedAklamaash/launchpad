@@ -39,6 +39,13 @@ NGINX_IMAGE = (
 # NET_BIND_SERVICE is dropped along with every other capability, so the sidecar
 # cannot bind port 80.
 NGINX_PORT = 18080
+# The stock image's `nginx` user. Started as root with every capability dropped, nginx's
+# master dies at boot chowning its temp dirs to this uid ("chown(/var/cache/nginx/
+# client_temp, 101) failed (Operation not permitted)"); started as this uid it never
+# chowns, but then needs a writable temp dir (an emptyDir) and a pid file outside the
+# root-owned /var/run.
+NGINX_UID = 101
+NGINX_CACHE_DIR = "/var/cache/nginx"
 SIDECAR_CPU_MILLI = 100
 SIDECAR_MEMORY_MI = 128
 SIDECAR_RESOURCES = {"cpu": f"{SIDECAR_CPU_MILLI}m", "memory": f"{SIDECAR_MEMORY_MI}Mi"}
@@ -536,11 +543,15 @@ class EKSDeployer:
         env_vars = inject_routing_envs([{"name": k, "value": str(v)} for k, v in envs.items()], self.slug)
         return [k8s.V1EnvVar(name=e["name"], value=e["value"]) for e in env_vars]
 
-    def _security_context(self) -> k8s.V1SecurityContext:
-        # No runAsNonRoot: customer Dockerfiles routinely run as root and would CrashLoop.
+    def _security_context(self, run_as_user: int | None = None) -> k8s.V1SecurityContext:
+        # No runAsNonRoot for the app: customer Dockerfiles routinely run as root and would
+        # CrashLoop. The nginx sidecar is ours, so it runs as its own unprivileged uid.
         return k8s.V1SecurityContext(
             allow_privilege_escalation=False,
             capabilities=k8s.V1Capabilities(drop=["ALL"]),
+            run_as_user=run_as_user,
+            run_as_group=run_as_user,
+            run_as_non_root=True if run_as_user else None,
         )
 
     def _deployment_manifest(self, image_uri: str) -> k8s.V1Deployment:
@@ -557,11 +568,13 @@ class EKSDeployer:
         nginx_container = k8s.V1Container(
             name=f"{self.slug}-nginx",
             image=NGINX_IMAGE,
+            command=["nginx", "-g", "daemon off; pid /tmp/nginx.pid;"],
             ports=[k8s.V1ContainerPort(container_port=NGINX_PORT)],
             volume_mounts=[
                 k8s.V1VolumeMount(
                     name="nginx-config", mount_path="/etc/nginx/nginx.conf", sub_path="nginx.conf"
-                )
+                ),
+                k8s.V1VolumeMount(name="nginx-cache", mount_path=NGINX_CACHE_DIR),
             ],
             resources=k8s.V1ResourceRequirements(
                 requests=SIDECAR_RESOURCES,
@@ -578,7 +591,7 @@ class EKSDeployer:
                 initial_delay_seconds=5,
                 period_seconds=10,
             ),
-            security_context=self._security_context(),
+            security_context=self._security_context(run_as_user=NGINX_UID),
         )
         return k8s.V1Deployment(
             metadata=k8s.V1ObjectMeta(name=self.slug, labels={"app": self.slug}),
@@ -594,7 +607,8 @@ class EKSDeployer:
                             k8s.V1Volume(
                                 name="nginx-config",
                                 config_map=k8s.V1ConfigMapVolumeSource(name=f"{self.slug}-nginx"),
-                            )
+                            ),
+                            k8s.V1Volume(name="nginx-cache", empty_dir=k8s.V1EmptyDirVolumeSource()),
                         ],
                     ),
                 ),

@@ -145,9 +145,20 @@ def test_pod_spec_hardening_and_ingress_paths(application, deploy):
     for container in pod.containers:
         assert container.security_context.allow_privilege_escalation is False
         assert container.security_context.capabilities.drop == ["ALL"]
-        # Customer Dockerfiles routinely run as root; forcing non-root would CrashLoop them.
-        assert container.security_context.run_as_non_root is None
     app_container, nginx = pod.containers
+    # Customer Dockerfiles routinely run as root; forcing non-root would CrashLoop them.
+    assert app_container.security_context.run_as_non_root is None
+    assert app_container.security_context.run_as_user is None
+    # The stock nginx image, started as root with ALL capabilities dropped, dies chowning
+    # its temp dirs. As its own uid it never chowns, so it needs a writable cache dir and a
+    # pid file outside root-owned /var/run.
+    assert nginx.security_context.run_as_non_root is True
+    assert nginx.security_context.run_as_user == 101
+    assert "pid /tmp/nginx.pid;" in " ".join(nginx.command)
+    assert "daemon off;" in " ".join(nginx.command)
+    cache_mount = next(m for m in nginx.volume_mounts if m.mount_path == "/var/cache/nginx")
+    cache_volume = next(v for v in pod.volumes if v.name == cache_mount.name)
+    assert cache_volume.empty_dir is not None
     assert app_container.resources.limits == {"cpu": "500m", "memory": "1024Mi"}
     assert nginx.ports[0].container_port == 18080
     assert nginx.readiness_probe.http_get.port == 18080
