@@ -6,11 +6,16 @@ hand-transcribed copy, so a stray character here fails the same way a real regre
 would. Host mode drops the 301/rewrite/X-Forwarded-Prefix/ROOT_PATH machinery and adds the
 dedicated health path in lockstep with aws/alb.py and the k8s readiness probe.
 """
+import shutil
+import subprocess
+
+import pytest
 from aws.container_config import (
     HOST_MODE_HEALTH_CHECK_PATH,
     generate_nginx_config,
     inject_routing_envs,
 )
+from aws.ecs import NGINX_SIDECAR_IMAGE
 
 GOLDEN_PATH_MODE = '''
 events {
@@ -192,3 +197,62 @@ def test_inject_routing_envs_never_clobbers_a_user_set_host():
     envs = inject_routing_envs([{"name": "HOST", "value": "custom"}], "myapp", host_mode=True)
     by_name = {e["name"]: e["value"] for e in envs}
     assert by_name["HOST"] == "custom"
+
+
+# ── server_names_hash_bucket_size (real-AWS incident: e2e-web) ──────────────────────────
+
+def _max_length_host_mode_hostname() -> tuple[str, str]:
+    """A realistic worst case for build_app_hostname (api/common/host_url.py): a 63-char
+    DNS-label-shaped app slug, a 16-hex dns_label (secrets.token_hex(8)), and a real
+    platform base domain — the exact shape that produced
+    `e2e-web.1e922243bb3654a8.launchpad.aklamaash.me` on real AWS, just at the slug's
+    length ceiling instead of a short one."""
+    slug = "a" + "b" * 61 + "c"
+    assert len(slug) == 63
+    dns_label = "1e922243bb3654a8"
+    base_domain = "launchpad.aklamaash.me"
+    return slug, f"{slug}.{dns_label}.{base_domain}"
+
+
+def test_host_mode_sets_a_large_enough_server_names_hash_bucket_size():
+    """Default nginx bucket sizes (32/64 bytes) are too small for a 100+ byte server_name
+    — nginx then fails `nginx -t` outright ('could not build server_names_hash'), the
+    sidecar exits, and the task never comes up. See test_host_mode_nginx_config_is_valid_
+    per_nginx_t below for the same check run through a real nginx binary."""
+    slug, hostname = _max_length_host_mode_hostname()
+    assert len(hostname) > 64
+    config = generate_nginx_config(slug, 8000, host_mode=True, app_hostname=hostname)
+    assert "server_names_hash_bucket_size 128;" in config
+
+
+def test_path_mode_does_not_set_server_names_hash_bucket_size():
+    assert "server_names_hash_bucket_size" not in generate_nginx_config("myapp", 8000)
+
+
+def test_host_mode_nginx_config_is_valid_per_nginx_t(tmp_path):
+    """Renders host mode with the realistic max-length hostname above and validates it
+    with the actual nginx binary from the exact image the ECS sidecar runs
+    (aws.ecs.NGINX_SIDECAR_IMAGE) via `docker run ... nginx -t`. Skipped when docker
+    isn't available (e.g. CI has no docker-in-docker for this repo)."""
+    if shutil.which("docker") is None:
+        pytest.skip("docker not available")
+    try:
+        subprocess.run(["docker", "info"], capture_output=True, timeout=10, check=True)
+    except Exception:
+        pytest.skip("docker daemon not reachable")
+
+    slug, hostname = _max_length_host_mode_hostname()
+    config = generate_nginx_config(slug, 8000, host_mode=True, app_hostname=hostname)
+
+    conf_path = tmp_path / "nginx.conf"
+    conf_path.write_text(config)
+
+    result = subprocess.run(
+        [
+            "docker", "run", "--rm",
+            "-v", f"{conf_path}:/etc/nginx/nginx.conf:ro",
+            NGINX_SIDECAR_IMAGE, "nginx", "-t",
+        ],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, result.stderr
