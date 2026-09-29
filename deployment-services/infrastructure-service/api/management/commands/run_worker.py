@@ -377,6 +377,18 @@ class LockHeartbeat:
         self._stop.set()
 
 
+def _inflight_nuke_run(infra_id):
+    """The NukeRun row for this infra if one is PENDING/RUNNING, else None. A DESTROYING
+    Environment can belong to either a plain destroy or a nuke run — both set the same
+    status — so every place that would otherwise blindly `enqueue_destroy` a stuck
+    DESTROYING environment must check this first and route to `enqueue_nuke` instead,
+    or a crashed nuke gets silently re-driven as a plain destroy with no step tracking."""
+    from api.models.nuke_run import NukeRun
+    return NukeRun.objects.filter(
+        infrastructure_id=infra_id, status__in=('PENDING', 'RUNNING'),
+    ).order_by('-created_at').first()
+
+
 def reap_stuck_environments(stale_threshold_seconds):
     """Re-enqueue environments stuck mid-flight past the staleness window.
 
@@ -432,6 +444,11 @@ def reap_stuck_environments(stale_threshold_seconds):
             )
             InfraQueue.release_lock(infra_id)
             InfraQueue.clear_reap_count(infra_id)
+            nuke_run = _inflight_nuke_run(infra_id) if env.status == 'DESTROYING' else None
+            if nuke_run:
+                nuke_run.status = 'FAILED'
+                nuke_run.finished_at = timezone.now()
+                nuke_run.save(update_fields=['status', 'finished_at', 'updated_at'])
             try:
                 infra = env.infrastructure
                 notify = NotificationService.send_destroy_failure if env.status == 'DESTROYING' \
@@ -446,7 +463,10 @@ def reap_stuck_environments(stale_threshold_seconds):
         # keeps a heartbeated lock the re-dispatch can't steal.
         InfraQueue.release_lock(infra_id)
         if env.status == 'DESTROYING':
-            InfraQueue.enqueue_destroy(infra_id)
+            if _inflight_nuke_run(infra_id):
+                InfraQueue.enqueue_nuke(infra_id)
+            else:
+                InfraQueue.enqueue_destroy(infra_id)
         else:
             InfraQueue.enqueue_provision(infra_id)
         logger.warning(f"Reaper re-enqueued stuck {env.status} environment {infra_id}")
@@ -548,8 +568,12 @@ class Command(BaseCommand):
                     InfraQueue.release_db_lock(infra_id_str)  # clear any stale DB lock from crashed worker
                     already_queued = any(infra_id_str in item for item in r.lrange(DESTROY_QUEUE, 0, -1))
                     if not already_queued:
-                        InfraQueue.enqueue_destroy(infra_id_str)
-                        logger.info(f"Re-enqueued destroy for {infra_id_str}")
+                        if _inflight_nuke_run(infra_id_str):
+                            InfraQueue.enqueue_nuke(infra_id_str)
+                            logger.info(f"Re-enqueued nuke for {infra_id_str}")
+                        else:
+                            InfraQueue.enqueue_destroy(infra_id_str)
+                            logger.info(f"Re-enqueued destroy for {infra_id_str}")
             finally:
                 if r.get(recovery_lock_key) == worker_id:
                     r.delete(recovery_lock_key)
@@ -695,6 +719,23 @@ class Command(BaseCommand):
                 InfraQueue.release_lock(infra_id)
                 _close_db()
 
+        def run_nuke(infra_id, lock_token):
+            """Dispatch body for a nuke job — same queue/lock as run_destroy (see
+            dispatch_destroy's routing on job['action']), but delegates the actual
+            ordered teardown to NukeWorker, which tracks per-step progress on the
+            NukeRun row instead of just Environment.status/logs. NukeWorker.run() is
+            responsible for its own notification, row deletion, and audit logging on
+            both success and failure — nothing else happens here."""
+            from api.services.nuke_worker import NukeWorker
+            try:
+                NukeWorker.run(infra_id)
+            except Exception:
+                logger.exception(f"Unhandled exception running nuke for {infra_id}")
+            finally:
+                InfraQueue.release_db_lock(infra_id, lock_token)
+                InfraQueue.release_lock(infra_id)
+                _close_db()
+
         # A lock is owned by a per-dispatch token, not the process id, so if this same worker
         # re-acquires an infra it previously ran, the earlier job's release can't wipe the new
         # job's lock (its token differs). worker_id stays as the token prefix for traceability.
@@ -751,16 +792,26 @@ class Command(BaseCommand):
             if not job:
                 return False
             infra_id = job['infra_id']
+            # Nuke reuses this same queue/lock (see InfraQueue.enqueue_nuke's docstring)
+            # so it can never race a plain destroy or a provision against the same
+            # infra — distinguished only by 'action'. Every re-enqueue below must
+            # preserve it, or a crashed/lock-contended nuke silently downgrades to a
+            # plain destroy with no per-step tracking.
+            is_nuke = job.get('action') == 'nuke'
+            requeue = InfraQueue.enqueue_nuke if is_nuke else InfraQueue.enqueue_destroy
+            job_fn = run_nuke if is_nuke else run_destroy
+            op_name = 'nuke' if is_nuke else 'destroy'
+
             lock_token = _new_lock_token()
             if not InfraQueue.acquire_db_lock(infra_id, lock_token):
-                logger.warning(f"Could not acquire destroy lock for {infra_id}, re-enqueueing")
-                InfraQueue.enqueue_destroy(infra_id)
+                logger.warning(f"Could not acquire {op_name} lock for {infra_id}, re-enqueueing")
+                requeue(infra_id)
                 return False
             heartbeat = LockHeartbeat(infra_id, lock_token)
             heartbeat.start()
             try:
-                future: Future = destroy_pool.submit(run_destroy, infra_id, lock_token)
-                future.add_done_callback(lambda f: (heartbeat.stop(), _log_future_exception(f, infra_id, 'destroy')))
+                future: Future = destroy_pool.submit(job_fn, infra_id, lock_token)
+                future.add_done_callback(lambda f: (heartbeat.stop(), _log_future_exception(f, infra_id, op_name)))
                 pending_futures.append(future)
                 return True
             except Exception:

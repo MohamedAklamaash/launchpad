@@ -105,6 +105,22 @@ class InfraQueue:
         _redis().setex(lock_key, LOCK_TTL, "queued")
         logger.info(f"Enqueued destroy job for {infra_id}")
         return True
+
+    @staticmethod
+    def enqueue_nuke(infra_id: str):
+        """Add a nuke job to the destroy queue — same queue, same per-infra dedup lock as
+        destroy, so a nuke run can never race a plain destroy or a provision against the
+        same infra. Distinguished from a plain destroy only by `action`; run_worker's
+        dispatch_destroy routes on it."""
+        lock_key = f"{LOCK_PREFIX}{infra_id}"
+        if _redis().exists(lock_key):
+            logger.warning(f"Nuke job {infra_id} already queued or processing, skipping")
+            return False
+        job = {"infra_id": infra_id, "action": "nuke"}
+        _redis().rpush(DESTROY_QUEUE, json.dumps(job))
+        _redis().setex(lock_key, LOCK_TTL, "queued")
+        logger.info(f"Enqueued nuke job for {infra_id}")
+        return True
     
     @staticmethod
     def dequeue_provision(timeout: int = _BLPOP_TIMEOUT):

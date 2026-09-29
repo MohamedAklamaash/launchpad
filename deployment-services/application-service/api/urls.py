@@ -25,6 +25,7 @@ from api.views.exit_inventory import export_inventory
 from api.views.health import health_check, liveness_check, readiness_check
 from api.views.infrastructure_validation import infrastructure_validation
 from api.views.metrics import metrics_view
+from api.views.nuke_internal import nuke_applications
 from api.views.runtime_logs import runtime_logs
 
 urlpatterns = [
@@ -50,6 +51,9 @@ urlpatterns = [
     # string). Called same-origin by infrastructure-service (F1b part 3b).
     path('internal/custom-domains/attach/', custom_domain_attach, name='custom-domain-attach'),
     path('internal/custom-domains/detach/', custom_domain_detach, name='custom-domain-detach'),
+    # Internal-only, fixed literal path — see nuke_internal.py's module docstring.
+    # Called same-origin by infrastructure-service's Nuke infrastructure worker.
+    path('internal/applications/nuke/', nuke_applications, name='nuke-applications'),
     # Owner-only (forwards the caller's JWT, unlike the two above) — a narrow
     # {id, infrastructure_id, status} lookup for infrastructure-service's claim flow, so
     # it never receives a full application detail (env vars, etc.) it has no use for.

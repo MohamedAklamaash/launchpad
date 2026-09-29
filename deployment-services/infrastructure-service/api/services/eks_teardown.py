@@ -24,12 +24,18 @@ ELB_REAP_POLL_INTERVAL_SECONDS = 20
 MAX_ORPHANS_PER_BATCH = 5
 
 
-def cleanup_eks_orphans(infra, credentials: dict | None = None) -> str:
+def cleanup_eks_orphans(infra, credentials: dict | None = None, bypass_cap: bool = False) -> str:
     """Reap controller-created ALBs/SGs that live outside terraform state.
 
     Must run before terraform destroy on every teardown entry point: the destroy
     dispatch, the inline rollback after a permanent provision failure, and
     InfrastructureService.delete_infrastructure's no-terraform path.
+
+    `bypass_cap` lifts MAX_ORPHANS_PER_BATCH — set only by a Nuke infrastructure run,
+    which intends to remove everything this cluster owns and must not stop partway
+    through and call it done. Still scoped to resources tagged/owned by THIS cluster
+    (the cluster-name tag plus a terraform-owned VpcId match, same as the capped path) —
+    lifting the cap widens how many matching resources get deleted, never which ones.
     """
     if getattr(infra, "compute_type", None) != ComputeType.EKS:
         return ""
@@ -66,8 +72,8 @@ def cleanup_eks_orphans(infra, credentials: dict | None = None) -> str:
     else:
         status = "absent" if cluster is None else cluster.get("status")
         lines.append(f"[k8s-reap] cluster {status}; reaping orphaned load balancers directly")
-        _reap_orphaned_load_balancers(session, cluster_name, vpc_id, lines)
-        _reap_orphaned_security_groups(session, cluster_name, vpc_id, lines)
+        _reap_orphaned_load_balancers(session, cluster_name, vpc_id, lines, bypass_cap=bypass_cap)
+        _reap_orphaned_security_groups(session, cluster_name, vpc_id, lines, bypass_cap=bypass_cap)
 
     return "\n".join(lines)
 
@@ -153,7 +159,8 @@ def _matching_load_balancers(elbv2, cluster_name: str, vpc_id: str) -> list[dict
     return matches
 
 
-def _reap_orphaned_load_balancers(session, cluster_name: str, vpc_id: str | None, lines: list):
+def _reap_orphaned_load_balancers(session, cluster_name: str, vpc_id: str | None, lines: list,
+                                   bypass_cap: bool = False):
     if not vpc_id:
         lines.append("[k8s-reap] no recorded vpc_id; refusing orphan load balancer reap")
         return
@@ -164,7 +171,7 @@ def _reap_orphaned_load_balancers(session, cluster_name: str, vpc_id: str | None
     if not matches:
         lines.append("[k8s-reap] no orphaned load balancers found")
         return
-    if len(matches) > MAX_ORPHANS_PER_BATCH:
+    if len(matches) > MAX_ORPHANS_PER_BATCH and not bypass_cap:
         lines.append(
             f"[k8s-reap] REFUSING to delete {len(matches)} load balancers (limit {MAX_ORPHANS_PER_BATCH}); "
             "manual cleanup required"
@@ -178,7 +185,8 @@ def _reap_orphaned_load_balancers(session, cluster_name: str, vpc_id: str | None
         elbv2.delete_load_balancer(LoadBalancerArn=arn)
 
 
-def _reap_orphaned_security_groups(session, cluster_name: str, vpc_id: str | None, lines: list):
+def _reap_orphaned_security_groups(session, cluster_name: str, vpc_id: str | None, lines: list,
+                                    bypass_cap: bool = False):
     if not vpc_id:
         return
     ec2 = session.client("ec2")
@@ -188,7 +196,7 @@ def _reap_orphaned_security_groups(session, cluster_name: str, vpc_id: str | Non
             {"Name": f"tag:{CLUSTER_TAG_KEY}", "Values": [cluster_name]},
         ]
     )["SecurityGroups"]
-    if len(security_groups) > MAX_ORPHANS_PER_BATCH:
+    if len(security_groups) > MAX_ORPHANS_PER_BATCH and not bypass_cap:
         lines.append(
             f"[k8s-reap] REFUSING to delete {len(security_groups)} security groups "
             f"(limit {MAX_ORPHANS_PER_BATCH}); manual cleanup required"

@@ -133,6 +133,28 @@ async def infrastructure_complete_exit(infra_id: UUID, body: CompleteExitBody, r
     )
 
 
+class NukeStartBody(BaseModel):
+    confirm_name: str = Field(description="Must exactly match the infrastructure's current name")
+
+
+@router.post("/{infra_id}/nuke", summary="Start a Nuke infrastructure run", status_code=202)
+async def infrastructure_nuke_start(infra_id: UUID, body: NukeStartBody, request: Request):
+    """Owner only. Destroys every resource Launchpad created for this infrastructure in
+    the customer's AWS account, then verifies nothing is left. Unlike DELETE, does not
+    refuse when applications or databases exist. 409 if a run is already in progress."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/nuke/", request
+    )
+
+
+@router.get("/{infra_id}/nuke", summary="Get the status of the current (or most recent) Nuke infrastructure run")
+async def infrastructure_nuke_status(infra_id: UUID, request: Request):
+    """Owner only. Still answers after a COMPLETED run has deleted the infrastructure."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/nuke/", request
+    )
+
+
 class AppCost(BaseModel):
     app: str
     amount_usd: float
