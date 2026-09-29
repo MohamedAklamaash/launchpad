@@ -163,12 +163,13 @@ jobs:
       - name: TypeScript
         run: npx tsc --noEmit
 
-      # Lint + tsc don't catch build-time failures (Vercel was broken for weeks while CI
-      # stayed green). VERCEL=1 builds the way Vercel does (no standalone output).
-      - name: Build
+      # Lint + tsc don't catch build-time failures: Vercel was broken for three weeks
+      # while CI stayed green. Build through a no-op adapter, standalone output on, the
+      # same path Vercel's adapter takes (see scripts/ci-noop-adapter.mjs).
+      - name: Build (adapter path, as on Vercel)
         run: pnpm run build
         env:
-          VERCEL: "1"
+          NEXT_ADAPTER_PATH: ${{ github.workspace }}/launchpad-frontend/scripts/ci-noop-adapter.mjs
           NEXT_TELEMETRY_DISABLED: "1"
 
   check-terraform:

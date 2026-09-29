@@ -254,6 +254,14 @@ def test_host_mode_nginx_config_is_valid_per_nginx_t(tmp_path):
     except Exception:
         pytest.skip("docker daemon not reachable")
 
+    # Pull separately so a registry problem (public ECR rate-limits CI runners:
+    # "toomanyrequests: Data limit exceeded") skips instead of failing as if the
+    # config were invalid. Only `nginx -t` itself decides pass/fail.
+    pull = subprocess.run(["docker", "pull", "-q", NGINX_SIDECAR_IMAGE], capture_output=True, text=True,
+                          timeout=120, check=False)
+    if pull.returncode != 0:
+        pytest.skip(f"could not pull {NGINX_SIDECAR_IMAGE}: {pull.stderr.strip()[:200]}")
+
     slug, hostname = _max_length_host_mode_hostname()
     config = generate_nginx_config(slug, 8000, host_mode=True, app_hostname=hostname)
 

@@ -31,6 +31,17 @@ def _docker_available() -> bool:
 
 pytestmark = pytest.mark.skipif(not _docker_available(), reason="docker not available")
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _nginx_image_pulled():
+    """Pull once up front so a registry problem (public ECR rate-limits CI runners:
+    "toomanyrequests: Data limit exceeded") skips these tests instead of reading as a
+    sidecar behaviour failure."""
+    pull = subprocess.run(["docker", "pull", "-q", NGINX_SIDECAR_IMAGE], capture_output=True, text=True,
+                          timeout=120, check=False)
+    if pull.returncode != 0:
+        pytest.skip(f"could not pull {NGINX_SIDECAR_IMAGE}: {pull.stderr.strip()[:200]}")
+
 BROKEN_CONF = "events {} http { this is not valid nginx config {{{ }"
 
 
