@@ -204,6 +204,17 @@ async def infrastructure_reprovision(infra_id: UUID, request: Request):
     )
 
 
+@router.post("/{infra_id}/reissue-token", summary="Reissue the onboarding token for a not-yet-onboarded infrastructure",
+             response_model=InfraCreateResponse)
+async def infrastructure_reissue_token(infra_id: UUID, request: Request):
+    """Owner only. Mints a fresh single-use onboarding token (invalidating any previous one) so
+    the setup command can be shown again after creation. 409 once the infrastructure is
+    already onboarded."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/reissue-token/", request
+    )
+
+
 class OnboardingCallbackBody(BaseModel):
     infra_id: str = Field(description="Infrastructure UUID this callback is for")
     account_id: str = Field(description="AWS Account ID where LaunchpadDeploymentRole was created")
