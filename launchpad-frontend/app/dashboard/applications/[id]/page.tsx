@@ -17,7 +17,8 @@ import {
 import { EditAppSheet } from '@/components/edit-app-sheet';
 import { EnvEditor } from '@/components/env-editor';
 import { DeploymentHistory } from '@/components/deployment-history';
-import { RuntimeLogsPanel } from '@/components/runtime-logs-panel';
+import { AppMetricsPanel } from '@/components/app-metrics-panel';
+import { AppLiveLogs } from '@/components/app-live-logs';
 import { CustomDomainsPanel } from '@/components/custom-domains-panel';
 
 const POLLING_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
@@ -497,7 +498,13 @@ export default function ApplicationDetailPage() {
         onAccessChange={setHasRollbackAccess}
       />
 
-      {isOwner && <RuntimeLogsPanel appId={id} computeType={infra?.compute_type} />}
+      {isOwner && infra && (
+        <div className="space-y-3">
+          <span className="eyebrow">Observability</span>
+          <AppMetricsPanel appId={id} infraId={infra.id} computeType={infra.compute_type} />
+          <AppLiveLogs appId={id} infraId={infra.id} computeType={infra.compute_type} />
+        </div>
+      )}
 
       {isOwner && infra && <CustomDomainsPanel appId={id} infraId={infra.id} />}
 

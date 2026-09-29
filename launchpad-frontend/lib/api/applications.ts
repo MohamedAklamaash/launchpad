@@ -3,6 +3,8 @@ import {
   Application,
   ApplicationCreate,
   ApplicationUpdate,
+  AppMetricsRange,
+  AppMetricsResponse,
   Deployment,
   RollbackPreview,
   RuntimeLogsQuery,
@@ -72,6 +74,11 @@ export const applicationApi = {
   // Never cache/persist the response — it's unredacted customer application output.
   logs: async (id: string, params: RuntimeLogsQuery): Promise<RuntimeLogsResponse> => {
     const { data } = await apiClient.get(`/api/applications/${id}/logs`, { params });
+    return data;
+  },
+
+  metrics: async (id: string, range: AppMetricsRange): Promise<AppMetricsResponse> => {
+    const { data } = await apiClient.get(`/api/applications/${id}/metrics`, { params: { range } });
     return data;
   },
 };
