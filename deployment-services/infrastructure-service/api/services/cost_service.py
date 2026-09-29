@@ -59,6 +59,19 @@ class CostExplorerNotEnabledError(ValueError):
     so this must not be reported as a missing permission."""
 
 
+NOT_CONNECTED_MESSAGE = (
+    "Launchpad can't access this AWS account yet. Finish onboarding by running the setup "
+    "script from the infrastructure page (or re-run it if the role was changed)."
+)
+
+
+class InfrastructureNotConnectedError(ValueError):
+    """The platform can't assume LaunchpadDeploymentRole in this account: onboarding hasn't
+    completed yet, or the role/its trust policy has since been removed or changed. Not a
+    server error, and not a missing Cost Explorer grant — the customer has to (re)run the
+    onboarding script."""
+
+
 class CostAllocationTagsNotActivatedError(ValueError):
     """Cost Explorer rejected the tag-based query, most likely because launchpad:app/
     launchpad:infra aren't activated for cost allocation yet. Distinguished from
@@ -177,8 +190,19 @@ def _mock_costs(infra, window_start: date, window_end: date) -> dict:
 
 # ── ECS actuals ──────────────────────────────────────────────────────────────────
 
+def _onboarding_pending(infra) -> bool:
+    return bool(infra.onboarding_token_hash) and infra.onboarding_token_used_at is None
+
+
 def _ce_client(infra):
-    credentials = authenticate_infrastructure(infra)
+    if _onboarding_pending(infra):
+        raise InfrastructureNotConnectedError(NOT_CONNECTED_MESSAGE)
+    try:
+        credentials = authenticate_infrastructure(infra)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "AccessDenied" or e.operation_name != "AssumeRole":
+            raise
+        raise InfrastructureNotConnectedError(NOT_CONNECTED_MESSAGE) from e
     return boto3.client(
         "ce",
         region_name=CE_REGION,

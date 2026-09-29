@@ -403,3 +403,34 @@ def test_returns_503_when_limiter_unavailable(factory, make_infra, monkeypatch):
 
     resp = _get_costs(factory, infra.user, str(infra.id))
     assert resp.status_code == 503
+
+
+def test_infra_still_onboarding_reports_not_connected_without_calling_aws(factory, make_infra, make_app, monkeypatch):
+    """Seen on real AWS: costs for an infra whose onboarding script hadn't completed hit
+    AssumeRole AccessDenied and surfaced as a bare 500 "Internal error"."""
+    infra = make_infra(compute_type="ecs_fargate", is_mock=False)
+    infra.issue_onboarding_token()
+    make_app(infra, name="my-app")
+    assume = MagicMock()
+    monkeypatch.setattr("api.services.cost_service.authenticate_infrastructure", assume)
+
+    resp = _get_costs(factory, infra.user, str(infra.id))
+
+    assert resp.status_code == 409
+    assert resp.data["code"] == "infrastructure_not_connected"
+    assume.assert_not_called()
+
+
+def test_assume_role_denied_reports_not_connected(factory, make_infra, make_app, monkeypatch):
+    infra = make_infra(compute_type="ecs_fargate", is_mock=False)
+    make_app(infra, name="my-app")
+    monkeypatch.setattr(
+        "api.services.cost_service.authenticate_infrastructure",
+        MagicMock(side_effect=ClientError({"Error": {"Code": "AccessDenied", "Message": "x"}}, "AssumeRole")),
+    )
+
+    resp = _get_costs(factory, infra.user, str(infra.id))
+
+    assert resp.status_code == 409
+    assert resp.data["code"] == "infrastructure_not_connected"
+
