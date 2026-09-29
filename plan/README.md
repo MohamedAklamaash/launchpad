@@ -85,7 +85,12 @@ to walk, not a specification to type in.
       compute types) and requires the same bump in the release that ships it: until the
       pinned ref moves, cert bootstrap's `policy_version >= 4` gate skips TLS
       (`tls_status=POLICY_STALE`) for every customer who re-runs the onboarding/refresh
-      script against the old ref.
+      script against the old ref. Per-app metrics bumped the policy to v5 (a base-statement
+      change — `cloudwatch:GetMetricData` — so `required_version_for` is now 5 for both
+      compute types) and requires the same bump in the release that ships it: until the
+      pinned ref moves, the refresh-policy snippet reinstalls the old v4 policy and the
+      metrics endpoint's `policy_refresh_required` (422) never clears for a customer who
+      re-runs it.
 - [ ] **Run `manage.py redact_stored_provisioning_text --dry-run`, then for real, before
       enabling the provisioning-logs endpoint.** Lossy by design, no reverse.
 - [ ] Dismiss the GitGuardian incidents on #65 and #73 — both flagged AWS's published

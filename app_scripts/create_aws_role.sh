@@ -343,8 +343,13 @@ fi
 #   cannot delete a certificate it did not let Launchpad tag as its own. No new
 #   elasticloadbalancing actions were needed: elasticloadbalancing:* above already
 #   covers the 443 listener and per-app host-header rules
+# - cloudwatch:GetMetricData (v5, per-app metrics): read CPU/memory/request/latency
+#   metrics for dashboards. Cloudwatch metric reads carry no resource-level permissions
+#   in AWS's IAM model, so this is account-wide read access to every CloudWatch metric,
+#   not scoped to Launchpad-created resources. No new elasticloadbalancing actions were
+#   needed: elasticloadbalancing:* above already covers DescribeTargetGroups/DescribeTags
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-POLICY_VERSION=4
+POLICY_VERSION=5
 case "$COMPUTE_TYPE" in
   ecs_fargate)
     cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
@@ -430,6 +435,11 @@ case "$COMPUTE_TYPE" in
           "aws:ResourceTag/ManagedBy": "launchpad"
         }
       }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
     }
   ]
 }
@@ -519,6 +529,11 @@ EOF
           "aws:ResourceTag/ManagedBy": "launchpad"
         }
       }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
     },
     {
       "Effect": "Allow",

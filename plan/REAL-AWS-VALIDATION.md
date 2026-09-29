@@ -665,3 +665,31 @@ against `aws iam get-role` have never executed against the real AWS CLI/IAM back
       value this replaces was confirmed on real AWS to fail `TagRole` with
       `ValidationError` — that's what triggered this fix; the `+` replacement itself is
       unverified against real AWS.)
+
+## Per-app metrics (added with this feature, unverified against real AWS)
+
+- [ ] ECS: confirm `AWS/ECS` CPUUtilization/MemoryUtilization actually populate for a
+      Fargate service under `ClusterName`+`ServiceName` dimensions derived from
+      `Environment.cluster_arn`/`Application.service_arn` (`app_metrics_service.py`'s
+      `_ecs_metrics`), and that `AWS/ApplicationELB` `TargetResponseTime` really accepts
+      `Stat: "p50"`/`"p95"` in `GetMetricData` the way this assumes — mocked and unit
+      tested only (stubbed `cloudwatch.get_metric_data`), never called against a real ALB.
+- [ ] EKS target-group discovery (`AppMetricsService._discover_eks_target_group` /
+      `_match_target_group_by_tags`): this finds the shared group ALB from `alb_dns` (the
+      same approach as `EKSDeployer._verify_eks_https_listener`), lists its target groups,
+      and matches the one whose `ingress.k8s.aws/resource` tag starts with
+      `<namespace>/<slug>` — e.g. `app-api/api-...`. The exact value the AWS Load Balancer
+      Controller writes to that tag (namespace/ingress/service/port encoding) is
+      undocumented beyond "derived from the Ingress and its backend", and the mock has no
+      controller-managed tags to test this against, so the prefix match is an assumption,
+      not a verified fact. Also unverified: that both the path Ingress (`<slug>`) and the
+      host-only Ingress (`<slug>-host`) actually get *separate* target groups rather than
+      sharing one, which is what the `-host-` tie-break in `_match_target_group_by_tags`
+      assumes. Run a real EKS app deploy, inspect the created target group(s) with `aws
+      elbv2 describe-tags`, and confirm the match picks the path Ingress's target group
+      (the one actually serving customer traffic through `/`).
+- [ ] `cloudwatch:GetMetricData`'s `AccessDenied` message text/code on a policy that
+      predates v5 — confirmed only against a synthetic `ClientError` in tests, never a
+      real IAM denial, so the `policy_refresh_required` mapping's assumption that AWS
+      returns `AccessDenied`/`AccessDeniedException` (not some other code) for this
+      specific action is unconfirmed.

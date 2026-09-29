@@ -1,10 +1,11 @@
 {
-  "version": 4,
+  "version": 5,
   "version_hashes": {
     "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
     "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de",
     "3": "e310fd84891a43b61b8eb9d8c66c33d720b16b787617373ef6e75e9fca047d58",
-    "4": "89e56ce04e59320bd516b48e95fd73661c464bb011b730da9d3c14995d96a2e5"
+    "4": "89e56ce04e59320bd516b48e95fd73661c464bb011b730da9d3c14995d96a2e5",
+    "5": "0d54c2a8f760090d272842305f05b55a10cf0d2ba54606246d26489777214c97"
   },
   "document_hashes": {
     "1": {
@@ -21,6 +22,10 @@
     "4": {
       "ecs_fargate": "8ffdadbc9893b1ef98bc173047e6ec5a3fbf871c6c3656b6586ceaaffca8e878",
       "eks": "41d2c2e334654b93d80e83fe2b6eafe6695aab778bd14f7517905fadef56dd02"
+    },
+    "5": {
+      "ecs_fargate": "fe011cb988be4a879b9171db8a12596266b628a300f034fab9bfa58639c71499",
+      "eks": "de27073c0f8d1df39f942dc8c0b08032c406e742506db4ed30ec19acc74c0222"
     }
   },
   "notes": [
@@ -66,7 +71,12 @@
     "acm:DeleteCertificate: only when aws:ResourceTag/ManagedBy=launchpad — this account",
     "  cannot delete a certificate it did not let Launchpad tag as its own. No new",
     "  elasticloadbalancing actions were needed: elasticloadbalancing:* above already",
-    "  covers the 443 listener and per-app host-header rules"
+    "  covers the 443 listener and per-app host-header rules",
+    "cloudwatch:GetMetricData (v5, per-app metrics): read CPU/memory/request/latency",
+    "  metrics for dashboards. Cloudwatch metric reads carry no resource-level permissions",
+    "  in AWS's IAM model, so this is account-wide read access to every CloudWatch metric,",
+    "  not scoped to Launchpad-created resources. No new elasticloadbalancing actions were",
+    "  needed: elasticloadbalancing:* above already covers DescribeTargetGroups/DescribeTags"
   ],
   "statements": [
     {
@@ -148,6 +158,11 @@
           "aws:ResourceTag/ManagedBy": "launchpad"
         }
       }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
     }
   ],
   "compute_type_statements": {

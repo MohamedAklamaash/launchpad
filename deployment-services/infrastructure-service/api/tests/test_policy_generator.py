@@ -307,10 +307,10 @@ def test_document_hash_of_ecs_fargate_equals_the_default_document():
 
 
 def test_required_version_for_matches_committed_data():
-    """v4 (F1b TLS activation) added a base-statement grant (acm:*), which changes
-    every compute type's rendered document — both now require v4."""
-    assert policy_data.required_version_for("ecs_fargate") == 4
-    assert policy_data.required_version_for("eks") == 4
+    """v5 (per-app metrics) added a base-statement grant (cloudwatch:GetMetricData),
+    which changes every compute type's rendered document — both now require v5."""
+    assert policy_data.required_version_for("ecs_fargate") == 5
+    assert policy_data.required_version_for("eks") == 5
 
 
 def test_check_fails_when_a_compute_type_is_missing_from_document_hashes(sandbox):
