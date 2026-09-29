@@ -5,6 +5,7 @@ from api.services.cost_service import (
     CostExplorerNotEnabledError,
     CostExplorerTemporarilyUnavailableError,
     CostService,
+    InfrastructureNotConnectedError,
 )
 from api.services.policy_errors import PolicyRefreshRequiredError
 from django.conf import settings
@@ -63,6 +64,8 @@ def _error_response(e: Exception):
             {'error': str(e), 'code': 'policy_refresh_required', 'denied_actions': e.denied_actions},
             status=422,
         )
+    if isinstance(e, InfrastructureNotConnectedError):
+        return Response({'error': str(e), 'code': 'infrastructure_not_connected'}, status=409)
     if isinstance(e, CostExplorerNotEnabledError):
         return Response({'error': str(e), 'code': 'cost_explorer_not_enabled'}, status=422)
     if isinstance(e, CostAllocationTagsNotActivatedError):
@@ -103,6 +106,7 @@ def _error_response(e: Exception):
         400: CostsErrorSerializer,
         403: CostsErrorSerializer,
         404: CostsErrorSerializer,
+        409: CostsErrorSerializer,
         422: CostsErrorSerializer,
         503: CostsErrorSerializer,
     },
