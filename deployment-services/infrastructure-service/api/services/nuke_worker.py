@@ -409,7 +409,34 @@ def _cleanup_out_of_terraform_leftovers(ctx: _NukeContext) -> dict:
     detail = {"codebuild": _delete_codebuild_resources(ctx, infra_id)}
     detail["app_security_group"] = _delete_app_security_group(ctx, infra_id)
     detail["app_log_groups"] = _delete_app_log_groups(ctx)
+    detail["cluster_log_groups"] = _delete_cluster_log_groups(ctx)
     return detail
+
+
+def _cluster_log_group_names(ctx: _NukeContext) -> list:
+    """Log groups AWS itself creates for the cluster, outside Terraform state: EKS
+    control-plane logs and ECS Container Insights. Seen on real AWS: the EKS one
+    survived a nuke that otherwise came back clean."""
+    env = ctx.infra.environments.first()
+    cluster_arn = getattr(env, "cluster_arn", None) or ""
+    name = cluster_arn.rsplit("/", 1)[-1]
+    if not name:
+        return []
+    return [f"/aws/eks/{name}/cluster", f"/aws/ecs/containerinsights/{name}/performance"]
+
+
+def _delete_cluster_log_groups(ctx: _NukeContext) -> list:
+    logs = ctx.boto_client("logs")
+    deleted = []
+    for name in _cluster_log_group_names(ctx):
+        try:
+            logs.delete_log_group(logGroupName=name)
+            deleted.append(name)
+        except ClientError as e:
+            _raise_if_access_denied(e)
+            if e.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+    return deleted
 
 
 def _delete_codebuild_resources(ctx: _NukeContext, infra_id: str) -> dict:
@@ -742,6 +769,12 @@ def _untagged_leftovers(ctx: _NukeContext, infra_id: str) -> list:
     iam = ctx.boto_client("iam")
     if _iam_role_exists(iam, role_name):
         leftovers.append({"type": "iam_role", "id": role_name, "reason": "still present"})
+
+    logs = ctx.boto_client("logs")
+    for name in _cluster_log_group_names(ctx):
+        groups = logs.describe_log_groups(logGroupNamePrefix=name)["logGroups"]
+        if any(group["logGroupName"] == name for group in groups):
+            leftovers.append({"type": "log_group", "id": name, "reason": "still present"})
 
     # LaunchpadDeploymentRole itself is intentionally NOT checked here: deployment_role
     # (the step that deletes it) runs AFTER this one, precisely so this verify pass can

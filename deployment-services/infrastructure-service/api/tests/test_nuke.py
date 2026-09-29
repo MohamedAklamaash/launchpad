@@ -673,6 +673,12 @@ def test_state_backend_deleted_when_last_infra_in_account_and_region(make_nuke_r
 
 # ── verify ───────────────────────────────────────────────────────────────────────
 
+def _no_log_groups():
+    logs = MagicMock()
+    logs.describe_log_groups.return_value = {"logGroups": []}
+    return logs
+
+
 def test_verify_reports_tagged_leftovers(make_nuke_run):
     from api.services.nuke_worker import _NukeContext, _verify_nothing_left
 
@@ -687,7 +693,7 @@ def test_verify_reports_tagged_leftovers(make_nuke_run):
     fake_codebuild.batch_get_projects.return_value = {"projects": []}
     fake_iam = MagicMock()
     fake_iam.get_role.side_effect = ClientError({"Error": {"Code": "NoSuchEntity", "Message": "x"}}, "GetRole")
-    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock()}
+    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock(), "logs": _no_log_groups()}
 
     with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
         result = _verify_nothing_left(ctx)
@@ -708,7 +714,7 @@ def test_verify_clean_reports_no_leftovers(make_nuke_run):
     fake_codebuild.batch_get_projects.return_value = {"projects": []}
     fake_iam = MagicMock()
     fake_iam.get_role.side_effect = ClientError({"Error": {"Code": "NoSuchEntity", "Message": "x"}}, "GetRole")
-    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock()}
+    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock(), "logs": _no_log_groups()}
 
     with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
         result = _verify_nothing_left(ctx)
@@ -782,4 +788,42 @@ def test_internal_views_need_no_user_only_the_internal_token(module, view):
     cls = getattr(importlib.import_module(module), view).cls
     assert list(cls.authentication_classes) == []
     assert list(cls.permission_classes) == [AllowAny]
+
+
+def test_cluster_log_groups_are_deleted_and_verified(make_nuke_run):
+    """Real AWS: /aws/eks/<cluster>/cluster (created by EKS, outside Terraform) survived a
+    nuke that otherwise verified clean. Same class: ECS Container Insights."""
+    from api.services.nuke_worker import (
+        _delete_cluster_log_groups,
+        _NukeContext,
+        _untagged_leftovers,
+    )
+
+    _owner, infra, env, run = make_nuke_run(name="prod-infra")
+    env.cluster_arn = "arn:aws:eks:us-east-1:123456789012:cluster/infra-abc-123"
+    env.save(update_fields=["cluster_arn"])
+    ctx = _NukeContext(infra=infra, run=run)
+    eks_group = "/aws/eks/infra-abc-123/cluster"
+
+    logs = MagicMock()
+    assert _delete_cluster_log_groups_with(ctx, logs, _delete_cluster_log_groups) == [
+        eks_group, "/aws/ecs/containerinsights/infra-abc-123/performance",
+    ]
+
+    logs.describe_log_groups.side_effect = lambda logGroupNamePrefix: {
+        "logGroups": [{"logGroupName": eks_group}] if logGroupNamePrefix == eks_group else []
+    }
+    codebuild = MagicMock()
+    codebuild.batch_get_projects.return_value = {"projects": []}
+    clients = {"logs": logs, "codebuild": codebuild, "iam": MagicMock(), "rds": MagicMock(), "ec2": MagicMock()}
+    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]), \
+         patch("api.services.nuke_worker._iam_role_exists", return_value=False):
+        leftovers = _untagged_leftovers(ctx, str(infra.id))
+
+    assert {"type": "log_group", "id": eks_group, "reason": "still present"} in leftovers
+
+
+def _delete_cluster_log_groups_with(ctx, logs, fn):
+    with patch.object(type(ctx), "boto_client", lambda self, service: logs):
+        return fn(ctx)
 
