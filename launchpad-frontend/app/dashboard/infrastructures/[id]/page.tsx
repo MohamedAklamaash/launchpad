@@ -25,9 +25,9 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download } from 'lucide-react';
+import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download, Terminal } from 'lucide-react';
 import { Infrastructure, InvitedUserSummary } from '@/types/infrastructure';
-import { ApplicationSummary } from '@/types/application';
+import { ApplicationSummary, ApplicationStatus } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { applicationApi } from '@/lib/api/applications';
 import { authApi } from '@/lib/api/auth';
@@ -37,6 +37,11 @@ import { DatabasesSection } from '@/components/databases-section';
 import { ProvisioningLogsPanel } from '@/components/provisioning-logs-panel';
 import { CostsPanel } from '@/components/costs-panel';
 import { PolicyRefreshDialog } from '@/components/policy-refresh-dialog';
+import { buildBootstrapEnvExports, getOnboardingMisconfiguration, resolveOnboardingScript } from '@/lib/onboarding-scripts';
+
+const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
+
+const APP_IN_FLIGHT_STATUSES: ApplicationStatus[] = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
 
 const ROLE_COLORS: Record<string, string> = {
   super_admin: 'text-brand',
@@ -98,6 +103,9 @@ export default function InfrastructureDetailPage() {
   const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
   const [provisioningError, setProvisioningError] = useState<string | null>(null);
   const [downloadingEvidence, setDownloadingEvidence] = useState(false);
+  const [reissuingToken, setReissuingToken] = useState(false);
+  const [setupCommand, setSetupCommand] = useState<{ invocation: string; misconfig: string | null } | null>(null);
+  const [setupCommandCopied, setSetupCommandCopied] = useState(false);
   const [exitExportOpen, setExitExportOpen] = useState(false);
   const [downloadingExitExport, setDownloadingExitExport] = useState(false);
   const [completeExitOpen, setCompleteExitOpen] = useState(false);
@@ -178,13 +186,17 @@ export default function InfrastructureDetailPage() {
     };
   })();
 
+  // Apps table has its own in-flight statuses (build/deploy/wake) distinct from the
+  // infra's own PENDING/PROVISIONING — either one in flight should keep this page live.
+  const appsInFlight = apps.some((a) => APP_IN_FLIGHT_STATUSES.includes(a.status));
+
   useEffect(() => {
     loadData();
     const interval = setInterval(() => {
-      if (infra?.status === 'PENDING' || infra?.status === 'PROVISIONING') loadData();
+      if (infra?.status === 'PENDING' || infra?.status === 'PROVISIONING' || appsInFlight) loadData();
     }, 5000);
     return () => clearInterval(interval);
-  }, [id, infra?.status, loadData]);
+  }, [id, infra?.status, appsInFlight, loadData]);
 
   const handleRenameInfra = async () => {
     if (!infraName.trim() || infraName === infra?.name) { setEditingName(false); return; }
@@ -332,6 +344,32 @@ export default function InfrastructureDetailPage() {
     }
   };
 
+  // The onboarding token is shown exactly once, at create time — the detail page never
+  // has it. Mint a fresh one (rejected once onboarded) so an owner who lost or never
+  // copied it can still get a working setup command without deleting/recreating the infra.
+  const handleShowSetupCommand = async () => {
+    setReissuingToken(true);
+    try {
+      const reissued = await infrastructureApi.reissueOnboardingToken(id);
+      const misconfig = getOnboardingMisconfiguration();
+      if (misconfig) {
+        setSetupCommand({ invocation: '', misconfig });
+      } else {
+        const env = buildBootstrapEnvExports(
+          reissued,
+          reissued.onboarding_token,
+          `${API_GATEWAY_URL}/api/infrastructures/onboarding/callback`,
+        );
+        setSetupCommand({ invocation: resolveOnboardingScript('bootstrap', env).invocation, misconfig: null });
+      }
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string } } };
+      toast.error(err.response?.data?.error || 'Failed to prepare setup command');
+    } finally {
+      setReissuingToken(false);
+    }
+  };
+
   const handleReprovision = async () => {
     setReprovisioning(true);
     try {
@@ -423,11 +461,34 @@ export default function InfrastructureDetailPage() {
         </div>
       )}
 
-      {(infra.status === 'PROVISIONING' || infra.status === 'PENDING') && (
+      {infra.status === 'PENDING' && !infra.is_cloud_authenticated && (
+        <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 space-y-2.5">
+          <div className="flex items-center gap-3">
+            <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
+            <p className="text-xs text-azure">
+              Waiting for you to run the setup script in AWS account <span className="font-mono">{infra.code}</span>.
+              Provisioning starts automatically once it finishes.
+            </p>
+          </div>
+          {isOwner && (
+            <Button variant="outline" size="sm" onClick={handleShowSetupCommand} disabled={reissuingToken} className="ml-[18px] h-7 gap-1.5">
+              <Terminal className="w-3.5 h-3.5" /> {reissuingToken ? 'Preparing…' : 'Show setup command'}
+            </Button>
+          )}
+        </div>
+      )}
+      {infra.status === 'PENDING' && infra.is_cloud_authenticated && (
+        <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 flex items-center gap-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
+          <p className="text-xs text-azure">Provisioning queued — waiting to start…</p>
+        </div>
+      )}
+      {infra.status === 'PROVISIONING' && (
         <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 flex items-center gap-3">
           <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
           <p className="text-xs text-azure">
-            {infra.status === 'PROVISIONING' ? 'Terraform is provisioning your AWS infrastructure…' : 'Provisioning queued — waiting to start…'}
+            Terraform is provisioning your AWS infrastructure…
+            {!infra.is_mock && ' Usually 8–15 minutes — watch Provisioning Logs below for live progress.'}
           </p>
         </div>
       )}
@@ -525,9 +586,9 @@ export default function InfrastructureDetailPage() {
 
       <DatabasesSection infraId={id} environmentActive={infra.status === 'ACTIVE'} canManage={isOwner} />
 
-      {isOwner && <CostsPanel infraId={id} />}
+      {isOwner && <CostsPanel infraId={id} connected={infra.is_cloud_authenticated} />}
 
-      {isOwner && <ProvisioningLogsPanel infraId={id} status={infra.status} />}
+      {isOwner && <ProvisioningLogsPanel infraId={id} status={infra.status} connected={infra.is_cloud_authenticated} />}
 
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
         <SheetContent className="w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto resize-x">
@@ -731,6 +792,45 @@ export default function InfrastructureDetailPage() {
             <Button variant="destructive" onClick={handleDeleteInfra} disabled={deleting}>
               {deleting ? 'Deleting…' : 'Delete'}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!setupCommand} onOpenChange={(o) => { if (!o) { setSetupCommand(null); setSetupCommandCopied(false); } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-base font-display font-semibold">Setup Command</DialogTitle>
+          </DialogHeader>
+          {setupCommand?.misconfig ? (
+            <p className="text-xs text-destructive">{setupCommand.misconfig}</p>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-xl border border-warning/30 bg-warning/10 p-3">
+                <p className="text-xs text-warning">
+                  This mints a new one-time token — any earlier onboarding token for this infrastructure stops working. Run this command in a shell with AWS credentials for account <span className="font-mono">{infra.code}</span>.
+                </p>
+              </div>
+              <div className="relative">
+                <pre className="bg-surface-3 border border-hairline rounded-lg px-3 py-2.5 text-[11px] font-mono text-success overflow-x-auto whitespace-pre">{setupCommand?.invocation}</pre>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(setupCommand?.invocation ?? '').then(
+                      () => {
+                        setSetupCommandCopied(true);
+                        setTimeout(() => setSetupCommandCopied(false), 2000);
+                      },
+                      () => toast.error('Copy failed — copy it manually'),
+                    );
+                  }}
+                  className="absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {setupCommandCopied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="flex gap-2 justify-end mt-2">
+            <Button variant="outline" onClick={() => { setSetupCommand(null); setSetupCommandCopied(false); }}>Done</Button>
           </div>
         </DialogContent>
       </Dialog>

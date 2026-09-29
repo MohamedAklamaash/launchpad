@@ -9,7 +9,7 @@ import { ArrowLeft, ArrowRight, Server, Cpu, HardDrive, Hash, Copy, Check, Termi
 import { LaunchSequence } from '@/components/launch';
 import { infrastructureApi, AwsRegion } from '@/lib/api/infrastructures';
 import { ComputeType, InfrastructureCreateResponse } from '@/types/infrastructure';
-import { resolveOnboardingScript, getOnboardingMisconfiguration } from '@/lib/onboarding-scripts';
+import { resolveOnboardingScript, getOnboardingMisconfiguration, buildBootstrapEnvExports } from '@/lib/onboarding-scripts';
 import { toast } from 'sonner';
 
 const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
@@ -125,24 +125,12 @@ export default function NewInfrastructurePage() {
     else next();
   };
 
-  const mockEnv = createdInfra?.is_mock
-    ? [
-      `export LAUNCHPAD_MOCK=1`,
-      `export LAUNCHPAD_ACCOUNT_ID=${createdInfra.code}`,
-    ]
-    : [];
-
   const bootstrapEnv = createdInfra
-    ? [
-      `export LAUNCHPAD_INFRA_ID=${createdInfra.id}`,
-      `export LAUNCHPAD_CALLBACK_URL=${API_GATEWAY_URL}/api/infrastructures/onboarding/callback`,
-      `export LAUNCHPAD_ONBOARDING_TOKEN=${createdInfra.onboarding_token}`,
-      `export LAUNCHPAD_EXTERNAL_ID=${createdInfra.id}`,
-      `export LAUNCHPAD_COMPUTE_TYPE=${createdInfra.compute_type}`,
-      `export LAUNCHPAD_PLATFORM_ACCOUNT_ID=${createdInfra.platform_account_id}`,
-      `export LAUNCHPAD_PLATFORM_USER=${createdInfra.platform_user}`,
-      ...mockEnv,
-    ]
+    ? buildBootstrapEnvExports(
+      createdInfra,
+      createdInfra.onboarding_token,
+      `${API_GATEWAY_URL}/api/infrastructures/onboarding/callback`,
+    )
     : [];
 
   const onboardingMisconfig = createdInfra ? getOnboardingMisconfiguration() : null;

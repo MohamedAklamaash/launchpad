@@ -45,6 +45,12 @@ const statusOf = (s: string) => STATUS[s] ?? { dot: 'bg-muted-foreground', label
 
 const IN_FLIGHT: string[] = ['PENDING', 'PROVISIONING', 'DELETING'];
 
+const IN_FLIGHT_HINT: Record<string, string> = {
+  PENDING: 'Creating database — usually 5–10 minutes',
+  PROVISIONING: 'Creating database — usually 5–10 minutes',
+  DELETING: 'Deleting — a final snapshot is taken first, usually 5–10 minutes',
+};
+
 interface Props {
   infraId: string;
   environmentActive: boolean;
@@ -202,6 +208,12 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
                 {db.secret_arn && (
                   <p className="text-[10px] text-muted-foreground/70 font-mono truncate" title={db.secret_arn}>
                     Secret: {db.secret_arn}
+                  </p>
+                )}
+                {IN_FLIGHT.includes(db.status) && (
+                  <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                    <span className="w-1 h-1 rounded-full bg-current animate-pulse shrink-0" />
+                    {IN_FLIGHT_HINT[db.status]}
                   </p>
                 )}
                 {db.error_message && db.status === 'ERROR' && (
