@@ -126,34 +126,20 @@ def check_pending_certificates():
             cert.tls_requested_at is not None
             and timezone.now() - cert.tls_requested_at > cert_bootstrap.ISSUED_CHECK_TIMEOUT
         )
-        if timed_out:
-            InfrastructureCertificate.objects.filter(
-                id=cert.id, tls_status=InfrastructureCertificate.TLS_PENDING,
-            ).update(tls_status=InfrastructureCertificate.TLS_FAILED)
-            logger.warning(
-                f"TLS bootstrap timed out for infra {infra.id} after "
-                f"{cert_bootstrap.ISSUED_CHECK_TIMEOUT}; marking FAILED (env stays ACTIVE on path URL)"
-            )
-            _publish_host_readiness(infra.id)
-            continue
 
-        if not cert.cert_arn:
-            # R1 defense in depth: a null ARN should no longer happen (cert_arn is now
-            # persisted immediately after RequestCertificate), but a row from before that
-            # fix, or a bug, must still age out via the same timeout rather than stay
-            # PENDING forever with nothing to check against ACM.
-            continue
-
-        try:
-            credentials = assume_role_credentials_only(infra)
-            region = (infra.metadata or {}).get("aws_region", "us-west-2")
-            client = cert_bootstrap._acm_client(
-                infra_is_mock=infra.is_mock, dev_mode=dev_mode, credentials=credentials, region=region,
-            )
-            status = client.describe_certificate(CertificateArn=cert.cert_arn)["Certificate"]["Status"]
-        except Exception:
-            logger.warning(f"TLS ISSUED re-check failed for infra {infra.id} (will retry next tick)", exc_info=True)
-            continue
+        # Ask ACM first: a certificate that issued after the deadline but before this tick
+        # (e.g. DNS delegation landed late) must be adopted, not marked FAILED.
+        status = None
+        if cert.cert_arn:
+            try:
+                credentials = assume_role_credentials_only(infra)
+                region = (infra.metadata or {}).get("aws_region", "us-west-2")
+                client = cert_bootstrap._acm_client(
+                    infra_is_mock=infra.is_mock, dev_mode=dev_mode, credentials=credentials, region=region,
+                )
+                status = client.describe_certificate(CertificateArn=cert.cert_arn)["Certificate"]["Status"]
+            except Exception:
+                logger.warning(f"TLS ISSUED re-check failed for infra {infra.id} (will retry next tick)", exc_info=True)
 
         if status == "ISSUED":
             updated = InfrastructureCertificate.objects.filter(
@@ -163,11 +149,20 @@ def check_pending_certificates():
                 logger.info(f"TLS certificate ISSUED for infra {infra.id}; re-enqueuing provision to apply 443")
                 InfraQueue.enqueue_provision(str(infra.id))
                 _publish_host_readiness(infra.id)
-        elif status in ("FAILED", "VALIDATION_TIMED_OUT", "REVOKED"):
+        elif status in ("FAILED", "VALIDATION_TIMED_OUT", "REVOKED") or timed_out:
+            # A null ARN (defense in depth — cert_arn is persisted right after
+            # RequestCertificate) or an unreadable status still ages out via the timeout
+            # rather than staying PENDING forever.
             InfrastructureCertificate.objects.filter(
                 id=cert.id, tls_status=InfrastructureCertificate.TLS_PENDING,
             ).update(tls_status=InfrastructureCertificate.TLS_FAILED)
-            logger.warning(f"ACM reports {status} for infra {infra.id} certificate; marking FAILED")
+            if status in ("FAILED", "VALIDATION_TIMED_OUT", "REVOKED"):
+                logger.warning(f"ACM reports {status} for infra {infra.id} certificate; marking FAILED")
+            else:
+                logger.warning(
+                    f"TLS bootstrap timed out for infra {infra.id} after "
+                    f"{cert_bootstrap.ISSUED_CHECK_TIMEOUT}; marking FAILED (env stays ACTIVE on path URL)"
+                )
             _publish_host_readiness(infra.id)
 
     _reenqueue_issued_certs_missing_https_listener(deadline)
