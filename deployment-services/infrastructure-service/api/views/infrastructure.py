@@ -26,8 +26,8 @@ class InfraResponseSerializer(serializers.Serializer):
     id = serializers.UUIDField()
     name = serializers.CharField()
     cloud_provider = serializers.CharField(help_text="e.g. AWS")
-    max_cpu = serializers.FloatField(help_text="Total CPU units ceiling (1024 = 1 vCPU)")
-    max_memory = serializers.FloatField(help_text="Total memory ceiling in MB")
+    max_cpu = serializers.FloatField(help_text="Total vCPU ceiling across all apps")
+    max_memory = serializers.FloatField(help_text="Total memory ceiling in GB across all apps")
     is_cloud_authenticated = serializers.BooleanField(help_text="Whether Launchpad successfully assumed the IAM role")
     is_mock = serializers.BooleanField(help_text="True when this infra was created in dev mock mode; never touches real AWS")
     code = serializers.CharField(help_text="AWS Account ID")
@@ -49,8 +49,8 @@ class InfraCreateResponseSerializer(InfraResponseSerializer):
 class InfraCreateSerializer(serializers.Serializer):
     name = serializers.CharField(help_text="Human-readable name, e.g. prod-infra")
     cloud_provider = serializers.ChoiceField(choices=["AWS"], help_text="Only AWS is supported")
-    max_cpu = serializers.FloatField(help_text="Total CPU units to allocate across all apps (1024 = 1 vCPU)")
-    max_memory = serializers.FloatField(help_text="Total memory in MB to allocate across all apps")
+    max_cpu = serializers.FloatField(help_text="Total vCPU to allocate across all apps")
+    max_memory = serializers.FloatField(help_text="Total memory in GB to allocate across all apps")
     code = serializers.CharField(help_text="AWS Account ID where infrastructure will be provisioned, e.g. 123456789012")
     metadata = serializers.DictField(
         child=serializers.CharField(), required=False,
@@ -59,8 +59,8 @@ class InfraCreateSerializer(serializers.Serializer):
 
 class InfraUpdateSerializer(serializers.Serializer):
     name = serializers.CharField(required=False)
-    max_cpu = serializers.FloatField(required=False, help_text="New CPU units ceiling")
-    max_memory = serializers.FloatField(required=False, help_text="New memory ceiling in MB")
+    max_cpu = serializers.FloatField(required=False, help_text="New vCPU ceiling")
+    max_memory = serializers.FloatField(required=False, help_text="New memory ceiling in GB")
     code = serializers.CharField(required=False, help_text="AWS Account ID; correctable only before onboarding")
 
 class ErrorSerializer(serializers.Serializer):

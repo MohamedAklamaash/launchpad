@@ -39,6 +39,28 @@ def validate_vpc_cidr(value) -> None:
         raise ValueError("Invalid vpc_cidr")
 
 
+def validate_infra_resource_ceiling(value, *, field_name: str) -> float:
+    """Reject a max_cpu/max_memory ceiling that is missing, non-numeric, non-positive, or
+    absurdly large. Units are vCPU (max_cpu) / GB (max_memory), the same contract
+    application-service validates alloted_cpu/alloted_memory against. This only bounds
+    the ceiling itself; it does not change how the stored value is used elsewhere.
+
+    Previously unvalidated: the create/update serializers are docs-only, and the value
+    passed straight from the request body into the model's FloatField, so a caller could
+    set a negative, zero, or unbounded ceiling.
+    """
+    cap = settings.INFRA_MAX_CPU_VCPU if field_name == "max_cpu" else settings.INFRA_MAX_MEMORY_GB
+    if value is None:
+        raise ValueError(f"{field_name} is required.")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be a number.")
+    if not (0 < numeric <= cap):
+        raise ValueError(f"{field_name} must be greater than 0 and at most {cap}.")
+    return numeric
+
+
 def validate_aws_region(value) -> None:
     """Reject anything not shaped like an AWS region name."""
     if not isinstance(value, str) or not _AWS_REGION.fullmatch(value):
@@ -113,6 +135,8 @@ class InfrastructureService:
         # onboarding state machine.
         ALLOWED_CREATE_FIELDS = {"name", "cloud_provider", "compute_type", "max_cpu", "max_memory", "code", "metadata"}
         infra_data = {k: v for k, v in infra_data.items() if k in ALLOWED_CREATE_FIELDS}
+        infra_data["max_cpu"] = validate_infra_resource_ceiling(infra_data.get("max_cpu"), field_name="max_cpu")
+        infra_data["max_memory"] = validate_infra_resource_ceiling(infra_data.get("max_memory"), field_name="max_memory")
         # Pop-then-reinsert: an explicit null must fall back to the model default instead of
         # splatting compute_type=None into the constructor.
         compute_type = infra_data.pop("compute_type", None)
@@ -350,8 +374,17 @@ class InfrastructureService:
             update_fields.append('name')
         
         if 'max_cpu' in update_data or 'max_memory' in update_data:
-            new_cpu = float(update_data.get('max_cpu', infra.max_cpu))
-            new_mem = float(update_data.get('max_memory', infra.max_memory))
+            # Only re-validate a field the caller actually sent. A stored ceiling from
+            # before this check existed (or set under a higher settings.INFRA_MAX_CPU_VCPU/
+            # INFRA_MAX_MEMORY_GB) must not block an update to the other field.
+            new_cpu = (
+                validate_infra_resource_ceiling(update_data['max_cpu'], field_name="max_cpu")
+                if 'max_cpu' in update_data else infra.max_cpu
+            )
+            new_mem = (
+                validate_infra_resource_ceiling(update_data['max_memory'], field_name="max_memory")
+                if 'max_memory' in update_data else infra.max_memory
+            )
 
             # Note: Infrastructure service doesn't have Application model
             # Validation against current usage should be done in application service

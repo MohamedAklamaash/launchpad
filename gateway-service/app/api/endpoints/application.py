@@ -17,9 +17,10 @@ class AppCreateBody(BaseModel):
     project_commit_hash: str | None = Field(default=None, example="abc1234")
     dockerfile_path: str | None = Field(default="Dockerfile", example="Dockerfile")
     port: int | None = Field(default=8080, example=8080)
-    alloted_cpu: float | None = Field(default=256, example=256,
-                                          description="CPU units: 256=0.25vCPU, 512=0.5vCPU, 1024=1vCPU")
-    alloted_memory: float | None = Field(default=512, example=512, description="Memory in MB")
+    alloted_cpu: float | None = Field(default=0.25, example=0.25,
+                                          description="CPU in vCPU (ECS Fargate must be one of: 0.25, 0.5, 1.0, 2.0, 4.0)")
+    alloted_memory: float | None = Field(default=0.5, example=0.5,
+                                          description="Memory in GB (ECS Fargate: 0.5-2.0 GB depending on CPU tier)")
     envs: dict[str, str] | None = Field(default=None, example={"NODE_ENV": "production"})
 
 class AppCreateResponse(BaseModel):
@@ -33,8 +34,8 @@ class AppDetailResponse(BaseModel):
     infrastructure_id: str
     status: str = Field(description="CREATED | BUILDING | DEPLOYING | ACTIVE | SLEEPING | FAILED")
     is_sleeping: bool
-    cpu: float
-    memory: float
+    cpu: float = Field(description="CPU in vCPU")
+    memory: float = Field(description="Memory in GB")
     storage: float
     port: int
     url: str
@@ -52,15 +53,15 @@ class AppDetailResponse(BaseModel):
 class AppListItem(BaseModel):
     id: str
     name: str
-    cpu: float
-    memory: float
+    cpu: float = Field(description="CPU in vCPU")
+    memory: float = Field(description="Memory in GB")
     port: int
 
 class AppUpdateBody(BaseModel):
     description: str | None = None
     envs: dict[str, str] | None = Field(default=None, example={"NODE_ENV": "production"})
-    alloted_cpu: float | None = Field(default=None, description="CPU units: 256=0.25vCPU, 512=0.5vCPU, 1024=1vCPU")
-    alloted_memory: float | None = Field(default=None, description="Memory in MB")
+    alloted_cpu: float | None = Field(default=None, description="CPU in vCPU (ECS Fargate must be one of: 0.25, 0.5, 1.0, 2.0, 4.0)")
+    alloted_memory: float | None = Field(default=None, description="Memory in GB (ECS Fargate: 0.5-2.0 GB depending on CPU tier)")
     port: int | None = None
     project_branch: str | None = None
     dockerfile_path: str | None = None
@@ -75,8 +76,8 @@ class AppUpdateResponse(BaseModel):
     name: str
     description: str | None = None
     envs: dict[str, str] = {}
-    alloted_cpu: float
-    alloted_memory: float
+    alloted_cpu: float = Field(description="CPU in vCPU")
+    alloted_memory: float = Field(description="Memory in GB")
     port: int
     attached_database_ids: list[str] = []
     updated_at: str
@@ -173,8 +174,8 @@ class RollbackPreviewResponse(BaseModel):
     image_tag: str
     commit_sha: str | None = None
     compute_type: str
-    cpu: float
-    memory: float
+    cpu: float = Field(description="CPU in vCPU")
+    memory: float = Field(description="Memory in GB")
     port: int
     deployed_at: str
     added_keys: list[str] = []

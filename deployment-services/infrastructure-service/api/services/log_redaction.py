@@ -18,6 +18,8 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from api.validators import EKS_PUBLIC_ACCESS_CIDRS_GUIDANCE
+
 REDACTED = "<redacted>"
 WITHHELD_DIAGNOSTIC = "Error: <diagnostic withheld: contained a credential>"
 MAX_DIAGNOSTIC_CHARS = 16_000
@@ -59,6 +61,7 @@ _MARKER = re.compile(
     r"|Invalid (?:aws_region|vpc_cidr|database name|cloud provider)"
     r"|AWS Account ID is required in the infrastructure code field"
     r"|" + re.escape(WITHHELD_DIAGNOSTIC) + r"(?: \(\w+\))?"
+    r"|" + re.escape(EKS_PUBLIC_ACCESS_CIDRS_GUIDANCE) +
     r")"
 )
 

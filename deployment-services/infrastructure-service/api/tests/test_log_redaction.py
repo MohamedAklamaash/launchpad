@@ -19,6 +19,7 @@ from api.services.log_redaction import (
     scrub_exact_values,
 )
 from api.services.terraform_worker import MAX_LOG_CHARS, _capped_logs
+from api.validators import EKS_PUBLIC_ACCESS_CIDRS_GUIDANCE
 
 # Assembled from parts rather than written as literals. These have to match the exact
 # AWS key and secret shapes, because those shapes are what the redactor keys on — and a
@@ -324,6 +325,7 @@ def test_keeps_progress_and_error_code():
     "Cleanup: All resources were destroyed.",
     "[OUTPUT] parsed keys: alb_dns, vpc_id",
     "Missing AWS credentials for terraform execution",
+    EKS_PUBLIC_ACCESS_CIDRS_GUIDANCE,
 ])
 def test_platform_composed_messages_survive_verbatim(message):
     """Drop-by-default means every worker-composed sentence that reaches error_message
