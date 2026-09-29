@@ -71,6 +71,17 @@ OUTPUT_FETCH_RETRY_DELAYS_SECONDS = (5, 10, 20)
 # never withhold.
 OUTPUT_FETCH_EXHAUSTED_MESSAGE = "could not read terraform outputs; reprovision to retry"
 
+# Fixed, allowlisted (see log_redaction._MARKER's "Provisioning failed after" entry)
+# sentence for a never-activated environment whose transient-error retries ran out (see
+# _handle_provision_failure). The raw terraform/AWS error is a flat, unshaped string
+# that the redactor usually can't classify and withholds outright — this sentence is
+# what customers and notifications actually see; the raw detail still lands in
+# Environment.logs via combined_logs below.
+TRANSIENT_RETRIES_EXHAUSTED_MESSAGE = (
+    f"Provisioning failed after {MAX_RETRIES + 1} attempts due to a temporary AWS or "
+    "Terraform error. Reprovision to try again."
+)
+
 # R3 (security review): applied at every DESTROYED transition so a later re-provision (or
 # a stale row that somehow gets touched again) never inherits a "TLS already patched"
 # signal from a cluster/certificate pairing that no longer exists.
@@ -985,10 +996,19 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
             cleanup_status = f"WARNING: Cleanup failed. Manual cleanup required in AWS account. Error: {destroy_result.get('error', 'Unknown')}"
         
         combined_logs = _capped_logs(logs, "\n[DESTROY]\n", destroy_result.get("logs", ""))
+        # A transient error only ever reaches this destroy-rollback branch once its
+        # retries are exhausted (see the early-return above) — its raw text is a flat,
+        # unshaped string the redactor can't classify and withholds outright. Swap in
+        # the fixed, always-legible TRANSIENT_RETRIES_EXHAUSTED_MESSAGE for error_message
+        # in that case; the raw error and cleanup outcome stay in combined_logs above. A
+        # non-transient (immediately permanent) error keeps its existing message.
+        error_message = (
+            _capped_error(TRANSIENT_RETRIES_EXHAUSTED_MESSAGE) if result["transient"]
+            else _capped_error(error, f"Cleanup: {cleanup_status}")
+        )
         with transaction.atomic():
             Environment.objects.filter(infrastructure_id=infra_id).update(
-                status="ERROR", logs=combined_logs,
-                error_message=_capped_error(error, f"Cleanup: {cleanup_status}"),
+                status="ERROR", logs=combined_logs, error_message=error_message,
             )
     
     @staticmethod

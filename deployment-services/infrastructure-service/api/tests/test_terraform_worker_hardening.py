@@ -15,6 +15,7 @@ from api.services.log_redaction import redact_provisioning_text
 from api.services.terraform_worker import (
     MAX_RETRIES,
     OUTPUT_FETCH_EXHAUSTED_MESSAGE,
+    TRANSIENT_RETRIES_EXHAUSTED_MESSAGE,
     TerraformWorker,
 )
 from django.utils import timezone
@@ -397,3 +398,20 @@ def test_exhausted_transient_retries_on_never_activated_environment_rolls_back(m
     assert env.status == "ERROR"
     assert env.error_message
     assert env.error_message == redact_provisioning_text(env.error_message).text
+
+
+def test_exhausted_transient_retries_store_exact_fixed_human_readable_message(make_infra_env):
+    """The raw AWS/terraform error text ("Throttling: rate exceeded") is a flat, unshaped
+    string the redactor withholds outright — error_message must instead be exactly the
+    fixed TRANSIENT_RETRIES_EXHAUSTED_MESSAGE, never "... lines withheld", with the raw
+    detail (the original error and the destroy outcome) still recoverable from env.logs."""
+    infra, env = make_infra_env()
+    with patch("api.services.infra_queue.InfraQueue"), \
+            patch.object(TerraformWorker, "_exec_tf",
+                         return_value={"success": True, "logs": "[COMMAND] destroy ok"}):
+        _handle_failure(infra, TRANSIENT_FAILURE, retry_count=MAX_RETRIES)
+    env.refresh_from_db()
+    assert env.error_message == TRANSIENT_RETRIES_EXHAUSTED_MESSAGE
+    assert "withheld" not in env.error_message.lower()
+    assert "[COMMAND]" in env.logs
+    assert "[DESTROY]" in env.logs

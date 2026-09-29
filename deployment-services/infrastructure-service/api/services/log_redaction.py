@@ -53,6 +53,8 @@ _MARKER = re.compile(
     r"|Destroy failed:|Destroy blocked: \d+ database\(s\) must be deleted first"
     r"|Apply succeeded but reading outputs failed:|Terraform execution failed:"
     r"|could not read terraform outputs; reprovision to retry"
+    r"|Provisioning failed after \d+ attempts due to a temporary AWS or Terraform error\."
+    r" Reprovision to try again\."
     r"|Missing AWS credentials for terraform execution"
     r"|(?:PROVISIONING|UPDATING|DESTROYING) (?:update could not be recovered after \d+ attempts;"
     r" environment returned to ACTIVE|abandoned after \d+ recovery attempts)"
