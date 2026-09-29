@@ -119,7 +119,7 @@ services:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
-      - ./volumes/prometheus:/prometheus
+      - prometheus_data:/prometheus
     networks:
       - backend
 
@@ -134,7 +134,7 @@ services:
     ports:
       - "${GRAFANA_PORT:-3001}:3000"
     volumes:
-      - ./volumes/grafana:/var/lib/grafana
+      - grafana_data:/var/lib/grafana
     networks:
       - backend
     depends_on:
@@ -175,3 +175,7 @@ volumes:
       type: none
       o: bind
       device: ./volumes/rabbitmq
+  # Docker-managed so the non-root prometheus/grafana users can write to them;
+  # a host bind mount is created root-owned.
+  prometheus_data:
+  grafana_data:

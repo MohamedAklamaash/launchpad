@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 from shared.process_role import is_dns_writer_role
 
-load_dotenv()
+# See application.py: the dns_writer must not inherit the service's shared .env.
+if not is_dns_writer_role():
+    load_dotenv()
 
 
 def _get_bool(value: str | None, *, default: bool = False) -> bool:

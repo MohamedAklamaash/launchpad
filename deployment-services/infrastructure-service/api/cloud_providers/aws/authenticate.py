@@ -55,12 +55,16 @@ def _assume_role_with_fallback(infrastructure: Infrastructure) -> dict:
         aws_secret_access_key=app_config.aws_secret_access_key,
         config=Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2}),
     )
+    # create_aws_role.sh raises the role's max session to 2h for EKS only (a cluster apply
+    # can outlive 1h); an ECS role keeps AWS's 1h default, so asking it for 2h would be a
+    # guaranteed ValidationError round trip on every assume.
+    duration = SESSION_DURATION_SECONDS if infrastructure.compute_type == "eks" else FALLBACK_SESSION_DURATION_SECONDS
     try:
-        response = _assume_role(sts_client, infrastructure, SESSION_DURATION_SECONDS)
+        response = _assume_role(sts_client, infrastructure, duration)
     except ClientError as e:
-        if e.response.get("Error", {}).get("Code") != "ValidationError":
+        if duration == FALLBACK_SESSION_DURATION_SECONDS or e.response.get("Error", {}).get("Code") != "ValidationError":
             raise
-        # Roles created before the max-session-duration bump still cap at 1h; log the
+        # EKS roles created before the max-session-duration bump still cap at 1h; log the
         # exception type only — its message contains the role ARN.
         logger.warning(
             "AssumeRole rejected DurationSeconds=%s for infra %s (%s); retrying with %s",

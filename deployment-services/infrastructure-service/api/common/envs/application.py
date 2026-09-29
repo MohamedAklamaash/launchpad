@@ -9,7 +9,11 @@ from shared.process_role import (
     current_process_role,
 )
 
-load_dotenv()
+# The dns_writer gets its environment from its own isolated source. load_dotenv() walks up
+# from this module to the service's shared .env, which carries the platform AWS keys,
+# JWT_SECRET and INTERNAL_API_TOKEN — exactly what that role must never hold.
+if current_process_role() != DNS_WRITER_ROLE:
+    load_dotenv()
 
 # JWT_SECRET and INTERNAL_API_TOKEN authenticate every other service to this one; every
 # name in REAL_AWS_CREDENTIAL_ENV_VARS is a way boto3's default credential chain can pick

@@ -53,6 +53,12 @@ class CostExplorerTemporarilyUnavailableError(Exception):
     available). Maps to 503 — re-running the refresh policy script would not help."""
 
 
+class CostExplorerNotEnabledError(ValueError):
+    """The account has never opened Cost Explorer. AWS returns AccessDeniedException
+    ("User not enabled for cost explorer access") even though the IAM grant is present,
+    so this must not be reported as a missing permission."""
+
+
 class CostAllocationTagsNotActivatedError(ValueError):
     """Cost Explorer rejected the tag-based query, most likely because launchpad:app/
     launchpad:infra aren't activated for cost allocation yet. Distinguished from
@@ -196,6 +202,12 @@ def _actual_ecs_costs(infra, window_start: date, window_end: date) -> dict:
         )
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
+        if code in _ACCESS_DENIED_CODES and "not enabled for cost explorer" in e.response.get("Error", {}).get("Message", "").lower():
+            raise CostExplorerNotEnabledError(
+                "AWS Cost Explorer is not enabled for this account. Open Billing and Cost "
+                "Management → Cost Explorer once in the AWS console to enable it; data can "
+                "take up to 24 hours to appear."
+            ) from e
         if code in _ACCESS_DENIED_CODES:
             raise PolicyRefreshRequiredError(
                 "Launchpad's IAM role in your AWS account is missing Cost Explorer "

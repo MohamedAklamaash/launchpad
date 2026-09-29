@@ -97,7 +97,7 @@ def _delete(factory, view, user, infra_id, database_id, confirm_name=""):
 VALID_CREATE = {
     "name": "primary-db",
     "engine": "postgres",
-    "engine_version": "16.6",
+    "engine_version": "16",
     "instance_class": "db.t3.micro",
     "allocated_storage": 20,
 }

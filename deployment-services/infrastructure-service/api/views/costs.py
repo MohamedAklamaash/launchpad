@@ -2,6 +2,7 @@ import logging
 
 from api.services.cost_service import (
     CostAllocationTagsNotActivatedError,
+    CostExplorerNotEnabledError,
     CostExplorerTemporarilyUnavailableError,
     CostService,
 )
@@ -62,6 +63,8 @@ def _error_response(e: Exception):
             {'error': str(e), 'code': 'policy_refresh_required', 'denied_actions': e.denied_actions},
             status=422,
         )
+    if isinstance(e, CostExplorerNotEnabledError):
+        return Response({'error': str(e), 'code': 'cost_explorer_not_enabled'}, status=422)
     if isinstance(e, CostAllocationTagsNotActivatedError):
         return Response({'error': str(e), 'code': 'cost_tags_not_activated'}, status=422)
     if isinstance(e, CostExplorerTemporarilyUnavailableError):

@@ -36,7 +36,7 @@ def make_db_row(db):
 
     def _make(env, *, name="primary-db", engine="postgres", status="PENDING", allocated_storage=20):
         return Database.objects.create(
-            environment=env, name=name, engine=engine, engine_version="16.6",
+            environment=env, name=name, engine=engine, engine_version="16",
             instance_class="db.t3.micro", allocated_storage=allocated_storage, status=status,
         )
     return _make

@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import boto3
+from botocore.exceptions import ClientError
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from api.common import naming
 from api.common.envs.application import app_config
@@ -117,6 +118,23 @@ class TerraformWorker:
         """Generate unique suffix for resource names"""
         return naming.unique_suffix(infra_id)
     
+    # IAM is eventually consistent: onboarding attaches LaunchpadDeploymentPolicy and the
+    # callback enqueues provisioning seconds later, so the first calls on a freshly
+    # onboarded account can be denied until the attachment propagates (~10-60s).
+    IAM_PROPAGATION_RETRY_DELAYS = (5, 10, 15, 20, 30)
+
+    @staticmethod
+    def _ensure_backend_with_iam_retry(credentials: dict, region: str, account_id: str) -> tuple[str, str]:
+        for delay in (*TerraformWorker.IAM_PROPAGATION_RETRY_DELAYS, None):
+            try:
+                return TerraformWorker._ensure_backend(credentials, region, account_id)
+            except ClientError as e:
+                if delay is None or e.response.get("Error", {}).get("Code") not in ("AccessDenied", "AccessDeniedException"):
+                    raise
+                logger.warning("State backend denied for account %s; retrying in %ss for IAM propagation",
+                               account_id, delay)
+                time.sleep(delay)
+
     @staticmethod
     def _ensure_backend(credentials: dict, region: str, account_id: str) -> tuple[str, str]:
         """Ensure S3 backend and DynamoDB lock table exist"""
@@ -203,7 +221,7 @@ class TerraformWorker:
         bucket = f"launchpad-tf-state-{account_id}-{region}"
         table = f"launchpad-tf-locks-{account_id}-{region}"
         if ensure_backend:
-            bucket, table = TerraformWorker._ensure_backend(credentials, region, account_id)
+            bucket, table = TerraformWorker._ensure_backend_with_iam_retry(credentials, region, account_id)
 
         tf_config = TerraformWorker._generate_config(
             env_vars, infra_id, bucket, table, region, compute_type, account_id

@@ -267,6 +267,25 @@ def test_access_denied_maps_to_policy_refresh_required_422(factory, make_infra, 
     assert resp.data["code"] == "policy_refresh_required"
 
 
+def test_cost_explorer_not_enabled_is_not_reported_as_missing_permission(factory, make_infra, make_app, monkeypatch):
+    """A fresh AWS account returns AccessDeniedException "User not enabled for cost
+    explorer access" even with the grant in place (seen on real AWS)."""
+    infra = make_infra(compute_type="ecs_fargate", is_mock=False)
+    make_app(infra, name="my-app")
+
+    ce = MagicMock()
+    ce.get_cost_and_usage.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "User not enabled for cost explorer access"}},
+        "GetCostAndUsage",
+    )
+    monkeypatch.setattr("api.services.cost_service._ce_client", lambda infra: ce)
+
+    resp = _get_costs(factory, infra.user, str(infra.id))
+
+    assert resp.status_code == 422
+    assert resp.data["code"] == "cost_explorer_not_enabled"
+
+
 def test_validation_exception_maps_to_tags_not_activated_422(factory, make_infra, make_app, monkeypatch):
     infra = make_infra(compute_type="ecs_fargate", is_mock=False)
     make_app(infra, name="my-app")

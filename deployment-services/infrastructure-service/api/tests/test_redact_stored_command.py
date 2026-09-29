@@ -40,7 +40,7 @@ def _make_database(env, *, error_message):
     from api.models.database import Database
 
     return Database.objects.create(
-        environment=env, name="primary-db", engine="postgres", engine_version="16.6",
+        environment=env, name="primary-db", engine="postgres", engine_version="16",
         instance_class="db.t3.micro", allocated_storage=20, status="ERROR", error_message=error_message,
     )
 

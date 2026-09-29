@@ -12,7 +12,7 @@ router = APIRouter(prefix="/infrastructures/{infra_id}/databases", tags=["Databa
 class DatabaseCreateBody(BaseModel):
     name: str = Field(example="primary-db", description="^[a-z][a-z0-9-]{2,30}$")
     engine: str = Field(example="postgres", description="postgres | mysql | redis | docdb")
-    engine_version: str = Field(example="16.6")
+    engine_version: str = Field(example="16", description="Major version; RDS picks its current default minor (e.g. postgres 15|16|17, mysql 8.0|8.4)")
     instance_class: str = Field(example="db.t3.micro")
     allocated_storage: int | None = Field(
         default=None, example=20, description="GB; required except for redis"
