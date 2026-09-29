@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import time
 from contextlib import contextmanager
@@ -46,6 +47,7 @@ NGINX_PORT = 18080
 # root-owned /var/run.
 NGINX_UID = 101
 NGINX_CACHE_DIR = "/var/cache/nginx"
+NGINX_CONFIG_HASH_ANNOTATION = "launchpad.dev/nginx-config-sha256"
 SIDECAR_CPU_MILLI = 100
 SIDECAR_MEMORY_MI = 128
 SIDECAR_RESOURCES = {"cpu": f"{SIDECAR_CPU_MILLI}m", "memory": f"{SIDECAR_MEMORY_MI}Mi"}
@@ -466,14 +468,17 @@ class EKSDeployer:
                 "NetworkPolicy", policy.metadata.name,
             )
 
+    def _nginx_config(self) -> str:
+        return generate_nginx_config(
+            self.slug, self.application.port, listen_port=NGINX_PORT,
+            host_mode=self.host_mode, app_hostname=self.app_hostname,
+        )
+
     def _apply_config_map(self, apis) -> str:
         name = f"{self.slug}-nginx"
         config_map = k8s.V1ConfigMap(
             metadata=k8s.V1ObjectMeta(name=name),
-            data={"nginx.conf": generate_nginx_config(
-                self.slug, self.application.port, listen_port=NGINX_PORT,
-                host_mode=self.host_mode, app_hostname=self.app_hostname,
-            )},
+            data={"nginx.conf": self._nginx_config()},
         )
         created = self._create(
             lambda: apis.core.create_namespaced_config_map(self.namespace, config_map), "ConfigMap", name
@@ -599,7 +604,16 @@ class EKSDeployer:
                 replicas=1,
                 selector=k8s.V1LabelSelector(match_labels={"app": self.slug}),
                 template=k8s.V1PodTemplateSpec(
-                    metadata=k8s.V1ObjectMeta(labels={"app": self.slug}),
+                    metadata=k8s.V1ObjectMeta(
+                        labels={"app": self.slug},
+                        # nginx.conf is a subPath mount, which never sees ConfigMap updates,
+                        # and patching the ConfigMap alone doesn't restart pods. Hashing it
+                        # into the template makes any config change (host mode on/off, a
+                        # config fix) roll the pods; an unchanged config rolls nothing.
+                        annotations={NGINX_CONFIG_HASH_ANNOTATION: hashlib.sha256(
+                            self._nginx_config().encode()
+                        ).hexdigest()},
+                    ),
                     spec=k8s.V1PodSpec(
                         automount_service_account_token=False,
                         containers=[app_container, nginx_container],

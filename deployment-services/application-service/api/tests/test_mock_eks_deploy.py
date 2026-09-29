@@ -491,3 +491,19 @@ def test_eks_host_mode_fails_closed_when_https_listener_is_missing(tls_ready_app
     tls_ready_application.refresh_from_db()
     assert tls_ready_application.host_route_applied is False
     assert ("ingress", "app-myapp", "myapp-host") not in _objects(tls_ready_application)
+
+
+@pytest.mark.django_db
+def test_pod_template_carries_the_nginx_config_hash(application, deploy):
+    """nginx.conf is a subPath mount: a patched ConfigMap alone never reaches running pods.
+    The hash in the pod template is what rolls them when (and only when) the config changes."""
+    import hashlib
+
+    from api.k8s.deployer import NGINX_CONFIG_HASH_ANNOTATION
+
+    deploy(application)
+    objects = _objects(application)
+
+    template = objects[("deployment", "app-myapp", "myapp")].spec.template
+    config = objects[("configmap", "app-myapp", "myapp-nginx")].data["nginx.conf"]
+    assert template.metadata.annotations[NGINX_CONFIG_HASH_ANNOTATION] == hashlib.sha256(config.encode()).hexdigest()
