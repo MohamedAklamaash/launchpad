@@ -71,6 +71,13 @@ class InfrastructureResponse:
     policy_refresh_required: bool = False
     # Set once the owner completes the exit flow (F6). Never cleared.
     exited_at: datetime | None = None
+    # The Launchpad platform IAM principal (parsed from LAUNCHPAD_PLATFORM_PRINCIPAL_ARN)
+    # the customer's create_aws_role.sh must trust. The dashboard injects these as
+    # LAUNCHPAD_PLATFORM_ACCOUNT_ID / LAUNCHPAD_PLATFORM_USER so the script never has to
+    # guess. A wrong hardcoded default here previously caused
+    # MalformedPolicyDocument: Invalid principal.
+    platform_account_id: str | None = None
+    platform_user: str | None = None
 
     def to_dict(self):
         data = asdict(self)

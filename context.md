@@ -161,7 +161,9 @@ sts:AssumeRole
 
 **IAM Setup**:
 - User creates `LaunchpadDeploymentRole` in their AWS account
-- Role trusts platform IAM user: `aklamaash-terraform` (account 221082203366)
+- Role trusts the Launchpad platform IAM user/account (server-configured via
+  `LAUNCHPAD_PLATFORM_PRINCIPAL_ARN`; surfaced per-infra as `platform_account_id` /
+  `platform_user`, never hardcoded)
 - Temporary session credentials (up to 2 hours) are minted fresh per operation and held
   only in worker memory — never persisted
 

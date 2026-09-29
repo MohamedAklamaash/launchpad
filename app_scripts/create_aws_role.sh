@@ -23,8 +23,11 @@ Which callback fires is decided by the credentials present:
   - LAUNCHPAD_API_KEY set          -> policy-refresh callback (attributed refresh)
 
 Environment variables (all optional unless noted):
-  LAUNCHPAD_PLATFORM_ACCOUNT_ID    Launchpad platform AWS account ID (default: 221082203366)
-  LAUNCHPAD_PLATFORM_USER          Launchpad platform IAM user (default: aklamaash-terraform)
+  LAUNCHPAD_PLATFORM_ACCOUNT_ID    Launchpad platform AWS account ID the trust policy must name as
+                                   principal. Required unless LAUNCHPAD_MOCK=1. The dashboard's
+                                   generated command sets this for you.
+  LAUNCHPAD_PLATFORM_USER          Launchpad platform IAM user name. Required unless LAUNCHPAD_MOCK=1.
+                                   The dashboard's generated command sets this for you.
   LAUNCHPAD_EXTERNAL_ID            Per-customer ExternalId binding the trust policy (defaults to LAUNCHPAD_INFRA_ID)
   LAUNCHPAD_REGION                 AWS region for deployment (default: us-east-1)
   LAUNCHPAD_COMPUTE_TYPE           Infra compute target: "ecs_fargate" (default) or "eks".
@@ -46,15 +49,41 @@ fi
 ROLE_NAME="LaunchpadDeploymentRole"
 POLICY_NAME="LaunchpadDeploymentPolicy"
 
-# Defaults match the current Launchpad platform; override via env if platform creds rotate
-# so customers don't need a fresh script each rotation.
-TRUSTED_ACCOUNT_ID="${LAUNCHPAD_PLATFORM_ACCOUNT_ID:-221082203366}"
-PLATFORM_USER="${LAUNCHPAD_PLATFORM_USER:-aklamaash-terraform}"
+MOCK_MODE="${LAUNCHPAD_MOCK:-0}"
+
+# No hardcoded default: a stale platform account/user here builds a trust policy naming
+# the wrong AWS principal, which IAM rejects at role-creation time with
+# "MalformedPolicyDocument: Invalid principal". A hardcoded value here has gone stale
+# before. The dashboard's generated command always sets both from the server's own
+# LAUNCHPAD_PLATFORM_PRINCIPAL_ARN, so it never has to guess. Mock mode still needs a
+# value to render a trust policy with (nothing real is ever created), so it falls back
+# to the same placeholder core/settings.py uses for LAUNCHPAD_PLATFORM_PRINCIPAL_ARN in
+# MODE=dev.
+if [ "$MOCK_MODE" = "1" ]; then
+  TRUSTED_ACCOUNT_ID="${LAUNCHPAD_PLATFORM_ACCOUNT_ID:-000000000000}"
+  PLATFORM_USER="${LAUNCHPAD_PLATFORM_USER:-dev-placeholder}"
+else
+  if [ -z "${LAUNCHPAD_PLATFORM_ACCOUNT_ID:-}" ]; then
+    echo "ERROR: LAUNCHPAD_PLATFORM_ACCOUNT_ID is required (the Launchpad platform AWS" >&2
+    echo "       account id your trust policy must name as principal). The dashboard's" >&2
+    echo "       generated command sets this for you; set LAUNCHPAD_MOCK=1 for local" >&2
+    echo "       dev/mock runs instead." >&2
+    exit 1
+  fi
+  if [ -z "${LAUNCHPAD_PLATFORM_USER:-}" ]; then
+    echo "ERROR: LAUNCHPAD_PLATFORM_USER is required (the Launchpad platform IAM user" >&2
+    echo "       your trust policy must name as principal). The dashboard's generated" >&2
+    echo "       command sets this for you; set LAUNCHPAD_MOCK=1 for local dev/mock runs" >&2
+    echo "       instead." >&2
+    exit 1
+  fi
+  TRUSTED_ACCOUNT_ID="$LAUNCHPAD_PLATFORM_ACCOUNT_ID"
+  PLATFORM_USER="$LAUNCHPAD_PLATFORM_USER"
+fi
+
 # Default ExternalId to the infra UUID — backend uses infra.id as ExternalId on AssumeRole, so binding
 # the trust policy to it by default removes a manual setup step for customers using the dashboard flow.
 ASSUME_EXTERNAL_ID="${LAUNCHPAD_EXTERNAL_ID:-${LAUNCHPAD_INFRA_ID:-}}"
-
-MOCK_MODE="${LAUNCHPAD_MOCK:-0}"
 
 # Selects which IAM statements the generated policy region below applies. Keep the
 # default in sync with policy_data.DEFAULT_COMPUTE_TYPE.

@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import re
 from pathlib import Path
 
 from api.common.envs.application import app_config
@@ -145,6 +146,18 @@ else:
     raise ValueError(
         "LAUNCHPAD_PLATFORM_PRINCIPAL_ARN must be set outside MODE=dev — it names the AWS "
         "principal the evidence-pack live drift check trusts, and has no safe default."
+    )
+
+# Must be a user ARN, not just any non-empty string: api.cloud_providers.aws.
+# platform_principal.platform_account_and_user() parses it into the
+# LAUNCHPAD_PLATFORM_ACCOUNT_ID / LAUNCHPAD_PLATFORM_USER the dashboard hands customers
+# for their trust policy. Failing that parse at request time instead of here would turn
+# a config typo into a 500 (list/detail) or a 400 blamed on the caller (create). This
+# check keeps it a boot-time failure, matching the "no safe default" rule above.
+if not re.match(r'^arn:aws:iam::\d{12}:user/[^/]+$', LAUNCHPAD_PLATFORM_PRINCIPAL_ARN):
+    raise ValueError(
+        "LAUNCHPAD_PLATFORM_PRINCIPAL_ARN must be a user ARN of the form "
+        f"arn:aws:iam::<12-digit account>:user/<name>, got {LAUNCHPAD_PLATFORM_PRINCIPAL_ARN!r}."
     )
 
 # Per-user budget for the costs endpoint (F4). Lower than `databases`: unlike a database

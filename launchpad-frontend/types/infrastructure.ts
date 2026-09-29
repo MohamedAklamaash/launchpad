@@ -35,6 +35,12 @@ export interface Infrastructure {
    *  script before the missing grants cause an AccessDenied mid-deploy. */
   policy_refresh_required?: boolean;
   invited_users?: InvitedUserSummary[];
+  /** Launchpad platform AWS account ID; the trust policy created by create_aws_role.sh
+   *  must name this as principal. */
+  platform_account_id: string;
+  /** Launchpad platform IAM user name; the trust policy created by create_aws_role.sh
+   *  must name this as principal. */
+  platform_user: string;
   metadata?: { aws_region?: string; [key: string]: string | undefined };
   /** Set once the owner completes the exit flow (F6). Never cleared. */
   exited_at?: string | null;

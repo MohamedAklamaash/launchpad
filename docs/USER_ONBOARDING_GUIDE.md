@@ -88,6 +88,8 @@ export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
 export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/onboarding/callback
 export LAUNCHPAD_ONBOARDING_TOKEN=<one-time-token>
 export LAUNCHPAD_COMPUTE_TYPE=<ecs_fargate|eks>
+export LAUNCHPAD_PLATFORM_ACCOUNT_ID=<launchpad-platform-account-id>
+export LAUNCHPAD_PLATFORM_USER=<launchpad-platform-iam-user>
 curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
 ```
 
@@ -209,6 +211,8 @@ export LAUNCHPAD_EXTERNAL_ID=<your-infra-uuid>
 export LAUNCHPAD_CALLBACK_URL=https://<gateway>/api/infrastructures/policy-refresh/callback
 export LAUNCHPAD_API_KEY=<generated-key>
 export LAUNCHPAD_COMPUTE_TYPE=<ecs_fargate|eks>
+export LAUNCHPAD_PLATFORM_ACCOUNT_ID=<launchpad-platform-account-id>
+export LAUNCHPAD_PLATFORM_USER=<launchpad-platform-iam-user>
 curl -sSL https://raw.githubusercontent.com/MohamedAklamaash/launchpad/<pinned-ref>/app_scripts/create_aws_role.sh | bash
 ```
 

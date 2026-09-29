@@ -1,6 +1,7 @@
 from typing import Any
 
 from api.cloud_providers.aws import iam_policy
+from api.cloud_providers.aws.platform_principal import platform_account_and_user
 from api.models.infrastructure import Infrastructure
 from api.types.infrastructure import InfrastructureResponse
 
@@ -8,6 +9,7 @@ from api.types.infrastructure import InfrastructureResponse
 class InfrastructureSerializer:
     @staticmethod
     def serialize_instance(instance: Infrastructure) -> dict[str, Any]:
+        platform_account_id, platform_user = platform_account_and_user()
         invited_users_details = [
             {
                 'id': str(u.id),
@@ -44,6 +46,8 @@ class InfrastructureSerializer:
             required_policy_version=iam_policy.required_version_for(instance.compute_type),
             policy_refresh_required=instance.policy_refresh_required(),
             exited_at=instance.exited_at,
+            platform_account_id=platform_account_id,
+            platform_user=platform_user,
         )
         return response.to_dict()
 
