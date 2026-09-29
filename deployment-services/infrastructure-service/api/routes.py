@@ -21,6 +21,7 @@ from api.views.infrastructure import (
     infrastructure_update,
 )
 from api.views.infrastructure_internal import infrastructure_exit_status
+from api.views.nuke import infrastructure_nuke
 from api.views.provisioning_logs import provisioning_logs
 from api.views.script_api_key import (
     infrastructure_policy_refresh_callback,
@@ -54,6 +55,7 @@ urlpatterns = [
     path('infrastructures/<str:infra_id>/evidence-pack/', evidence_pack, name='evidence-pack'),
     path('infrastructures/<str:infra_id>/exit-export/', exit_export, name='exit-export'),
     path('infrastructures/<str:infra_id>/exit/', infrastructure_complete_exit, name='infrastructure-complete-exit'),
+    path('infrastructures/<str:infra_id>/nuke/', infrastructure_nuke, name='infrastructure-nuke'),
     path('infrastructures/onboarding/callback/', infrastructure_onboarding_callback, name='infrastructure-onboarding-callback'),
     path('infrastructures/<str:infra_id>/users/<str:user_id>/', infrastructure_remove_user, name='infrastructure-remove-user'),
     path('healthz/', health, name='health'),

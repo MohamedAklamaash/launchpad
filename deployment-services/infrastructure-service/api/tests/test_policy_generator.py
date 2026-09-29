@@ -307,10 +307,11 @@ def test_document_hash_of_ecs_fargate_equals_the_default_document():
 
 
 def test_required_version_for_matches_committed_data():
-    """v5 (per-app metrics) added a base-statement grant (cloudwatch:GetMetricData),
-    which changes every compute type's rendered document — both now require v5."""
-    assert policy_data.required_version_for("ecs_fargate") == 5
-    assert policy_data.required_version_for("eks") == 5
+    """v6 (Nuke infrastructure verification) added a base-statement grant
+    (tag:GetResources), which changes every compute type's rendered document — both
+    now require v6."""
+    assert policy_data.required_version_for("ecs_fargate") == 6
+    assert policy_data.required_version_for("eks") == 6
 
 
 def test_check_fails_when_a_compute_type_is_missing_from_document_hashes(sandbox):

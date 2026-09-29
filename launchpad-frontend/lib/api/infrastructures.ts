@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { ComputeType, Infrastructure, InfrastructureCosts, InfrastructureCreate, InfrastructureCreateResponse, ProvisioningLogs } from '@/types/infrastructure';
+import { ComputeType, Infrastructure, InfrastructureCosts, InfrastructureCreate, InfrastructureCreateResponse, NukeStatus, ProvisioningLogs } from '@/types/infrastructure';
 
 export interface AwsRegion {
   value: string;
@@ -117,6 +117,21 @@ export const infrastructureApi = {
   // Plaintext is returned exactly once; issuing again revokes prior keys.
   issueScriptApiKey: async (): Promise<{ api_key: string }> => {
     const { data } = await apiClient.post('/api/infrastructures/script-api-key');
+    return data;
+  },
+
+  // Owner only. Starts a Nuke infrastructure run — destroys every AWS resource
+  // Launchpad created for this infra, including applications and databases (unlike
+  // delete, which refuses when either exist). confirmName must exactly match the
+  // infrastructure's current name. 409 if a run is already in progress.
+  startNuke: async (id: string, confirmName: string): Promise<NukeStatus> => {
+    const { data } = await apiClient.post(`/api/infrastructures/${id}/nuke`, { confirm_name: confirmName });
+    return data;
+  },
+
+  // Owner only. Still answers after a COMPLETED run has deleted the infrastructure.
+  getNukeStatus: async (id: string): Promise<NukeStatus> => {
+    const { data } = await apiClient.get(`/api/infrastructures/${id}/nuke`);
     return data;
   },
 };

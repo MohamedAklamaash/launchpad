@@ -29,6 +29,10 @@ EXEMPT_EXACT_PATHS = [
     # for application-service's clear_infrastructure_exited command — same machine-to-
     # machine shape as the custom-domains paths above, still enforced by X-INTERNAL-TOKEN.
     "/api/v1/internal/infrastructures/exit-status/",
+    # Nuke infrastructure: infrastructure-service's nuke worker force-deletes every
+    # Application on an infra via this path — same machine-to-machine shape, still
+    # enforced by X-INTERNAL-TOKEN. See application-service/api/views/nuke_internal.py.
+    "/api/v1/internal/applications/nuke/",
 ]
 
 class JWTAuthMiddleware:

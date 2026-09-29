@@ -348,8 +348,16 @@ fi
 #   in AWS's IAM model, so this is account-wide read access to every CloudWatch metric,
 #   not scoped to Launchpad-created resources. No new elasticloadbalancing actions were
 #   needed: elasticloadbalancing:* above already covers DescribeTargetGroups/DescribeTags
+# - tag:GetResources (v6, Nuke infrastructure verification): list every resource carrying
+#   the launchpad:infra tag so a nuke run can confirm nothing Launchpad-tagged is left in
+#   your account. Read-only and carries no resource-level permissions in AWS's IAM model.
+#   Every delete action a nuke run needs (codebuild:DeleteProject, iam:DeleteRole,
+#   logs:DeleteLogGroup, ec2:DeleteSecurityGroup, rds:DeleteDBSnapshot, s3 bucket
+#   empty+delete, dynamodb:DeleteTable, ecr:DeleteRepository,
+#   ecs:DeleteTaskDefinitions, ...) is already covered by the service-wide grants above —
+#   this is the only action nuke needed that wasn't
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-POLICY_VERSION=5
+POLICY_VERSION=6
 case "$COMPUTE_TYPE" in
   ecs_fargate)
     cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
@@ -439,6 +447,11 @@ case "$COMPUTE_TYPE" in
     {
       "Effect": "Allow",
       "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "tag:GetResources",
       "Resource": "*"
     }
   ]
@@ -533,6 +546,11 @@ EOF
     {
       "Effect": "Allow",
       "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "tag:GetResources",
       "Resource": "*"
     },
     {

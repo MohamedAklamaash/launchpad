@@ -107,6 +107,9 @@ class MockClient:
     def deregister_task_definition(self, **kwargs):
         return {"taskDefinition": {"taskDefinitionArn": kwargs.get("taskDefinition", "")}}
 
+    def delete_task_definitions(self, **kwargs):
+        return {"taskDefinitions": [], "failures": []}
+
     def describe_services(self, **kwargs):
         services = kwargs.get("services", [])
         descriptions = []

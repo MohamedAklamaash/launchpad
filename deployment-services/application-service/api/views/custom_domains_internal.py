@@ -23,7 +23,12 @@ from django.core.exceptions import ValidationError
 from django.views.decorators.csrf import csrf_exempt
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from api.services.custom_domain_routing import (
@@ -64,9 +69,15 @@ _ERROR_STATUS = {
 }
 
 
+# Machine-to-machine only: no user JWT is ever sent, so the default IsAuthenticated
+# permission turned every call into a 403 (seen on real AWS for the nuke call). The
+# trust boundary is X-INTERNAL-TOKEN, enforced by shared/middleware/internal_auth.py
+# on every /api/v1/internal/ path; the gateway exposes no route to them.
 @extend_schema(exclude=True)
 @csrf_exempt
 @api_view(['POST'])
+@authentication_classes([])
+@permission_classes([AllowAny])
 def custom_domain_attach(request):
     """Internal only. Attaches `cert_arn` to the infra's 443 listener (subject to the SNI
     cap) and creates the app's host-forward/host-redirect rules. Idempotent for a hostname
@@ -94,6 +105,8 @@ def custom_domain_attach(request):
 @extend_schema(exclude=True)
 @csrf_exempt
 @api_view(['POST'])
+@authentication_classes([])
+@permission_classes([AllowAny])
 def custom_domain_detach(request):
     """Internal only. Idempotent — detaching a hostname with no CustomDomainRoute row for
     this infrastructure is a 200, not a 404: infrastructure-service calls this on every

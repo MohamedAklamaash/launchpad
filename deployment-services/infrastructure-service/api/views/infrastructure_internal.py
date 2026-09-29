@@ -16,7 +16,12 @@ that list's own docstring)."""
 from api.models.infrastructure import Infrastructure
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import serializers, status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+)
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 
@@ -24,7 +29,13 @@ class ExitStatusQuerySerializer(serializers.Serializer):
     infrastructure_id = serializers.UUIDField()
 
 
+# Machine-to-machine only: no user JWT is ever sent, so the default IsAuthenticated
+# permission turned every call into a 403 (seen on real AWS for the nuke call). The
+# trust boundary is X-INTERNAL-TOKEN, enforced by shared/middleware/internal_auth.py
+# on every /api/v1/internal/ path; the gateway exposes no route to them.
 @api_view(['GET'])
+@authentication_classes([])
+@permission_classes([AllowAny])
 @csrf_exempt
 def infrastructure_exit_status(request):
     query = ExitStatusQuerySerializer(data=request.query_params)

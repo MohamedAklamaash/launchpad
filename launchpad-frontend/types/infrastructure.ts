@@ -125,3 +125,29 @@ export interface InfrastructureCosts {
   is_mock: boolean;
   cached: boolean;
 }
+
+export type NukeRunStatus = 'PENDING' | 'RUNNING' | 'FAILED' | 'COMPLETED';
+
+export type NukeStepStatus = 'pending' | 'running' | 'success' | 'failed' | 'policy_refresh_required';
+
+export interface NukeStep {
+  key: string;
+  label: string;
+  status: NukeStepStatus;
+  detail: unknown;
+}
+
+export interface NukeLeftover {
+  type: string;
+  id: string;
+  reason: string;
+}
+
+export interface NukeStatus {
+  infrastructure_id: string;
+  status: NukeRunStatus;
+  steps: NukeStep[];
+  leftovers: NukeLeftover[];
+  started_at: string | null;
+  finished_at: string | null;
+}

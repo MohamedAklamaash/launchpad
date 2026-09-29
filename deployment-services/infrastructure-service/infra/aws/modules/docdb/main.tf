@@ -49,7 +49,7 @@ resource "aws_docdb_cluster" "this" {
 
   storage_encrypted = true
 
-  skip_final_snapshot       = false
+  skip_final_snapshot       = var.skip_final_snapshot
   final_snapshot_identifier = var.final_snapshot_identifier
   deletion_protection       = false
 

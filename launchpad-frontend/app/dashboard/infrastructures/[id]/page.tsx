@@ -25,7 +25,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download, Terminal } from 'lucide-react';
+import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download, Terminal, Flame } from 'lucide-react';
 import { Infrastructure, InvitedUserSummary } from '@/types/infrastructure';
 import { ApplicationSummary, ApplicationStatus } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
@@ -37,6 +37,7 @@ import { DatabasesSection } from '@/components/databases-section';
 import { ProvisioningLogsPanel } from '@/components/provisioning-logs-panel';
 import { CostsPanel } from '@/components/costs-panel';
 import { PolicyRefreshDialog } from '@/components/policy-refresh-dialog';
+import { NukeInfrastructureDialog } from '@/components/nuke-infrastructure-dialog';
 import { buildBootstrapEnvExports, getOnboardingMisconfiguration, resolveOnboardingScript } from '@/lib/onboarding-scripts';
 
 const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
@@ -99,6 +100,7 @@ export default function InfrastructureDetailPage() {
   const [savingName, setSavingName] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [nukeOpen, setNukeOpen] = useState(false);
   const [reprovisioning, setReprovisioning] = useState(false);
   const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
   const [provisioningError, setProvisioningError] = useState<string | null>(null);
@@ -272,6 +274,11 @@ export default function InfrastructureDetailPage() {
       setDeleting(false);
       setDeleteOpen(false);
     }
+  };
+
+  const handleNuked = () => {
+    toast.success('Infrastructure nuked — everything removed');
+    router.push('/dashboard/infrastructures');
   };
 
   const handleDownloadEvidencePack = async () => {
@@ -771,6 +778,20 @@ export default function InfrastructureDetailPage() {
                     <Trash2 className="w-3.5 h-3.5" /> Delete
                   </Button>
                 </div>
+                <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-foreground">Nuke Infrastructure</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">Destroys everything — apps, databases (no snapshot), logs, and all AWS resources. Does not refuse when apps or databases exist.</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setNukeOpen(true)}
+                    className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive gap-1.5 shrink-0 ml-4"
+                  >
+                    <Flame className="w-3.5 h-3.5" /> Nuke
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -795,6 +816,14 @@ export default function InfrastructureDetailPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <NukeInfrastructureDialog
+        open={nukeOpen}
+        onOpenChange={setNukeOpen}
+        infraId={id}
+        infraName={infra.name}
+        onNuked={handleNuked}
+      />
 
       <Dialog open={!!setupCommand} onOpenChange={(o) => { if (!o) { setSetupCommand(null); setSetupCommandCopied(false); } }}>
         <DialogContent className="max-w-lg">

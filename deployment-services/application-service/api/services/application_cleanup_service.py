@@ -145,6 +145,17 @@ class ApplicationCleanupService:
             logger.info(f"Deregistered task definition {task_definition_arn}")
         except Exception as e:
             logger.error(f"Failed to deregister task definition: {e}")
+            return
+        # A deregistered revision is inactive but still visible/billed-for-storage until
+        # actually deleted. No infra-scoped family prefix is safe to list-and-sweep by
+        # (a legacy family is shared by every app with this slug across infras — see
+        # api/common/naming.py's ecs_log_group/ecs_task_family docstrings), so this ARN
+        # — captured while the row still exists — is the only safe way to remove it.
+        try:
+            ecs_client.delete_task_definitions(taskDefinitions=[task_definition_arn])
+            logger.info(f"Deleted task definition revision {task_definition_arn}")
+        except Exception as e:
+            logger.warning(f"Failed to delete task definition revision {task_definition_arn}: {e}")
     
     def _delete_log_group(self, session, application):
         """Keep log groups for debugging — just log and skip. H4: reads the app's own

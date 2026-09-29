@@ -2,6 +2,7 @@ import logging
 import os
 import uuid
 
+from botocore.exceptions import ClientError
 from django.conf import settings
 from django.db import transaction
 from shared.enums.orchestrator import ComputeType
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 class DeploymentInProgressError(Exception):
     """Raised when an operation can't proceed because a deploy holds the app's lock."""
+
+
+_CLUSTER_GONE_CODES = {"ResourceNotFoundException", "ClusterNotFoundException"}
 
 
 class ApplicationService:
@@ -314,7 +318,75 @@ class ApplicationService:
         ApplicationEventProducer.publish_application_deleted(app_id)
 
         return result
-    
+
+    def nuke_applications_for_infrastructure(self, infrastructure_id: str) -> dict:
+        """Force-delete every Application on this infrastructure, synchronously.
+
+        Called only by infrastructure-service's Nuke infrastructure worker over the
+        internal channel (api/views/nuke_internal.py) — no owner check here, the same
+        trust boundary custom_domains_internal.py documents: infrastructure-service
+        already verified ownership before calling this.
+
+        Deliberately synchronous, unlike `delete_application` (which deletes the row
+        and hands AWS cleanup to DeploymentQueue for an async worker to pick up): the
+        nuke worker's next step is a Terraform destroy of the same ECS cluster/ALB, and
+        needs every app's AWS resources (ECS service, listener rule, target group, task
+        definition) actually gone first, not merely queued. Calls
+        ApplicationCleanupService.cleanup_application directly instead.
+
+        Not gated by DeploymentLock the way delete_application is — a nuke intentionally
+        forces through even mid-deploy. An application whose cleanup step raises is
+        recorded in `errors` and left in place (still deletable on a retry of the nuke
+        run); every other application still gets processed.
+        """
+        from api.common.naming import ecs_log_group_for
+        from api.services.custom_domain_routing import (
+            detach_custom_domains_for_application,
+            notify_infrastructure_service_of_deleted_application,
+        )
+
+        apps = list(Application.objects.filter(infrastructure_id=infrastructure_id))
+        deleted_count = 0
+        errors = []
+        log_groups = []
+
+        for app in apps:
+            app_id = str(app.id)
+            try:
+                if not app.runtime_refs:
+                    # ECS apps keep their log group around for debugging (see
+                    # ApplicationCleanupService._delete_log_group) — capture the name here so
+                    # the nuke worker's own "leftovers" step can delete it explicitly.
+                    log_groups.append(ecs_log_group_for(app))
+
+                try:
+                    self.cleanup_service.cleanup_application(app)
+                except ClientError as e:
+                    # A retried nuke runs after terraform already destroyed the cluster
+                    # (real AWS: EKS describe_cluster -> ResourceNotFoundException). With
+                    # the whole cluster gone there is nothing of this app's left to
+                    # remove; any other error still fails the app.
+                    if e.response.get("Error", {}).get("Code") not in _CLUSTER_GONE_CODES:
+                        raise
+                    logger.info(f"Nuke: cluster for application {app_id} already gone; removing its record")
+                self.app_repo.delete(app_id)
+                deleted_count += 1
+
+                try:
+                    detach_custom_domains_for_application(app_id)
+                    notify_infrastructure_service_of_deleted_application(infrastructure_id, app_id)
+                except Exception:
+                    logger.warning(
+                        "custom-domain cleanup failed for nuked application %s (non-fatal)",
+                        app_id, exc_info=True,
+                    )
+                ApplicationEventProducer.publish_application_deleted(app_id)
+            except Exception as e:
+                logger.exception(f"Nuke: failed to clean up application {app_id}")
+                errors.append({"application_id": app_id, "error": str(e)})
+
+        return {"deleted_count": deleted_count, "errors": errors, "log_groups": log_groups}
+
     def deploy_application(self, app_id: str):
         """Deploy an application to AWS infrastructure."""
         app = self.app_repo.get_by_id(app_id)

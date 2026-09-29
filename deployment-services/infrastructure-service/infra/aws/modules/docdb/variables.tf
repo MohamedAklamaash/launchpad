@@ -35,3 +35,9 @@ variable "app_security_group_id" {
 variable "final_snapshot_identifier" {
   type = string
 }
+
+variable "skip_final_snapshot" {
+  description = "True only for a Nuke infrastructure run, which deletes any pre-existing final snapshot separately and must leave none behind"
+  type        = bool
+  default     = false
+}

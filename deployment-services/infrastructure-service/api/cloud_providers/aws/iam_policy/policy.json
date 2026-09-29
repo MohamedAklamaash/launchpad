@@ -1,11 +1,12 @@
 {
-  "version": 5,
+  "version": 6,
   "version_hashes": {
     "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
     "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de",
     "3": "e310fd84891a43b61b8eb9d8c66c33d720b16b787617373ef6e75e9fca047d58",
     "4": "89e56ce04e59320bd516b48e95fd73661c464bb011b730da9d3c14995d96a2e5",
-    "5": "0d54c2a8f760090d272842305f05b55a10cf0d2ba54606246d26489777214c97"
+    "5": "0d54c2a8f760090d272842305f05b55a10cf0d2ba54606246d26489777214c97",
+    "6": "0dc4a42cf691a1587aba06f6f385ab3356c9a12f5c03454861a29d67b1b281d7"
   },
   "document_hashes": {
     "1": {
@@ -26,6 +27,10 @@
     "5": {
       "ecs_fargate": "fe011cb988be4a879b9171db8a12596266b628a300f034fab9bfa58639c71499",
       "eks": "de27073c0f8d1df39f942dc8c0b08032c406e742506db4ed30ec19acc74c0222"
+    },
+    "6": {
+      "ecs_fargate": "676758d718edf475e3d60c889355b02e02d5f00297068038ed1fe5db6831145a",
+      "eks": "9f38671f3e55ae497fdda1c95ce93aba56b0013ac44e4d5be601069fefc7fd04"
     }
   },
   "notes": [
@@ -76,7 +81,15 @@
     "  metrics for dashboards. Cloudwatch metric reads carry no resource-level permissions",
     "  in AWS's IAM model, so this is account-wide read access to every CloudWatch metric,",
     "  not scoped to Launchpad-created resources. No new elasticloadbalancing actions were",
-    "  needed: elasticloadbalancing:* above already covers DescribeTargetGroups/DescribeTags"
+    "  needed: elasticloadbalancing:* above already covers DescribeTargetGroups/DescribeTags",
+    "tag:GetResources (v6, Nuke infrastructure verification): list every resource carrying",
+    "  the launchpad:infra tag so a nuke run can confirm nothing Launchpad-tagged is left in",
+    "  your account. Read-only and carries no resource-level permissions in AWS's IAM model.",
+    "  Every delete action a nuke run needs (codebuild:DeleteProject, iam:DeleteRole,",
+    "  logs:DeleteLogGroup, ec2:DeleteSecurityGroup, rds:DeleteDBSnapshot, s3 bucket",
+    "  empty+delete, dynamodb:DeleteTable, ecr:DeleteRepository,",
+    "  ecs:DeleteTaskDefinitions, ...) is already covered by the service-wide grants above —",
+    "  this is the only action nuke needed that wasn't"
   ],
   "statements": [
     {
@@ -162,6 +175,11 @@
     {
       "Effect": "Allow",
       "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "tag:GetResources",
       "Resource": "*"
     }
   ],

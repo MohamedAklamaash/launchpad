@@ -6,6 +6,7 @@ from .environment import Environment
 from .exit_export_access import ExitExportAccess
 from .infrastructure import Infrastructure
 from .infrastructure_certificate import InfrastructureCertificate
+from .nuke_run import NukeRun
 from .platform_dns_record import PlatformDnsRecord
 from .policy_refresh_event import PolicyRefreshEvent
 from .reserved_dns_label import ReservedDnsLabel
@@ -14,6 +15,6 @@ from .user import User
 
 __all__ = [
     "Application", "CostReport", "CustomDomain", "Database", "Environment", "ExitExportAccess",
-    "Infrastructure", "InfrastructureCertificate", "PlatformDnsRecord",
+    "Infrastructure", "InfrastructureCertificate", "NukeRun", "PlatformDnsRecord",
     "PolicyRefreshEvent", "ReservedDnsLabel", "ScriptApiKey", "User",
 ]

@@ -356,11 +356,18 @@ class TerraformWorker:
         return get_or_create_app_security_group(ec2, infra_id, vpc_id)
 
     @staticmethod
-    def _db_module_blocks(infra_id: str, env_name: str, app_sg_id: str) -> str:
+    def _db_module_blocks(infra_id: str, env_name: str, app_sg_id: str, skip_final_snapshot: bool = False) -> str:
         """One Terraform module block (+ outputs) per live Database row for this
         environment. A row not included here (DELETING/DELETED) has no module block, so
-        terraform plans its destroy on the next apply."""
+        terraform plans its destroy on the next apply.
+
+        `skip_final_snapshot` is only ever True for a Nuke infrastructure run (see
+        TerraformWorker.destroy's `nuke` kwarg) — the product decision there is no final
+        snapshot, plus deleting any pre-existing one. A plain destroy always takes the
+        default (False), unchanged from before this parameter existed.
+        """
         live_dbs = TerraformWorker._live_dbs_for_infra(infra_id)
+        skip_final_snapshot_hcl = "true" if skip_final_snapshot else "false"
 
         blocks = []
         for db in live_dbs:
@@ -383,6 +390,7 @@ module "{mod}" {{
   private_subnet_ids          = module.vpc.private_subnet_ids
   app_security_group_id       = "{app_sg_id}"
   final_snapshot_identifier   = "{db.final_snapshot_id}"
+  skip_final_snapshot         = {skip_final_snapshot_hcl}
 
   depends_on = [module.vpc]
 }}
@@ -423,6 +431,7 @@ module "{mod}" {{
   private_subnet_ids          = module.vpc.private_subnet_ids
   app_security_group_id       = "{app_sg_id}"
   final_snapshot_identifier   = "{db.final_snapshot_id}"
+  skip_final_snapshot         = {skip_final_snapshot_hcl}
 
   depends_on = [module.vpc]
 }}
@@ -489,7 +498,9 @@ output "{mod}_secret_arn" {{ value = module.{mod}.secret_arn }}
         never from customer-controllable `vars`.
         """
         env_name = naming.environment_name(infra_id)
-        db_blocks = TerraformWorker._db_module_blocks(infra_id, env_name, vars.get("db_app_sg_id", ""))
+        db_blocks = TerraformWorker._db_module_blocks(
+            infra_id, env_name, vars.get("db_app_sg_id", ""), skip_final_snapshot=bool(vars.get("skip_final_snapshot", False)),
+        )
         db_secret_arns = TerraformWorker._db_secret_arn_refs(infra_id)
 
         alb_extra_vars = ""
@@ -1264,8 +1275,12 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 return False
 
     @staticmethod
-    def _pre_destroy_cleanup(credentials: dict, region: str, infra) -> str:
-        """Pre-clean resources that block Terraform destroy."""
+    def _pre_destroy_cleanup(credentials: dict, region: str, infra, bypass_eks_cap: bool = False) -> str:
+        """Pre-clean resources that block Terraform destroy.
+
+        `bypass_eks_cap` is threaded straight through to cleanup_eks_orphans — see its
+        docstring. Only ever True for a Nuke infrastructure run.
+        """
         if is_dev_mode(app_config.mode):
             logger.warning("MOCK pre-destroy cleanup skipped in dev mode")
             return ""
@@ -1274,7 +1289,7 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
         eks_reap_logs = ""
         if infra.compute_type == ComputeType.EKS:
             try:
-                eks_reap_logs = cleanup_eks_orphans(infra, credentials=credentials)
+                eks_reap_logs = cleanup_eks_orphans(infra, credentials=credentials, bypass_cap=bypass_eks_cap)
             except Exception as e:
                 logger.warning(f"EKS pre-destroy reap failed (non-fatal): {e}")
         import boto3
@@ -1353,17 +1368,30 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
         return eks_reap_logs
 
     @staticmethod
-    def destroy(infra_id: str):
-        """Destroy infrastructure"""
+    def destroy(infra_id: str, nuke: bool = False):
+        """Destroy infrastructure.
+
+        `nuke` is set only by NukeWorker, after its own apps/databases steps have
+        already run. It changes three things: (1) skips the live-database refusal below
+        — a nuke run tears databases down as part of this same terraform destroy, not
+        beforehand, so a live row here is expected, not a bug; (2) passes
+        skip_final_snapshot=true into the generated database module blocks, per the
+        Nuke infrastructure product decision (no final snapshot — NukeWorker's own
+        databases step separately deletes any pre-existing one); (3) lifts the
+        EKS-orphan-reap safety cap (see cleanup_eks_orphans) since a nuke intends to
+        remove everything this cluster owns.
+        """
         try:
             # Defense-in-depth: the primary guard lives at the service layer
             # (delete_infrastructure, before this job is ever enqueued). Re-checked here
             # so this method is safe even if invoked some other way — must run before the
-            # DESTROYING status update and before any AWS-touching cleanup.
+            # DESTROYING status update and before any AWS-touching cleanup. Nuke is the
+            # one caller that intentionally destroys with live database rows still
+            # present — it deletes them as part of this same terraform destroy.
             live_dbs = Database.objects.filter(
                 environment__infrastructure_id=infra_id
             ).exclude(status='DELETED')
-            if live_dbs.exists():
+            if live_dbs.exists() and not nuke:
                 logger.error(
                     f"Refusing to destroy infra {infra_id}: {live_dbs.count()} live database row(s)"
                 )
@@ -1461,7 +1489,7 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
 
             credentials["account_id"] = account_id
 
-            pre_destroy_logs = TerraformWorker._pre_destroy_cleanup(credentials, region, infra)
+            pre_destroy_logs = TerraformWorker._pre_destroy_cleanup(credentials, region, infra, bypass_eks_cap=nuke)
 
             tf_vars = {
                 "environment": f"cli-{infra_id}",
@@ -1469,7 +1497,8 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 "project": "launchpad-infra",
                 "aws_region": region,
                 "vpc_cidr": metadata.get("vpc_cidr", "10.0.0.0/16"),
-                "cluster_version": metadata.get("cluster_version", DEFAULT_EKS_CLUSTER_VERSION)
+                "cluster_version": metadata.get("cluster_version", DEFAULT_EKS_CLUSTER_VERSION),
+                "skip_final_snapshot": nuke,
             }
 
             result = TerraformWorker._exec_tf(

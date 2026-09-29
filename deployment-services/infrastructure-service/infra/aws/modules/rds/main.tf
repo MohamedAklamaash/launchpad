@@ -61,7 +61,7 @@ resource "aws_db_instance" "this" {
   username                    = "lp_admin"
   db_name                     = replace(var.db_name, "-", "_")
 
-  skip_final_snapshot       = false
+  skip_final_snapshot       = var.skip_final_snapshot
   final_snapshot_identifier = var.final_snapshot_identifier
   deletion_protection       = false
 

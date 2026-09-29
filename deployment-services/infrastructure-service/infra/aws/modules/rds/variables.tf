@@ -46,3 +46,9 @@ variable "final_snapshot_identifier" {
   description = "Fixed at create time from the Database row's own UUID"
   type        = string
 }
+
+variable "skip_final_snapshot" {
+  description = "True only for a Nuke infrastructure run, which deletes any pre-existing final snapshot separately and must leave none behind"
+  type        = bool
+  default     = false
+}
