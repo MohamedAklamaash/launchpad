@@ -362,6 +362,10 @@ def test_worker_leftovers_after_verify_marks_run_failed(make_nuke_run, monkeypat
     run.refresh_from_db()
     assert run.status == "FAILED"
     assert run.leftovers == [{"type": "ec2", "id": "sg-123", "reason": "still tagged"}]
+    # Real AWS: revoking access here made the retry fail with AssumeRole AccessDenied.
+    # With leftovers, the role/trust entry is kept so a retry can still clean up.
+    assert "deployment_role" not in calls
+    assert run.step("deployment_role")["status"] == "skipped"
 
 
 def test_worker_access_denied_reports_policy_refresh_required(make_nuke_run, monkeypatch):

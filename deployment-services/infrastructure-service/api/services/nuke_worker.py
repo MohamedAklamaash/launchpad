@@ -107,6 +107,16 @@ class NukeWorker:
 
         ctx = _NukeContext(infra=infra, run=run)
         for key, step_fn, resumable in ctx.STEPS:
+            if key == "deployment_role" and run.leftovers:
+                # Revoking Launchpad's access (removing this infra's ExternalId, or the
+                # role itself) while resources remain would make every retry fail with
+                # AssumeRole AccessDenied — seen on real AWS. Keep access until a verify
+                # comes back clean.
+                run.set_step(key, "skipped", {
+                    "reason": "resources remain; access kept so a retry can remove them",
+                })
+                run.save(update_fields=["steps", "updated_at"])
+                break
             if not NukeWorker._run_step(ctx, key, step_fn, resumable):
                 return
 
