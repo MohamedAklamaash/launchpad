@@ -52,6 +52,7 @@ _MARKER = re.compile(
     r"|WARNING: Cleanup failed\. Manual cleanup required in AWS account\."
     r"|Destroy failed:|Destroy blocked: \d+ database\(s\) must be deleted first"
     r"|Apply succeeded but reading outputs failed:|Terraform execution failed:"
+    r"|could not read terraform outputs; reprovision to retry"
     r"|Missing AWS credentials for terraform execution"
     r"|(?:PROVISIONING|UPDATING|DESTROYING) (?:update could not be recovered after \d+ attempts;"
     r" environment returned to ACTIVE|abandoned after \d+ recovery attempts)"

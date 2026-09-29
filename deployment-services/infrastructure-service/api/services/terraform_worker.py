@@ -57,6 +57,20 @@ DEFAULT_EKS_CLUSTER_VERSION = "1.31"
 MAX_LOG_CHARS = 256_000
 MAX_ERROR_CHARS = 8_000
 
+# `terraform output -json` fails transiently (state-lock contention, a network blip)
+# far more often than `apply` itself, and unlike apply there is no destructive state to
+# protect — retrying it inline, before falling back to the same failure handling as a
+# failed apply, is safe. Delays are seconds to wait *before* each retry attempt, so
+# len(...) + 1 is the total number of attempts made.
+OUTPUT_FETCH_RETRY_DELAYS_SECONDS = (5, 10, 20)
+
+# Fixed, allowlisted (see log_redaction._MARKER) sentence used whenever the output-fetch
+# retries above are exhausted. Deliberately carries no interpolated terraform text: the
+# raw diagnostic already went into Environment.logs via _capped_logs, so error_message —
+# the field notifications and the dashboard surface — stays a value the redactor can
+# never withhold.
+OUTPUT_FETCH_EXHAUSTED_MESSAGE = "could not read terraform outputs; reprovision to retry"
+
 # R3 (security review): applied at every DESTROYED transition so a later re-provision (or
 # a stale row that somehow gets touched again) never inherits a "TLS already patched"
 # signal from a cluster/certificate pairing that no longer exists.
@@ -836,7 +850,10 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 result["logs"] = result.get("logs", "") + "\n" + phase_marker("apply")
 
             try:
-                TerraformWorker._save_outputs(infra_id, result, tf_vars, credentials, region, account_id, compute_type)
+                outputs_saved = TerraformWorker._save_outputs(
+                    infra_id, result, tf_vars, credentials, region, account_id, compute_type,
+                    retry_count=retry_count,
+                )
             except EksBootstrapTimeout as e:
                 TerraformWorker._handle_provision_failure(
                     infra_id,
@@ -853,7 +870,10 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                     tf_vars, credentials, region, account_id, retry_count, compute_type
                 )
                 return
-            logger.info(f"Infrastructure {infra_id} provisioned successfully")
+            if outputs_saved:
+                logger.info(f"Infrastructure {infra_id} provisioned successfully")
+            else:
+                logger.warning(f"Infrastructure {infra_id} applied but outputs could not be saved")
 
         except Exception as e:
             logger.error(f"Provisioning failed for {infra_id}: {redact_provisioning_text(str(e)).text}",
@@ -1001,9 +1021,31 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
         return payload
 
     @staticmethod
+    def _fetch_outputs_with_retry(tf_vars, credentials, infra_id, region, account_id, compute_type):
+        """Retry `terraform output -json` with a short backoff before giving up — see
+        OUTPUT_FETCH_RETRY_DELAYS_SECONDS. The caller (`_save_outputs`) must never treat
+        a final failure here as success."""
+        total_attempts = len(OUTPUT_FETCH_RETRY_DELAYS_SECONDS) + 1
+        for attempt in range(1, total_attempts + 1):
+            output_result = TerraformWorker._exec_tf(
+                ["terraform", "output", "-json"],
+                tf_vars, credentials, str(infra_id), region, account_id, compute_type
+            )
+            if output_result["success"] or attempt == total_attempts:
+                return output_result
+            delay = OUTPUT_FETCH_RETRY_DELAYS_SECONDS[attempt - 1]
+            logger.warning(
+                f"terraform output -json failed for {infra_id} (attempt {attempt}/{total_attempts}), "
+                f"retrying in {delay}s: {output_result.get('error')}"
+            )
+            time.sleep(delay)
+
+    @staticmethod
     def _save_outputs(infra_id, apply_result, tf_vars, credentials, region, account_id,
-                      compute_type=ComputeType.ECS_FARGATE, mock_outputs=None):
-        """Get terraform outputs and save to database"""
+                      compute_type=ComputeType.ECS_FARGATE, mock_outputs=None, retry_count=0) -> bool:
+        """Get terraform outputs and save to database. Returns whether outputs were
+        actually read and saved — callers must not report the provision as successful
+        when this is False, even though the preceding `terraform apply` succeeded."""
         if mock_outputs is not None:
             output_result = {
                 "success": True,
@@ -1011,9 +1053,8 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 "logs": "[MOCK OUTPUT] synthesized",
             }
         else:
-            output_result = TerraformWorker._exec_tf(
-                ["terraform", "output", "-json"],
-                tf_vars, credentials, str(infra_id), region, account_id, compute_type
+            output_result = TerraformWorker._fetch_outputs_with_retry(
+                tf_vars, credentials, infra_id, region, account_id, compute_type
             )
 
         if output_result["success"]:
@@ -1138,20 +1179,25 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 transaction.on_commit(lambda: threading.Thread(
                     target=_publish_env_delayed, kwargs=_env_kwargs, daemon=True
                 ).start())
+            return True
         else:
-            logger.error(f"Failed to fetch terraform outputs for {infra_id}: {output_result.get('error')}")
+            logger.error(
+                f"Failed to fetch terraform outputs for {infra_id} after retries: {output_result.get('error')}"
+            )
             combined_logs = _capped_logs(apply_result.get("logs", ""), "\n[OUTPUT FETCH FAILED]\n",
                                          output_result.get("error", ""))
             env = Environment.objects.get(infrastructure_id=infra_id)
             if env.first_activated_at is not None:
                 # Env was live before this run — a failure to read outputs back must
-                # never regress it to ERROR; restore it, don't leave it PROVISIONING.
+                # never regress it to ERROR; restore it, don't leave it PROVISIONING. The
+                # fixed OUTPUT_FETCH_EXHAUSTED_MESSAGE (not the raw terraform error) is
+                # what lands in error_message — the raw diagnostic is already in
+                # combined_logs, and this sentence is guaranteed allowlisted (see
+                # log_redaction._MARKER) so notifications never see a withheld stub.
                 with transaction.atomic():
                     Environment.objects.filter(infrastructure_id=infra_id).update(
                         status="ACTIVE", logs=combined_logs,
-                        error_message=_capped_error(
-                            f"Apply succeeded but reading outputs failed: {output_result.get('error', 'Unknown error')}"
-                        ),
+                        error_message=_capped_error(OUTPUT_FETCH_EXHAUSTED_MESSAGE),
                     )
                 # Any Database row mid-flight in this apply has an unconfirmed outcome —
                 # ACTIVE has no reaper coverage, so without a re-enqueue here a row could
@@ -1162,12 +1208,24 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                 ).exists():
                     from api.services.infra_queue import InfraQueue
                     InfraQueue.enqueue_provision(str(infra_id))
+                return False
             else:
-                # First-time provision: apply succeeded but we couldn't confirm it, so
-                # first_activated_at stays unstamped. Leave status as PROVISIONING —
-                # the reaper re-drives it and a retried apply is a safe no-op.
-                with transaction.atomic():
-                    Environment.objects.filter(infrastructure_id=infra_id).update(logs=combined_logs)
+                # First-time provision: apply succeeded but we could never confirm it.
+                # Leaving this in PROVISIONING for the reaper gave no notification either
+                # way — treat it exactly like a failed `terraform apply` instead, so it
+                # gets the same transient-retry vs. permanent-failure-and-rollback
+                # decision _handle_provision_failure already makes, and is never
+                # reported as a success.
+                TerraformWorker._handle_provision_failure(
+                    infra_id,
+                    {
+                        "error": output_result.get("error", "Unknown error"),
+                        "transient": output_result.get("transient", False),
+                        "logs": combined_logs,
+                    },
+                    tf_vars, credentials, region, account_id, retry_count, compute_type,
+                )
+                return False
 
     @staticmethod
     def _pre_destroy_cleanup(credentials: dict, region: str, infra) -> str:
