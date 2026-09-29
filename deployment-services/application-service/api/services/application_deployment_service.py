@@ -960,7 +960,7 @@ class ApplicationDeploymentService:
             if _is_eks(application):
                 deployment_url = self._rollback_eks(session, application, environment, target, created_resources)
             else:
-                deployment_url = self._rollback_ecs(session, application, environment, target)
+                deployment_url = self._rollback_ecs(session, application, environment, target, created_resources)
 
         except Exception as e:
             logger.exception(f"Rollback failed for application {application.name}")
@@ -988,7 +988,8 @@ class ApplicationDeploymentService:
         logger.info(f"Application {application.name} rolled back to deployment {target.id}")
         return deployment_url
 
-    def _rollback_ecs(self, session, application: Application, environment: Environment, target) -> str:
+    def _rollback_ecs(self, session, application: Application, environment: Environment, target,
+                      created_resources: list) -> str:
         ecs = ECSClient(session)
 
         # Routing mode is re-resolved at rollback time too, not carried over from
@@ -1003,6 +1004,7 @@ class ApplicationDeploymentService:
         # anything below raises, `application` still reflects its pre-rollback state.
         original = (application.alloted_cpu, application.alloted_memory, application.port)
         application.alloted_cpu, application.alloted_memory, application.port = target.cpu, target.memory, target.port
+        recreate = False
         try:
             task_def_arn = self._create_task_definition(
                 session, application, environment,
@@ -1011,12 +1013,30 @@ class ApplicationDeploymentService:
             )
             service_name = f"{_slug(application.name)}-service"
             self._abort_if_exited(application)
-            ecs.client.update_service(
-                cluster=environment.cluster_arn,
-                service=service_name,
-                taskDefinition=task_def_arn,
-                forceNewDeployment=True,
-            )
+            try:
+                ecs.client.update_service(
+                    cluster=environment.cluster_arn,
+                    service=service_name,
+                    taskDefinition=task_def_arn,
+                    forceNewDeployment=True,
+                )
+            except (ecs.client.exceptions.ServiceNotFoundException,
+                    ecs.client.exceptions.ServiceNotActiveException):
+                # The service this rollback meant to re-pin no longer exists — most often
+                # ApplicationRetryDeployView's cleanup job tore it down (along with the
+                # target group and listener rule) after a prior failed deploy, or someone
+                # removed it by hand. ApplicationCleanupService._delete_ecs_service waits
+                # for the service to reach INACTIVE rather than for its record to vanish
+                # outright, so UpdateService can raise either exception depending on
+                # exactly when the rollback lands relative to that cleanup — both mean
+                # the same thing here. Recreate everything a normal deploy would, pinned
+                # to the already-registered rollback task definition, instead of dead-
+                # lettering on the same error three retries in a row.
+                logger.warning(
+                    "Rollback target service %s not found/active for %s — recreating it",
+                    service_name, application.name,
+                )
+                recreate = True
         except Exception:
             application.alloted_cpu, application.alloted_memory, application.port = original
             raise
@@ -1029,19 +1049,73 @@ class ApplicationDeploymentService:
             'alloted_cpu', 'alloted_memory', 'port', 'task_definition_arn', 'status', 'error_message',
         ])
 
-        self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
         alb = ALBClient(session)
-        self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
+        if recreate:
+            self._recreate_ecs_service(
+                session, application, environment, host_mode, app_hostname, created_resources,
+            )
+        else:
+            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+            self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
 
-        health_check_path = HOST_MODE_HEALTH_CHECK_PATH if host_mode else '/'
-        alb.modify_target_group(application.target_group_arn, health_check_path)
-        self._configure_host_routing(alb, application, environment, host_mode, app_hostname)
+            health_check_path = HOST_MODE_HEALTH_CHECK_PATH if host_mode else '/'
+            alb.modify_target_group(application.target_group_arn, health_check_path)
+            self._configure_host_routing(alb, application, environment, host_mode, app_hostname)
 
         deployment_url = self._generate_deployment_url(application, environment)
         application.deployment_url = deployment_url
         application.status = 'ACTIVE'
         application.save(update_fields=['deployment_url', 'status'])
         return deployment_url
+
+    def _recreate_ecs_service(self, session, application: Application, environment: Environment,
+                              host_mode: bool, app_hostname: str | None, created_resources: list):
+        """F3 gap: the ECS service `_rollback_ecs` meant to update is gone (see its
+        ServiceNotFoundException/ServiceNotActiveException handling above). Rebuilds
+        everything a normal deploy creates after its task definition — target group,
+        service, ALB routing — reusing the exact steps `deploy_application` runs for ECS
+        rather than duplicating them. `application.task_definition_arn` is already pinned
+        to the rollback target's image by the caller; `_create_target_group`/
+        `_create_ecs_service` fall back to creating fresh resources when the
+        application's stored ARNs are also gone (the usual case when a retry's cleanup is
+        what deleted the service).
+
+        Appends to `created_resources` exactly as `deploy_application` does, so
+        `rollback_application`'s failure handler tears these back down — rather than
+        leaving them running in the customer's account — if a later step (service never
+        stabilizes, ALB never reports healthy) fails."""
+        health_check_path = HOST_MODE_HEALTH_CHECK_PATH if host_mode else '/'
+        target_group_arn = self._create_target_group(
+            session, application, environment, health_check_path=health_check_path,
+        )
+        application.target_group_arn = target_group_arn
+        application.save(update_fields=['target_group_arn'])
+        created_resources.append(('target_group', target_group_arn))
+
+        service_arn = self._create_ecs_service(session, application, environment)
+        application.service_arn = service_arn
+        application.desired_count = 1
+        application.save(update_fields=['service_arn', 'desired_count'])
+        created_resources.append(('ecs_service', service_arn))
+
+        service_name = f"{_slug(application.name)}-service"
+        self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+
+        alb = ALBClient(session)
+        self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
+
+        self._reserve_host_redirect_priority(alb, application, environment)
+
+        listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
+        application.listener_rule_arn = listener_rule_arn
+        application.save(update_fields=['listener_rule_arn'])
+        created_resources.append(('listener_rule', listener_rule_arn))
+
+        host_forward_rule_arn = self._configure_host_routing(alb, application, environment, host_mode, app_hostname)
+        if host_forward_rule_arn:
+            created_resources.append(('host_forward_rule', host_forward_rule_arn))
+
+        alb.verify_target_group_attached(application.target_group_arn, listener_arn)
 
     def _rollback_eks(self, session, application: Application, environment: Environment, target, created_resources: list) -> str:
         ecr = ECRClient(session)

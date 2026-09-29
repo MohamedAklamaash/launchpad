@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from aws.ecr import ECRClient
+from aws.ecs import ECSClient
 from botocore.exceptions import ClientError
 from shared.enums.user_role import UserRole
 
@@ -345,6 +346,167 @@ def test_rollback_is_all_or_nothing_on_config_failure(ecs_app, old_deployment, m
     assert app.task_definition_arn == original_task_def
     assert app.status == "FAILED"  # the outer failure handler still records the attempt
     assert Deployment.objects.filter(application=app, status=Deployment.STATUS_FAILED).exists()
+
+
+# ── rollback recreates a service that no longer exists (F3 gap) ────────────────
+#
+# ApplicationRetryDeployView's cleanup job (ApplicationCleanupService._delete_ecs_service)
+# can delete the ECS service, target group and listener rule for an app that previously
+# deployed successfully — a rollback triggered after that (or before the retry's own
+# redeploy completes) must not assume update_service has anything to pin.
+
+@pytest.mark.django_db
+def test_rollback_updates_existing_service_without_recreating(ecs_app, old_deployment, mock_service):
+    """Service exists — the update_service path must stay exactly as it was, never
+    falling through to the create-service steps."""
+    app, _env = ecs_app
+
+    with patch("aws.ecs.ECSClient.create_service") as create_service:
+        mock_service.rollback_application(app, old_deployment)
+
+    create_service.assert_not_called()
+    app.refresh_from_db()
+    assert app.status == "ACTIVE"
+    # The pre-existing target group / listener rule are untouched — no new ones minted.
+    assert app.target_group_arn == (
+        f"arn:aws:elasticloadbalancing:us-east-1:{ACCOUNT_ID}:targetgroup/my-app-tg/abc"
+    )
+
+
+@pytest.mark.django_db
+def test_rollback_recreates_the_service_when_it_no_longer_exists(ecs_app, old_deployment, monkeypatch, settings):
+    settings.PLATFORM_BASE_DOMAIN = None  # infra has no dns_label — host mode is out of scope here
+    app, env = ecs_app
+    session = MockSession(region="us-east-1", account_id=ACCOUNT_ID)
+    service = ApplicationDeploymentService()
+    monkeypatch.setattr(service, "_create_aws_session", lambda _infra: session)
+
+    # Mirror what ApplicationRetryDeployView's cleanup job actually does: delete the ECS
+    # service in AWS and null out the app's stored ARNs (target group and listener rule
+    # included — the cleanup job removes those too).
+    session.client("ecs").delete_service(service="my-app-service")
+    app.service_arn = None
+    app.target_group_arn = None
+    app.listener_rule_arn = None
+    app.save(update_fields=["service_arn", "target_group_arn", "listener_rule_arn"])
+
+    create_service_calls = []
+    original_create_service = ECSClient.create_service
+
+    def _spy_create_service(self, **kwargs):
+        create_service_calls.append(kwargs)
+        return original_create_service(self, **kwargs)
+
+    monkeypatch.setattr(ECSClient, "create_service", _spy_create_service)
+
+    create_td_calls = []
+    original_create_task_definition = ECSClient.create_task_definition
+
+    def _spy_create_task_definition(self, **kwargs):
+        create_td_calls.append(kwargs)
+        return original_create_task_definition(self, **kwargs)
+
+    monkeypatch.setattr(ECSClient, "create_task_definition", _spy_create_task_definition)
+
+    url = service.rollback_application(app, old_deployment)
+
+    assert len(create_td_calls) == 1
+    assert create_td_calls[0]["image"].endswith(f":{old_deployment.image_tag}")
+    assert len(create_service_calls) == 1
+    assert create_service_calls[0]["task_definition_arn"] == app.task_definition_arn
+    assert url == f"http://{env.alb_dns}/my-app"
+
+    app.refresh_from_db()
+    assert app.status == "ACTIVE"
+    assert app.service_arn is not None
+    assert app.target_group_arn is not None
+    assert app.listener_rule_arn is not None
+    assert app.alloted_cpu == old_deployment.cpu
+    assert app.alloted_memory == old_deployment.memory
+    assert app.port == old_deployment.port
+
+    row = Deployment.objects.exclude(id=old_deployment.id).get(application=app)
+    assert row.triggered_by == Deployment.TRIGGERED_BY_ROLLBACK
+    assert row.status == Deployment.STATUS_SUCCEEDED
+    assert row.image_tag == old_deployment.image_tag
+
+
+@pytest.mark.django_db
+def test_rollback_recreates_the_service_when_it_is_inactive_not_missing(
+    ecs_app, old_deployment, monkeypatch, settings,
+):
+    """ApplicationCleanupService._delete_ecs_service polls until the deleted service
+    reaches INACTIVE rather than until its record disappears outright — real ECS keeps an
+    INACTIVE service describable for a while. UpdateService against an INACTIVE service
+    raises ServiceNotActiveException, not ServiceNotFoundException; the recreate fallback
+    must trigger on either."""
+    settings.PLATFORM_BASE_DOMAIN = None
+    app, env = ecs_app
+    session = MockSession(region="us-east-1", account_id=ACCOUNT_ID)
+    service = ApplicationDeploymentService()
+    monkeypatch.setattr(service, "_create_aws_session", lambda _infra: session)
+
+    def _raise_not_active(self, **kwargs):
+        raise self.exceptions.ServiceNotActiveException("Service is not active")
+
+    monkeypatch.setattr("api.mock.mock_session.MockClient.update_service", _raise_not_active)
+
+    app.service_arn = None
+    app.target_group_arn = None
+    app.listener_rule_arn = None
+    app.save(update_fields=["service_arn", "target_group_arn", "listener_rule_arn"])
+
+    url = service.rollback_application(app, old_deployment)
+
+    app.refresh_from_db()
+    assert app.status == "ACTIVE"
+    assert app.service_arn is not None
+    assert url == f"http://{env.alb_dns}/my-app"
+
+
+@pytest.mark.django_db
+def test_rollback_recreate_aborts_if_infra_exits_before_creating_the_service(
+    ecs_app, old_deployment, monkeypatch, settings,
+):
+    """Exit lands right after the recreate path's target group is created, before the ECS
+    service itself is created (_create_ecs_service's own _abort_if_exited call). Must
+    abort there rather than finish recreating."""
+    from api.services.exit_enforcement import InfrastructureExitedError
+
+    settings.PLATFORM_BASE_DOMAIN = None  # infra has no dns_label — host mode is out of scope here
+    app, _env = ecs_app
+    infra = app.infrastructure
+    session = MockSession(region="us-east-1", account_id=ACCOUNT_ID)
+    service = ApplicationDeploymentService()
+    monkeypatch.setattr(service, "_create_aws_session", lambda _infra: session)
+
+    session.client("ecs").delete_service(service="my-app-service")
+    app.service_arn = None
+    app.target_group_arn = None
+    app.listener_rule_arn = None
+    app.save(update_fields=["service_arn", "target_group_arn", "listener_rule_arn"])
+
+    original_create_target_group = service._create_target_group
+
+    def _create_target_group_then_exit(*args, **kwargs):
+        from django.utils import timezone
+
+        result = original_create_target_group(*args, **kwargs)
+        from api.models.infrastructure import Infrastructure
+        Infrastructure.objects.filter(id=infra.id).update(exited_at=timezone.now())
+        return result
+
+    monkeypatch.setattr(service, "_create_target_group", _create_target_group_then_exit)
+
+    with patch("aws.ecs.ECSClient.create_service") as create_service, \
+            pytest.raises(InfrastructureExitedError):
+        service.rollback_application(app, old_deployment)
+
+    create_service.assert_not_called()
+    app.refresh_from_db()
+    assert app.status == "FAILED"
+    assert app.target_group_arn is not None  # created before exit landed
+    assert app.service_arn is None  # never reached
 
 
 # ── expired ECR tag ──────────────────────────────────────────────────────────

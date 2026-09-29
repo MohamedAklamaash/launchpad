@@ -118,10 +118,20 @@ class MockClient:
 
     def create_service(self, **kwargs):
         name = kwargs.get("serviceName", "app-service")
+        # A create after a delete (the rollback recreate path) is a fresh, ACTIVE
+        # service — it must stop showing up as deleted to describe_services/update_service.
+        self._deleted_services.discard(name)
         return {"service": {"serviceArn": self._arn(f"service/{name}"), "serviceName": name}}
 
     def update_service(self, **kwargs):
-        service = kwargs.get("service", "app-service")
+        service = str(kwargs.get("service", "app-service")).split("/")[-1]
+        if service in self._deleted_services:
+            # Real ECS: UpdateService on a service that's been deleted (or never
+            # existed) raises ServiceNotFoundException — a rollback whose target service
+            # was removed (e.g. ApplicationRetryDeployView's cleanup job) must see this.
+            raise self.exceptions.ServiceNotFoundException(
+                f"Service not found: {service}"
+            )
         return {"service": {"serviceArn": self._arn(f"service/{service}"), "serviceName": service}}
 
     def delete_service(self, **kwargs):
