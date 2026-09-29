@@ -49,6 +49,15 @@ export const infrastructureApi = {
     await apiClient.post(`/api/infrastructures/${id}/reprovision/`);
   },
 
+  // Owner only. Mints a fresh single-use onboarding token for an infra that hasn't
+  // completed onboarding yet — lets the dashboard re-show the bootstrap command if the
+  // original token was lost or already consumed, without deleting/recreating the infra.
+  // Rejected (409) once the infra is onboarded.
+  reissueOnboardingToken: async (id: string): Promise<InfrastructureCreateResponse> => {
+    const { data } = await apiClient.post(`/api/infrastructures/${id}/reissue-token/`);
+    return data;
+  },
+
   getLogs: async (id: string): Promise<ProvisioningLogs> => {
     const { data } = await apiClient.get(`/api/infrastructures/${id}/logs`);
     return data;

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -22,6 +22,8 @@ const STATUS: Record<string, { dot: string; label: string }> = {
   SLEEPING: { dot: 'bg-warning', label: 'text-warning' },
   FAILED: { dot: 'bg-destructive', label: 'text-destructive' },
 };
+
+const IN_FLIGHT_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
 
 const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
@@ -63,24 +65,39 @@ function ApplicationsPageInner() {
     router.replace(`/dashboard/applications?infra=${id}`);
   };
 
+  // Assigned in an effect, not during render (see databases-section.tsx for the same
+  // pattern): the poll below only reads .current, so updating it after paint is fine and
+  // keeps setState out of the render path.
+  const hasInFlight = useRef(false);
+  useEffect(() => {
+    hasInFlight.current = apps.some((a) => IN_FLIGHT_STATUSES.includes(a.status));
+  }, [apps]);
+
   useEffect(() => {
     if (!selectedInfra) return;
     let isActive = true;
-    const fetchApps = async () => {
-      await Promise.resolve();
-      if (isActive) setLoading(true);
+    const fetchApps = async (showLoading: boolean) => {
+      if (showLoading) await Promise.resolve();
+      if (isActive && showLoading) setLoading(true);
       try {
         const data = await applicationApi.list(selectedInfra);
         if (isActive) setApps(data);
       } catch (err: unknown) {
-        const error = err as { response?: { data?: { error?: string } } };
-        if (isActive) toast.error(error.response?.data?.error || 'Failed to load applications');
+        // Silent on background poll ticks — only the initial load surfaces an error toast,
+        // otherwise a transient gateway blip during polling would spam the user every 5s.
+        if (isActive && showLoading) {
+          const error = err as { response?: { data?: { error?: string } } };
+          toast.error(error.response?.data?.error || 'Failed to load applications');
+        }
       } finally {
-        if (isActive) setLoading(false);
+        if (isActive && showLoading) setLoading(false);
       }
     };
-    fetchApps();
-    return () => { isActive = false; };
+    fetchApps(true);
+    const interval = setInterval(() => {
+      if (hasInFlight.current) fetchApps(false);
+    }, 5000);
+    return () => { isActive = false; clearInterval(interval); };
   }, [selectedInfra]);
 
   const deployHref = `/dashboard/applications/new${selectedInfra ? `?infra=${selectedInfra}` : ''}`;

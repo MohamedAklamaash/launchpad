@@ -22,6 +22,13 @@ import { CustomDomainsPanel } from '@/components/custom-domains-panel';
 
 const POLLING_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
 
+const IN_FLIGHT_HINT: Record<string, string> = {
+  CREATED: 'Queued — waiting for a build slot…',
+  BUILDING: 'Building your image — usually a couple of minutes…',
+  PUSHING_IMAGE: 'Pushing the built image to your registry…',
+  DEPLOYING: 'Rolling out — waiting for tasks to pass health checks…',
+};
+
 const STATUS: Record<string, { dot: string; label: string }> = {
   ACTIVE: { dot: 'bg-success', label: 'text-success' },
   BUILDING: { dot: 'bg-azure animate-pulse', label: 'text-azure' },
@@ -41,6 +48,9 @@ export default function ApplicationDetailPage() {
   const [infra, setInfra] = useState<Infrastructure | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  // Distinguishes which action is in flight so the button that was actually clicked can
+  // say "Sleeping…"/"Waking…" instead of every button in the row claiming the same state.
+  const [pendingAction, setPendingAction] = useState<'deploy' | 'sleep' | 'wake' | 'retry' | 'delete' | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [revealedEnvs, setRevealedEnvs] = useState<Set<string>>(new Set());
@@ -66,7 +76,9 @@ export default function ApplicationDetailPage() {
       return data;
     } catch (e: unknown) {
       const error = e as { response?: { data?: { error?: string } } };
-      toast.error(error.response?.data?.error || 'Failed to load application');
+      // Fixed id: a failing 3s poll (e.g. gateway restart) must replace the same toast
+      // rather than stack a new one every tick.
+      toast.error(error.response?.data?.error || 'Failed to load application', { id: 'app-load' });
     } finally {
       setLoading(false);
     }
@@ -133,8 +145,9 @@ export default function ApplicationDetailPage() {
     );
   };
 
-  const action = async (fn: () => Promise<void>, successMsg: string) => {
+  const action = async (fn: () => Promise<void>, successMsg: string, key: typeof pendingAction = null) => {
     setActionLoading(true);
+    setPendingAction(key);
     try {
       await fn();
       toast.success(successMsg);
@@ -144,6 +157,7 @@ export default function ApplicationDetailPage() {
       toast.error(error.response?.data?.error || 'Action failed');
     } finally {
       setActionLoading(false);
+      setPendingAction(null);
     }
   };
 
@@ -250,10 +264,24 @@ export default function ApplicationDetailPage() {
         </a>
       )}
 
+      {POLLING_STATUSES.includes(app.status) && !app.is_sleeping && (
+        <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 flex items-center gap-3">
+          <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
+          <p className="text-xs text-azure">{IN_FLIGHT_HINT[app.status]}</p>
+        </div>
+      )}
+
+      {app.is_sleeping && (
+        <div className="rounded-xl border border-warning/20 bg-warning/5 px-4 py-3 flex items-center gap-3">
+          <Moon className="w-3.5 h-3.5 text-warning shrink-0" />
+          <p className="text-xs text-warning">Scaled to zero — click Wake Up to restore it.</p>
+        </div>
+      )}
+
       {app.error_message && (
         <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3">
-          <p className="eyebrow text-destructive mb-1">Error</p>
-          <p className="text-xs text-destructive/80 font-mono break-all">{app.error_message}</p>
+          <p className="eyebrow text-destructive mb-1">{app.status === 'FAILED' ? 'Last deploy failed' : 'Error'}</p>
+          <pre className="text-xs text-destructive/80 font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto">{app.error_message}</pre>
         </div>
       )}
 
@@ -261,26 +289,26 @@ export default function ApplicationDetailPage() {
         {app.status === 'ACTIVE' && !app.is_sleeping && (
           <>
             {!app.infrastructure_exited && (
-              <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Redeployment queued')} disabled={actionLoading} className="gap-1.5">
-                <RefreshCw className="w-3.5 h-3.5" /> Redeploy
+              <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Redeployment queued', 'deploy')} disabled={actionLoading} className="gap-1.5">
+                <RefreshCw className={`w-3.5 h-3.5 ${pendingAction === 'deploy' ? 'animate-spin' : ''}`} /> {pendingAction === 'deploy' ? 'Queuing…' : 'Redeploy'}
               </Button>
             )}
             {!app.infrastructure_exited && (
               <Button variant="outline" size="sm" className="gap-1.5"
-                onClick={() => action(() => applicationApi.sleep(id), 'Application sleeping')} disabled={actionLoading}>
-                <Moon className="w-3.5 h-3.5" /> Sleep
+                onClick={() => action(() => applicationApi.sleep(id), 'Application sleeping', 'sleep')} disabled={actionLoading}>
+                <Moon className="w-3.5 h-3.5" /> {pendingAction === 'sleep' ? 'Sleeping…' : 'Sleep'}
               </Button>
             )}
           </>
         )}
         {app.is_sleeping && !app.infrastructure_exited && (
-          <Button size="sm" onClick={() => action(() => applicationApi.wake(id), 'Application waking up')} disabled={actionLoading} className="gap-1.5">
-            <Sun className="w-3.5 h-3.5" /> Wake Up
+          <Button size="sm" onClick={() => action(() => applicationApi.wake(id), 'Application waking up', 'wake')} disabled={actionLoading} className="gap-1.5">
+            <Sun className="w-3.5 h-3.5" /> {pendingAction === 'wake' ? 'Waking…' : 'Wake Up'}
           </Button>
         )}
         {app.status === 'FAILED' && !app.infrastructure_exited && (
-          <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Retry queued')} disabled={actionLoading} className="gap-1.5">
-            <RefreshCw className="w-3.5 h-3.5" /> Retry
+          <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Retry queued', 'retry')} disabled={actionLoading} className="gap-1.5">
+            <RefreshCw className={`w-3.5 h-3.5 ${pendingAction === 'retry' ? 'animate-spin' : ''}`} /> {pendingAction === 'retry' ? 'Queuing…' : 'Retry'}
           </Button>
         )}
         {app.auto_deploy_paused && canEdit && hasRollbackAccess && !app.infrastructure_exited && (
@@ -487,8 +515,8 @@ export default function ApplicationDetailPage() {
               onClick={() => action(async () => {
                 await applicationApi.delete(id);
                 router.push('/dashboard');
-              }, 'Application deleted')}>
-              {actionLoading ? 'Deleting…' : 'Delete'}
+              }, 'Application deleted', 'delete')}>
+              {pendingAction === 'delete' ? 'Deleting…' : 'Delete'}
             </Button>
           </DialogFooter>
         </DialogContent>

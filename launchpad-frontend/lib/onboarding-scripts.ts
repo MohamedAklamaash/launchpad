@@ -194,6 +194,41 @@ function buildScriptInvocation(envExports: string[]): string {
   return lines.join("\n");
 }
 
+export interface BootstrapEnvSource {
+  id: string;
+  code: string;
+  compute_type: string;
+  platform_account_id: string;
+  platform_user: string;
+  is_mock?: boolean;
+}
+
+/**
+ * Builds the `export ...` lines the bootstrap snippet needs, from an infra (as returned
+ * by create or reissue-token) plus its one-time onboarding token. Shared by the
+ * post-create screen and the infra detail page's "show setup command" recovery flow so
+ * the two never drift on which vars the script expects.
+ */
+export function buildBootstrapEnvExports(
+  infra: BootstrapEnvSource,
+  onboardingToken: string,
+  callbackUrl: string,
+): string[] {
+  const exports = [
+    `export LAUNCHPAD_INFRA_ID=${infra.id}`,
+    `export LAUNCHPAD_CALLBACK_URL=${callbackUrl}`,
+    `export LAUNCHPAD_ONBOARDING_TOKEN=${onboardingToken}`,
+    `export LAUNCHPAD_EXTERNAL_ID=${infra.id}`,
+    `export LAUNCHPAD_COMPUTE_TYPE=${infra.compute_type}`,
+    `export LAUNCHPAD_PLATFORM_ACCOUNT_ID=${infra.platform_account_id}`,
+    `export LAUNCHPAD_PLATFORM_USER=${infra.platform_user}`,
+  ];
+  if (infra.is_mock) {
+    exports.push(`export LAUNCHPAD_MOCK=1`, `export LAUNCHPAD_ACCOUNT_ID=${infra.code}`);
+  }
+  return exports;
+}
+
 export function resolveOnboardingScript(
   variant: OnboardingVariant,
   envExports: string[] = [],

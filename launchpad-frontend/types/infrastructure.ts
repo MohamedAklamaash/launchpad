@@ -78,6 +78,7 @@ export interface InfrastructureCreateResponse extends Infrastructure {
   onboarding_token: string;
 }
 
+
 // Owner-only. Served by GET /api/infrastructures/{id}/logs; invited users get 403.
 export interface ProvisioningLogs {
   status: InfrastructureStatus;
