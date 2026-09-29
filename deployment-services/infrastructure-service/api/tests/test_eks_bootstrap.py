@@ -437,3 +437,27 @@ def test_apply_eks_tls_patches_the_cert_onto_the_class_and_443_onto_the_bootstra
     assert call_order.index("custom.patch_cluster_custom_object") < call_order.index(
         "networking.patch_namespaced_ingress"
     )
+
+
+def test_replace_on_rerun_carries_the_live_resource_version(monkeypatch):
+    """Real EKS: replacing the ValidatingAdmissionPolicy without metadata.resourceVersion
+    is a 422 ("must be specified for an update"), which failed every reprovision of an
+    existing cluster. Each replace must send the version it just read."""
+    rbac, admission = _rbac_and_admission(monkeypatch)
+    rbac.create_cluster_role.side_effect = _conflict()
+    admission.create_validating_admission_policy.side_effect = _conflict()
+    admission.create_validating_admission_policy_binding.side_effect = _conflict()
+    rbac.create_cluster_role_binding.side_effect = _conflict()
+    admission.read_validating_admission_policy.return_value.metadata.resource_version = "101"
+    admission.read_validating_admission_policy_binding.return_value.metadata.resource_version = "202"
+    rbac.read_cluster_role.return_value.metadata.resource_version = "303"
+
+    eb._ensure_namespace_creator_rbac(object(), [])
+
+    (_, policy), _ = admission.replace_validating_admission_policy.call_args
+    (_, binding), _ = admission.replace_validating_admission_policy_binding.call_args
+    (_, role), _ = rbac.replace_cluster_role.call_args
+    assert policy.metadata.resource_version == "101"
+    assert binding.metadata.resource_version == "202"
+    assert role.metadata.resource_version == "303"
+

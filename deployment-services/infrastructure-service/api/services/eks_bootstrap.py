@@ -272,7 +272,9 @@ def _ensure_namespace_creator_rbac(api, lines: list):
     )
     _create_or_replace(
         lambda: admission.create_validating_admission_policy(policy),
+        lambda: admission.read_validating_admission_policy(DEPLOYER_NAMESPACE_GUARD),
         lambda: admission.replace_validating_admission_policy(DEPLOYER_NAMESPACE_GUARD, policy),
+        policy,
         f"ValidatingAdmissionPolicy/{DEPLOYER_NAMESPACE_GUARD}",
         lines,
     )
@@ -284,7 +286,9 @@ def _ensure_namespace_creator_rbac(api, lines: list):
     )
     _create_or_replace(
         lambda: admission.create_validating_admission_policy_binding(policy_binding),
+        lambda: admission.read_validating_admission_policy_binding(DEPLOYER_NAMESPACE_GUARD),
         lambda: admission.replace_validating_admission_policy_binding(DEPLOYER_NAMESPACE_GUARD, policy_binding),
+        policy_binding,
         f"ValidatingAdmissionPolicyBinding/{DEPLOYER_NAMESPACE_GUARD}",
         lines,
     )
@@ -299,7 +303,9 @@ def _ensure_namespace_creator_rbac(api, lines: list):
     )
     _create_or_replace(
         lambda: rbac.create_cluster_role(cluster_role),
+        lambda: rbac.read_cluster_role(NAMESPACE_CREATOR_CLUSTER_ROLE),
         lambda: rbac.replace_cluster_role(NAMESPACE_CREATOR_CLUSTER_ROLE, cluster_role),
+        cluster_role,
         f"ClusterRole/{NAMESPACE_CREATOR_CLUSTER_ROLE}",
         lines,
     )
@@ -315,13 +321,18 @@ def _ensure_namespace_creator_rbac(api, lines: list):
     )
 
 
-def _create_or_replace(create, replace, kind: str, lines: list):
+def _create_or_replace(create, read, replace, body, kind: str, lines: list):
+    """On a rerun the object exists, so replace it with the current rules. A replace must
+    carry the live object's resourceVersion: the API server rejects an update without one
+    for some kinds (ValidatingAdmissionPolicy: 422 "metadata.resourceVersion: must be
+    specified for an update"), which failed every reprovision of an existing EKS infra."""
     try:
         create()
         lines.append(f"[k8s] created {kind}")
     except ApiException as e:
         if e.status != 409:
             raise
+        body.metadata.resource_version = read().metadata.resource_version
         replace()
         lines.append(f"[k8s] replaced {kind}")
 
