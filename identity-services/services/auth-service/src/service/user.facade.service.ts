@@ -19,8 +19,14 @@ export class UserFacadeService extends BaseService {
     private clientSecret = env.GITHUB_CLIENT_SECRET;
     private redirectUri = env.GITHUB_REDIRECT_URI;
 
-    public getAuthUrl(): string {
-        return `https://github.com/login/oauth/authorize?client_id=${this.clientId}&redirect_uri=${this.redirectUri}&scope=repo%20read:org%20user:email`;
+    public getAuthUrl(state: string): string {
+        const params = new URLSearchParams({
+            client_id: this.clientId,
+            redirect_uri: this.redirectUri,
+            scope: 'repo read:org user:email',
+            state,
+        });
+        return `https://github.com/login/oauth/authorize?${params.toString()}`;
     }
 
     public async getUserFromToken(token: string) {

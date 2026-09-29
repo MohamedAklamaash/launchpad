@@ -1,11 +1,15 @@
 import { apiClient } from './client';
 import { AuthResponse, InvitedUser, User } from '@/types/auth';
 
-const AUTH_SERVICE = process.env.NEXT_PUBLIC_AUTH_SERVICE_URL || 'http://localhost:5001';
+// GitHub OAuth login must be started at the same origin the callback lands on (the
+// gateway — see GITHUB_REDIRECT_URI in auth-service), not at the auth-service origin
+// directly: the CSRF-state cookie set on /login is bound to whichever origin the browser
+// is on, and only matches at the callback if that's the same origin.
+const API_GATEWAY = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
 
 export const authApi = {
   githubLogin: () => {
-    window.location.href = `${AUTH_SERVICE}/api/user/login`;
+    window.location.href = `${API_GATEWAY}/api/user/login`;
   },
 
   getCurrentUser: async (): Promise<User> => {
