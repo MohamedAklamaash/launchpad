@@ -167,6 +167,11 @@ Attach this policy to the role:
           "aws:ResourceTag/ManagedBy": "launchpad"
         }
       }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
     }
   ]
 }
@@ -356,6 +361,11 @@ cat > deployment-policy.json <<'EOF'
           "aws:ResourceTag/ManagedBy": "launchpad"
         }
       }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudwatch:GetMetricData",
+      "Resource": "*"
     }
   ]
 }
@@ -579,7 +589,7 @@ This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
 <!-- BEGIN GENERATED: policy version — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
-**Policy version**: 4
+**Policy version**: 5
 <!-- END GENERATED -->
 
 **Document revision**: 2.2.0  

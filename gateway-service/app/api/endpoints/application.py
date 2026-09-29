@@ -258,6 +258,45 @@ async def application_logs(app_id: uuid.UUID, request: Request):
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/logs/", request)
 
 
+class MetricPoint(BaseModel):
+    t: str
+    v: float
+
+
+class AppMetricsSeries(BaseModel):
+    cpu_percent: list[MetricPoint]
+    memory_percent: list[MetricPoint]
+    request_count: list[MetricPoint]
+    latency_p50_ms: list[MetricPoint]
+    latency_p95_ms: list[MetricPoint]
+    http_4xx: list[MetricPoint]
+    http_5xx: list[MetricPoint]
+    healthy_targets: list[MetricPoint]
+
+
+class AppMetricsResponse(BaseModel):
+    range: str = Field(example="1h", description="1h | 6h | 24h | 7d")
+    period_seconds: int
+    compute_type: str
+    generated_at: str
+    cached: bool
+    series: AppMetricsSeries
+    unavailable: dict[str, str] = Field(
+        default_factory=dict,
+        description="series key -> machine reason it couldn't be produced, e.g. eks_container_metrics_not_enabled",
+    )
+
+
+@router.get("/{app_id}/metrics", summary="Per-application metrics for dashboard charts",
+            response_model=AppMetricsResponse)
+async def application_metrics(app_id: uuid.UUID, request: Request):
+    """Owner only. Query param `range` (1h|6h|24h|7d, default 1h) — passed through
+    untouched; app_id is typed as a UUID here so a malformed id 404s at the gateway rather
+    than reaching the upstream as a raw string. Every series key in the response is always
+    present (empty list if no data); see `unavailable` for why a series may be empty."""
+    return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/metrics/", request)
+
+
 # Mounted at the FastAPI app root (no /applications prefix) — GitHub URLs live under
 # a stable /api/v1/webhooks/github/ path so the auth middleware can prefix-exempt them.
 webhook_router = APIRouter(prefix="/webhooks", tags=["Webhooks"])

@@ -1,5 +1,6 @@
 from django.urls import path
 
+from api.views.app_metrics import application_metrics
 from api.views.application import (
     ApplicationDeploymentsView,
     ApplicationDeployView,
@@ -60,4 +61,7 @@ urlpatterns = [
     path('metrics/', metrics_view, name='metrics'),
     # F2: runtime log tailing — appended at the end to keep this file's diff additive.
     path('applications/<uuid:app_id>/logs/', runtime_logs, name='application-runtime-logs'),
+    # Per-app dashboard metrics. Distinct from `metrics/` above (that's the Prometheus
+    # scrape endpoint at the service root, not per-application).
+    path('applications/<uuid:app_id>/metrics/', application_metrics, name='application-metrics'),
 ]

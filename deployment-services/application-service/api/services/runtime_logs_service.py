@@ -19,7 +19,6 @@ from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 from kubernetes.client.rest import ApiException
 from shared.enums.orchestrator import ComputeType
-from shared.enums.user_role import UserRole
 
 from api.common.naming import (
     app_slug,
@@ -28,9 +27,11 @@ from api.common.naming import (
     require_k8s_safe_slug,
 )
 from api.k8s.deployer import cluster_name_from_arn, k8s_apis, namespace_for
-from api.models.application import Application
-from api.models.environment import Environment
-from api.services.infrastructure_permissions import InfrastructurePermissions
+from api.services.owner_only import (
+    NotDeployedError,
+    get_deployed_environment,
+    get_owner_authorized_app,
+)
 from api.services.runtime_logs_cursor import decode_cursor, encode_cursor
 
 logger = logging.getLogger(__name__)
@@ -70,10 +71,6 @@ def _budget_config(deadline: float) -> Config:
     )
 
 
-class NotDeployedError(Exception):
-    """The application has no active deployment to read logs from."""
-
-
 class UpstreamUnavailableError(Exception):
     """The mock/real gate (aws.session.create_boto3_session, api.k8s.deployer.k8s_apis)
     would refuse this call — a platform configuration mismatch between this infra's
@@ -111,7 +108,7 @@ class RuntimeLogsService:
         if cursor and minutes is not None:
             raise ValueError("cursor and minutes cannot be combined")
 
-        app = self._get_authorized_app(user_id, app_id)
+        app = get_owner_authorized_app(user_id, app_id)
         infra = app.infrastructure
         is_eks = infra.compute_type == ComputeType.EKS
 
@@ -132,7 +129,7 @@ class RuntimeLogsService:
         if not bool(getattr(infra, "is_mock", False)) and not infra.code:
             raise NotDeployedError("Infrastructure not authenticated with AWS")
 
-        env = self._deployed_environment(app, infra)
+        env = get_deployed_environment(app, infra)
 
         deadline = time.monotonic() + CALL_DEADLINE_SECONDS
         # The initial AssumeRole is on the same deadline as everything after it — for a
@@ -143,34 +140,6 @@ class RuntimeLogsService:
         if is_eks:
             return self._tail_eks(session, app, env, infra, container, minutes, previous, deadline)
         return self._tail_ecs(session, app, env, infra, container, minutes, cursor, user_id, deadline)
-
-    # ── authorization ────────────────────────────────────────────────────────
-
-    def _get_authorized_app(self, user_id, app_id) -> Application:
-        try:
-            uuid.UUID(str(app_id))
-        except ValueError:
-            raise LookupError("Application not found") from None
-        try:
-            app = Application.objects.select_related("infrastructure").get(id=app_id)
-        except Application.DoesNotExist:
-            raise LookupError("Application not found") from None
-        role = InfrastructurePermissions.get_user_role(app.infrastructure, user_id)
-        if role is None:
-            raise LookupError("Application not found")
-        if role != UserRole.SUPER_ADMIN:
-            raise PermissionError("Only the infrastructure owner can view runtime logs")
-        return app
-
-    def _deployed_environment(self, app: Application, infra) -> Environment:
-        env = Environment.objects.filter(infrastructure_id=infra.id).first()
-        if not env or env.status != "ACTIVE" or not env.cluster_arn:
-            raise NotDeployedError("Environment is not active")
-        is_eks = infra.compute_type == ComputeType.EKS
-        deployed = (app.runtime_refs or {}).get("namespace") if is_eks else app.service_arn
-        if not deployed:
-            raise NotDeployedError("Application has not been deployed")
-        return env
 
     # ── ECS ──────────────────────────────────────────────────────────────────
 
