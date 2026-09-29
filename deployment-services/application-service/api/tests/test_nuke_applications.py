@@ -204,3 +204,44 @@ def test_internal_views_need_no_user_only_the_internal_token(module, view):
     cls = getattr(importlib.import_module(module), view).cls
     assert list(cls.authentication_classes) == []
     assert list(cls.permission_classes) == [AllowAny]
+
+
+@pytest.mark.django_db
+def test_nuke_treats_an_already_destroyed_cluster_as_cleaned(infra, make_app):
+    """Real AWS: a retried nuke ran after terraform had destroyed the EKS cluster, and
+    cleanup failed with ResourceNotFoundException — the app could never be removed."""
+    from botocore.exceptions import ClientError
+
+    from api.models.application import Application
+    from api.services.application_service import ApplicationService
+
+    app = make_app()
+    service = ApplicationService()
+    gone = ClientError({"Error": {"Code": "ResourceNotFoundException", "Message": "No cluster found"}}, "DescribeCluster")
+    with patch.object(service.cleanup_service, "cleanup_application", side_effect=gone), \
+         patch("api.services.application_service.ApplicationEventProducer"), \
+         patch("api.services.custom_domain_routing.detach_custom_domains_for_application"), \
+         patch("api.services.custom_domain_routing.notify_infrastructure_service_of_deleted_application"):
+        result = service.nuke_applications_for_infrastructure(str(infra.id))
+
+    assert result["errors"] == []
+    assert result["deleted_count"] == 1
+    assert not Application.objects.filter(id=app.id).exists()
+
+
+@pytest.mark.django_db
+def test_nuke_still_fails_an_app_on_other_aws_errors(infra, make_app):
+    from botocore.exceptions import ClientError
+
+    from api.models.application import Application
+    from api.services.application_service import ApplicationService
+
+    app = make_app()
+    service = ApplicationService()
+    denied = ClientError({"Error": {"Code": "AccessDenied", "Message": "nope"}}, "AssumeRole")
+    with patch.object(service.cleanup_service, "cleanup_application", side_effect=denied):
+        result = service.nuke_applications_for_infrastructure(str(infra.id))
+
+    assert result["deleted_count"] == 0
+    assert len(result["errors"]) == 1
+    assert Application.objects.filter(id=app.id).exists()

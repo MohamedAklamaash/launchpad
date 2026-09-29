@@ -2,6 +2,7 @@ import logging
 import os
 import uuid
 
+from botocore.exceptions import ClientError
 from django.conf import settings
 from django.db import transaction
 from shared.enums.orchestrator import ComputeType
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 class DeploymentInProgressError(Exception):
     """Raised when an operation can't proceed because a deploy holds the app's lock."""
+
+
+_CLUSTER_GONE_CODES = {"ResourceNotFoundException", "ClusterNotFoundException"}
 
 
 class ApplicationService:
@@ -355,7 +359,16 @@ class ApplicationService:
                     # the nuke worker's own "leftovers" step can delete it explicitly.
                     log_groups.append(ecs_log_group_for(app))
 
-                self.cleanup_service.cleanup_application(app)
+                try:
+                    self.cleanup_service.cleanup_application(app)
+                except ClientError as e:
+                    # A retried nuke runs after terraform already destroyed the cluster
+                    # (real AWS: EKS describe_cluster -> ResourceNotFoundException). With
+                    # the whole cluster gone there is nothing of this app's left to
+                    # remove; any other error still fails the app.
+                    if e.response.get("Error", {}).get("Code") not in _CLUSTER_GONE_CODES:
+                        raise
+                    logger.info(f"Nuke: cluster for application {app_id} already gone; removing its record")
                 self.app_repo.delete(app_id)
                 deleted_count += 1
 
