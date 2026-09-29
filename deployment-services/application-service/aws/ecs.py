@@ -276,7 +276,7 @@ class ECSClient:
                     return response['services'][0]['serviceArn']
             raise
     
-    def wait_for_service_stable(self, cluster_arn, service_name, timeout=None):
+    def wait_for_service_stable(self, cluster_arn, service_name, timeout=None, expected_task_definition_arn=None):
         """Wait for the ECS service's PRIMARY deployment to converge.
 
         Keys on the PRIMARY deployment's own runningCount/desiredCount/rolloutState, not
@@ -291,6 +291,16 @@ class ECSClient:
         success anyway. Also requires every non-PRIMARY (ACTIVE) deployment to be fully
         drained — a "converged" PRIMARY next to a still-running old deployment means
         traffic may still be served by the task definition this deploy meant to replace.
+
+        `expected_task_definition_arn` closes a second way the same incident can recur:
+        `deploymentCircuitBreaker: {enable: True, rollback: True}` (see create_service/
+        update_service below) means ECS itself can give up on our new task definition and
+        auto-rollback to the previous one. That rollback is its own new deployment, and
+        once IT converges (COMPLETED, runningCount == desiredCount, nothing else running)
+        every check above reports "stable" — the caller never finds out its own deploy
+        never shipped. Every caller of this method already knows the task definition ARN
+        it just told ECS to run, so it's passed in and checked against the PRIMARY
+        deployment's own `taskDefinition` before anything is called stable.
         """
         import time
         if timeout is None:
@@ -326,6 +336,17 @@ class ECSClient:
             rollout = primary.get('rolloutState', '')
             failed = primary.get('failedTasks', 0)
             last_primary_failed = failed
+            primary_task_def = primary.get('taskDefinition')
+
+            if (
+                expected_task_definition_arn
+                and primary_task_def
+                and primary_task_def != expected_task_definition_arn
+            ):
+                raise Exception(
+                    "new version failed and ECS rolled back to the previous one — "
+                    "check runtime logs"
+                )
 
             if rollout == 'FAILED':
                 raise Exception(

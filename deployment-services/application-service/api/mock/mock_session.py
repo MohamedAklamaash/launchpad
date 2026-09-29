@@ -85,7 +85,11 @@ class MockClient:
         # unless a test overrides this to express an in-progress or stuck rollout — e.g. a
         # PRIMARY that never converges next to an ACTIVE deployment still running the old
         # task, the shape wait_for_service_stable (aws/ecs.py) must fail on rather than
-        # report stable (see the e2e-web incident it fixes).
+        # report stable (see the e2e-web incident it fixes). A PRIMARY dict may also carry
+        # its own "taskDefinition", left out of the default so most tests never trip the
+        # expected_task_definition_arn check — set it to something other than the
+        # application's own task_definition_arn to express a deploymentCircuitBreaker
+        # auto-rollback onto the previous task definition.
         self._service_deployments = service_deployments if service_deployments is not None else {}
         self.meta = _MockMeta(region)
         self.exceptions = _MockClientExceptions(service)

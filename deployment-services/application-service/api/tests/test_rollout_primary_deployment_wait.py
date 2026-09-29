@@ -136,8 +136,8 @@ def test_stuck_primary_with_old_task_still_running_fails_the_deploy(
     original_wait = service._wait_for_service_stable_with_refresh
     monkeypatch.setattr(
         service, "_wait_for_service_stable_with_refresh",
-        lambda infra, cluster_arn, service_name, timeout=2: original_wait(
-            infra, cluster_arn, service_name, timeout=timeout,
+        lambda infra, cluster_arn, service_name, timeout=2, **kw: original_wait(
+            infra, cluster_arn, service_name, timeout=timeout, **kw,
         ),
     )
     session._service_deployments["my-app-service"] = [
@@ -202,8 +202,8 @@ def test_stuck_primary_fails_deploy_application_before_publishing_a_host_url(
     original_wait = service._wait_for_service_stable_with_refresh
     monkeypatch.setattr(
         service, "_wait_for_service_stable_with_refresh",
-        lambda infra, cluster_arn, service_name, timeout=2: original_wait(
-            infra, cluster_arn, service_name, timeout=timeout,
+        lambda infra, cluster_arn, service_name, timeout=2, **kw: original_wait(
+            infra, cluster_arn, service_name, timeout=timeout, **kw,
         ),
     )
     session._service_deployments["my-app-service"] = [
@@ -225,3 +225,42 @@ def test_stuck_primary_fails_deploy_application_before_publishing_a_host_url(
     assert "new tasks failed to start" in app.error_message
     assert app.host_forward_rule_arn is None
     assert app.deployment_url is None
+
+
+@pytest.mark.django_db
+def test_circuit_breaker_rollback_onto_old_task_definition_fails_the_deploy(
+    ecs_app, old_deployment, mock_service, settings,
+):
+    """ECS's own deploymentCircuitBreaker (enable=True, rollback=True — see
+    ECSClient.create_service/update_service) can silently converge the service back onto
+    the PREVIOUS task definition when the new one keeps failing. That rollback is its own
+    deployment; once it converges, PRIMARY looks completely healthy (COMPLETED,
+    runningCount == desiredCount, nothing else running) — every check except the
+    expected_task_definition_arn one would call this "stable"."""
+    settings.PLATFORM_BASE_DOMAIN = None
+    app, _env = ecs_app
+    service, session = mock_service
+    # A genuinely different task definition from whatever the mock will register for this
+    # rollback (the mock's register_task_definition is deterministic per family/revision,
+    # so it would otherwise coincidentally match app.task_definition_arn) — the point is
+    # that PRIMARY reports running something other than what this call just asked for.
+    stale_task_definition_arn = (
+        f"arn:aws:ecs:us-east-1:{ACCOUNT_ID}:task-definition/my-app-task:0"
+    )
+    session._service_deployments["my-app-service"] = [
+        {
+            "status": "PRIMARY", "rolloutState": "COMPLETED", "failedTasks": 0,
+            "runningCount": 1, "desiredCount": 1,
+            "taskDefinition": stale_task_definition_arn,
+        },
+    ]
+
+    with pytest.raises(Exception, match="ECS rolled back to the previous one"):
+        service.rollback_application(app, old_deployment)
+
+    app.refresh_from_db()
+    assert app.status == "FAILED"
+    assert "ECS rolled back to the previous one" in app.error_message
+    # The rollback DID register a new task definition (task_def_arn, set before the wait
+    # ran) — it's just not the one ECS actually converged the service onto.
+    assert app.task_definition_arn != stale_task_definition_arn
