@@ -133,12 +133,13 @@ function ChartTooltip({ active, payload, label, unit }: {
   );
 }
 
-function MetricChart({ title, unit, lines, range, yDomain, unavailableReason }: {
+function MetricChart({ title, unit, lines, range, yDomain, unavailableReason, allowDecimals = true }: {
   title: string;
   unit: string;
   lines: LineSpec[];
   range: AppMetricsRange;
   yDomain?: [number, number];
+  allowDecimals?: boolean;
   unavailableReason?: string;
 }) {
   const data = useMemo(() => toChartRows(lines), [lines]);
@@ -158,7 +159,7 @@ function MetricChart({ title, unit, lines, range, yDomain, unavailableReason }: 
         </div>
       ) : (
         <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
-          <LineChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+          <LineChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="var(--hairline)" vertical={false} />
             <XAxis
               dataKey="t"
@@ -172,11 +173,14 @@ function MetricChart({ title, unit, lines, range, yDomain, unavailableReason }: 
               minTickGap={32}
             />
             <YAxis
-              domain={yDomain ?? ['auto', 'auto']}
+              // Every series here is non-negative; 'auto' let a flat line (e.g. 1 healthy
+              // target) pad below zero to -1.
+              domain={yDomain ?? [0, 'auto']}
+              allowDecimals={allowDecimals}
               tick={{ fontSize: 10, fill: 'var(--muted-foreground)' }}
               axisLine={false}
               tickLine={false}
-              width={40}
+              width={44}
             />
             <Tooltip content={<ChartTooltip unit={unit} />} />
             {showLegend && (
@@ -432,6 +436,7 @@ export function AppMetricsPanel({ appId, infraId }: Props) {
             <MetricChart
               title="Healthy targets"
               unit=""
+              allowDecimals={false}
               range={range}
               unavailableReason={unavailable.healthy_targets ? unavailableMessage(unavailable.healthy_targets) : undefined}
               lines={[{ key: 'healthy', name: 'Healthy targets', color: 'var(--success)', points: healthy ?? [] }]}
