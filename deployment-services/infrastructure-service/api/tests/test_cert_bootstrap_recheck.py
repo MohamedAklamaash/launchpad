@@ -93,14 +93,40 @@ def test_timeout_marks_failed_without_touching_environment(make_infra):
     infra = make_infra()
     cert = _pending_cert(infra, requested_at=timezone.now() - timedelta(minutes=45))
 
-    with patch("api.cloud_providers.aws.authenticate.assume_role_credentials_only") as auth:
+    with patch("api.cloud_providers.aws.authenticate.assume_role_credentials_only", return_value={}), \
+            patch("api.services.cert_bootstrap._acm_client", return_value=_fake_describe_client("PENDING_VALIDATION")):
         check_pending_certificates()
 
-    auth.assert_not_called()  # timeout short-circuits before any AWS call
     cert.refresh_from_db()
     assert cert.tls_status == InfrastructureCertificate.TLS_FAILED
     env = Environment.objects.get(infrastructure=infra)
     assert env.status == "ACTIVE"
+
+
+def test_certificate_issued_after_the_deadline_is_adopted_not_failed(make_infra):
+    """Found on real AWS: DNS delegation landed after the 30-minute window, ACM issued the
+    certificate, and the old ordering (timeout checked first) marked it FAILED anyway."""
+    infra = make_infra()
+    cert = _pending_cert(infra, requested_at=timezone.now() - timedelta(minutes=45))
+
+    with patch("api.cloud_providers.aws.authenticate.assume_role_credentials_only", return_value={}), \
+            patch("api.services.cert_bootstrap._acm_client", return_value=_fake_describe_client("ISSUED")), \
+            patch("api.services.infra_queue.InfraQueue.enqueue_provision"):
+        check_pending_certificates()
+
+    cert.refresh_from_db()
+    assert cert.tls_status == InfrastructureCertificate.TLS_ISSUED
+
+
+def test_timed_out_row_with_unreadable_status_still_ages_out(make_infra):
+    infra = make_infra()
+    cert = _pending_cert(infra, requested_at=timezone.now() - timedelta(minutes=45))
+
+    with patch("api.cloud_providers.aws.authenticate.assume_role_credentials_only", side_effect=RuntimeError("role gone")):
+        check_pending_certificates()
+
+    cert.refresh_from_db()
+    assert cert.tls_status == InfrastructureCertificate.TLS_FAILED
 
 
 def test_describe_error_leaves_row_pending_for_next_tick(make_infra):

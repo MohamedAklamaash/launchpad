@@ -238,7 +238,8 @@ def test_idempotency_token_changes_between_a_failed_attempt_and_its_retry(make_i
         tokens.append(kwargs.get("IdempotencyToken"))
         return original_request(*args, **kwargs)
 
-    with patch.object(client, "request_certificate", side_effect=_capture):
+    with patch.object(client, "request_certificate", side_effect=_capture), \
+            patch.object(cert_bootstrap, "_certificate_status", return_value="VALIDATION_TIMED_OUT"):
         _dev_ensure(infra)  # first attempt
         InfrastructureCertificate.objects.filter(infrastructure=infra).update(
             tls_status=InfrastructureCertificate.TLS_FAILED,
@@ -386,3 +387,42 @@ def test_reenqueue_after_policy_refresh_is_a_noop_for_a_nonexistent_infra(db):
         cert_bootstrap.maybe_reenqueue_after_policy_refresh(uuid.uuid4())
 
     enqueue.assert_not_called()
+
+
+def test_failed_retry_adopts_a_certificate_that_issued_after_the_timeout(make_infra):
+    """Found on real AWS: the retry deleted a certificate ACM had already issued."""
+    infra = make_infra()
+    client = cert_bootstrap._shared_fake_acm()
+    _dev_ensure(infra)
+    cert = InfrastructureCertificate.objects.get(infrastructure=infra)
+    InfrastructureCertificate.objects.filter(id=cert.id).update(tls_status=InfrastructureCertificate.TLS_FAILED)
+
+    with patch.object(cert_bootstrap, "_certificate_status", return_value="ISSUED"), \
+            patch.object(client, "request_certificate") as request, \
+            patch.object(client, "delete_certificate") as delete:
+        _dev_ensure(infra)
+
+    cert.refresh_from_db()
+    assert cert.tls_status == InfrastructureCertificate.TLS_ISSUED
+    request.assert_not_called()
+    delete.assert_not_called()
+
+
+def test_reuse_scan_skips_a_certificate_deleted_between_list_and_tag_read():
+    """Found on real AWS: ListCertificates still returned the certificate this retry had just
+    deleted, and ListTagsForCertificate raised ResourceNotFoundException."""
+    from botocore.exceptions import ClientError
+
+    class _Client:
+        def list_certificates(self, **_):
+            return {"CertificateSummaryList": [
+                {"DomainName": "*.x.example", "CertificateArn": "arn:gone", "Type": "AMAZON_ISSUED"},
+                {"DomainName": "*.x.example", "CertificateArn": "arn:ours", "Type": "AMAZON_ISSUED"},
+            ]}
+
+        def list_tags_for_certificate(self, CertificateArn):
+            if CertificateArn == "arn:gone":
+                raise ClientError({"Error": {"Code": "ResourceNotFoundException", "Message": "x"}}, "ListTagsForCertificate")
+            return {"Tags": [{"Key": cert_bootstrap.CERT_TAG_KEY, "Value": cert_bootstrap.CERT_TAG_VALUE}]}
+
+    assert cert_bootstrap._find_reusable_certificate(_Client(), "*.x.example") == "arn:ours"

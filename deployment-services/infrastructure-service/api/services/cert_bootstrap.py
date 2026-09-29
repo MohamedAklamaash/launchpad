@@ -32,6 +32,7 @@ from api.models.infrastructure_certificate import InfrastructureCertificate
 from api.services.platform_dns import naming
 from api.services.platform_dns.producer import request_dns_reconcile
 from api.services.platform_dns.route53_client import MockRealMismatch
+from botocore.exceptions import ClientError
 from django.conf import settings
 from django.utils import timezone
 
@@ -142,6 +143,14 @@ def _ensure_certificate(infra, *, credentials: dict, region: str, infra_is_mock:
     client = _acm_client(infra_is_mock=infra_is_mock, dev_mode=dev_mode, credentials=credentials, region=region)
 
     if cert is not None and cert.tls_status == InfrastructureCertificate.TLS_FAILED and cert.cert_arn:
+        # FAILED can mean "timed out while DNS wasn't delegated yet" — ACM keeps validating
+        # after our deadline, so the certificate may be ISSUED by now. Adopt it rather than
+        # deleting a valid certificate and starting validation over.
+        if _certificate_status(client, cert.cert_arn) == "ISSUED":
+            cert.tls_status = InfrastructureCertificate.TLS_ISSUED
+            cert.save(update_fields=["tls_status", "updated_at"])
+            logger.info("adopting ACM certificate for %s that issued after the timeout", infra.id)
+            return
         _best_effort_delete(client, cert.cert_arn)
 
     if cert is None:
@@ -239,6 +248,14 @@ def maybe_reenqueue_after_policy_refresh(infra_id) -> None:
     InfraQueue.enqueue_provision(str(infra_id))
 
 
+def _certificate_status(client, cert_arn: str) -> str | None:
+    try:
+        return client.describe_certificate(CertificateArn=cert_arn)["Certificate"]["Status"]
+    except Exception:
+        logger.warning("could not read ACM status for %s", cert_arn, exc_info=True)
+        return None
+
+
 def _best_effort_delete(client, cert_arn: str) -> None:
     try:
         client.delete_certificate(CertificateArn=cert_arn)
@@ -281,7 +298,14 @@ def _find_reusable_certificate(client, domain_name: str) -> str | None:
             if summary.get("Type", "AMAZON_ISSUED") != "AMAZON_ISSUED":
                 continue
             arn = summary["CertificateArn"]
-            tags_response = client.list_tags_for_certificate(CertificateArn=arn)
+            try:
+                tags_response = client.list_tags_for_certificate(CertificateArn=arn)
+            except ClientError as e:
+                # ListCertificates is eventually consistent: a certificate deleted moments
+                # ago (e.g. by this same retry path) can still be listed.
+                if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    continue
+                raise
             tags = {tag["Key"]: tag["Value"] for tag in tags_response.get("Tags", [])}
             if tags.get(CERT_TAG_KEY) == CERT_TAG_VALUE:
                 return arn
