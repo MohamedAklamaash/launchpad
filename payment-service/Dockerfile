@@ -1,4 +1,5 @@
-FROM public.ecr.aws/docker/library/python:3.11-slim AS base
+ARG BASE_REGISTRY=public.ecr.aws/docker/library
+FROM ${BASE_REGISTRY}/python:3.11-slim AS base
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

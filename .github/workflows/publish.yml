@@ -3,14 +3,222 @@ name: Publish Docker Images
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Comma-separated service ids to build, or 'all'"
+        required: false
+        default: "all"
+      push:
+        description: "Push images and attest (otherwise build-only)"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Compute build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.compute.outputs.matrix }}
+      has_matches: ${{ steps.compute.outputs.has_matches }}
+      publish: ${{ steps.compute.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute matrix from changed paths
+        id: compute
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+          DISPATCH_SERVICES: ${{ github.event.inputs.services }}
+          DISPATCH_PUSH: ${{ github.event.inputs.push }}
+        run: |
+          python3 - <<'EOF'
+          import json
+          import os
+          import subprocess
+
+          # Single source of truth for the publish matrix: every entry the
+          # docker job can ever build, plus the paths that should trigger it.
+          SERVICES = [
+              {
+                  "service": "gateway-service",
+                  "context": "gateway-service",
+                  "dockerfile": "gateway-service/Dockerfile",
+                  "paths": ["gateway-service/"],
+              },
+              {
+                  "service": "auth-service",
+                  "context": "identity-services",
+                  "dockerfile": "identity-services/services/auth-service/Dockerfile",
+                  "paths": [
+                      "identity-services/services/auth-service/",
+                      "identity-services/packages/common/",
+                      "identity-services/package.json",
+                      "identity-services/pnpm-lock.yaml",
+                      "identity-services/pnpm-workspace.yaml",
+                      "identity-services/tsconfig.json",
+                      "identity-services/tsconfig.base.json",
+                  ],
+              },
+              {
+                  "service": "user-service",
+                  "context": "identity-services",
+                  "dockerfile": "identity-services/services/user-service/Dockerfile",
+                  "paths": [
+                      "identity-services/services/user-service/",
+                      "identity-services/packages/common/",
+                      "identity-services/package.json",
+                      "identity-services/pnpm-lock.yaml",
+                      "identity-services/pnpm-workspace.yaml",
+                      "identity-services/tsconfig.json",
+                      "identity-services/tsconfig.base.json",
+                  ],
+              },
+              {
+                  "service": "notification-service",
+                  "context": "identity-services",
+                  "dockerfile": "identity-services/services/notification-service/Dockerfile",
+                  "paths": [
+                      "identity-services/services/notification-service/",
+                      "identity-services/packages/common/",
+                      "identity-services/package.json",
+                      "identity-services/pnpm-lock.yaml",
+                      "identity-services/pnpm-workspace.yaml",
+                      "identity-services/tsconfig.json",
+                      "identity-services/tsconfig.base.json",
+                  ],
+              },
+              {
+                  "service": "payment-service",
+                  "context": ".",
+                  "dockerfile": "payment-service/Dockerfile",
+                  "paths": [
+                      "payment-service/",
+                      "deployment-services/shared/",
+                      "deployment-services/requirements.txt",
+                  ],
+              },
+              {
+                  "service": "application-service",
+                  "context": ".",
+                  "dockerfile": "deployment-services/application-service/Dockerfile",
+                  "paths": [
+                      "deployment-services/application-service/",
+                      "deployment-services/shared/",
+                      "deployment-services/requirements.txt",
+                  ],
+              },
+              {
+                  "service": "application-worker",
+                  "context": ".",
+                  "dockerfile": "deployment-services/application-service/Dockerfile.worker",
+                  "paths": [
+                      "deployment-services/application-service/",
+                      "deployment-services/shared/",
+                      "deployment-services/requirements.txt",
+                  ],
+              },
+              {
+                  "service": "infrastructure-service",
+                  "context": ".",
+                  "dockerfile": "deployment-services/infrastructure-service/Dockerfile",
+                  "paths": [
+                      "deployment-services/infrastructure-service/",
+                      "deployment-services/shared/",
+                      "deployment-services/requirements.txt",
+                  ],
+              },
+              {
+                  "service": "infrastructure-worker",
+                  "context": ".",
+                  "dockerfile": "deployment-services/infrastructure-service/Dockerfile.worker",
+                  "paths": [
+                      "deployment-services/infrastructure-service/",
+                      "deployment-services/shared/",
+                      "deployment-services/requirements.txt",
+                  ],
+              },
+              {
+                  "service": "frontend",
+                  "context": "launchpad-frontend",
+                  "dockerfile": "launchpad-frontend/Dockerfile",
+                  "paths": ["launchpad-frontend/"],
+              },
+          ]
+
+          WORKFLOW_FILE = ".github/workflows/publish.yml"
+          ALL_ZERO_SHA = "0000000000000000000000000000000000000000"
+
+          event_name = os.environ["EVENT_NAME"]
+
+          if event_name == "workflow_dispatch":
+              publish = os.environ.get("DISPATCH_PUSH", "false") == "true"
+              wanted = os.environ.get("DISPATCH_SERVICES", "all").strip() or "all"
+              if wanted == "all":
+                  matrix = SERVICES
+              else:
+                  names = {s.strip() for s in wanted.split(",") if s.strip()}
+                  matrix = [s for s in SERVICES if s["service"] in names]
+          else:
+              publish = True
+              before = os.environ.get("BEFORE_SHA", "")
+              current = os.environ["CURRENT_SHA"]
+
+              if not before or before == ALL_ZERO_SHA:
+                  matrix = SERVICES
+              else:
+                  try:
+                      diff = subprocess.run(
+                          ["git", "diff", "--name-only", before, current],
+                          capture_output=True,
+                          text=True,
+                          check=True,
+                      )
+                      changed = [line for line in diff.stdout.splitlines() if line]
+                  except subprocess.CalledProcessError as exc:
+                      print(f"git diff failed ({exc}); building everything")
+                      changed = None
+
+                  if changed is None or WORKFLOW_FILE in changed:
+                      matrix = SERVICES
+                  else:
+                      matrix = [
+                          s
+                          for s in SERVICES
+                          if any(
+                              changed_file.startswith(path)
+                              for path in s["paths"]
+                              for changed_file in changed
+                          )
+                      ]
+
+          matrix_json = json.dumps(
+              [{k: v for k, v in s.items() if k != "paths"} for s in matrix]
+          )
+
+          github_output = os.environ["GITHUB_OUTPUT"]
+          with open(github_output, "a") as f:
+              f.write(f"matrix={matrix_json}\n")
+              f.write(f"has_matches={'true' if matrix else 'false'}\n")
+              f.write(f"publish={'true' if publish else 'false'}\n")
+
+          print(f"Selected services: {[s['service'] for s in matrix]}")
+          print(f"Publish: {publish}")
+          EOF
+
   docker:
     name: Build & Push (${{ matrix.service }})
+    needs: changes
+    if: needs.changes.outputs.has_matches == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -19,47 +227,9 @@ jobs:
       id-token: write
     strategy:
       fail-fast: false
+      max-parallel: 4
       matrix:
-        include:
-          - service: gateway-service
-            context: gateway-service
-            dockerfile: gateway-service/Dockerfile
-
-          - service: auth-service
-            context: identity-services
-            dockerfile: identity-services/services/auth-service/Dockerfile
-
-          - service: user-service
-            context: identity-services
-            dockerfile: identity-services/services/user-service/Dockerfile
-
-          - service: notification-service
-            context: identity-services
-            dockerfile: identity-services/services/notification-service/Dockerfile
-
-          - service: payment-service
-            context: .
-            dockerfile: payment-service/Dockerfile
-
-          - service: application-service
-            context: .
-            dockerfile: deployment-services/application-service/Dockerfile
-
-          - service: application-worker
-            context: .
-            dockerfile: deployment-services/application-service/Dockerfile.worker
-
-          - service: infrastructure-service
-            context: .
-            dockerfile: deployment-services/infrastructure-service/Dockerfile
-
-          - service: infrastructure-worker
-            context: .
-            dockerfile: deployment-services/infrastructure-service/Dockerfile.worker
-
-          - service: frontend
-            context: launchpad-frontend
-            dockerfile: launchpad-frontend/Dockerfile
+        include: ${{ fromJson(needs.changes.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -83,20 +253,43 @@ jobs:
             type=raw,value=latest
 
       - name: Build and push
-        id: push
+        id: build
+        continue-on-error: true
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          push: true
+          push: ${{ needs.changes.outputs.publish == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_REGISTRY=docker.io/library
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Wait before retry
+        if: steps.build.outcome == 'failure'
+        run: sleep 30
+
+      - name: Build and push (retry)
+        id: build_retry
+        if: steps.build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: ${{ needs.changes.outputs.publish == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BASE_REGISTRY=docker.io/library
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
       - name: Generate artifact attestation
+        if: needs.changes.outputs.publish == 'true'
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: index.docker.io/${{secrets.DOCKER_USERNAME}}/launchpad-${{ matrix.service }}
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.build.outputs.digest || steps.build_retry.outputs.digest }}
           push-to-registry: true
