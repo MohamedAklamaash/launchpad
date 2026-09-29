@@ -114,7 +114,7 @@ class SleepResponseSerializer(serializers.Serializer):
 class WakeResponseSerializer(serializers.Serializer):
     message = serializers.CharField()
     application_id = serializers.UUIDField()
-    status = serializers.CharField(help_text="Always 'ACTIVE'")
+    status = serializers.CharField(help_text="The application's stored status — 'DEPLOYING' until the background wake job confirms it is healthy and flips it to 'ACTIVE'")
 
 class ErrorSerializer(serializers.Serializer):
     error = serializers.CharField()
@@ -429,7 +429,8 @@ class ApplicationWakeView(APIView):
 
     @extend_schema(
         summary="Wake application from sleep",
-        description="No request body. Restores ECS desired task count to the previously configured value.",
+        description="No request body. Restores ECS desired task count and enqueues a background "
+                     "job that waits for the service to become healthy before marking it ACTIVE.",
         parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
         request=None,
         responses={200: WakeResponseSerializer, 400: ErrorSerializer, 403: ErrorSerializer, 404: ErrorSerializer, 500: ErrorSerializer},
@@ -443,8 +444,8 @@ class ApplicationWakeView(APIView):
                 return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
             require_not_exited(app.infrastructure)
             self.sleep_service.wake_application(app)
-            return Response({"message": "Application woken up successfully",
-                             "application_id": str(pk), "status": "ACTIVE"})
+            return Response({"message": "Application is starting — this may take a minute",
+                             "application_id": str(pk), "status": app.status})
         except InfrastructureExitedError as e:
             return Response({"error": str(e), "code": e.code}, status=status.HTTP_409_CONFLICT)
         except ValueError as e:

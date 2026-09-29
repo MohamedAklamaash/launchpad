@@ -77,6 +77,21 @@ class DeploymentQueue:
             raise
 
     @staticmethod
+    def enqueue_wake(app_id: str, infrastructure_id: str):
+        """A wake only restores ECS desiredCount synchronously (application_sleep_service.py)
+        — the service isn't actually stable/healthy yet. This job finishes the job: wait for
+        it, then mark the application ACTIVE (or FAILED on timeout). `infrastructure_id` is
+        required (unlike enqueue_deployment's optional one) so dispatch() always routes this
+        through the per-infra queue rather than falling back to a bare run_deploy submission."""
+        try:
+            job = {"app_id": str(app_id), "action": "wake", "infrastructure_id": str(infrastructure_id), "retry_count": 0}
+            DeploymentQueue.get_redis().rpush(DeploymentQueue.QUEUE_NAME, json.dumps(job))
+            logger.info(f"Enqueued wake completion for application {app_id}")
+        except Exception as e:
+            logger.error(f"Failed to enqueue wake completion: {e}")
+            raise
+
+    @staticmethod
     def enqueue_rollback(app_id: str, infrastructure_id: str, deployment_id: str):
         try:
             job = {

@@ -96,6 +96,34 @@ def execute_rollback_job(app_id, job):
     DeploymentQueue.ack_job(job)
 
 
+def execute_wake_job(app_id, job):
+    """Finish a wake started by ApplicationSleepService.wake_application: wait for the
+    restored ECS service to become stable and healthy, then mark the app ACTIVE (or FAILED
+    on timeout). See execute_deploy_job for the H2 re-check this mirrors.
+
+    Unlike deploy/rollback, a failure here is terminal rather than retried — ack_job runs
+    regardless of outcome. complete_wake already records the FAILED status and a sanitized
+    error_message itself, so a retry would just re-run the same wait against a service that
+    is (most likely) going to time out the same way again, holding the infra's worker
+    thread for no benefit. The app is no longer `is_sleeping` at this point, so recovery is
+    a normal redeploy/retry, not another wake."""
+    from api.repositories.application import ApplicationRepository
+    from api.services.application_sleep_service import ApplicationSleepService
+    from api.services.deployment_queue import DeploymentQueue
+
+    app = ApplicationRepository().get_by_id(app_id)
+    if not app:
+        logger.error(f"Application {app_id} not found")
+        DeploymentQueue.ack_job(job)
+        return
+
+    try:
+        ApplicationSleepService().complete_wake(app)
+    except Exception:
+        logger.exception(f"Wake completion failed for {app_id}")
+    DeploymentQueue.ack_job(job)
+
+
 class Command(BaseCommand):
     help = 'Run the deployment worker'
 
@@ -181,6 +209,19 @@ class Command(BaseCommand):
                 _unclaim(app_id)
                 _close_db()
 
+        def run_wake(app_id, job):
+            lock = DeploymentLock()
+            if not lock.acquire(app_id, worker_id):
+                logger.warning(f"App {app_id} already locked, leaving in processing queue for retry")
+                _unclaim(app_id)
+                return
+            try:
+                execute_wake_job(app_id, job)
+            finally:
+                lock.release(app_id, worker_id)
+                _unclaim(app_id)
+                _close_db()
+
         def run_cleanup(job):
             # H2: deliberately NOT gated on Infrastructure.exited_at, unlike deploy/rollback
             # above. Cleanup only runs after the owner deleted an application (or a retry
@@ -258,6 +299,8 @@ class Command(BaseCommand):
                         run_deploy(job['app_id'], job)
                     elif job.get('action') == 'rollback':
                         run_rollback(job['app_id'], job)
+                    elif job.get('action') == 'wake':
+                        run_wake(job['app_id'], job)
                 except Exception:
                     logger.exception(f"Unhandled error in drain loop for {infra_id}")
                     DeploymentQueue.nack_job(job)
