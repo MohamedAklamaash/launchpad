@@ -120,6 +120,22 @@ def test_extra_trust_statements_are_called_out_in_the_summary():
     assert "additional statement" in _drift_summary_markdown(drift)
 
 
+def test_sibling_external_ids_are_reported_without_being_treated_as_drift():
+    """A second Launchpad infrastructure sharing this AWS account's role adds its
+    ExternalId to the same trust statement (create_aws_role.sh's any-of merge) — this
+    must read as an informational count, not as drift, when the trust policy is
+    otherwise identical."""
+    drift = {
+        "note": None,
+        "policy": _identical_policy(),
+        "trust_policy": {**_identical_trust(), "sibling_external_ids": 1},
+    }
+    summary = _drift_summary_markdown(drift)
+    assert "matches the expected shape" in summary
+    assert "other ExternalId" in summary
+    assert "not counted as drift" in summary
+
+
 @pytest.fixture(autouse=True)
 def _stub_infra_queue(monkeypatch):
     fake = MagicMock()

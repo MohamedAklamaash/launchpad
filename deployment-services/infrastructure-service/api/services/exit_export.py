@@ -178,7 +178,7 @@ def _render_readme(infra, environment, inventory: dict, tf_facts: dict) -> str:
         (
             "This archive documents what Launchpad has deployed into your AWS account so "
             "you can keep running it without Launchpad. Nothing here changes anything in "
-            "your account — see REVOCATION.md for the one change you make yourself."
+            "your account — see REVOCATION.md for the change you make yourself to revoke access."
         ),
         "",
         "## Inventory",
@@ -286,15 +286,68 @@ def _render_readme(infra, environment, inventory: dict, tf_facts: dict) -> str:
 
 def _render_revocation(infra) -> str:
     role_arns = _account_role_arns(infra)
+    infra_id = str(infra.id)
+    platform_principal_arn = settings.LAUNCHPAD_PLATFORM_PRINCIPAL_ARN
     return "\n".join([
         "# Revoking Launchpad's access",
         "",
         (
             "Launchpad's only access to your account is the cross-account role below, "
             "assumed with `ExternalId` equal to this infrastructure's id "
-            f"(`{infra.id}`). Deleting it revokes every capability Launchpad has, "
-            "immediately."
+            f"(`{infra_id}`)."
         ),
+        "",
+        (
+            "**This AWS account may host more than one Launchpad infrastructure sharing "
+            "this role** (`create_aws_role.sh` is idempotent per-account, not per-infra: "
+            "onboarding or refreshing a second infrastructure here adds its ExternalId "
+            "to the same role rather than replacing this one's). Deleting the role "
+            "outright would revoke access for those other infrastructures too, not just "
+            "this one — check first."
+        ),
+        "",
+        "## Step 1: check whether another infrastructure shares this role",
+        "",
+        "```",
+        f"aws iam get-role --role-name {ROLE_NAME} \\",
+        '  --query \'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals."sts:ExternalId"\'',
+        "```",
+        "",
+        (
+            f"- If this prints only `{infra_id}` (a bare string, or a one-element list), "
+            "no other infrastructure is trusted on this role — skip to Step 3."
+        ),
+        (
+            f"- If it prints a list containing `{infra_id}` **and other ids**, this "
+            "account hosts other Launchpad infrastructures on this same role. Continue "
+            "to Step 2 — do not delete the role."
+        ),
+        "",
+        "## Step 2: remove only this infrastructure's ExternalId (other ids present)",
+        "",
+        (
+            "Rewrite the trust policy with every id from Step 1's output **except** "
+            f"`{infra_id}`, keeping the Principal exactly as shown by `get-role` above:"
+        ),
+        "",
+        "```",
+        f"aws iam update-assume-role-policy --role-name {ROLE_NAME} --policy-document '{{",
+        '  "Version": "2012-10-17",',
+        '  "Statement": [{',
+        '    "Effect": "Allow",',
+        f'    "Principal": {{"AWS": "{platform_principal_arn}"}},',
+        '    "Action": "sts:AssumeRole",',
+        '    "Condition": {"StringEquals": {"sts:ExternalId": ["<remaining-id-1>", "<remaining-id-2>", ...]}}',
+        "  }]",
+        "}'",
+        "```",
+        "",
+        (
+            "This revokes Launchpad's access to *this* infrastructure only; the other "
+            "infrastructure(s) on this role keep working. Stop here — do not run Step 3."
+        ),
+        "",
+        "## Step 3: delete the role (only when this was the last infrastructure on it)",
         "",
         f"1. Detach and delete the policy `{role_arns['policy_name']}` from the role `{ROLE_NAME}`.",
         f"2. Delete the role: `aws iam delete-role --role-name {ROLE_NAME}`.",

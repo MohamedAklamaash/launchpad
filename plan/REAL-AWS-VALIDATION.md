@@ -615,3 +615,38 @@ Blocked on the account, not the code:
       Auto Mode controller) — this is AWS's own documented convention for the
       `aws-load-balancer-controller` action-annotation feature, unverified specifically
       against the Auto Mode variant this cluster runs.
+
+## Multi-infra-per-account trust policy merge (fix/multi-infra-same-account)
+
+Built and tested only against `fake_aws.sh` (a bash stub, not real IAM) and mocked boto3
+clients (`test_live_diff.py`). The `--query` expressions `create_aws_role.sh` now runs
+against `aws iam get-role` have never executed against the real AWS CLI/IAM backend.
+
+- [ ] Run `create_aws_role.sh` twice against one real account with two different
+      `LAUNCHPAD_EXTERNAL_ID`s: confirm the second run's `aws iam get-role --query
+      "...Condition.StringEquals.\"sts:ExternalId\""` actually parses the first run's
+      trust policy the way the fixture assumes (real IAM may return the document with
+      different key ordering, or the CLI's own JMESPath quoting for a colon-containing
+      key (`"sts:ExternalId"`) may behave differently across installed `awscli`/
+      `aws-cli-v2` versions than assumed here) — confirm the resulting trust policy is a
+      two-element list and both infras' `AssumeRole` (with their own ExternalId) succeed.
+- [ ] Confirm `aws iam tag-role` on a role that already has other tags (e.g. ones applied
+      manually, or by a future feature) preserves them — the script only reads and
+      rewrites the `launchpad:compute-types` tag, but this has never run against a role
+      with pre-existing unrelated tags on real AWS.
+- [ ] Run an `ecs_fargate` onboarding, then an `eks` onboarding for a second infra on the
+      same account/role, then re-run the `ecs_fargate` infra's refresh: confirm the role's
+      `MaxSessionDuration` really stays at 7200 after the third run (real `update-role`
+      behavior, not just the fake's state file), and that the deployment policy version
+      installed after the third run is still the EKS document, not silently reverted by
+      IAM's policy-version pruning logic interacting with a real 5-version limit.
+- [ ] Confirm `aws iam get-role`'s `--query` filter `Principal.AWS=='<platform ARN>'`
+      still matches after the platform principal ARN has been rotated once
+      (`LAUNCHPAD_PLATFORM_ACCOUNT_ID`/`_USER` overridden) — a role trust-policy statement
+      written under the old principal must not silently vanish from the merge and get
+      treated as "no existing ExternalIds".
+- [ ] Exercise the F6 revocation instructions (`REVOCATION.md`) against a real two-infra
+      account: run the `aws iam get-role` check, remove one infra's ExternalId via the
+      documented `update-assume-role-policy` command, confirm the *other* infra's
+      `AssumeRole` still succeeds and the removed infra's does not, then delete the role
+      per Step 3 once it's the last one and confirm no residual grant survives.

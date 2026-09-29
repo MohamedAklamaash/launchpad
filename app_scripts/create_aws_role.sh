@@ -95,6 +95,80 @@ else
 fi
 
 POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+PLATFORM_PRINCIPAL_ARN="arn:aws:iam::${TRUSTED_ACCOUNT_ID}:user/${PLATFORM_USER}"
+
+########################################
+# EXISTING ROLE STATE
+########################################
+
+# Two Launchpad infrastructures can land in the same AWS account (Infrastructure.code
+# isn't unique) and share this one role. Overwriting the trust policy with only this
+# run's ExternalId would revoke AssumeRole for every other infra already trusted on the
+# role, forever. Read what's already there (if anything) before we build the new trust
+# policy below, so we can merge instead of replace. Same story for which compute types
+# the role already serves (`launchpad:compute-types` tag): a role also serving an EKS
+# infra must never be narrowed back to the ecs_fargate policy document just because this
+# run happens to be for an ecs_fargate infra.
+ROLE_EXISTS=0
+EXISTING_EXTERNAL_IDS=""
+EXISTING_COMPUTE_TYPES=""
+
+if [ "$MOCK_MODE" != "1" ] && aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
+  ROLE_EXISTS=1
+
+  # --output text flattens whatever shape "sts:ExternalId" is on the wire (a bare
+  # string, or a list from a previous multi-infra run) into whitespace-separated
+  # tokens. A UUID never contains whitespace, so word-splitting on IFS below recovers
+  # the individual ids either way, without jq.
+  #
+  # Deliberately NOT suppressing errors or falling back to "" here: the role was just
+  # confirmed to exist above, so a failure on this read is a real problem (a malformed
+  # query, a permissions issue, a throttle) — not evidence of "no existing ExternalIds".
+  # Treating it as the latter is exactly the bug this script exists to fix: it would
+  # silently proceed to overwrite the trust policy with only this run's id.
+  EXTERNAL_ID_QUERY="Role.AssumeRolePolicyDocument.Statement[?Principal.AWS=='${PLATFORM_PRINCIPAL_ARN}' && Effect=='Allow'].Condition.StringEquals.\"sts:ExternalId\""
+  EXISTING_EXTERNAL_IDS=$(aws iam get-role --role-name "${ROLE_NAME}" --query "$EXTERNAL_ID_QUERY" --output text)
+  [ "$EXISTING_EXTERNAL_IDS" = "None" ] && EXISTING_EXTERNAL_IDS=""
+
+  COMPUTE_TYPES_TAG_QUERY="Role.Tags[?Key=='launchpad:compute-types'].Value | [0]"
+  EXISTING_COMPUTE_TYPES=$(aws iam get-role --role-name "${ROLE_NAME}" --query "$COMPUTE_TYPES_TAG_QUERY" --output text)
+  [ "$EXISTING_COMPUTE_TYPES" = "None" ] && EXISTING_COMPUTE_TYPES=""
+fi
+
+# Prints each non-empty argument exactly once, in first-seen order — used below to
+# merge ExternalIds and compute-type tags without a jq dependency.
+_dedupe_tokens() {
+  local seen=" " token
+  for token in "$@"; do
+    [ -z "$token" ] && continue
+    case "$seen" in
+      *" $token "*) continue ;;
+    esac
+    seen="$seen$token "
+    printf '%s\n' "$token"
+  done
+}
+
+# Word-splitting is intentional here: _dedupe_tokens wants each existing compute type
+# as its own positional argument, and none of them ever contain whitespace.
+# shellcheck disable=SC2046,SC2086
+MERGED_COMPUTE_TYPES=$(_dedupe_tokens $(printf '%s' "$EXISTING_COMPUTE_TYPES" | tr ',' ' ') "$COMPUTE_TYPE")
+# Never downgrade: if any infra this role already serves (or this run requests) is EKS,
+# install the EKS policy document (a strict superset) and keep the 2h max session — see
+# the APPLY IAM section below. A role that only ever serves ecs_fargate infras is
+# unaffected.
+EFFECTIVE_COMPUTE_TYPE="$COMPUTE_TYPE"
+for _served in $MERGED_COMPUTE_TYPES; do
+  [ "$_served" = "eks" ] && EFFECTIVE_COMPUTE_TYPE="eks"
+done
+unset _served
+if [ "$EFFECTIVE_COMPUTE_TYPE" != "$COMPUTE_TYPE" ]; then
+  echo "Role already serves EKS elsewhere; installing the EKS policy document (superset) instead of ${COMPUTE_TYPE}."
+fi
+COMPUTE_TYPE="$EFFECTIVE_COMPUTE_TYPE"
+# shellcheck disable=SC2086
+MERGED_COMPUTE_TYPES_CSV=$(printf '%s,' $MERGED_COMPUTE_TYPES)
+MERGED_COMPUTE_TYPES_CSV="${MERGED_COMPUTE_TYPES_CSV%,}"
 
 ########################################
 # POLICY DOCUMENTS
@@ -106,6 +180,14 @@ POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
 # (LAUNCHPAD_ALLOW_NO_EXTERNAL_ID=1) exists only for advanced/manual setups
 # that wire their own ExternalId out-of-band.
 if [ -n "$ASSUME_EXTERNAL_ID" ]; then
+  # shellcheck disable=SC2086
+  MERGED_EXTERNAL_IDS=$(_dedupe_tokens $EXISTING_EXTERNAL_IDS "$ASSUME_EXTERNAL_ID")
+  # Always rendered as a list ("any-of"), even for a single id: a customer with only
+  # one infra sees the same shape a second infra would grow into, so a future refresh
+  # never has to switch representations.
+  # shellcheck disable=SC2086
+  EXTERNAL_ID_JSON_LIST=$(printf '"%s",' $MERGED_EXTERNAL_IDS)
+  EXTERNAL_ID_JSON_LIST="[${EXTERNAL_ID_JSON_LIST%,}]"
   cat > "$WORK_DIR/trust-policy.json" <<EOF
 {
   "Version": "2012-10-17",
@@ -113,11 +195,11 @@ if [ -n "$ASSUME_EXTERNAL_ID" ]; then
     {
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::${TRUSTED_ACCOUNT_ID}:user/${PLATFORM_USER}"
+        "AWS": "${PLATFORM_PRINCIPAL_ARN}"
       },
       "Action": "sts:AssumeRole",
       "Condition": {
-        "StringEquals": { "sts:ExternalId": "${ASSUME_EXTERNAL_ID}" }
+        "StringEquals": { "sts:ExternalId": ${EXTERNAL_ID_JSON_LIST} }
       }
     }
   ]
@@ -434,16 +516,18 @@ if [ "$MOCK_MODE" = "1" ]; then
   echo "Mock mode: skipping IAM role/policy changes."
 else
   echo "Ensuring IAM role..."
-  if aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
-    # A re-run with a new ExternalId (or a rotated platform principal) must land on
-    # the existing role, otherwise the backend's AssumeRole (which always sends
-    # ExternalId) fails with AccessDenied.
+  if [ "$ROLE_EXISTS" = "1" ]; then
+    # A re-run with a new/merged ExternalId list (or a rotated platform principal) must
+    # land on the existing role, otherwise the backend's AssumeRole (which always sends
+    # ExternalId) fails with AccessDenied for every infra trusted on it.
     echo "Role exists; refreshing trust policy..."
     aws iam update-assume-role-policy \
       --role-name "${ROLE_NAME}" \
       --policy-document file://"$WORK_DIR/trust-policy.json"
     if [ "$COMPUTE_TYPE" = "eks" ]; then
-      # An EKS cluster apply can outlive a 1h STS session; ECS-only roles keep the default.
+      # An EKS cluster apply can outlive a 1h STS session; ECS-only roles keep the
+      # default. Only ever raised, never lowered back down on a later ecs_fargate-only
+      # run — see EFFECTIVE_COMPUTE_TYPE above.
       echo "Raising role max session duration to 2h (EKS)..."
       aws iam update-role \
         --role-name "${ROLE_NAME}" \
@@ -462,6 +546,16 @@ else
         --assume-role-policy-document file://"$WORK_DIR/trust-policy.json"
     fi
   fi
+
+  # Records which compute types this role serves so a later run for a different infra
+  # (possibly a different compute type) can compute the same union again next time.
+  # --tags must be given as JSON, not the `Key=...,Value=...` shorthand: the shorthand
+  # parser splits on every comma, so a union value like "ecs_fargate,eks" would be
+  # misread as a second key/value pair (or rejected outright) instead of one tag value.
+  echo "Tagging role with served compute types (${MERGED_COMPUTE_TYPES_CSV})..."
+  aws iam tag-role \
+    --role-name "${ROLE_NAME}" \
+    --tags "[{\"Key\": \"launchpad:compute-types\", \"Value\": \"${MERGED_COMPUTE_TYPES_CSV}\"}]"
 
   echo "Ensuring deployment policy (latest permissions)..."
   if aws iam get-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1; then

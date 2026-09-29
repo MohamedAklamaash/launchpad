@@ -188,6 +188,28 @@ def test_owner_gets_the_archive(mock_fetch, factory, make_infra):
     assert "terraform/backend.hcl" in names
 
 
+@patch("api.services.exit_export.ExitExportService.fetch_app_inventory")
+def test_revocation_instructions_check_for_sibling_infras_before_deleting_the_role(mock_fetch, factory, make_infra, settings):
+    """This AWS account's LaunchpadDeploymentRole may be shared with a second Launchpad
+    infrastructure (Infrastructure.code isn't unique) — REVOCATION.md must tell the
+    customer to check for sibling ExternalIds and, if any are found, remove only this
+    infra's id instead of deleting the shared role."""
+    settings.LAUNCHPAD_PLATFORM_PRINCIPAL_ARN = "arn:aws:iam::221082203366:user/aklamaash-terraform"
+    owner, infra = make_infra()
+    mock_fetch.return_value = _fake_inventory()
+
+    resp = _get(factory, _jwt_user(owner, auth_time=_fresh_auth_time()), str(infra.id))
+    with zipfile.ZipFile(BytesIO(resp.content)) as zf:
+        revocation = zf.read("REVOCATION.md").decode()
+
+    assert str(infra.id) in revocation
+    assert "aws iam get-role" in revocation
+    assert "sts:ExternalId" in revocation
+    assert "do not delete the role" in revocation.lower()
+    assert "aws iam delete-role" in revocation
+    assert settings.LAUNCHPAD_PLATFORM_PRINCIPAL_ARN in revocation
+
+
 def test_invited_user_gets_403(factory, make_infra, make_user):
     _owner, infra = make_infra()
     invited = make_user()
