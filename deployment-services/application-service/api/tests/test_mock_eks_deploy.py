@@ -145,9 +145,20 @@ def test_pod_spec_hardening_and_ingress_paths(application, deploy):
     for container in pod.containers:
         assert container.security_context.allow_privilege_escalation is False
         assert container.security_context.capabilities.drop == ["ALL"]
-        # Customer Dockerfiles routinely run as root; forcing non-root would CrashLoop them.
-        assert container.security_context.run_as_non_root is None
     app_container, nginx = pod.containers
+    # Customer Dockerfiles routinely run as root; forcing non-root would CrashLoop them.
+    assert app_container.security_context.run_as_non_root is None
+    assert app_container.security_context.run_as_user is None
+    # The stock nginx image, started as root with ALL capabilities dropped, dies chowning
+    # its temp dirs. As its own uid it never chowns, so it needs a writable cache dir and a
+    # pid file outside root-owned /var/run.
+    assert nginx.security_context.run_as_non_root is True
+    assert nginx.security_context.run_as_user == 101
+    assert "pid /tmp/nginx.pid;" in " ".join(nginx.command)
+    assert "daemon off;" in " ".join(nginx.command)
+    cache_mount = next(m for m in nginx.volume_mounts if m.mount_path == "/var/cache/nginx")
+    cache_volume = next(v for v in pod.volumes if v.name == cache_mount.name)
+    assert cache_volume.empty_dir is not None
     assert app_container.resources.limits == {"cpu": "500m", "memory": "1024Mi"}
     assert nginx.ports[0].container_port == 18080
     assert nginx.readiness_probe.http_get.port == 18080
@@ -509,3 +520,48 @@ def test_eks_host_mode_fails_closed_when_https_listener_is_missing(tls_ready_app
     tls_ready_application.refresh_from_db()
     assert tls_ready_application.host_route_applied is False
     assert ("ingress", "app-myapp", "myapp-host") not in _objects(tls_ready_application)
+
+
+@pytest.mark.django_db
+def test_pod_template_carries_the_nginx_config_hash(application, deploy):
+    """nginx.conf is a subPath mount: a patched ConfigMap alone never reaches running pods.
+    The hash in the pod template is what rolls them when (and only when) the config changes."""
+    import hashlib
+
+    from api.k8s.deployer import NGINX_CONFIG_HASH_ANNOTATION
+
+    deploy(application)
+    objects = _objects(application)
+
+    template = objects[("deployment", "app-myapp", "myapp")].spec.template
+    config = objects[("configmap", "app-myapp", "myapp-nginx")].data["nginx.conf"]
+    assert template.metadata.annotations[NGINX_CONFIG_HASH_ANNOTATION] == hashlib.sha256(config.encode()).hexdigest()
+
+
+def _deployment(generation, observed, replicas, updated, available):
+    from kubernetes import client as k8s
+
+    return k8s.V1Deployment(
+        metadata=k8s.V1ObjectMeta(generation=generation),
+        spec=k8s.V1DeploymentSpec(replicas=1, selector=k8s.V1LabelSelector(), template=k8s.V1PodTemplateSpec()),
+        status=k8s.V1DeploymentStatus(
+            observed_generation=observed, replicas=replicas, updated_replicas=updated, available_replicas=available,
+        ),
+    )
+
+
+@pytest.mark.parametrize("state,complete", [
+    # e2e-kube incident: right after the patch the old pod is available, but the controller
+    # hasn't observed the new generation — the old wait returned here.
+    ((2, 1, 1, 1, 1), False),
+    # Mid-roll: new pod up, old pod still around.
+    ((2, 2, 2, 1, 1), False),
+    # New pod created but not yet available.
+    ((2, 2, 1, 1, 0), False),
+    ((2, 2, 1, 1, 1), True),
+])
+def test_rollout_complete_waits_for_the_new_generation_to_replace_the_old(state, complete):
+    from api.k8s.deployer import _rollout_complete
+
+    assert _rollout_complete(_deployment(*state)) is complete
+

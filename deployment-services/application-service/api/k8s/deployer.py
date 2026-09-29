@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import time
 from contextlib import contextmanager
@@ -39,6 +40,14 @@ NGINX_IMAGE = (
 # NET_BIND_SERVICE is dropped along with every other capability, so the sidecar
 # cannot bind port 80.
 NGINX_PORT = 18080
+# The stock image's `nginx` user. Started as root with every capability dropped, nginx's
+# master dies at boot chowning its temp dirs to this uid ("chown(/var/cache/nginx/
+# client_temp, 101) failed (Operation not permitted)"); started as this uid it never
+# chowns, but then needs a writable temp dir (an emptyDir) and a pid file outside the
+# root-owned /var/run.
+NGINX_UID = 101
+NGINX_CACHE_DIR = "/var/cache/nginx"
+NGINX_CONFIG_HASH_ANNOTATION = "launchpad.dev/nginx-config-sha256"
 SIDECAR_CPU_MILLI = 100
 SIDECAR_MEMORY_MI = 128
 SIDECAR_RESOURCES = {"cpu": f"{SIDECAR_CPU_MILLI}m", "memory": f"{SIDECAR_MEMORY_MI}Mi"}
@@ -172,6 +181,23 @@ def delete_object(apis, ref: dict):
         if e.status != 404:
             raise
         logger.info(f"{kind} {name} already absent in {namespace}")
+
+
+def _rollout_complete(deployment) -> bool:
+    """`kubectl rollout status` semantics. Counting available replicas alone passes the
+    instant a patch lands, on the OLD pod still serving: the controller hasn't observed the
+    new generation yet, and during the roll the old pod is what's available."""
+    status = deployment.status
+    if status is None:
+        return False
+    spec_replicas = deployment.spec.replicas if deployment.spec else None
+    desired = 1 if spec_replicas is None else spec_replicas
+    return (
+        (status.observed_generation or 0) >= (deployment.metadata.generation or 0)
+        and (status.updated_replicas or 0) >= desired
+        and (status.replicas or 0) <= (status.updated_replicas or 0)
+        and (status.available_replicas or 0) >= desired
+    )
 
 
 class RolloutFailed(Exception):
@@ -459,14 +485,17 @@ class EKSDeployer:
                 "NetworkPolicy", policy.metadata.name,
             )
 
+    def _nginx_config(self) -> str:
+        return generate_nginx_config(
+            self.slug, self.application.port, listen_port=NGINX_PORT,
+            host_mode=self.host_mode, app_hostname=self.app_hostname,
+        )
+
     def _apply_config_map(self, apis) -> str:
         name = f"{self.slug}-nginx"
         config_map = k8s.V1ConfigMap(
             metadata=k8s.V1ObjectMeta(name=name),
-            data={"nginx.conf": generate_nginx_config(
-                self.slug, self.application.port, listen_port=NGINX_PORT,
-                host_mode=self.host_mode, app_hostname=self.app_hostname,
-            )},
+            data={"nginx.conf": self._nginx_config()},
         )
         created = self._create(
             lambda: apis.core.create_namespaced_config_map(self.namespace, config_map), "ConfigMap", name
@@ -536,11 +565,15 @@ class EKSDeployer:
         env_vars = inject_routing_envs([{"name": k, "value": str(v)} for k, v in envs.items()], self.slug)
         return [k8s.V1EnvVar(name=e["name"], value=e["value"]) for e in env_vars]
 
-    def _security_context(self) -> k8s.V1SecurityContext:
-        # No runAsNonRoot: customer Dockerfiles routinely run as root and would CrashLoop.
+    def _security_context(self, run_as_user: int | None = None) -> k8s.V1SecurityContext:
+        # No runAsNonRoot for the app: customer Dockerfiles routinely run as root and would
+        # CrashLoop. The nginx sidecar is ours, so it runs as its own unprivileged uid.
         return k8s.V1SecurityContext(
             allow_privilege_escalation=False,
             capabilities=k8s.V1Capabilities(drop=["ALL"]),
+            run_as_user=run_as_user,
+            run_as_group=run_as_user,
+            run_as_non_root=True if run_as_user else None,
         )
 
     def _deployment_manifest(self, image_uri: str) -> k8s.V1Deployment:
@@ -557,11 +590,13 @@ class EKSDeployer:
         nginx_container = k8s.V1Container(
             name=f"{self.slug}-nginx",
             image=NGINX_IMAGE,
+            command=["nginx", "-g", "daemon off; pid /tmp/nginx.pid;"],
             ports=[k8s.V1ContainerPort(container_port=NGINX_PORT)],
             volume_mounts=[
                 k8s.V1VolumeMount(
                     name="nginx-config", mount_path="/etc/nginx/nginx.conf", sub_path="nginx.conf"
-                )
+                ),
+                k8s.V1VolumeMount(name="nginx-cache", mount_path=NGINX_CACHE_DIR),
             ],
             resources=k8s.V1ResourceRequirements(
                 requests=SIDECAR_RESOURCES,
@@ -578,7 +613,7 @@ class EKSDeployer:
                 initial_delay_seconds=5,
                 period_seconds=10,
             ),
-            security_context=self._security_context(),
+            security_context=self._security_context(run_as_user=NGINX_UID),
         )
         return k8s.V1Deployment(
             metadata=k8s.V1ObjectMeta(name=self.slug, labels={"app": self.slug}),
@@ -586,7 +621,16 @@ class EKSDeployer:
                 replicas=1,
                 selector=k8s.V1LabelSelector(match_labels={"app": self.slug}),
                 template=k8s.V1PodTemplateSpec(
-                    metadata=k8s.V1ObjectMeta(labels={"app": self.slug}),
+                    metadata=k8s.V1ObjectMeta(
+                        labels={"app": self.slug},
+                        # nginx.conf is a subPath mount, which never sees ConfigMap updates,
+                        # and patching the ConfigMap alone doesn't restart pods. Hashing it
+                        # into the template makes any config change (host mode on/off, a
+                        # config fix) roll the pods; an unchanged config rolls nothing.
+                        annotations={NGINX_CONFIG_HASH_ANNOTATION: hashlib.sha256(
+                            self._nginx_config().encode()
+                        ).hexdigest()},
+                    ),
                     spec=k8s.V1PodSpec(
                         automount_service_account_token=False,
                         containers=[app_container, nginx_container],
@@ -594,7 +638,8 @@ class EKSDeployer:
                             k8s.V1Volume(
                                 name="nginx-config",
                                 config_map=k8s.V1ConfigMapVolumeSource(name=f"{self.slug}-nginx"),
-                            )
+                            ),
+                            k8s.V1Volume(name="nginx-cache", empty_dir=k8s.V1EmptyDirVolumeSource()),
                         ],
                     ),
                 ),
@@ -713,10 +758,15 @@ class EKSDeployer:
         deadline = time.monotonic() + ROLLOUT_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             deployment = apis.apps.read_namespaced_deployment(self.slug, self.namespace)
-            available = (deployment.status.available_replicas if deployment.status else 0) or 0
-            logger.info(f"Deployment {self.slug}: {available}/1 available replicas")
-            if available >= 1:
+            if _rollout_complete(deployment):
+                logger.info(f"Deployment {self.slug}: rollout complete")
                 return
+            status = deployment.status
+            logger.info(
+                f"Deployment {self.slug}: {(status and status.updated_replicas) or 0} updated, "
+                f"{(status and status.available_replicas) or 0} available, "
+                f"{(status and status.replicas) or 0} total"
+            )
             time.sleep(ROLLOUT_POLL_INTERVAL_SECONDS)
         raise RolloutFailed(
             f"Deployment {self.slug} had no available replicas after {ROLLOUT_TIMEOUT_SECONDS}s.\n"
