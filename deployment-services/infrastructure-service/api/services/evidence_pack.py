@@ -220,12 +220,22 @@ def _other_policies_line(other: dict) -> str:
     )
 
 
-def _drift_summary_markdown(drift: dict) -> str:
+def _drift_summary_markdown(drift: dict, compute_type: str) -> str:
     if drift.get("note"):
         return drift["note"]
 
     lines = []
     policy = drift.get("policy", {})
+    expected_types = policy.get("expected_compute_types") or []
+    if set(expected_types) - {compute_type}:
+        siblings = ", ".join(f"`{t}`" for t in sorted(set(expected_types) - {compute_type}))
+        lines.append(
+            f"- **This role is shared with a sibling infrastructure that needs {siblings}.** "
+            f"The live drift below is compared against the union of every compute_type this "
+            f"role serves, so grants beyond a standalone `{compute_type}` infrastructure are "
+            f"expected here, not drift. `policy.expected.json` in this pack still reflects only "
+            f"this infrastructure's own `{compute_type}` document — it is not that union."
+        )
     if not policy.get("available"):
         lines.append(f"- Managed policy: unavailable ({policy.get('reason')}).")
     elif policy.get("identical"):
@@ -362,7 +372,7 @@ def _render_evidence_markdown(infra, manifest: dict, drift: dict, limitations: l
         "",
         "## Live drift",
         "",
-        _drift_summary_markdown(drift),
+        _drift_summary_markdown(drift, infra.compute_type),
         "",
         *limitations,
         "",

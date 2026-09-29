@@ -89,7 +89,7 @@ def test_missing_deny_or_extra_allow_reads_as_wider_access():
         "policy": {**_identical_policy(), "identical": False, "missing_denies": [{"effect": "Deny"}]},
         "trust_policy": _identical_trust(),
     }
-    assert "wider access" in _drift_summary_markdown(drift)
+    assert "wider access" in _drift_summary_markdown(drift, "ecs_fargate")
 
 
 def test_other_policies_renders_even_when_policy_unavailable():
@@ -106,7 +106,7 @@ def test_other_policies_renders_even_when_policy_unavailable():
         },
         "trust_policy": _identical_trust(),
     }
-    summary = _drift_summary_markdown(drift)
+    summary = _drift_summary_markdown(drift, "ecs_fargate")
     assert "unavailable" in summary
     assert "other attached polic" in summary
 
@@ -117,7 +117,22 @@ def test_extra_trust_statements_are_called_out_in_the_summary():
         "policy": _identical_policy(),
         "trust_policy": {**_identical_trust(), "identical": False, "extra_statements": [{"Principal": "*"}]},
     }
-    assert "additional statement" in _drift_summary_markdown(drift)
+    assert "additional statement" in _drift_summary_markdown(drift, "ecs_fargate")
+
+
+def test_shared_role_widened_by_sibling_compute_type_is_called_out():
+    """When the expected document is the union because a sibling infra on the same role
+    needs a wider compute_type, EVIDENCE.md must say so instead of leaving an auditor to
+    wonder why the expected policy has more than this infra's own compute_type grants."""
+    drift = {
+        "note": None,
+        "policy": {**_identical_policy(), "expected_compute_types": ["ecs_fargate", "eks"]},
+        "trust_policy": _identical_trust(),
+    }
+    summary = _drift_summary_markdown(drift, "ecs_fargate")
+    assert "shared with a sibling infrastructure" in summary
+    assert "`eks`" in summary
+    assert "policy.expected.json" in summary
 
 
 def test_sibling_external_ids_are_reported_without_being_treated_as_drift():
@@ -130,7 +145,7 @@ def test_sibling_external_ids_are_reported_without_being_treated_as_drift():
         "policy": _identical_policy(),
         "trust_policy": {**_identical_trust(), "sibling_external_ids": 1},
     }
-    summary = _drift_summary_markdown(drift)
+    summary = _drift_summary_markdown(drift, "ecs_fargate")
     assert "matches the expected shape" in summary
     assert "other ExternalId" in summary
     assert "not counted as drift" in summary

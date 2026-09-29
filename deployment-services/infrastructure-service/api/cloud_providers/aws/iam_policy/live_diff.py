@@ -25,6 +25,11 @@ from . import policy_data
 ROLE_NAME = "LaunchpadDeploymentRole"
 POLICY_NAME = "LaunchpadDeploymentPolicy"
 
+# create_aws_role.sh's own tag for which compute_types a shared LaunchpadDeploymentRole
+# serves (values joined with "+", e.g. "ecs_fargate+eks") — see EXISTING_COMPUTE_TYPES /
+# MERGED_COMPUTE_TYPES_TAG_VALUE in that script.
+COMPUTE_TYPES_TAG_KEY = "launchpad:compute-types"
+
 _ASSUME_ROLE_ACTION = "sts:assumerole"
 
 
@@ -146,6 +151,11 @@ class PolicyDiff:
     extra_denies: list[dict] = field(default_factory=list)
     other_policies: dict | None = None
     identical: bool = False
+    # Every compute_type the shared role is expected to serve — this infra's own type
+    # plus any sibling compute_types found on the role's `launchpad:compute-types` tag
+    # (see `_served_compute_types`). More than one entry means the expected document
+    # below was widened beyond this infra's own compute_type.
+    expected_compute_types: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -157,6 +167,7 @@ class PolicyDiff:
             "extra_denies": self.extra_denies,
             "other_policies": self.other_policies,
             "identical": self.identical,
+            "expected_compute_types": self.expected_compute_types,
         }
 
 
@@ -217,6 +228,54 @@ def _other_policies(iam, attached: list[dict]) -> dict | None:
     return {"attached": other_attached_arns, "inline": list(inline_policy_names)}
 
 
+def _known_compute_types() -> set[str]:
+    """Every compute_type policy_data actually knows how to render a document for — the
+    default (base statements only) plus every key with its own extra statements.
+    Derived so this module can't accept a tag value policy_data has no document for."""
+    return {policy_data.DEFAULT_COMPUTE_TYPE} | set(policy_data.compute_type_statements().keys())
+
+
+def _served_compute_types(iam, infra) -> set[str]:
+    """Every compute_type the shared LaunchpadDeploymentRole actually serves, per
+    create_aws_role.sh's `launchpad:compute-types` role tag — always includes this
+    infra's own compute_type. A missing tag, an unreadable one (AccessDenied etc.), or a
+    tag naming no known compute_type falls back to just this infra's own type, matching
+    behaviour from before sibling infras were tracked."""
+    served = {infra.compute_type}
+    try:
+        tags = iam.list_role_tags(RoleName=ROLE_NAME)["Tags"]
+    except ClientError:
+        return served
+
+    tag_value = next((t.get("Value") for t in tags if t.get("Key") == COMPUTE_TYPES_TAG_KEY), None)
+    if not tag_value:
+        return served
+
+    known = _known_compute_types()
+    served |= {t for t in tag_value.split("+") if t in known}
+    return served
+
+
+def _expected_policy_document(served_types: set[str]) -> dict:
+    """The policy document expected on a role serving every compute_type in
+    `served_types`: base statements plus each served type's own extra statements from
+    `policy_data`, deduped rather than reconstructed. Mirrors create_aws_role.sh's rule
+    of installing the union on a shared role (an eks sibling means the eks statements
+    are present alongside ecs_fargate's, never fewer than what any served type needs) —
+    without hard-coding which compute_type is a "superset"; a served type with no extra
+    statements simply contributes none."""
+    statement_list = policy_data.statements()
+    extras = policy_data.compute_type_statements()
+    seen = {json.dumps(s, sort_keys=True) for s in statement_list}
+    for compute_type in sorted(served_types):
+        for statement in extras.get(compute_type, []):
+            key = json.dumps(statement, sort_keys=True)
+            if key not in seen:
+                seen.add(key)
+                statement_list.append(statement)
+    return {"Version": policy_data.IAM_POLICY_LANGUAGE_VERSION, "Statement": statement_list}
+
+
 def _diff_managed_policy(iam, infra) -> PolicyDiff:
     try:
         attached = iam.list_attached_role_policies(RoleName=ROLE_NAME)["AttachedPolicies"]
@@ -243,7 +302,8 @@ def _diff_managed_policy(iam, infra) -> PolicyDiff:
         return PolicyDiff(available=False, reason=_client_error_reason(e, "GetPolicyVersion"), other_policies=other_policies)
 
     live_doc = _decode_policy_document(version["Document"])
-    expected_json = policy_data.document_json(infra.compute_type).replace(
+    served_types = _served_compute_types(iam, infra)
+    expected_json = json.dumps(_expected_policy_document(served_types)).replace(
         policy_data.ACCOUNT_ID_PLACEHOLDER, str(infra.code)
     )
     expected_doc = json.loads(expected_json)
@@ -271,6 +331,7 @@ def _diff_managed_policy(iam, infra) -> PolicyDiff:
         extra_denies=extra_denies,
         other_policies=other_policies,
         identical=not missing_keys and not extra_keys and other_policies is None,
+        expected_compute_types=sorted(served_types),
     )
 
 

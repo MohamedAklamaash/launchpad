@@ -84,11 +84,17 @@ def _expected_trust_doc(infra):
     }
 
 
-def _stub_full(stubber, *, policy_doc, trust_doc, extra_attached=(), inline_names=()):
+def _role_tags_response(compute_types_tag_value=None):
+    tags = [{"Key": "launchpad:compute-types", "Value": compute_types_tag_value}] if compute_types_tag_value else []
+    return {"Tags": tags, "IsTruncated": False}
+
+
+def _stub_full(stubber, *, policy_doc, trust_doc, extra_attached=(), inline_names=(), compute_types_tag=None):
     stubber.add_response("list_attached_role_policies", _attached_policies_response(extra_attached), {"RoleName": ANY})
     stubber.add_response("list_role_policies", _inline_policies_response(inline_names), {"RoleName": ANY})
     stubber.add_response("get_policy", _get_policy_response(), {"PolicyArn": ANY})
     stubber.add_response("get_policy_version", _get_policy_version_response(policy_doc), {"PolicyArn": ANY, "VersionId": ANY})
+    stubber.add_response("list_role_tags", _role_tags_response(compute_types_tag), {"RoleName": ANY})
     stubber.add_response("get_role", _role_response(trust_doc), {"RoleName": ANY})
 
 
@@ -230,6 +236,85 @@ def test_eks_compute_type_substitutes_account_id_before_diffing(iam_client):
         report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
 
     assert report.policy.identical is True
+
+
+# ── shared role serving several compute_types (F5 evidence pack bug) ───────────────
+
+def test_ecs_infra_on_role_shared_with_eks_sibling_expects_the_eks_document(iam_client):
+    """An ecs_fargate infra whose role also serves an eks sibling has the eks (superset)
+    document installed on it — create_aws_role.sh never downgrades. The live diff must
+    expect that same superset, not just the ecs_fargate document, or every EKS-only
+    grant reads as unexplained drift."""
+    infra = FakeInfra(compute_type="ecs_fargate")
+    eks_doc = json.loads(policy_data.document_json("eks").replace(policy_data.ACCOUNT_ID_PLACEHOLDER, infra.code))
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(
+            stubber,
+            policy_doc=eks_doc,
+            trust_doc=_expected_trust_doc(infra),
+            compute_types_tag="ecs_fargate+eks",
+        )
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.policy.identical is True
+    assert report.policy.missing_allows == []
+    assert report.policy.extra_allows == []
+    assert report.policy.expected_compute_types == ["ecs_fargate", "eks"]
+
+
+def test_ecs_infra_on_shared_role_with_a_genuine_extra_grant_is_still_drift(iam_client):
+    """The union widens what's expected, but it doesn't launder a grant beyond that
+    union — something genuinely extra must still surface."""
+    infra = FakeInfra(compute_type="ecs_fargate")
+    live_doc = json.loads(policy_data.document_json("eks").replace(policy_data.ACCOUNT_ID_PLACEHOLDER, infra.code))
+    live_doc["Statement"].append({"Effect": "Allow", "Action": "sns:Publish", "Resource": "*"})
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(
+            stubber,
+            policy_doc=live_doc,
+            trust_doc=_expected_trust_doc(infra),
+            compute_types_tag="ecs_fargate+eks",
+        )
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.policy.identical is False
+    assert len(report.policy.extra_allows) == 1
+    assert report.policy.extra_allows[0]["action"] == "sns:Publish"
+    assert report.policy.expected_compute_types == ["ecs_fargate", "eks"]
+
+
+def test_no_compute_types_tag_falls_back_to_this_infras_own_type(iam_client):
+    """No tag at all (a role created before the tag existed, or a single-infra role
+    never tagged) keeps the pre-union behaviour: the eks grants on a shared role with no
+    tag still read as extra, exactly as before this fix."""
+    infra = FakeInfra(compute_type="ecs_fargate")
+    eks_doc = json.loads(policy_data.document_json("eks").replace(policy_data.ACCOUNT_ID_PLACEHOLDER, infra.code))
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(stubber, policy_doc=eks_doc, trust_doc=_expected_trust_doc(infra), compute_types_tag=None)
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.policy.identical is False
+    assert len(report.policy.extra_allows) > 0
+    assert report.policy.expected_compute_types == ["ecs_fargate"]
+
+
+def test_garbage_compute_types_tag_value_is_ignored(iam_client):
+    """A tag value naming no compute_type policy_data actually knows falls back to this
+    infra's own type, same as a missing tag — never crashes and never silently trusts an
+    unrecognised name."""
+    infra = FakeInfra(compute_type="ecs_fargate")
+    eks_doc = json.loads(policy_data.document_json("eks").replace(policy_data.ACCOUNT_ID_PLACEHOLDER, infra.code))
+
+    with Stubber(iam_client) as stubber:
+        _stub_full(stubber, policy_doc=eks_doc, trust_doc=_expected_trust_doc(infra), compute_types_tag="garbage")
+        report = diff_live_policy(iam_client, infra, platform_principal_arn=PLATFORM_PRINCIPAL_ARN)
+
+    assert report.policy.identical is False
+    assert len(report.policy.extra_allows) > 0
+    assert report.policy.expected_compute_types == ["ecs_fargate"]
 
 
 # ── other attached/inline policies (R1) ────────────────────────────────────────────
