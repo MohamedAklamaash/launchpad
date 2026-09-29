@@ -76,11 +76,44 @@ def test_unmaterialized_infra_is_requeued_then_ackable_once_it_exists(consumer, 
     # connection's own sleep (keeps heartbeats alive), never a bare time.sleep (which
     # would starve the BlockingConnection's I/O loop for the delay's duration — this
     # module no longer imports `time` at all, see H6).
-    ch.connection.sleep.assert_called_once_with(1)  # delay = min(2**0, 30) = 1
+    ch.connection.sleep.assert_called_once_with(1)  # delay = min(2**0, 5) = 1
 
     infra = make_infra(id=infra_id)
     ch2 = _deliver(consumer, payload)
     ch2.basic_ack.assert_called_once_with(delivery_tag=1)
+    infra.refresh_from_db()
+    assert infra.exited_at is not None
+
+
+@pytest.mark.django_db
+def test_unknown_infra_is_discarded_after_a_short_budget_and_the_queue_moves_on(consumer, make_infra):
+    """Same short-budget bound as HostReadinessEventConsumer: a junk infra id must not
+    hold this prefetch=1 queue for minutes. MAX_RETRIES=3 with a capped exponential delay
+    bounds the total wait to a few seconds before the event is discarded, and the next
+    message is processed normally."""
+    from api.messaging.consumers.infrastructure import InfraExitedEventConsumer
+
+    unknown_infra_id = str(uuid.uuid4())
+    consumer._retry_counts = {}
+    payload = {"infra_id": unknown_infra_id, "exited_at": "2026-01-01T00:00:00Z"}
+
+    total_delay = 0
+    for attempt in range(InfraExitedEventConsumer.MAX_RETRIES):
+        ch = _deliver(consumer, payload)
+        ch.basic_nack.assert_called_once_with(delivery_tag=1, requeue=True)
+        ch.connection.sleep.assert_called_once()
+        total_delay += ch.connection.sleep.call_args.args[0]
+
+    assert total_delay <= 10, "unknown-infra retries must total only a few seconds, not minutes"
+
+    ch_final = _deliver(consumer, payload)
+    ch_final.basic_nack.assert_called_once_with(delivery_tag=1, requeue=False)
+    ch_final.connection.sleep.assert_not_called()
+    assert unknown_infra_id not in consumer._retry_counts
+
+    infra = make_infra()
+    ch_next = _deliver(consumer, {"infra_id": str(infra.id), "exited_at": "2026-02-01T00:00:00Z"})
+    ch_next.basic_ack.assert_called_once_with(delivery_tag=1)
     infra.refresh_from_db()
     assert infra.exited_at is not None
 

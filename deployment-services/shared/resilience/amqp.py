@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from typing import Any
@@ -22,7 +23,28 @@ class ResilientPikaProducer:
         self._max_buffer_size = 100
 
     def connect(self):
-        """Open connection and declare the exchange. Idempotent if already connected."""
+        """Open connection and declare the exchange. Idempotent if already connected.
+
+        Backstop against the exact leak this class caused once already: a Django test
+        suite (no live broker mocked) calling a view/service that publishes for real,
+        landing junk messages — for infra ids that exist in no database — on the
+        developer's local RabbitMQ. Each service's root conftest.py patches connect/publish
+        to an in-memory recorder for every test (see the `no_real_broker` fixture) and is
+        the primary defense; this guard only matters if that patch is somehow bypassed, in
+        which case it refuses to reach pika.BlockingConnection at all. Note this raises
+        from inside connect() itself — publish()'s own `except Exception` around its
+        auto-connect swallows it and just leaves the message buffered, which is still the
+        safe outcome (no socket opened) but not a loud test failure; call connect()
+        directly, as the tests here do, to observe the raise.
+        """
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            raise RuntimeError(
+                f"ResilientPikaProducer[{self.name}].connect() was called while running "
+                "under pytest. Tests must never open a connection to a real broker — "
+                "patch ResilientPikaProducer.connect/publish (see each service's root "
+                "conftest.py `no_real_broker` fixture) instead of exercising this method "
+                "for real."
+            )
         if self.connection and not self.connection.is_closed:
             return
 

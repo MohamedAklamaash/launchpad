@@ -10,6 +10,15 @@ os.environ.setdefault("DJANGO_SECRET", "x" * 60)
 os.environ.setdefault("JWT_SECRET", "x" * 40)
 os.environ.setdefault("DJANGO_PORT", "8002")
 os.environ.setdefault("INTERNAL_API_TOKEN", "x" * 40)
+# Deliberately unroutable (port 1 is never a broker) — ApplicationConfig.from_env()
+# defaults RABBITMQ_URL to the real local broker address when unset, which is exactly how
+# a test suite that forgets to mock the producer ends up publishing for real. Defense in
+# depth alongside the root conftest.py `no_real_broker` fixture (patches
+# ResilientPikaProducer.connect/publish for every test) and that class's own pytest guard
+# in shared/resilience/amqp.py. Assigned outright, not setdefault: a developer with
+# RABBITMQ_URL exported in their shell (pointing at their real local broker, exactly the
+# failure mode this guards against) must not be able to leak it in.
+os.environ["RABBITMQ_URL"] = "amqp://guest:guest@127.0.0.1:1/"
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 os.environ.setdefault("DATABASE_USER_NAME", "test")
