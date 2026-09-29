@@ -19,7 +19,12 @@ class EnvironmentEventConsumer:
     ROUTING_KEY = "environment.updated"
     QUEUE_NAME = "application-service.environment-events"
 
-    MAX_RETRIES = 10
+    # Short budget — see infrastructure.py's InfraEventConsumer.MAX_RETRIES for the leak
+    # this guards against: a stalled/junk infra id must not hold this prefetch=1 queue for
+    # minutes. Self-heals: infrastructure-service republishes environment.updated on every
+    # subsequent terraform apply, so a discarded update is stale until the next apply, not
+    # a permanent loss.
+    MAX_RETRIES = 3
 
     def __init__(self):
         self._retry_counts: dict = {}
@@ -88,7 +93,7 @@ class EnvironmentEventConsumer:
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 else:
                     self._retry_counts[env_id] = retry_count + 1
-                    delay = min(2 ** retry_count, 30)
+                    delay = min(2 ** retry_count, 5)
                     log.warning(
                         "Infrastructure not found yet — NACKing with requeue (attempt %d/%d, delay %ds)",
                         retry_count + 1, self.MAX_RETRIES, delay,

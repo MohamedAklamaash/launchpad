@@ -100,6 +100,43 @@ def test_unmaterialized_infra_is_requeued_then_ackable_once_it_exists(consumer, 
 
 
 @pytest.mark.django_db
+def test_unknown_infra_is_discarded_after_a_short_budget_and_the_queue_moves_on(consumer, make_infra):
+    """A junk infra id (e.g. published by a test suite that leaked onto the real broker —
+    see conftest.py's no_real_broker fixture) must not hold this prefetch=1 queue for
+    minutes: MAX_RETRIES=3 with a capped exponential delay bounds the total wait to a few
+    seconds before the event is discarded, and the next message is processed normally."""
+    from api.messaging.consumers.infrastructure import HostReadinessEventConsumer
+
+    unknown_infra_id = str(uuid.uuid4())
+    consumer._retry_counts = {}
+    payload = {"infra_id": unknown_infra_id, "host_readiness_version": 1, "dns_synced": True, "https_ready": True}
+
+    total_delay = 0
+    for attempt in range(HostReadinessEventConsumer.MAX_RETRIES):
+        ch = _deliver(consumer, payload)
+        ch.basic_nack.assert_called_once_with(delivery_tag=1, requeue=True)
+        ch.connection.sleep.assert_called_once()
+        total_delay += ch.connection.sleep.call_args.args[0]
+
+    assert total_delay <= 10, "unknown-infra retries must total only a few seconds, not minutes"
+
+    # One more delivery past the budget: discarded outright, not requeued again.
+    ch_final = _deliver(consumer, payload)
+    ch_final.basic_nack.assert_called_once_with(delivery_tag=1, requeue=False)
+    ch_final.connection.sleep.assert_not_called()
+    assert unknown_infra_id not in consumer._retry_counts
+
+    # The queue is not stalled: the very next message, for a real infra, is processed.
+    infra = make_infra()
+    ch_next = _deliver(consumer, {
+        "infra_id": str(infra.id), "host_readiness_version": 1, "dns_synced": True, "https_ready": True,
+    })
+    ch_next.basic_ack.assert_called_once_with(delivery_tag=1)
+    infra.refresh_from_db()
+    assert infra.dns_synced is True
+
+
+@pytest.mark.django_db
 def test_applies_dns_label_and_tls_status_and_acks(consumer, make_infra):
     infra = make_infra()
     consumer._retry_counts = {}

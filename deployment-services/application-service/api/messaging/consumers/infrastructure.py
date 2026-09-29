@@ -18,7 +18,15 @@ class InfraEventConsumer:
     EXCHANGE_NAME = "infrastructure.events"
     ROUTING_KEY = "infrastructure.created"
     QUEUE_NAME = "application-service.infra-events"
-    MAX_RETRIES = 10
+    # Bounded to a short total wait (3 attempts, ~7s via ch.connection.sleep) rather than
+    # the old 10-attempt/up-to-30s-per-attempt budget: a queue full of junk messages for
+    # infra ids that exist in no database (e.g. published by a test suite that leaked onto
+    # the real broker — see each service's root conftest.py no_real_broker fixture) held
+    # prefetch=1 for hours under the old budget, blocking every real event behind it. A
+    # genuinely unknown owner is discarded quickly instead; infrastructure-service
+    # publishes infrastructure.created again on every subsequent terraform apply, so a
+    # discarded event is stale until the next apply, not a permanent loss.
+    MAX_RETRIES = 3
 
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
@@ -126,7 +134,7 @@ class InfraEventConsumer:
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 else:
                     self._retry_counts[infra_id] = retry_count + 1
-                    delay = min(2 ** retry_count, 30)
+                    delay = min(2 ** retry_count, 5)
                     log.warning(
                         "infrastructure event deferred — requeueing (attempt %d/%d, delay %ds)",
                         retry_count + 1, self.MAX_RETRIES, delay,
@@ -162,7 +170,11 @@ class InfraUpdatedEventConsumer:
     EXCHANGE_NAME = "infrastructure.events"
     ROUTING_KEY = "infrastructure.updated"
     QUEUE_NAME = "application-service.infra-updated-events"
-    MAX_RETRIES = 10
+    # Short budget — see InfraEventConsumer.MAX_RETRIES above for the leak this guards
+    # against. No periodic republish exists for this event (unlike host_readiness/exited):
+    # it only fires again if the owner issues another PATCH (api/services/infrastructure.py),
+    # so a discarded update stays stale until that happens rather than self-healing.
+    MAX_RETRIES = 3
 
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
@@ -226,7 +238,7 @@ class InfraUpdatedEventConsumer:
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 else:
                     self._retry_counts[infra_id] = retry_count + 1
-                    delay = min(2 ** retry_count, 30)
+                    delay = min(2 ** retry_count, 5)
                     log.warning(
                         "Infrastructure not materialized yet — NACKing update with requeue (attempt %d/%d, delay %ds)",
                         retry_count + 1, self.MAX_RETRIES, delay,
@@ -289,7 +301,10 @@ class HostReadinessEventConsumer:
     EXCHANGE_NAME = "infrastructure.events"
     ROUTING_KEY = "infrastructure.host_readiness_updated"
     QUEUE_NAME = "application-service.host-readiness-events"
-    MAX_RETRIES = 10
+    # Short budget — see InfraEventConsumer.MAX_RETRIES above for the leak this guards
+    # against. Self-heals: infrastructure-service's periodic TLS re-check tick republishes
+    # this event, so a discarded snapshot is corrected on the next tick, not lost.
+    MAX_RETRIES = 3
 
     def __init__(self):
         self._retry_counts: dict = {}
@@ -358,7 +373,7 @@ class HostReadinessEventConsumer:
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 else:
                     self._retry_counts[infra_id] = retry_count + 1
-                    delay = min(2 ** retry_count, 30)
+                    delay = min(2 ** retry_count, 5)
                     log.warning(
                         "host_readiness event deferred — infra not synced yet (attempt %d/%d, delay %ds)",
                         retry_count + 1, self.MAX_RETRIES, delay,
@@ -453,7 +468,11 @@ class InfraExitedEventConsumer:
     EXCHANGE_NAME = "infrastructure.events"
     ROUTING_KEY = "infrastructure.exited"
     QUEUE_NAME = "application-service.infra-exited-events"
-    MAX_RETRIES = 10
+    # Short budget — see InfraEventConsumer.MAX_RETRIES above for the leak this guards
+    # against. Self-heals: exit_republish.py's periodic tick (run_worker.py,
+    # EXITED_EVENT_REPUBLISH_INTERVAL_SECONDS) republishes for every exited infra, so a
+    # discarded event is corrected on the next tick, not lost.
+    MAX_RETRIES = 3
 
     def __init__(self):
         self._retry_counts: dict = {}
@@ -520,7 +539,7 @@ class InfraExitedEventConsumer:
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 else:
                     self._retry_counts[infra_id] = retry_count + 1
-                    delay = min(2 ** retry_count, 30)
+                    delay = min(2 ** retry_count, 5)
                     log.warning(
                         "infra_exited event deferred — infra not synced yet (attempt %d/%d, delay %ds)",
                         retry_count + 1, self.MAX_RETRIES, delay,
@@ -532,12 +551,12 @@ class InfraExitedEventConsumer:
                     # never sees a heartbeat and can drop the connection under load.
                     # connection.sleep() blocks for the same delay but keeps pumping
                     # process_data_events internally, which is pika's own documented
-                    # answer to exactly this. MAX_RETRIES (10, unchanged) is already the
-                    # bounded "give up after N attempts" the alternative (a real AMQP DLQ)
-                    # would also provide — no DLX exists anywhere in this codebase's AMQP
-                    # consumers (the "DLQ" in inspect_dlq.py is a separate Redis structure
-                    # for the deployment job queue, not this exchange), so adding one here
-                    # is out of scope for this fix.
+                    # answer to exactly this. MAX_RETRIES (3, short-budget fix) is already
+                    # the bounded "give up after N attempts" the alternative (a real AMQP
+                    # DLQ) would also provide — no DLX exists anywhere in this codebase's
+                    # AMQP consumers (the "DLQ" in inspect_dlq.py is a separate Redis
+                    # structure for the deployment job queue, not this exchange), so adding
+                    # one here is out of scope for this fix.
                     ch.connection.sleep(delay)
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
                 return
