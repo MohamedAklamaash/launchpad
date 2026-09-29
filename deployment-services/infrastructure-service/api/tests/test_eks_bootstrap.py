@@ -54,6 +54,56 @@ def test_enable_network_policy_is_idempotent_when_already_enabled(monkeypatch):
     core.create_namespaced_config_map.assert_not_called()
 
 
+def test_ensure_namespace_creator_rbac_grants_exactly_get_and_create_on_namespaces(monkeypatch):
+    """The deploy role's access entry is namespace-scoped to app-* (infra/aws/modules/eks/
+    main.tf) and namespace creation is cluster-scoped, so this ClusterRole is the only thing
+    letting the deploy role create its own app-{slug} namespace. It must not grant anything
+    else: no update/delete/list/patch, no other resource. Creating a namespace is the only
+    cluster-scoped action the deploy role legitimately needs."""
+    rbac = MagicMock()
+    monkeypatch.setattr(eb.k8s, "RbacAuthorizationV1Api", lambda api: rbac)
+
+    eb._ensure_namespace_creator_rbac(object(), [])
+
+    (cluster_role,) = rbac.create_cluster_role.call_args.args
+    assert cluster_role.metadata.name == eb.NAMESPACE_CREATOR_CLUSTER_ROLE
+    assert len(cluster_role.rules) == 1
+    rule = cluster_role.rules[0]
+    assert rule.api_groups == [""]
+    assert rule.resources == ["namespaces"]
+    assert set(rule.verbs) == {"get", "create"}
+
+
+def test_ensure_namespace_creator_rbac_binds_the_deployer_group(monkeypatch):
+    rbac = MagicMock()
+    monkeypatch.setattr(eb.k8s, "RbacAuthorizationV1Api", lambda api: rbac)
+
+    eb._ensure_namespace_creator_rbac(object(), [])
+
+    (binding,) = rbac.create_cluster_role_binding.call_args.args
+    assert binding.metadata.name == eb.NAMESPACE_CREATOR_CLUSTER_ROLE
+    assert binding.role_ref.kind == "ClusterRole"
+    assert binding.role_ref.name == eb.NAMESPACE_CREATOR_CLUSTER_ROLE
+    (subject,) = binding.subjects
+    assert subject.kind == "Group"
+    assert subject.name == eb.DEPLOYER_GROUP
+
+
+def test_ensure_namespace_creator_rbac_is_idempotent_on_rerun(monkeypatch):
+    rbac = MagicMock()
+    rbac.create_cluster_role.side_effect = _conflict()
+    rbac.create_cluster_role_binding.side_effect = _conflict()
+    monkeypatch.setattr(eb.k8s, "RbacAuthorizationV1Api", lambda api: rbac)
+
+    lines = []
+    eb._ensure_namespace_creator_rbac(object(), lines)
+
+    assert lines == [
+        f"[k8s] ClusterRole/{eb.NAMESPACE_CREATOR_CLUSTER_ROLE} already exists",
+        f"[k8s] ClusterRoleBinding/{eb.NAMESPACE_CREATOR_CLUSTER_ROLE} already exists",
+    ]
+
+
 def test_ensure_bootstrap_ingress_is_rerun_safe(monkeypatch):
     core = MagicMock()
     core.create_namespace.side_effect = _conflict()
@@ -226,12 +276,43 @@ def test_bootstrap_ensures_ingress_class_with_the_dns_label_group_name(monkeypat
 
     monkeypatch.setattr(eb, "_ensure_ingress_class", _fake_ensure_ingress_class)
     monkeypatch.setattr(eb, "_enable_network_policy_enforcement", lambda api, lines: None)
+    monkeypatch.setattr(eb, "_ensure_namespace_creator_rbac", lambda api, lines: None)
     monkeypatch.setattr(eb, "_ensure_bootstrap_ingress", lambda api, lines: None)
     monkeypatch.setattr(eb, "_wait_for_alb_hostname", lambda api, lines: "alb.example.com")
 
     eb.bootstrap_eks_environment(infra, credentials={}, region="us-east-1", cluster_name="infra-x")
 
     assert calls["group_name"] == "launchpad-a1b2c3d4e5f6a7b8"
+
+
+def test_bootstrap_wires_up_the_namespace_creator_rbac(monkeypatch):
+    """Without this step the deploy role can never create its own app-{slug} namespace on a
+    freshly provisioned cluster: the real bug this fix addresses."""
+    infra = SimpleNamespace(id="x", dns_label="a1b2c3d4e5f6a7b8", is_mock=False)
+    monkeypatch.setattr(eb, "is_dev_mode", lambda mode: False)
+
+    session = MagicMock()
+    session.client.return_value.describe_cluster.return_value = {
+        "cluster": {"endpoint": "https://x", "certificateAuthority": {"data": "ca"}}
+    }
+    monkeypatch.setattr(eb, "_boto_session", lambda credentials, region: session)
+    monkeypatch.setattr(eb, "mint_eks_token", lambda *a, **k: "token")
+
+    api_cm = MagicMock()
+    monkeypatch.setattr(eb, "k8s_api_client", lambda *a, **k: api_cm)
+    api_cm.__enter__.return_value = object()
+    api_cm.__exit__.return_value = False
+
+    rbac_calls = []
+    monkeypatch.setattr(eb, "_ensure_namespace_creator_rbac", lambda api, lines: rbac_calls.append(1))
+    monkeypatch.setattr(eb, "_ensure_ingress_class", lambda api, group_name, lines: None)
+    monkeypatch.setattr(eb, "_enable_network_policy_enforcement", lambda api, lines: None)
+    monkeypatch.setattr(eb, "_ensure_bootstrap_ingress", lambda api, lines: None)
+    monkeypatch.setattr(eb, "_wait_for_alb_hostname", lambda api, lines: "alb.example.com")
+
+    eb.bootstrap_eks_environment(infra, credentials={}, region="us-east-1", cluster_name="infra-x")
+
+    assert rbac_calls == [1]
 
 
 # ── F1b part 3a: apply_eks_tls ──────────────────────────────────────────────────────────

@@ -218,6 +218,35 @@ def test_rollout_failure_harvests_events_and_unwinds_in_reverse(application, dep
 
 
 @pytest.mark.django_db
+def test_deploy_uses_the_app_prefixed_namespace(application, deploy):
+    """The deploy role's EKS access entry is scoped to namespaces app-* (infra/aws/modules/
+    eks/main.tf). The deployer must never ask for anything outside that prefix."""
+    from api.k8s.deployer import namespace_for
+
+    deploy(application)
+
+    assert namespace_for("myapp") == "app-myapp"
+    assert ("namespace", "app-myapp") in {(k, n) for k, _ns, n in _objects(application)}
+
+
+@pytest.mark.django_db
+def test_deploy_tolerates_a_namespace_that_already_exists(application, deploy):
+    """A namespace the deploy role just gained the right to create (get+create only, via the
+    launchpad-namespace-creator ClusterRole) can already exist from an earlier partial deploy
+    or a concurrent retry. create() racing into a 409 must not fail the deploy."""
+    from kubernetes import client as k8s
+
+    apis = mock_k8s.get_mock_apis(str(application.infrastructure_id))
+    apis.core.create_namespace(k8s.V1Namespace(metadata=k8s.V1ObjectMeta(name="app-myapp")))
+
+    deploy(application)
+
+    application.refresh_from_db()
+    assert application.status == "ACTIVE"
+    assert ("namespace", "app-myapp") in {(k, n) for k, _ns, n in _objects(application)}
+
+
+@pytest.mark.django_db
 def test_non_dns_safe_name_is_refused_before_any_object_is_created(application, deploy):
     application.name = "my.app"
     application.save()

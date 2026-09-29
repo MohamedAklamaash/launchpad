@@ -20,6 +20,19 @@ ALB_POLL_TIMEOUT_SECONDS = 600
 ALB_POLL_INTERVAL_SECONDS = 15
 ALB_TIMEOUT_MARKER = "EKS_BOOTSTRAP_ALB_TIMED_OUT"
 
+# The deploy role's access entry (infra/aws/modules/eks/main.tf) grants AmazonEKSEditPolicy
+# scoped to namespaces app-* and launchpad-bootstrap. Namespace creation is cluster-scoped
+# and can never be granted by a namespace-scoped access policy. Rather than widen the access
+# entry to cluster scope (which would hand the deploy role edit rights over every namespace,
+# including kube-system), the entry gets a Kubernetes group instead, and this cluster-admin
+# bootstrap step grants that group a narrow ClusterRole: get+create on namespaces only, no
+# update/delete/list/patch and no other resource. Creating a namespace confers no rights
+# inside it: the deploy role's actual permissions still come entirely from the app-*-scoped
+# EKSEditPolicy access entry, so a namespace the deploy role creates outside app-* (which
+# application-service's deployer never asks for) would be empty and inert to it.
+DEPLOYER_GROUP = "launchpad:deployers"
+NAMESPACE_CREATOR_CLUSTER_ROLE = "launchpad-namespace-creator"
+
 
 class EksBootstrapError(Exception):
     def __init__(self, message: str, logs: str = ""):
@@ -59,6 +72,7 @@ def bootstrap_eks_environment(infra, *, credentials: dict, region: str, cluster_
             token_provider=lambda: mint_eks_token(session, cluster_name, region),
         ) as api:
             _enable_network_policy_enforcement(api, lines)
+            _ensure_namespace_creator_rbac(api, lines)
             _ensure_ingress_class(api, _ingress_group_name(infra), lines)
             _ensure_bootstrap_ingress(api, lines)
             lines.append(phase_marker("alb-wait"))
@@ -209,6 +223,33 @@ def _enable_network_policy_enforcement(api, lines: list):
     # spec.networkPolicy is an optional knob whose default is already DefaultAllow, so
     # writing that value would change nothing while reading like enforcement was turned
     # on. Enforcement is proven by the sandbox connectivity check, not by this call.
+
+
+def _ensure_namespace_creator_rbac(api, lines: list):
+    """Grants the deploy role's Kubernetes group (bound via kubernetes_groups on its EKS
+    access entry, infra/aws/modules/eks/main.tf) exactly enough cluster scope to create its
+    own per-app namespace: get+create on namespaces, nothing else. See DEPLOYER_GROUP's
+    module docstring for why this can't just be a wider access policy."""
+    rbac = k8s.RbacAuthorizationV1Api(api)
+    cluster_role = k8s.V1ClusterRole(
+        metadata=k8s.V1ObjectMeta(name=NAMESPACE_CREATOR_CLUSTER_ROLE),
+        rules=[k8s.V1PolicyRule(api_groups=[""], resources=["namespaces"], verbs=["get", "create"])],
+    )
+    _get_or_create(
+        lambda: rbac.create_cluster_role(cluster_role),
+        f"ClusterRole/{NAMESPACE_CREATOR_CLUSTER_ROLE}",
+        lines,
+    )
+    binding = k8s.V1ClusterRoleBinding(
+        metadata=k8s.V1ObjectMeta(name=NAMESPACE_CREATOR_CLUSTER_ROLE),
+        role_ref=k8s.V1RoleRef(api_group="rbac.authorization.k8s.io", kind="ClusterRole", name=NAMESPACE_CREATOR_CLUSTER_ROLE),
+        subjects=[k8s.RbacV1Subject(kind="Group", name=DEPLOYER_GROUP, api_group="rbac.authorization.k8s.io")],
+    )
+    _get_or_create(
+        lambda: rbac.create_cluster_role_binding(binding),
+        f"ClusterRoleBinding/{NAMESPACE_CREATOR_CLUSTER_ROLE}",
+        lines,
+    )
 
 
 def _ensure_ingress_class(api, group_name: str, lines: list):

@@ -134,6 +134,18 @@ resource "aws_iam_role" "deploy" {
 resource "aws_eks_access_entry" "deployer" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = aws_iam_role.deploy.arn
+
+  # Namespace creation is cluster-scoped and AmazonEKSEditPolicy below is deliberately
+  # namespace-scoped to app-*, so the deploy role can never create the very namespace its
+  # edit rights depend on. This group is bound (by api/services/eks_bootstrap.py, which runs
+  # with cluster-admin) to a ClusterRole granting only get+create on namespaces, no other
+  # verb, no other resource. That grants no rights inside a namespace the deploy role
+  # creates; its actual in-namespace powers still come entirely from the access policy
+  # association below, scoped to app-*. kubernetes_groups is mutable in place (not ForceNew
+  # in the AWS provider's aws_eks_access_entry resource, updated via the EKS
+  # UpdateAccessEntry API), so applying this on an already-onboarded cluster does not
+  # replace the access entry or interrupt an in-flight deploy using it.
+  kubernetes_groups = ["launchpad:deployers"]
 }
 
 resource "aws_eks_access_policy_association" "deployer_namespaced_edit" {
