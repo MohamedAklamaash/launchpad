@@ -107,6 +107,36 @@ export interface RuntimeLogsQuery {
   previous?: boolean;
 }
 
+export type AppMetricsRange = '1h' | '6h' | '24h' | '7d';
+
+export interface MetricPoint {
+  t: string;
+  v: number;
+}
+
+export type MetricSeriesName =
+  | 'cpu_percent'
+  | 'memory_percent'
+  | 'request_count'
+  | 'latency_p50_ms'
+  | 'latency_p95_ms'
+  | 'http_4xx'
+  | 'http_5xx'
+  | 'healthy_targets';
+
+export interface AppMetricsResponse {
+  range: AppMetricsRange;
+  period_seconds: number;
+  compute_type: string;
+  generated_at: string;
+  cached: boolean;
+  series: Record<MetricSeriesName, MetricPoint[]>;
+  /** Series present in the record above were unavailable for this compute type/config —
+   *  keyed the same as `series`, value is a machine reason code (e.g.
+   *  'eks_container_metrics_not_enabled') the UI maps to a friendly note. */
+  unavailable?: Partial<Record<MetricSeriesName, string>>;
+}
+
 export interface ApplicationUpdate {
   name?: string;
   description?: string;
