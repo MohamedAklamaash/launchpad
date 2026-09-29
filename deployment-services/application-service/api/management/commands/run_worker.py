@@ -239,8 +239,11 @@ class Command(BaseCommand):
             lock = DeploymentLock()
             cleanup_owner = f"cleanup-{worker_id}"
             if not lock.acquire(app_id, cleanup_owner):
-                logger.warning(f"App {app_id} locked during cleanup — requeueing")
-                DeploymentQueue.nack_job(job)
+                # Same as deploy/rollback: leave it in the processing queue for the reaper to
+                # re-queue once the holder releases (or its lock expires). A held lock isn't a
+                # failure, so it must not spend a retry — nack_job here burned all three in
+                # milliseconds and dead-lettered the cleanup.
+                logger.warning(f"App {app_id} locked during cleanup, leaving in processing queue for retry")
                 _unclaim(app_id)
                 return
             try:
