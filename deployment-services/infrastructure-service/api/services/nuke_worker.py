@@ -511,12 +511,15 @@ def _manage_state_backend(ctx: _NukeContext) -> dict:
     if ctx.mock:
         return {"mock": True}
 
+    # Any other infra in the account keeps the backend, whatever region it claims: a
+    # region mismatch (a missing or stale metadata.aws_region) must never be the reason
+    # a still-used state bucket gets emptied. Leaving a bucket behind is recoverable;
+    # deleting another infra's Terraform state is not.
     others = _other_infras_same_account(ctx.infra)
-    same_region_others = [o for o in others if (o.metadata or {}).get("aws_region", "us-west-2") == ctx.region]
-    if same_region_others:
+    if others:
         return {
             "action": "kept",
-            "reason": f"shared with {len(same_region_others)} other infrastructure(s) in this region",
+            "reason": f"shared with {len(others)} other infrastructure(s) in this AWS account",
         }
     return _delete_state_backend(ctx)
 

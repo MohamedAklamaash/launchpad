@@ -622,6 +622,31 @@ def test_state_backend_kept_when_other_infra_shares_the_account_and_region(make_
     assert "shared with 1 other" in result["reason"]
 
 
+def test_state_backend_kept_when_other_infra_in_account_claims_a_different_region(make_nuke_run):
+    """A missing/stale metadata.aws_region on another infra must never let nuke empty a
+    state bucket that infra may still use: any other infra in the account keeps it."""
+    from api.services.nuke_worker import _manage_state_backend, _NukeContext
+
+    owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    from api.models.infrastructure import Infrastructure
+    Infrastructure.objects.create(
+        user=owner, name="other-region-infra", cloud_provider="aws", max_cpu=1, max_memory=1,
+        code=infra.code, metadata={"aws_region": "eu-west-1"},
+    )
+    Infrastructure.objects.create(
+        user=owner, name="no-region-infra", cloud_provider="aws", max_cpu=1, max_memory=1,
+        code=infra.code, metadata={},
+    )
+
+    ctx = _NukeContext(infra=infra, run=run)
+    with patch("api.services.nuke_worker.boto3.client") as boto_client:
+        result = _manage_state_backend(ctx)
+
+    boto_client.assert_not_called()
+    assert result["action"] == "kept"
+    assert "shared with 2 other" in result["reason"]
+
+
 def test_state_backend_deleted_when_last_infra_in_account_and_region(make_nuke_run):
     from api.services.nuke_worker import _manage_state_backend, _NukeContext
 
