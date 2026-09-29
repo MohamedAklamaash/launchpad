@@ -514,7 +514,7 @@ def _exit_infra_now(infra_id):
 
 
 @pytest.mark.django_db
-def test_deploy_aborts_if_infra_exits_mid_deploy_before_ecs_service_call(deployable_app, monkeypatch):
+def test_deploy_aborts_if_infra_exits_mid_deploy_before_ecs_service_call(deployable_app, monkeypatch, settings):
     """Exit lands right after the task definition is registered — after the build already
     ran, before the ECS service is created/updated. Must abort there rather than only
     catching it at the next dequeue."""
@@ -522,6 +522,7 @@ def test_deploy_aborts_if_infra_exits_mid_deploy_before_ecs_service_call(deploya
     from api.services.application_deployment_service import ApplicationDeploymentService
     from api.services.exit_enforcement import InfrastructureExitedError
 
+    settings.PLATFORM_BASE_DOMAIN = None  # infra has no dns_label — host mode is out of scope here
     app, _env, infra = deployable_app
     service = ApplicationDeploymentService()
     session = MockSession(region="us-east-1", account_id=ACCOUNT_ID)
@@ -590,7 +591,7 @@ def test_rollback_aborts_if_infra_exits_mid_rollback_before_update_service(deplo
 
 
 @pytest.mark.django_db
-def test_deploy_abort_cleans_up_resources_already_created(deployable_app, monkeypatch):
+def test_deploy_abort_cleans_up_resources_already_created(deployable_app, monkeypatch, settings):
     """The exit check reuses the existing failure path (raise -> outer except) precisely
     so a mid-deploy abort still cleans up everything created so far, exactly like any other
     deploy failure — never a half-applied state worse than what the pre-existing failure
@@ -599,6 +600,7 @@ def test_deploy_abort_cleans_up_resources_already_created(deployable_app, monkey
     from api.services.application_deployment_service import ApplicationDeploymentService
     from api.services.exit_enforcement import InfrastructureExitedError
 
+    settings.PLATFORM_BASE_DOMAIN = None  # infra has no dns_label — host mode is out of scope here
     app, _env, infra = deployable_app
     service = ApplicationDeploymentService()
     session = MockSession(region="us-east-1", account_id=ACCOUNT_ID)

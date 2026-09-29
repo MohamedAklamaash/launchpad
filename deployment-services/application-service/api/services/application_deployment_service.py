@@ -118,48 +118,15 @@ class ApplicationDeploymentService:
             application.save()
             created_resources.append(('target_group', target_group_arn))
 
-            # Step 7: Create ECS Service (BEFORE listener rule — no traffic until healthy)
-            service_arn = self._create_ecs_service(session, application, environment)
-            application.service_arn = service_arn
-            application.desired_count = 1
-            application.save()
-            created_resources.append(('ecs_service', service_arn))
-
-            # Step 8: Wait for service to become stable and target healthy
-            service_name = f"{_slug(application.name)}-service"
-            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
-            logger.info(f"Service {service_name} is stable and running")
-
-            # Step 8.5: Wait for ALB to mark the target healthy before routing traffic
-            alb = ALBClient(session)
-            self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
-            logger.info(f"Target group {application.target_group_arn} has healthy targets")
-
-            # Step 8.55: R1 — reserve the infra-wide :80 wildcard redirect's priority-1 slot
-            # BEFORE this (or any) app's own path rule is created. This runs whenever the
-            # infra has a dns_label, independent of whether THIS deploy is itself eligible
-            # for host mode: the very first deploy on an infra after TLS onboarding begins
-            # must not let a path rule claim priority 1 before any app ever reaches host
-            # mode, or a later host-mode-eligible app finds every low priority already
-            # taken and the redirect rule permanently outranked.
-            self._reserve_host_redirect_priority(alb, application, environment)
-
-            # Step 8.6: Configure ALB Routing AFTER targets are confirmed healthy — zero 502 window
-            listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
-            application.listener_rule_arn = listener_rule_arn
-            application.save()
-            created_resources.append(('listener_rule', listener_rule_arn))
-
-            # Step 8.65: Host-mode routing (443 forward) — additive, on top of the path
-            # rule above, never in place of it. The :80 redirect was already reserved in
-            # step 8.55, before the path rule existed at all.
-            host_forward_rule_arn = self._configure_host_routing(
-                alb, application, environment, host_mode, app_hostname,
+            # Step 7-8.65: Create the ECS service and wire up ALB routing, in whichever
+            # order the target group's current attachment to the ALB requires — see
+            # _create_ecs_service_with_routing.
+            listener_arn = self._create_ecs_service_with_routing(
+                session, application, environment, host_mode, app_hostname, created_resources,
             )
-            if host_forward_rule_arn:
-                created_resources.append(('host_forward_rule', host_forward_rule_arn))
 
             # Step 8.7: Verify target group is attached to ALB
+            alb = ALBClient(session)
             alb.verify_target_group_attached(application.target_group_arn, listener_arn)
             logger.info("Target group verified as attached to ALB")
 
@@ -657,7 +624,86 @@ class ApplicationDeploymentService:
         )
         logger.info(f"Created target group {target_group_arn}")
         return target_group_arn
-    
+
+    def _target_group_is_attached(self, alb: ALBClient, target_group_arn: str) -> bool:
+        """Real AWS: ECS CreateService raises InvalidParameterException for a target
+        group that has no associated load balancer yet, and an unattached target group
+        is never health-checked either way — see _create_ecs_service_with_routing for
+        why this decides the create-vs-route ordering."""
+        response = alb.client.describe_target_groups(TargetGroupArns=[target_group_arn])
+        return bool(response['TargetGroups'][0].get('LoadBalancerArns'))
+
+    def _create_ecs_service_with_routing(self, session, application: Application, environment: Environment,
+                                         host_mode: bool, app_hostname: str | None, created_resources: list) -> str:
+        """Creates the ECS service and wires up its ALB routing, choosing the order
+        based on whether `application.target_group_arn` is already attached to the ALB.
+
+        #43 moved routing to after the service is confirmed healthy — no traffic until
+        healthy, zero 502 window. On real AWS this breaks a brand-new target group: ECS
+        CreateService raises InvalidParameterException for a target group with no
+        associated load balancer, and an unattached target group is never health-checked
+        anyway — every first deploy failed this way, while redeploys worked only because
+        their target group was already attached from a prior deploy. A new target group
+        has no existing traffic to protect, so attaching it to the ALB before the service
+        exists is safe; an already-attached one keeps #43's original healthy-first order.
+
+        Used by both `deploy_application` and `_recreate_ecs_service` so the ordering
+        decision lives in one place. Returns the :80 listener ARN, for the caller's
+        subsequent `verify_target_group_attached` call.
+        """
+        alb = ALBClient(session)
+        route_before_create = not self._target_group_is_attached(alb, application.target_group_arn)
+
+        def create_and_wait_healthy():
+            service_arn = self._create_ecs_service(session, application, environment)
+            application.service_arn = service_arn
+            application.desired_count = 1
+            # Narrow update_fields: a webhook or other concurrent write to this row
+            # (e.g. project_commit_hash advancing while this deploy is in flight) must
+            # not be clobbered by a full save from this worker's stale in-memory copy.
+            application.save(update_fields=['service_arn', 'desired_count'])
+            created_resources.append(('ecs_service', service_arn))
+
+            service_name = f"{_slug(application.name)}-service"
+            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+            logger.info(f"Service {service_name} is stable and running")
+
+            self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
+            logger.info(f"Target group {application.target_group_arn} has healthy targets")
+
+        def route():
+            # H2: a build can run for minutes before either branch reaches this point —
+            # re-check for exit before the first AWS mutation this order performs.
+            self._abort_if_exited(application)
+
+            # R1: reserve the infra-wide :80 wildcard redirect's priority-1 slot before
+            # this (or any) app's own path rule is created — see
+            # _reserve_host_redirect_priority's docstring for why this runs independent
+            # of whether THIS deploy is itself eligible for host mode.
+            self._reserve_host_redirect_priority(alb, application, environment)
+
+            listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
+            application.listener_rule_arn = listener_rule_arn
+            application.save(update_fields=['listener_rule_arn'])
+            created_resources.append(('listener_rule', listener_rule_arn))
+
+            # Host-mode routing (443 forward) — additive, on top of the path rule above,
+            # never in place of it.
+            host_forward_rule_arn = self._configure_host_routing(alb, application, environment, host_mode, app_hostname)
+            if host_forward_rule_arn:
+                created_resources.append(('host_forward_rule', host_forward_rule_arn))
+
+            return listener_arn
+
+        if route_before_create:
+            listener_arn = route()
+            create_and_wait_healthy()
+        else:
+            create_and_wait_healthy()
+            listener_arn = route()
+
+        return listener_arn
+
     def _get_app_sg_name(self, application: Application) -> str:
         return app_security_group_name(application.infrastructure_id)
 
@@ -1092,29 +1138,11 @@ class ApplicationDeploymentService:
         application.save(update_fields=['target_group_arn'])
         created_resources.append(('target_group', target_group_arn))
 
-        service_arn = self._create_ecs_service(session, application, environment)
-        application.service_arn = service_arn
-        application.desired_count = 1
-        application.save(update_fields=['service_arn', 'desired_count'])
-        created_resources.append(('ecs_service', service_arn))
-
-        service_name = f"{_slug(application.name)}-service"
-        self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+        listener_arn = self._create_ecs_service_with_routing(
+            session, application, environment, host_mode, app_hostname, created_resources,
+        )
 
         alb = ALBClient(session)
-        self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
-
-        self._reserve_host_redirect_priority(alb, application, environment)
-
-        listener_rule_arn, listener_arn = self._configure_alb_routing(session, application, environment)
-        application.listener_rule_arn = listener_rule_arn
-        application.save(update_fields=['listener_rule_arn'])
-        created_resources.append(('listener_rule', listener_rule_arn))
-
-        host_forward_rule_arn = self._configure_host_routing(alb, application, environment, host_mode, app_hostname)
-        if host_forward_rule_arn:
-            created_resources.append(('host_forward_rule', host_forward_rule_arn))
-
         alb.verify_target_group_attached(application.target_group_arn, listener_arn)
 
     def _rollback_eks(self, session, application: Application, environment: Environment, target, created_resources: list) -> str:
