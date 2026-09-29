@@ -8,10 +8,16 @@ import json
 import uuid
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
-from api.services.terraform_worker import MAX_RETRIES, TerraformWorker
+from api.services.log_redaction import redact_provisioning_text
+from api.services.terraform_worker import (
+    MAX_RETRIES,
+    OUTPUT_FETCH_EXHAUSTED_MESSAGE,
+    TRANSIENT_RETRIES_EXHAUSTED_MESSAGE,
+    TerraformWorker,
+)
 from django.utils import timezone
 
 # authenticate_infrastructure returns the STS credentials now — they are no longer
@@ -71,8 +77,8 @@ def test_exec_tf_env_excludes_platform_secrets(monkeypatch, leaked):
     monkeypatch.setenv(leaked, "platform-only-value")
     run = _run_exec_tf()
     assert run.call_count == 2
-    for call in run.call_args_list:
-        assert leaked not in call.kwargs["env"]
+    for recorded_call in run.call_args_list:
+        assert leaked not in recorded_call.kwargs["env"]
 
 
 def test_exec_tf_env_passes_path_home_and_customer_credentials(monkeypatch):
@@ -107,6 +113,39 @@ def test_exec_tf_env_is_exactly_the_allowlist():
         "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "AWS_SHARED_CREDENTIALS_FILE",
         "AWS_CONFIG_FILE", "TF_IN_AUTOMATION", "TF_INPUT", "TF_PLUGIN_CACHE_DIR",
     }
+
+
+# ---- state-lock contention and network blips are transient, never a permanent failure ----
+
+@pytest.mark.parametrize("error_text", [
+    "Error acquiring the state lock",
+    "ConditionalCheckFailedException: the conditional request failed",
+    "state lock",
+    "ProvisionedThroughputExceededException",
+    "ThrottlingException: rate exceeded on lock table",
+    "connection reset by peer",
+    "dial tcp 10.0.0.1:443: i/o timeout",
+    "net/http: TLS handshake timeout",
+    "RequestError: send request failed",
+])
+def test_is_transient_error_recognizes_lock_contention_and_network_blips(error_text):
+    assert TerraformWorker._is_transient_error(error_text) is True
+
+
+def test_tf_result_classifies_state_lock_stderr_as_transient():
+    """The real path: `_exec_tf` runs raw terraform stderr through `_is_transient_error`
+    via `_tf_result`. A lock timeout must classify as transient so `_handle_provision_failure`
+    retries instead of destroying freshly-created resources over a lock it only needed to
+    wait out."""
+    result = TerraformWorker._tf_result(
+        False, [], CREDENTIALS,
+        error=(
+            "Error: Error acquiring the state lock\n\n"
+            "Error message: ConditionalCheckFailedException: The conditional request failed\n"
+            "Lock Info:\n  ID: abc\n  Who: worker@host\n  Operation: OperationTypeApply\n"
+        ),
+    )
+    assert result["transient"] is True
 
 
 # ---- #5 first_activated_at stamped once ----
@@ -162,46 +201,109 @@ def test_save_outputs_logs_key_names_without_values(make_infra_env):
     assert "vpc_id" in env.logs
 
 
-def _save_outputs_after_failed_output_fetch(infra):
-    with patch.object(TerraformWorker, "_exec_tf",
-                       return_value={"success": False, "error": "state lock timeout", "logs": ""}), \
+OUTPUT_FETCH_FAIL = {"success": False, "error": "state lock timeout", "transient": False, "logs": ""}
+OUTPUT_FETCH_FAIL_TRANSIENT = {"success": False, "error": "state lock timeout", "transient": True, "logs": ""}
+OUTPUT_FETCH_OK = {
+    "success": True,
+    "output": json.dumps({"vpc_id": {"value": "vpc-0123456789abcdef0"}}),
+    "logs": "",
+}
+
+
+def test_save_outputs_retries_output_fetch_then_succeeds(make_infra_env):
+    """A single transient output-fetch failure must not cost the provision a success."""
+    infra, env = make_infra_env()
+    with patch.object(TerraformWorker, "_exec_tf", side_effect=[OUTPUT_FETCH_FAIL, OUTPUT_FETCH_OK]), \
+            patch("api.services.terraform_worker.time.sleep") as sleep, \
             patch("api.messaging.producer.producer.infra_producer"):
-        TerraformWorker._save_outputs(
+        saved = TerraformWorker._save_outputs(
             str(infra.id), {"logs": "[COMMAND] apply ok"}, TF_VARS, CREDENTIALS,
             "us-east-1", "123456789012",
         )
-
-
-def test_output_fetch_failure_on_activated_environment_stays_active(make_infra_env):
-    """Apply already succeeded — real resources exist — so this must never regress to ERROR."""
-    infra, env = make_infra_env(status="UPDATING", first_activated_at=timezone.now())
-    _save_outputs_after_failed_output_fetch(infra)
     env.refresh_from_db()
+    assert saved is True
     assert env.status == "ACTIVE"
-    assert "reading outputs failed" in env.error_message
+    assert env.vpc_id == "vpc-0123456789abcdef0"
+    sleep.assert_called_once_with(5)
 
 
-def test_output_fetch_failure_on_first_provision_stays_provisioning(make_infra_env):
-    """Self-healing: an unconfirmed first apply must stay reap-eligible, never ERROR or ACTIVE."""
-    infra, env = make_infra_env()
-    _save_outputs_after_failed_output_fetch(infra)
+def test_output_fetch_exhausted_on_activated_environment_stays_active(make_infra_env):
+    """Apply already succeeded — real resources exist — so this must never regress to ERROR,
+    and must never be reported as a success either: the fixed, always-allowlisted sentence
+    lands in error_message instead of the raw (possibly withheld) terraform diagnostic."""
+    infra, env = make_infra_env(status="UPDATING", first_activated_at=timezone.now())
+    with patch.object(TerraformWorker, "_exec_tf", return_value=OUTPUT_FETCH_FAIL), \
+            patch("api.services.terraform_worker.time.sleep") as sleep, \
+            patch("api.messaging.producer.producer.infra_producer"):
+        saved = TerraformWorker._save_outputs(
+            str(infra.id), {"logs": "[COMMAND] apply ok"}, TF_VARS, CREDENTIALS,
+            "us-east-1", "123456789012",
+        )
     env.refresh_from_db()
-    assert env.status == "PROVISIONING"
+    assert saved is False
+    assert env.status == "ACTIVE"
+    assert env.error_message == OUTPUT_FETCH_EXHAUSTED_MESSAGE
+    assert sleep.call_args_list == [call(5), call(10), call(20)]
+
+
+def test_output_fetch_exhausted_on_first_provision_rolls_back_to_error(make_infra_env):
+    """Never-activated infra whose outputs can't be confirmed must be handled exactly like a
+    failed `terraform apply` — permanent failure here rolls back and never leaves it looking
+    like PROVISIONING is still in flight."""
+    infra, env = make_infra_env()
+    destroy_ok = {"success": True, "logs": "[COMMAND] destroy ok"}
+    with patch.object(
+        TerraformWorker, "_exec_tf",
+        side_effect=[OUTPUT_FETCH_FAIL, OUTPUT_FETCH_FAIL, OUTPUT_FETCH_FAIL, OUTPUT_FETCH_FAIL, destroy_ok],
+    ) as exec_tf, \
+            patch("api.services.terraform_worker.time.sleep") as sleep, \
+            patch("api.messaging.producer.producer.infra_producer"):
+        saved = TerraformWorker._save_outputs(
+            str(infra.id), {"logs": "[COMMAND] apply ok"}, TF_VARS, CREDENTIALS,
+            "us-east-1", "123456789012",
+        )
+    env.refresh_from_db()
+    assert saved is False
+    assert env.status == "ERROR"
     assert env.first_activated_at is None
+    assert sleep.call_args_list == [call(5), call(10), call(20)]
+    assert exec_tf.call_args_list[-1].args[0][:2] == ["terraform", "destroy"]
 
 
-def test_provision_survives_output_fetch_hiccup_on_first_apply(make_infra_env):
-    """End-to-end: a successful first apply whose output read fails must stay re-drivable."""
+def test_output_fetch_exhausted_transient_on_first_provision_requeues(make_infra_env):
+    """A transient output-read failure on a first provision gets the same bounded requeue
+    a transient apply failure gets — never a silent PROVISIONING with nothing driving it."""
+    infra, env = make_infra_env()
+    with patch.object(TerraformWorker, "_exec_tf", return_value=OUTPUT_FETCH_FAIL_TRANSIENT), \
+            patch("api.services.terraform_worker.time.sleep"), \
+            patch("api.services.infra_queue.InfraQueue") as Q, \
+            patch("api.messaging.producer.producer.infra_producer"):
+        saved = TerraformWorker._save_outputs(
+            str(infra.id), {"logs": "[COMMAND] apply ok"}, TF_VARS, CREDENTIALS,
+            "us-east-1", "123456789012",
+        )
+    Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=1)
+    env.refresh_from_db()
+    assert saved is False
+    assert env.status == "PROVISIONING"
+
+
+def test_provision_recovers_from_output_fetch_hiccup_on_first_apply(make_infra_env):
+    """End-to-end: a first apply whose output read fails once then succeeds must still
+    activate normally, not get stuck or reported as anything other than success."""
     infra, env = make_infra_env(status="PENDING")
     apply_ok = {"success": True, "logs": "[COMMAND] apply ok"}
-    output_fail = {"success": False, "error": "state lock timeout", "logs": ""}
     with patch("api.services.terraform_worker.authenticate_infrastructure",
                   return_value=dict(CREDENTIALS)), \
-            patch.object(TerraformWorker, "_exec_tf", side_effect=[apply_ok, output_fail]):
+            patch.object(TerraformWorker, "_exec_tf", side_effect=[apply_ok, OUTPUT_FETCH_FAIL, OUTPUT_FETCH_OK]), \
+            patch("api.services.terraform_worker.time.sleep") as sleep, \
+            patch("api.messaging.producer.producer.infra_producer"):
         TerraformWorker.provision(str(infra.id))
     env.refresh_from_db()
-    assert env.status == "PROVISIONING"
-    assert env.first_activated_at is None
+    assert env.status == "ACTIVE"
+    assert env.first_activated_at is not None
+    assert env.vpc_id == "vpc-0123456789abcdef0"
+    sleep.assert_called_once_with(5)
 
 
 # ---- #6 provision-failure gate on a previously-activated environment ----
@@ -232,13 +334,14 @@ def test_failure_on_activated_environment_skips_destroy_and_restores_active(make
 
 
 def test_transient_failure_on_activated_environment_still_retries(make_infra_env):
-    """Retrying never destroys anything, so a live env's transient errors must still retry."""
+    """Retrying never destroys anything, so a live env's transient errors must still retry.
+    The requeue must carry the incremented retry count so MAX_RETRIES is reachable."""
     infra, env = make_infra_env(status="UPDATING", first_activated_at=timezone.now())
     with patch("api.services.infra_queue.InfraQueue") as Q, \
             patch.object(TerraformWorker, "_exec_tf",
                          side_effect=AssertionError("retry path must not destroy")):
         _handle_failure(infra, TRANSIENT_FAILURE, retry_count=0)
-    Q.enqueue_provision.assert_called_once_with(str(infra.id))
+    Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=1)
     env.refresh_from_db()
     assert env.status == "UPDATING"
 
@@ -249,9 +352,23 @@ def test_transient_failure_on_never_activated_environment_still_retries(make_inf
             patch.object(TerraformWorker, "_exec_tf",
                          side_effect=AssertionError("retry path must not destroy")):
         _handle_failure(infra, TRANSIENT_FAILURE, retry_count=0)
-    Q.enqueue_provision.assert_called_once_with(str(infra.id))
+    Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=1)
     env.refresh_from_db()
     assert env.status == "PROVISIONING"
+
+
+def test_transient_retry_count_increments_across_successive_requeues(make_infra_env):
+    """Each successive transient failure must advance the counter by exactly one, so a
+    fixed number of retries is actually reachable instead of resetting forever."""
+    infra, env = make_infra_env()
+    for attempt in range(MAX_RETRIES):
+        with patch("api.services.infra_queue.InfraQueue") as Q, \
+                patch.object(TerraformWorker, "_exec_tf",
+                             side_effect=AssertionError("retry path must not destroy")):
+            _handle_failure(infra, TRANSIENT_FAILURE, retry_count=attempt)
+        Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=attempt + 1)
+        env.refresh_from_db()
+        assert env.status == "PROVISIONING"
 
 
 def test_permanent_failure_on_never_activated_environment_still_rolls_back(make_infra_env):
@@ -266,6 +383,11 @@ def test_permanent_failure_on_never_activated_environment_still_rolls_back(make_
 
 
 def test_exhausted_transient_retries_on_never_activated_environment_rolls_back(make_infra_env):
+    """Once retry_count actually reaches MAX_RETRIES (only reachable because the queue now
+    carries the counter), a still-failing transient error must stop requeueing forever and
+    park the environment in ERROR with a non-empty, redactor-passed message — never a raw,
+    unredacted exception string (see `test_run_worker_never_emails_a_raw_exception_string`
+    for the same invariant on the run_worker side)."""
     infra, env = make_infra_env()
     with patch("api.services.infra_queue.InfraQueue") as Q, \
             patch.object(TerraformWorker, "_exec_tf",
@@ -274,3 +396,22 @@ def test_exhausted_transient_retries_on_never_activated_environment_rolls_back(m
     Q.enqueue_provision.assert_not_called()
     env.refresh_from_db()
     assert env.status == "ERROR"
+    assert env.error_message
+    assert env.error_message == redact_provisioning_text(env.error_message).text
+
+
+def test_exhausted_transient_retries_store_exact_fixed_human_readable_message(make_infra_env):
+    """The raw AWS/terraform error text ("Throttling: rate exceeded") is a flat, unshaped
+    string the redactor withholds outright — error_message must instead be exactly the
+    fixed TRANSIENT_RETRIES_EXHAUSTED_MESSAGE, never "... lines withheld", with the raw
+    detail (the original error and the destroy outcome) still recoverable from env.logs."""
+    infra, env = make_infra_env()
+    with patch("api.services.infra_queue.InfraQueue"), \
+            patch.object(TerraformWorker, "_exec_tf",
+                         return_value={"success": True, "logs": "[COMMAND] destroy ok"}):
+        _handle_failure(infra, TRANSIENT_FAILURE, retry_count=MAX_RETRIES)
+    env.refresh_from_db()
+    assert env.error_message == TRANSIENT_RETRIES_EXHAUSTED_MESSAGE
+    assert "withheld" not in env.error_message.lower()
+    assert "[COMMAND]" in env.logs
+    assert "[DESTROY]" in env.logs

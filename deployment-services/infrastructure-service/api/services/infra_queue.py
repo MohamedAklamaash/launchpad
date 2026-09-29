@@ -75,17 +75,21 @@ class InfraQueue:
     """Queue for infrastructure operations with deduplication"""
     
     @staticmethod
-    def enqueue_provision(infra_id: str, priority: int = 0):
-        """Add provision job to queue (deduplicated)"""
+    def enqueue_provision(infra_id: str, priority: int = 0, retry_count: int = 0):
+        """Add provision job to queue (deduplicated). `retry_count` carries the
+        transient-failure retry counter across the queue (see
+        TerraformWorker._handle_provision_failure) so MAX_RETRIES is actually reachable
+        instead of resetting to 0 on every requeue. Every other caller enqueues a fresh
+        attempt and leaves this at its default."""
         lock_key = f"{LOCK_PREFIX}{infra_id}"
         if _redis().exists(lock_key):
             logger.warning(f"Job {infra_id} already queued or processing, skipping")
             return False
-        
-        job = {"infra_id": infra_id, "action": "provision", "priority": priority}
+
+        job = {"infra_id": infra_id, "action": "provision", "priority": priority, "retry_count": retry_count}
         _redis().rpush(PROVISION_QUEUE, json.dumps(job))
         _redis().setex(lock_key, LOCK_TTL, "queued")
-        logger.info(f"Enqueued provision job for {infra_id}")
+        logger.info(f"Enqueued provision job for {infra_id} (retry_count={retry_count})")
         return True
     
     @staticmethod

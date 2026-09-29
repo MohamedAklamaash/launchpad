@@ -126,7 +126,7 @@ def test_transient_retry_still_fires_after_redaction(make_infra_env):
                   side_effect=[INIT_OK, _failed("Throttling: rate exceeded\n")]), \
             patch("api.services.infra_queue.InfraQueue") as Q:
         TerraformWorker.provision(str(infra.id))
-    Q.enqueue_provision.assert_called_once_with(str(infra.id))
+    Q.enqueue_provision.assert_called_once_with(str(infra.id), retry_count=1)
     env.refresh_from_db()
     assert env.error_message.startswith("Retry 1:")
 
