@@ -66,7 +66,7 @@ class _MockPaginator:
 class MockClient:
     def __init__(self, service: str, region: str, account_id: str, deleted_services: set,
                  listener_rules: dict, infra_id: str | None = None, listener_certificates: dict | None = None,
-                 target_groups: dict | None = None):
+                 target_groups: dict | None = None, service_deployments: dict | None = None):
         self._service = service
         self._region = region
         self._account_id = account_id
@@ -80,6 +80,17 @@ class MockClient:
         # what a real elbv2 CreateTargetGroup would: DuplicateTargetGroupNameException,
         # never a silent second success.
         self._target_groups = target_groups if target_groups is not None else {}
+        # service name -> deployments list, shared across every MockClient built from the
+        # same MockSession. Defaults to a single converged PRIMARY (see describe_services)
+        # unless a test overrides this to express an in-progress or stuck rollout — e.g. a
+        # PRIMARY that never converges next to an ACTIVE deployment still running the old
+        # task, the shape wait_for_service_stable (aws/ecs.py) must fail on rather than
+        # report stable (see the e2e-web incident it fixes). A PRIMARY dict may also carry
+        # its own "taskDefinition", left out of the default so most tests never trip the
+        # expected_task_definition_arn check — set it to something other than the
+        # application's own task_definition_arn to express a deploymentCircuitBreaker
+        # auto-rollback onto the previous task definition.
+        self._service_deployments = service_deployments if service_deployments is not None else {}
         self.meta = _MockMeta(region)
         self.exceptions = _MockClientExceptions(service)
 
@@ -102,16 +113,24 @@ class MockClient:
         for service in services:
             name = str(service).split("/")[-1]
             deleted = name in self._deleted_services
+            running = 0 if deleted else 1
+            desired = 0 if deleted else 1
+            deployments = self._service_deployments.get(name) if not deleted else None
+            if deployments is None:
+                deployments = [
+                    {
+                        "status": "PRIMARY", "rolloutState": "COMPLETED", "failedTasks": 0,
+                        "runningCount": running, "desiredCount": desired,
+                    }
+                ]
             descriptions.append(
                 {
                     "serviceName": name,
                     "serviceArn": self._arn(f"service/{name}"),
                     "status": "INACTIVE" if deleted else "ACTIVE",
-                    "runningCount": 0 if deleted else 1,
-                    "desiredCount": 0 if deleted else 1,
-                    "deployments": [
-                        {"status": "PRIMARY", "rolloutState": "COMPLETED", "failedTasks": 0}
-                    ],
+                    "runningCount": running,
+                    "desiredCount": desired,
+                    "deployments": deployments,
                 }
             )
         return {"services": descriptions}
@@ -528,6 +547,8 @@ class MockSession:
         self._listener_rules: dict = {}
         self._listener_certificates: dict = {}
         self._target_groups: dict = {}
+        # service name -> deployments list override — see MockClient.describe_services.
+        self._service_deployments: dict = {}
 
     def client(self, service_name: str, **kwargs):
         return MockClient(
@@ -535,4 +556,5 @@ class MockSession:
             self._deleted_services, self._listener_rules, infra_id=self._infra_id,
             listener_certificates=self._listener_certificates,
             target_groups=self._target_groups,
+            service_deployments=self._service_deployments,
         )

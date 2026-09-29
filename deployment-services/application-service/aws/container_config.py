@@ -60,6 +60,13 @@ http {{
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
 
+    # A host-mode server_name is up to a 63-char app slug plus a 16-hex dns_label plus
+    # the platform base domain, well past nginx's default bucket size (32 or 64 bytes
+    # depending on build). Too small a bucket fails config load outright ("could not
+    # build server_names_hash"), which in ECS means nginx -t fails, the sidecar exits,
+    # and the task never comes up — see the e2e-web incident this constant fixes.
+    server_names_hash_bucket_size 128;
+
     proxy_connect_timeout 60s;
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;

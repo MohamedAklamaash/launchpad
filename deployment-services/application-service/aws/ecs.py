@@ -7,6 +7,13 @@ from aws.tags import as_lower_tags
 
 logger = logging.getLogger(__name__)
 
+# The nginx sidecar's own image — exported so tests that exercise the sidecar command
+# against a real nginx binary (see api/tests/test_container_config.py and
+# api/tests/test_nginx_sidecar_exit_code.py) run the exact image family ECS pulls, not an
+# independent guess at "the same family".
+NGINX_SIDECAR_IMAGE = 'public.ecr.aws/nginx/nginx:alpine'
+
+
 class ECSClient:
     def __init__(self, session):
         self.client = session.client('ecs')
@@ -90,7 +97,7 @@ class ECSClient:
             
             container_definitions.append({
                 'name': f'{family}-nginx',
-                'image': 'public.ecr.aws/nginx/nginx:alpine',
+                'image': NGINX_SIDECAR_IMAGE,
                 'essential': True,
                 # No dependsOn: HEALTHY — nginx starts immediately and handles
                 # "app not ready" gracefully. The ECS healthCheckGracePeriodSeconds
@@ -105,8 +112,24 @@ class ECSClient:
                 'command': [
                     '/bin/sh', '-c',
                     (
-                    'echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/nginx.conf && '
-                    'nginx -t && nginx -g "daemon off;" & '
+                    # `|| exit 1` (not `&&` into the next statement): a decode failure
+                    # must stop the script here too, the same way a failed nginx -t does
+                    # below — otherwise it falls through to `nginx -g ...` on a missing or
+                    # truncated config, which fails silently in the background just like
+                    # the bug this whole command shape fixes.
+                    'echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/nginx.conf || exit 1; '
+                    # nginx -t is its own statement, run to completion in the foreground
+                    # (note the `;`, not `&&`) before anything is backgrounded: the
+                    # previous shape, `nginx -t && nginx -g ... &`, backgrounds the whole
+                    # test+start chain as one job, so a failing config test only exits
+                    # that background job — its `exit 1` never reaches the foreground
+                    # script, which sails on into the 180s app-wait loop below and the
+                    # monitor loop then exits 0 (nothing left to watch). Ending the `if`
+                    # with `;` keeps it a foreground statement: `exit 1` inside it exits
+                    # this whole script immediately, before the container ever waits on
+                    # an app that has nothing in front of it.
+                    'if ! nginx -t; then echo "ERROR: nginx config test failed"; exit 1; fi; '
+                    'nginx -g "daemon off;" & '
                     'NGINX_PID=$! && '
                     # Wait for app to be healthy before nginx starts serving real traffic
                     f'for port in {container_port} 8080 8000 3000 5000 4000; do '
@@ -253,51 +276,109 @@ class ECSClient:
                     return response['services'][0]['serviceArn']
             raise
     
-    def wait_for_service_stable(self, cluster_arn, service_name, timeout=None):
-        """Wait for ECS service to become stable"""
+    def wait_for_service_stable(self, cluster_arn, service_name, timeout=None, expected_task_definition_arn=None):
+        """Wait for the ECS service's PRIMARY deployment to converge.
+
+        Keys on the PRIMARY deployment's own runningCount/desiredCount/rolloutState, not
+        the service-wide runningCount/desiredCount: during a rolling update
+        (maximumPercent 200, minimumHealthyPercent 100) the previous ACTIVE deployment's
+        task can still be running — and still attached to the target group — while the
+        new PRIMARY task has already failed and been stopped. At the service level that
+        reads as runningCount == desiredCount, falsely "stable", while the deploy this
+        call is supposed to be waiting for never actually came up. That is exactly what
+        happened on real AWS to e2e-web: the old path-mode task kept serving while the
+        new host-mode task's nginx sidecar failed nginx -t, and this check declared
+        success anyway. Also requires every non-PRIMARY (ACTIVE) deployment to be fully
+        drained — a "converged" PRIMARY next to a still-running old deployment means
+        traffic may still be served by the task definition this deploy meant to replace.
+
+        `expected_task_definition_arn` closes a second way the same incident can recur:
+        `deploymentCircuitBreaker: {enable: True, rollback: True}` (see create_service/
+        update_service below) means ECS itself can give up on our new task definition and
+        auto-rollback to the previous one. That rollback is its own new deployment, and
+        once IT converges (COMPLETED, runningCount == desiredCount, nothing else running)
+        every check above reports "stable" — the caller never finds out its own deploy
+        never shipped. Every caller of this method already knows the task definition ARN
+        it just told ECS to run, so it's passed in and checked against the PRIMARY
+        deployment's own `taskDefinition` before anything is called stable.
+        """
         import time
         if timeout is None:
             timeout = self.service_stable_timeout
-        
+
         logger.info(f"Waiting for service {service_name} to become stable...")
         start_time = time.time()
-        
+        last_primary_failed = 0
+
         while time.time() - start_time < timeout:
             response = self.client.describe_services(
                 cluster=cluster_arn,
                 services=[service_name]
             )
-            
+
             if not response['services']:
                 raise Exception(f"Service {service_name} not found")
-            
-            service = response['services'][0]
-            
-            running_count = service.get('runningCount', 0)
-            desired_count = service.get('desiredCount', 0)
 
-            # Detect circuit breaker rollback / crash loop
+            service = response['services'][0]
             deployments = service.get('deployments', [])
             primary = next((d for d in deployments if d['status'] == 'PRIMARY'), None)
-            if primary:
-                failed = primary.get('failedTasks', 0)
-                rollout = primary.get('rolloutState', '')
-                if rollout == 'FAILED':
-                    raise Exception(
-                        f"Service {service_name} deployment failed (circuit breaker triggered). "
-                        f"Failed tasks: {failed}. Check CloudWatch logs for the task family."
-                    )
-                if failed >= self.failed_tasks_threshold:
-                    raise Exception(
-                        f"Service {service_name} has {failed} failed tasks — app is crash-looping. "
-                        "Check CloudWatch logs for the task family."
-                    )
-            
-            if running_count == desired_count and running_count > 0:
-                logger.info(f"Service {service_name} is stable with {running_count} running tasks")
+
+            if primary is None:
+                # Plausibly transient immediately after UpdateService/CreateService —
+                # ECS hasn't published a deployment list yet. The timeout below still
+                # catches a service that never gets one.
+                logger.info(f"Service {service_name}: no PRIMARY deployment yet, waiting...")
+                time.sleep(self.service_stable_poll_interval)
+                continue
+
+            primary_running = primary.get('runningCount', 0)
+            primary_desired = primary.get('desiredCount', 0)
+            rollout = primary.get('rolloutState', '')
+            failed = primary.get('failedTasks', 0)
+            last_primary_failed = failed
+            primary_task_def = primary.get('taskDefinition')
+
+            if (
+                expected_task_definition_arn
+                and primary_task_def
+                and primary_task_def != expected_task_definition_arn
+            ):
+                raise Exception(
+                    "new version failed and ECS rolled back to the previous one — "
+                    "check runtime logs"
+                )
+
+            if rollout == 'FAILED':
+                raise Exception(
+                    f"Service {service_name} deployment failed (circuit breaker triggered). "
+                    f"Failed tasks: {failed}. Check CloudWatch logs for the task family."
+                )
+            if failed >= self.failed_tasks_threshold:
+                raise Exception(
+                    f"Service {service_name} has {failed} failed tasks — app is crash-looping. "
+                    "Check CloudWatch logs for the task family."
+                )
+
+            old_deployments_drained = all(
+                d.get('runningCount', 0) == 0 for d in deployments if d is not primary
+            )
+            primary_converged = rollout == 'COMPLETED' or (
+                primary_running >= primary_desired and primary_running > 0
+            )
+
+            if primary_converged and old_deployments_drained:
+                logger.info(
+                    f"Service {service_name} is stable: PRIMARY {primary_running}/{primary_desired} "
+                    "running, old deployments drained"
+                )
                 return True
-            
-            logger.info(f"Service {service_name}: {running_count}/{desired_count} tasks running, waiting...")
+
+            logger.info(
+                f"Service {service_name}: PRIMARY {primary_running}/{primary_desired} running "
+                f"(rollout={rollout}), waiting..."
+            )
             time.sleep(self.service_stable_poll_interval)
-        
+
+        if last_primary_failed > 0:
+            raise Exception("new tasks failed to start — check runtime logs")
         raise Exception(f"Service {service_name} did not become stable within {timeout} seconds")

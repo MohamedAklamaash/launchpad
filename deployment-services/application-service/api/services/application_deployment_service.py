@@ -665,7 +665,10 @@ class ApplicationDeploymentService:
             created_resources.append(('ecs_service', service_arn))
 
             service_name = f"{_slug(application.name)}-service"
-            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+            self._wait_for_service_stable_with_refresh(
+                application.infrastructure, environment.cluster_arn, service_name,
+                expected_task_definition_arn=application.task_definition_arn,
+            )
             logger.info(f"Service {service_name} is stable and running")
 
             self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
@@ -959,8 +962,15 @@ class ApplicationDeploymentService:
             _time.sleep(interval)
         raise Exception(f"Target group {target_group_arn} had no healthy targets after {timeout}s — not routing traffic")
 
-    def _wait_for_service_stable_with_refresh(self, infrastructure, cluster_arn, service_name, timeout=300):
-        """Wait for ECS service stability, refreshing credentials on token expiry."""
+    def _wait_for_service_stable_with_refresh(
+        self, infrastructure, cluster_arn, service_name, timeout=300, expected_task_definition_arn=None,
+    ):
+        """Wait for ECS service stability, refreshing credentials on token expiry.
+
+        `expected_task_definition_arn` is the task definition THIS call's caller just told
+        ECS to run — every caller passes its own, so a deploymentCircuitBreaker auto-
+        rollback (ECS silently converging the service back onto the previous task
+        definition) is caught here instead of read as a stable deploy of the new one."""
         logger.info(f"Waiting for service {service_name} to become stable...")
         session = self._create_aws_session(infrastructure)
         ecs = ECSClient(session)
@@ -968,7 +978,10 @@ class ApplicationDeploymentService:
 
         while True:
             try:
-                ecs.wait_for_service_stable(cluster_arn, service_name, timeout=int(timeout - (time.time() - start_time)))
+                ecs.wait_for_service_stable(
+                    cluster_arn, service_name, timeout=int(timeout - (time.time() - start_time)),
+                    expected_task_definition_arn=expected_task_definition_arn,
+                )
                 return
             except Exception as e:
                 if 'ExpiredToken' in str(e):
@@ -1101,7 +1114,10 @@ class ApplicationDeploymentService:
                 session, application, environment, host_mode, app_hostname, created_resources,
             )
         else:
-            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+            self._wait_for_service_stable_with_refresh(
+                application.infrastructure, environment.cluster_arn, service_name,
+                expected_task_definition_arn=application.task_definition_arn,
+            )
             self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
 
             health_check_path = HOST_MODE_HEALTH_CHECK_PATH if host_mode else '/'
@@ -1258,7 +1274,10 @@ class ApplicationDeploymentService:
         application.save(update_fields=['task_definition_arn'])
 
         try:
-            self._wait_for_service_stable_with_refresh(application.infrastructure, environment.cluster_arn, service_name)
+            self._wait_for_service_stable_with_refresh(
+                application.infrastructure, environment.cluster_arn, service_name,
+                expected_task_definition_arn=application.task_definition_arn,
+            )
             alb = ALBClient(session)
             self._wait_for_target_healthy(alb, application.target_group_arn, desired_count=application.desired_count)
             alb.modify_target_group(application.target_group_arn, HOST_MODE_HEALTH_CHECK_PATH)
