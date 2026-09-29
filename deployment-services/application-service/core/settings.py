@@ -317,15 +317,14 @@ MAX_SNI_CERTIFICATES_PER_LISTENER = int(os.environ.get('MAX_SNI_CERTIFICATES_PER
 INFRASTRUCTURE_SERVICE_URL = os.environ.get('INFRASTRUCTURE_SERVICE_URL', 'http://localhost:8002')
 
 # F1b part 3a security review (B1): EKS host mode is gated behind an explicit opt-in,
-# default OFF. Unlike ECS (where a per-app :443 host-header forward rule and one
-# infra-wide :80 wildcard redirect are the whole mechanism), EKS host mode depends on the
-# AWS Load Balancer Controller honoring a per-Ingress `listen-ports` annotation to scope a
-# host-only Ingress to HTTPS:443 and never attach its rule to the shared ALB's :80
-# listener (see api/k8s/deployer.py:EKSDeployer._host_ingress_manifest) — unverified
-# against a real EKS Auto Mode cluster. Flip this once the REAL-AWS-VALIDATION.md items
-# for EKS host mode are confirmed; until then every EKS app stays on path URLs and
-# `host_url_status` reports `eks_host_mode_disabled`.
-EKS_HOST_MODE_ENABLED = os.environ.get('EKS_HOST_MODE_ENABLED', 'False').lower() == 'true'
+# default ON since 2026-09-29. Unlike ECS (where a per-app :443 host-header forward rule
+# and one infra-wide :80 wildcard redirect are the whole mechanism), EKS host mode depends
+# on the AWS Load Balancer Controller honoring a per-Ingress `listen-ports` annotation to
+# scope a host-only Ingress to HTTPS:443 and never attach its rule to the shared ALB's :80
+# listener (see api/k8s/deployer.py:EKSDeployer._host_ingress_manifest). Verified on a real
+# EKS Auto Mode cluster (REAL-AWS-VALIDATION.md, B1): the host rule exists only on :443.
+# Set False to keep every EKS app on path URLs (`host_url_status` = eks_host_mode_disabled).
+EKS_HOST_MODE_ENABLED = os.environ.get('EKS_HOST_MODE_ENABLED', 'True').lower() == 'true'
 
 # H1: Application.envs is Fernet ciphertext at rest (api/fields.py,
 # migration 0037_encrypt_application_envs). Comma-separated, newest first — MultiFernet
