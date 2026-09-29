@@ -469,7 +469,10 @@ class ApplicationDeploymentService:
                 plain_env[f"{prefix}_TLS"] = "true"
                 secrets.append({"name": f"{prefix}_AUTH_TOKEN", "valueFrom": f"{db.secret_arn}:auth_token::"})
             else:
-                plain_env[f"{prefix}_DB"] = db.name
+                # The rds module creates the database as replace(db_name, "-", "_") — RDS
+                # DBName allows no hyphens. Injecting the raw Launchpad name handed every
+                # hyphenated database's apps a name that doesn't exist on the instance.
+                plain_env[f"{prefix}_DB"] = db.name.replace("-", "_")
                 secrets.append({"name": f"{prefix}_USERNAME", "valueFrom": f"{db.secret_arn}:username::"})
                 secrets.append({"name": f"{prefix}_PASSWORD", "valueFrom": f"{db.secret_arn}:password::"})
 

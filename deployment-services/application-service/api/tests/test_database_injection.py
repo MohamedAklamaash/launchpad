@@ -70,7 +70,8 @@ def test_postgres_injection_builds_secrets_and_plain_env(deployment_service, mak
 
     assert plain_env["PRIMARY_DB_HOST"] == "db.example.com"
     assert plain_env["PRIMARY_DB_PORT"] == "5432"
-    assert plain_env["PRIMARY_DB_DB"] == "primary-db"
+    # The database RDS actually creates (infra/aws/modules/rds: replace(db_name, "-", "_")).
+    assert plain_env["PRIMARY_DB_DB"] == "primary_db"
     names = {s["name"] for s in secrets}
     assert names == {"PRIMARY_DB_USERNAME", "PRIMARY_DB_PASSWORD"}
     for s in secrets:
