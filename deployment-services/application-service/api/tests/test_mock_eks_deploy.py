@@ -507,3 +507,32 @@ def test_pod_template_carries_the_nginx_config_hash(application, deploy):
     template = objects[("deployment", "app-myapp", "myapp")].spec.template
     config = objects[("configmap", "app-myapp", "myapp-nginx")].data["nginx.conf"]
     assert template.metadata.annotations[NGINX_CONFIG_HASH_ANNOTATION] == hashlib.sha256(config.encode()).hexdigest()
+
+
+def _deployment(generation, observed, replicas, updated, available):
+    from kubernetes import client as k8s
+
+    return k8s.V1Deployment(
+        metadata=k8s.V1ObjectMeta(generation=generation),
+        spec=k8s.V1DeploymentSpec(replicas=1, selector=k8s.V1LabelSelector(), template=k8s.V1PodTemplateSpec()),
+        status=k8s.V1DeploymentStatus(
+            observed_generation=observed, replicas=replicas, updated_replicas=updated, available_replicas=available,
+        ),
+    )
+
+
+@pytest.mark.parametrize("state,complete", [
+    # e2e-kube incident: right after the patch the old pod is available, but the controller
+    # hasn't observed the new generation — the old wait returned here.
+    ((2, 1, 1, 1, 1), False),
+    # Mid-roll: new pod up, old pod still around.
+    ((2, 2, 2, 1, 1), False),
+    # New pod created but not yet available.
+    ((2, 2, 1, 1, 0), False),
+    ((2, 2, 1, 1, 1), True),
+])
+def test_rollout_complete_waits_for_the_new_generation_to_replace_the_old(state, complete):
+    from api.k8s.deployer import _rollout_complete
+
+    assert _rollout_complete(_deployment(*state)) is complete
+

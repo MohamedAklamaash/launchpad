@@ -170,8 +170,13 @@ class MockAppsV1Api(_MockApi):
     def read_namespaced_deployment(self, name, namespace):
         self._read("deployment", namespace, name)
         return k8s.V1Deployment(
-            metadata=k8s.V1ObjectMeta(name=name, namespace=namespace),
-            status=k8s.V1DeploymentStatus(available_replicas=self._state.available_replicas),
+            metadata=k8s.V1ObjectMeta(name=name, namespace=namespace, generation=1),
+            status=k8s.V1DeploymentStatus(
+                observed_generation=1,
+                replicas=1,
+                updated_replicas=1,
+                available_replicas=self._state.available_replicas,
+            ),
         )
 
     def delete_namespaced_deployment(self, name, namespace, **kwargs):

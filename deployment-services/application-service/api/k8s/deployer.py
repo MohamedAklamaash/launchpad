@@ -183,6 +183,23 @@ def delete_object(apis, ref: dict):
         logger.info(f"{kind} {name} already absent in {namespace}")
 
 
+def _rollout_complete(deployment) -> bool:
+    """`kubectl rollout status` semantics. Counting available replicas alone passes the
+    instant a patch lands, on the OLD pod still serving: the controller hasn't observed the
+    new generation yet, and during the roll the old pod is what's available."""
+    status = deployment.status
+    if status is None:
+        return False
+    spec_replicas = deployment.spec.replicas if deployment.spec else None
+    desired = 1 if spec_replicas is None else spec_replicas
+    return (
+        (status.observed_generation or 0) >= (deployment.metadata.generation or 0)
+        and (status.updated_replicas or 0) >= desired
+        and (status.replicas or 0) <= (status.updated_replicas or 0)
+        and (status.available_replicas or 0) >= desired
+    )
+
+
 class RolloutFailed(Exception):
     pass
 
@@ -741,10 +758,15 @@ class EKSDeployer:
         deadline = time.monotonic() + ROLLOUT_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             deployment = apis.apps.read_namespaced_deployment(self.slug, self.namespace)
-            available = (deployment.status.available_replicas if deployment.status else 0) or 0
-            logger.info(f"Deployment {self.slug}: {available}/1 available replicas")
-            if available >= 1:
+            if _rollout_complete(deployment):
+                logger.info(f"Deployment {self.slug}: rollout complete")
                 return
+            status = deployment.status
+            logger.info(
+                f"Deployment {self.slug}: {(status and status.updated_replicas) or 0} updated, "
+                f"{(status and status.available_replicas) or 0} available, "
+                f"{(status and status.replicas) or 0} total"
+            )
             time.sleep(ROLLOUT_POLL_INTERVAL_SECONDS)
         raise RolloutFailed(
             f"Deployment {self.slug} had no available replicas after {ROLLOUT_TIMEOUT_SECONDS}s.\n"
