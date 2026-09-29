@@ -134,6 +134,15 @@ resource "aws_iam_role" "deploy" {
 resource "aws_eks_access_entry" "deployer" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = aws_iam_role.deploy.arn
+
+  # AmazonEKSEditPolicy below is deliberately namespace-scoped to app-*, but the deployer
+  # also has to create/delete its app namespace (cluster-scoped) and write the namespace's
+  # ResourceQuota/LimitRange (which `edit` only reads). This group is bound, by
+  # api/services/eks_bootstrap.py running as cluster-admin, to a ClusterRole for exactly
+  # those verbs, and a ValidatingAdmissionPolicy denies any of them outside app-*.
+  # kubernetes_groups is mutable in place (UpdateAccessEntry, not ForceNew), so applying
+  # this on an onboarded cluster doesn't replace the entry or interrupt a deploy.
+  kubernetes_groups = ["launchpad:deployers"]
 }
 
 resource "aws_eks_access_policy_association" "deployer_namespaced_edit" {
