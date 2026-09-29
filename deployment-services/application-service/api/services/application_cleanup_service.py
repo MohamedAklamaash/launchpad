@@ -9,6 +9,9 @@ from api.models import Application, Environment
 
 logger = logging.getLogger(__name__)
 
+# Above the ALB target group's default 300s deregistration delay, which bounds DRAINING.
+ECS_SERVICE_INACTIVE_TIMEOUT_SECONDS = 420
+
 class ApplicationCleanupService:
     def cleanup_application(self, application: Application):
         """Delete all AWS resources associated with an application."""
@@ -64,25 +67,47 @@ class ApplicationCleanupService:
             raise
     
     def _delete_ecs_service(self, session, cluster_arn, service_arn):
-        try:
-            ecs_client = session.client('ecs')
-            service_name = service_arn.split('/')[-1]
-            ecs_client.update_service(cluster=cluster_arn, service=service_name, desiredCount=0)
-            logger.info(f"Scaled service {service_name} to 0 tasks")
-            ecs_client.delete_service(cluster=cluster_arn, service=service_name, force=True)
-            logger.info(f"Deleted ECS service {service_name}")
+        """Idempotent: a retry must finish a delete an earlier attempt started. Seen on real
+        AWS: attempt 1 deleted the service and timed out waiting for INACTIVE; attempt 2 then
+        called update_service on the DRAINING service, got ServiceNotActiveException, and
+        the cleanup dead-lettered with the listener rules and target group still in place."""
+        import time
 
-            import time
-            svc = None
-            for _ in range(30):
-                resp = ecs_client.describe_services(cluster=cluster_arn, services=[service_name])
-                svc = resp['services'][0] if resp['services'] else None
-                if not svc or svc['status'] == 'INACTIVE':
+        ecs_client = session.client('ecs')
+        service_name = service_arn.split('/')[-1]
+
+        def _status():
+            resp = ecs_client.describe_services(cluster=cluster_arn, services=[service_name])
+            return resp['services'][0]['status'] if resp['services'] else None
+
+        try:
+            status = _status()
+            if status in (None, 'INACTIVE'):
+                logger.info(f"ECS service {service_name} already gone")
+                return
+            if status == 'ACTIVE':
+                try:
+                    ecs_client.update_service(cluster=cluster_arn, service=service_name, desiredCount=0)
+                    logger.info(f"Scaled service {service_name} to 0 tasks")
+                    ecs_client.delete_service(cluster=cluster_arn, service=service_name, force=True)
+                    logger.info(f"Deleted ECS service {service_name}")
+                except ecs_client.exceptions.ServiceNotActiveException:
+                    pass  # another attempt got there first; wait for it below
+                except ecs_client.exceptions.ServiceNotFoundException:
                     return
-                time.sleep(5)
+
+            # DRAINING lasts at least the target group's deregistration delay (ALB default
+            # 300s), so the wait must outlast it — the previous 150s always timed out for a
+            # service that still had registered tasks.
+            deadline = time.monotonic() + ECS_SERVICE_INACTIVE_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                status = _status()
+                if status in (None, 'INACTIVE'):
+                    return
+                time.sleep(10)
             raise RuntimeError(
                 f"ECS service {service_name} in cluster {cluster_arn} did not reach INACTIVE "
-                f"after 150s — last status: {svc['status'] if svc else 'not found'}"
+                f"after {ECS_SERVICE_INACTIVE_TIMEOUT_SECONDS}s — last status: {status}"
             )
         except Exception as e:
             logger.error(f"Failed to delete ECS service: {e}")

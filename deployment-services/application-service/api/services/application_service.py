@@ -261,52 +261,57 @@ class ApplicationService:
             host_forward_rule_arn = app.host_forward_rule_arn
 
             result = self.app_repo.delete(app_id)
-
-            if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn,
-                    runtime_refs, host_forward_rule_arn]):
-                try:
-                    DeploymentQueue.enqueue_cleanup(
-                        app_id=app_id,
-                        infrastructure_id=infrastructure_id,
-                        service_arn=service_arn,
-                        listener_rule_arn=listener_rule_arn,
-                        target_group_arn=target_group_arn,
-                        task_definition_arn=task_definition_arn,
-                        runtime=(runtime_refs or {}).get('runtime'),
-                        refs=runtime_refs,
-                        host_forward_rule_arn=host_forward_rule_arn,
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")
-
-            # F1b part 3b: custom-domain ALB rules/SNI cert are this app's own resources
-            # too, but tracked in CustomDomainRoute (application-service's own record,
-            # keyed by application_id — see that model's docstring), not on Application
-            # itself, so this doesn't go through the Redis job queue above. Always
-            # attempted, even if the app never had a target group (a custom domain can't
-            # exist without one, but this must never depend on that invariant holding).
-            # infrastructure-service is notified unconditionally (security review
-            # RECOMMENDED) — not only when a route existed here — because a still-PENDING
-            # domain (claimed but never verified, so never attached in this service at
-            # all) also needs its ACM certificate cleaned up there, and this notification
-            # is the only signal that ever reaches infrastructure-service that the
-            # application is gone.
-            try:
-                from api.services.custom_domain_routing import (
-                    detach_custom_domains_for_application,
-                    notify_infrastructure_service_of_deleted_application,
-                )
-                detach_custom_domains_for_application(app_id)
-                notify_infrastructure_service_of_deleted_application(infrastructure_id, app_id)
-            except Exception:
-                logger.warning(
-                    "custom-domain cleanup failed for deleted application %s (non-fatal)",
-                    app_id, exc_info=True,
-                )
-
-            ApplicationEventProducer.publish_application_deleted(app_id)
         finally:
+            # Released as soon as the row is gone, not after the cleanup below. The lock only
+            # has to cover the row delete (a racing deploy's save() would resurrect it); held
+            # any longer, the worker that dequeues the cleanup job this enqueues finds the app
+            # still locked by this request — seen on real AWS: the job spent its retries in
+            # milliseconds, went to the DLQ, and the app's ECS service kept running.
             lock.release(app_id, lock_owner)
+
+        if any([service_arn, listener_rule_arn, target_group_arn, task_definition_arn,
+                runtime_refs, host_forward_rule_arn]):
+            try:
+                DeploymentQueue.enqueue_cleanup(
+                    app_id=app_id,
+                    infrastructure_id=infrastructure_id,
+                    service_arn=service_arn,
+                    listener_rule_arn=listener_rule_arn,
+                    target_group_arn=target_group_arn,
+                    task_definition_arn=task_definition_arn,
+                    runtime=(runtime_refs or {}).get('runtime'),
+                    refs=runtime_refs,
+                    host_forward_rule_arn=host_forward_rule_arn,
+                )
+            except Exception as e:
+                logger.error(f"Failed to enqueue cleanup for {app_id}: {e} — AWS resources may need manual cleanup")
+
+        # F1b part 3b: custom-domain ALB rules/SNI cert are this app's own resources
+        # too, but tracked in CustomDomainRoute (application-service's own record,
+        # keyed by application_id — see that model's docstring), not on Application
+        # itself, so this doesn't go through the Redis job queue above. Always
+        # attempted, even if the app never had a target group (a custom domain can't
+        # exist without one, but this must never depend on that invariant holding).
+        # infrastructure-service is notified unconditionally (security review
+        # RECOMMENDED) — not only when a route existed here — because a still-PENDING
+        # domain (claimed but never verified, so never attached in this service at
+        # all) also needs its ACM certificate cleaned up there, and this notification
+        # is the only signal that ever reaches infrastructure-service that the
+        # application is gone.
+        try:
+            from api.services.custom_domain_routing import (
+                detach_custom_domains_for_application,
+                notify_infrastructure_service_of_deleted_application,
+            )
+            detach_custom_domains_for_application(app_id)
+            notify_infrastructure_service_of_deleted_application(infrastructure_id, app_id)
+        except Exception:
+            logger.warning(
+                "custom-domain cleanup failed for deleted application %s (non-fatal)",
+                app_id, exc_info=True,
+            )
+
+        ApplicationEventProducer.publish_application_deleted(app_id)
 
         return result
     

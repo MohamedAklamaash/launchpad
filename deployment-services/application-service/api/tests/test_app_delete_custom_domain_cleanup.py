@@ -125,3 +125,28 @@ def test_delete_application_survives_custom_domain_cleanup_failure(owner, app, _
     assert result is not None
     from api.models.application import Application
     assert not Application.objects.filter(id=app.id).exists()
+
+
+@pytest.mark.django_db
+def test_delete_releases_the_app_lock_before_enqueueing_cleanup(owner, app, monkeypatch):
+    """Seen on real AWS: cleanup was enqueued while delete still held the app lock, so the
+    worker that dequeued it found the app locked, burned its retries and dead-lettered —
+    leaving the deleted app's ECS service running."""
+    from api.services.application_service import ApplicationService
+
+    calls = []
+    lock = MagicMock()
+    lock.acquire.return_value = True
+    lock.release.side_effect = lambda *a: calls.append("release")
+    monkeypatch.setattr("api.services.application_service.DeploymentLock", lambda: lock)
+    monkeypatch.setattr(
+        "api.services.application_service.DeploymentQueue.enqueue_cleanup",
+        lambda **kw: calls.append("enqueue_cleanup"),
+    )
+    monkeypatch.setattr("api.services.application_service.ApplicationEventProducer.publish_application_deleted", MagicMock())
+
+    with patch("api.services.custom_domain_routing.detach_custom_domains_for_application", return_value=[]), \
+         patch("api.services.custom_domain_routing.notify_infrastructure_service_of_deleted_application"):
+        ApplicationService().delete_application(owner.id, app.id)
+
+    assert calls == ["release", "enqueue_cleanup"]
