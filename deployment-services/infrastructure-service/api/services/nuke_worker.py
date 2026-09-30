@@ -563,8 +563,44 @@ def _manage_state_backend(ctx: _NukeContext) -> dict:
         return {
             "action": "kept",
             "reason": f"shared with {len(others)} other infrastructure(s) in this AWS account",
+            "own_state": _delete_own_state(ctx),
         }
     return _delete_state_backend(ctx)
+
+
+def _state_names(ctx: _NukeContext) -> tuple[str, str, str]:
+    bucket = f"launchpad-tf-state-{ctx.account_id}-{ctx.region}"
+    table = f"launchpad-tf-locks-{ctx.account_id}-{ctx.region}"
+    return bucket, table, f"infra/{ctx.infra.id}/"
+
+
+def _own_lock_ids(bucket: str, prefix: str) -> list:
+    state_path = f"{bucket}/{prefix}terraform.tfstate"
+    return [state_path, f"{state_path}-md5"]
+
+
+def _delete_own_state(ctx: _NukeContext) -> dict:
+    """The backend stays because other infras use it, but this infra's own state must
+    not: every version of infra/<id>/terraform.tfstate (the bucket is versioned, and old
+    versions can hold sensitive outputs) and its lock-table rows. Seen on real AWS after
+    nuking e2e-eks: 12 state versions and the -md5 row were left behind."""
+    bucket, table, prefix = _state_names(ctx)
+    s3 = ctx.boto_client("s3")
+    try:
+        versions_deleted = _empty_bucket(s3, bucket, prefix=prefix)
+    except ClientError as e:
+        _raise_if_access_denied(e)
+        raise
+
+    dynamodb = ctx.boto_client("dynamodb")
+    for lock_id in _own_lock_ids(bucket, prefix):
+        try:
+            dynamodb.delete_item(TableName=table, Key={"LockID": {"S": lock_id}})
+        except ClientError as e:
+            _raise_if_access_denied(e)
+            if e.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+    return {"state_versions_deleted": versions_deleted, "lock_rows_deleted": True}
 
 
 # ── deployment role/policy — runs LAST (see module docstring) ──────────────────────
@@ -677,23 +713,26 @@ def _delete_state_backend(ctx: _NukeContext) -> dict:
     return result
 
 
-def _empty_bucket(s3, bucket: str) -> None:
+def _empty_bucket(s3, bucket: str, prefix: str = "") -> int:
     try:
         s3.head_bucket(Bucket=bucket)
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
         if code in ("404", "NoSuchBucket"):
-            return
+            return 0
         raise
 
+    deleted = 0
     paginator = s3.get_paginator("list_object_versions")
-    for page in paginator.paginate(Bucket=bucket):
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         to_delete = [
             {"Key": v["Key"], "VersionId": v["VersionId"]}
             for v in page.get("Versions", []) + page.get("DeleteMarkers", [])
         ]
         if to_delete:
             s3.delete_objects(Bucket=bucket, Delete={"Objects": to_delete})
+            deleted += len(to_delete)
+    return deleted
 
 
 # ── verify ───────────────────────────────────────────────────────────────────────
@@ -727,6 +766,29 @@ def _tagged_leftovers(ctx: _NukeContext, infra_id: str) -> list:
     except ClientError as e:
         _raise_if_access_denied(e)
         raise
+    return leftovers
+
+
+def _own_state_leftovers(ctx: _NukeContext) -> list:
+    bucket, table, prefix = _state_names(ctx)
+    leftovers = []
+    try:
+        page = ctx.boto_client("s3").list_object_versions(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+        if page.get("Versions") or page.get("DeleteMarkers"):
+            leftovers.append({"type": "terraform_state", "id": f"s3://{bucket}/{prefix}", "reason": "still present"})
+    except ClientError as e:
+        _raise_if_access_denied(e)
+        if e.response.get("Error", {}).get("Code") not in ("NoSuchBucket", "404"):
+            raise
+    dynamodb = ctx.boto_client("dynamodb")
+    for lock_id in _own_lock_ids(bucket, prefix):
+        try:
+            if dynamodb.get_item(TableName=table, Key={"LockID": {"S": lock_id}}).get("Item"):
+                leftovers.append({"type": "terraform_lock", "id": lock_id, "reason": "still present"})
+        except ClientError as e:
+            _raise_if_access_denied(e)
+            if e.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
     return leftovers
 
 
@@ -769,6 +831,8 @@ def _untagged_leftovers(ctx: _NukeContext, infra_id: str) -> list:
     iam = ctx.boto_client("iam")
     if _iam_role_exists(iam, role_name):
         leftovers.append({"type": "iam_role", "id": role_name, "reason": "still present"})
+
+    leftovers.extend(_own_state_leftovers(ctx))
 
     logs = ctx.boto_client("logs")
     for name in _cluster_log_group_names(ctx):
