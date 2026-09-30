@@ -618,10 +618,15 @@ def test_state_backend_kept_when_other_infra_shares_the_account_and_region(make_
     )
 
     ctx = _NukeContext(infra=infra, run=run)
-    with patch("api.services.nuke_worker.boto3.client") as boto_client:
+    clients = _empty_state_clients()
+    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
         result = _manage_state_backend(ctx)
 
-    boto_client.assert_not_called()
+    # The shared bucket itself is never deleted or emptied — only this infra's own prefix.
+    clients["s3"].delete_bucket.assert_not_called()
+    clients["dynamodb"].delete_table.assert_not_called()
+    (_, kwargs), = [c for c in clients["s3"].get_paginator.return_value.paginate.call_args_list]
+    assert kwargs["Prefix"] == f"infra/{infra.id}/"
     assert result["action"] == "kept"
     assert "shared with 1 other" in result["reason"]
 
@@ -643,10 +648,15 @@ def test_state_backend_kept_when_other_infra_in_account_claims_a_different_regio
     )
 
     ctx = _NukeContext(infra=infra, run=run)
-    with patch("api.services.nuke_worker.boto3.client") as boto_client:
+    clients = _empty_state_clients()
+    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
         result = _manage_state_backend(ctx)
 
-    boto_client.assert_not_called()
+    # The shared bucket itself is never deleted or emptied — only this infra's own prefix.
+    clients["s3"].delete_bucket.assert_not_called()
+    clients["dynamodb"].delete_table.assert_not_called()
+    (_, kwargs), = [c for c in clients["s3"].get_paginator.return_value.paginate.call_args_list]
+    assert kwargs["Prefix"] == f"infra/{infra.id}/"
     assert result["action"] == "kept"
     assert "shared with 2 other" in result["reason"]
 
@@ -673,6 +683,15 @@ def test_state_backend_deleted_when_last_infra_in_account_and_region(make_nuke_r
 
 # ── verify ───────────────────────────────────────────────────────────────────────
 
+def _empty_state_clients():
+    s3 = MagicMock()
+    s3.list_object_versions.return_value = {}
+    s3.get_paginator.return_value.paginate.return_value = [{"Versions": [], "DeleteMarkers": []}]
+    dynamodb = MagicMock()
+    dynamodb.get_item.return_value = {}
+    return {"s3": s3, "dynamodb": dynamodb}
+
+
 def _no_log_groups():
     logs = MagicMock()
     logs.describe_log_groups.return_value = {"logGroups": []}
@@ -693,7 +712,7 @@ def test_verify_reports_tagged_leftovers(make_nuke_run):
     fake_codebuild.batch_get_projects.return_value = {"projects": []}
     fake_iam = MagicMock()
     fake_iam.get_role.side_effect = ClientError({"Error": {"Code": "NoSuchEntity", "Message": "x"}}, "GetRole")
-    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock(), "logs": _no_log_groups()}
+    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock(), "logs": _no_log_groups(), **_empty_state_clients()}
 
     with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
         result = _verify_nothing_left(ctx)
@@ -714,7 +733,7 @@ def test_verify_clean_reports_no_leftovers(make_nuke_run):
     fake_codebuild.batch_get_projects.return_value = {"projects": []}
     fake_iam = MagicMock()
     fake_iam.get_role.side_effect = ClientError({"Error": {"Code": "NoSuchEntity", "Message": "x"}}, "GetRole")
-    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock(), "logs": _no_log_groups()}
+    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock(), "logs": _no_log_groups(), **_empty_state_clients()}
 
     with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
         result = _verify_nothing_left(ctx)
@@ -815,7 +834,7 @@ def test_cluster_log_groups_are_deleted_and_verified(make_nuke_run):
     }
     codebuild = MagicMock()
     codebuild.batch_get_projects.return_value = {"projects": []}
-    clients = {"logs": logs, "codebuild": codebuild, "iam": MagicMock(), "rds": MagicMock(), "ec2": MagicMock()}
+    clients = {"logs": logs, "codebuild": codebuild, "iam": MagicMock(), "rds": MagicMock(), "ec2": MagicMock(), **_empty_state_clients()}
     with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]), \
          patch("api.services.nuke_worker._iam_role_exists", return_value=False):
         leftovers = _untagged_leftovers(ctx, str(infra.id))
@@ -826,4 +845,45 @@ def test_cluster_log_groups_are_deleted_and_verified(make_nuke_run):
 def _delete_cluster_log_groups_with(ctx, logs, fn):
     with patch.object(type(ctx), "boto_client", lambda self, service: logs):
         return fn(ctx)
+
+
+def test_kept_backend_still_deletes_this_infras_own_state_and_lock_rows(make_nuke_run):
+    """Real AWS after nuking e2e-eks: the shared bucket was rightly kept, but 12 versions
+    of infra/<id>/terraform.tfstate and its -md5 lock row were left behind."""
+    from api.models.infrastructure import Infrastructure
+    from api.services.nuke_worker import _manage_state_backend, _NukeContext
+
+    owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    Infrastructure.objects.create(user=owner, name="other", cloud_provider="aws", max_cpu=1,
+                                  max_memory=1, code=infra.code, metadata={})
+    ctx = _NukeContext(infra=infra, run=run)
+    clients = _empty_state_clients()
+    clients["s3"].get_paginator.return_value.paginate.return_value = [{
+        "Versions": [{"Key": f"infra/{infra.id}/terraform.tfstate", "VersionId": str(v)} for v in range(12)],
+        "DeleteMarkers": [],
+    }]
+    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
+        result = _manage_state_backend(ctx)
+
+    assert result["action"] == "kept"
+    assert result["own_state"]["state_versions_deleted"] == 12
+    deleted_ids = [c.kwargs["Key"]["LockID"]["S"] for c in clients["dynamodb"].delete_item.call_args_list]
+    assert all(f"infra/{infra.id}/terraform.tfstate" in lock_id for lock_id in deleted_ids)
+    assert any(lock_id.endswith("-md5") for lock_id in deleted_ids)
+
+
+def test_verify_flags_this_infras_state_if_still_present(make_nuke_run):
+    from api.services.nuke_worker import _NukeContext, _own_state_leftovers
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+    clients = _empty_state_clients()
+    clients["s3"].list_object_versions.return_value = {"Versions": [{"Key": "k", "VersionId": "1"}]}
+    clients["dynamodb"].get_item.side_effect = lambda TableName, Key: (
+        {"Item": Key} if Key["LockID"]["S"].endswith("-md5") else {}
+    )
+    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
+        leftovers = _own_state_leftovers(ctx)
+
+    assert {item["type"] for item in leftovers} == {"terraform_state", "terraform_lock"}
 
