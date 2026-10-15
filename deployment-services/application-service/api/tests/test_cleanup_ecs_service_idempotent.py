@@ -54,3 +54,29 @@ def test_service_going_inactive_mid_delete_is_not_an_error():
 
 def test_wait_outlasts_the_default_alb_deregistration_delay():
     assert mod.ECS_SERVICE_INACTIVE_TIMEOUT_SECONDS > 300
+
+
+def test_delete_skips_connection_draining_on_the_services_target_groups():
+    """Real AWS: with the default 300s deregistration delay the deleted service stayed
+    DRAINING ~8 min and the nuke's apps step timed out."""
+    session, ecs = _client(["ACTIVE", "INACTIVE"])
+    ecs.describe_services.side_effect = None
+    statuses = iter(["ACTIVE", "INACTIVE"])
+    ecs.describe_services.side_effect = lambda **kw: {"services": [{
+        "status": next(statuses),
+        "loadBalancers": [{"targetGroupArn": "arn:tg/app"}],
+    }]}
+    elbv2 = MagicMock()
+    session.client.side_effect = lambda name: {"ecs": ecs, "elbv2": elbv2}[name]
+
+    ApplicationCleanupService()._delete_ecs_service(session, "cluster", "arn:svc/app-service")
+
+    elbv2.modify_target_group_attributes.assert_called_once_with(
+        TargetGroupArn="arn:tg/app",
+        Attributes=[{"Key": "deregistration_delay.timeout_seconds", "Value": "0"}],
+    )
+    ecs.delete_service.assert_called_once()
+
+
+def test_wait_outlasts_how_long_ecs_takes_to_mark_a_deleted_service_inactive():
+    assert mod.ECS_SERVICE_INACTIVE_TIMEOUT_SECONDS >= 900

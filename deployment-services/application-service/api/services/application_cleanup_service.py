@@ -9,8 +9,9 @@ from api.models import Application, Environment
 
 logger = logging.getLogger(__name__)
 
-# Above the ALB target group's default 300s deregistration delay, which bounds DRAINING.
-ECS_SERVICE_INACTIVE_TIMEOUT_SECONDS = 420
+# A backstop: _skip_connection_draining makes DRAINING short, but ECS still takes minutes
+# to flip a deleted service to INACTIVE (real AWS: ~8 min with the default 300s delay).
+ECS_SERVICE_INACTIVE_TIMEOUT_SECONDS = 900
 
 class ApplicationCleanupService:
     def cleanup_application(self, application: Application):
@@ -76,16 +77,22 @@ class ApplicationCleanupService:
         ecs_client = session.client('ecs')
         service_name = service_arn.split('/')[-1]
 
-        def _status():
+        def _describe():
             resp = ecs_client.describe_services(cluster=cluster_arn, services=[service_name])
-            return resp['services'][0]['status'] if resp['services'] else None
+            return resp['services'][0] if resp['services'] else None
+
+        def _status():
+            service = _describe()
+            return service['status'] if service else None
 
         try:
-            status = _status()
+            service = _describe()
+            status = service['status'] if service else None
             if status in (None, 'INACTIVE'):
                 logger.info(f"ECS service {service_name} already gone")
                 return
             if status == 'ACTIVE':
+                self._skip_connection_draining(session, service)
                 try:
                     ecs_client.update_service(cluster=cluster_arn, service=service_name, desiredCount=0)
                     logger.info(f"Scaled service {service_name} to 0 tasks")
@@ -112,6 +119,24 @@ class ApplicationCleanupService:
         except Exception as e:
             logger.error(f"Failed to delete ECS service: {e}")
             raise
+
+    def _skip_connection_draining(self, session, service):
+        """The service is being deleted, so there is nothing to drain connections for.
+        With the ALB default 300s deregistration delay a deleted service sat in DRAINING
+        for ~8 minutes on real AWS and blew the cleanup's wait. Best-effort: a failure here
+        only means a slower delete."""
+        elbv2 = session.client('elbv2')
+        for lb in service.get('loadBalancers', []):
+            tg_arn = lb.get('targetGroupArn')
+            if not tg_arn:
+                continue
+            try:
+                elbv2.modify_target_group_attributes(
+                    TargetGroupArn=tg_arn,
+                    Attributes=[{'Key': 'deregistration_delay.timeout_seconds', 'Value': '0'}],
+                )
+            except Exception:
+                logger.warning(f"Could not shorten deregistration delay on {tg_arn}", exc_info=True)
 
     def _delete_listener_rule(self, session, listener_rule_arn):
         try:
