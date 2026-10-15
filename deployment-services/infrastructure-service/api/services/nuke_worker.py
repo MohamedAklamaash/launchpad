@@ -291,7 +291,7 @@ class _NukeContext:
         ("apps", lambda ctx: ctx.step_apps(), True),
         ("databases", lambda ctx: ctx.step_databases(), True),
         ("terraform_teardown", lambda ctx: ctx.step_terraform_teardown(), True),
-        ("leftovers", lambda ctx: ctx.step_leftovers(), True),
+        ("leftovers", lambda ctx: ctx.step_leftovers(), False),
         ("state_backend", lambda ctx: ctx.step_state_backend(), False),
         ("verify", lambda ctx: ctx.step_verify(), False),
         ("deployment_role", lambda ctx: ctx.step_deployment_role(), False),
@@ -410,7 +410,38 @@ def _cleanup_out_of_terraform_leftovers(ctx: _NukeContext) -> dict:
     detail["app_security_group"] = _delete_app_security_group(ctx, infra_id)
     detail["app_log_groups"] = _delete_app_log_groups(ctx)
     detail["cluster_log_groups"] = _delete_cluster_log_groups(ctx)
+    # terraform destroy uses the skip_final_snapshot value stored in STATE, not the nuke's
+    # config, so it still wrote a final snapshot (real AWS, e2e-ecs). Sweep again after.
+    detail["database_snapshots"] = _cleanup_database_snapshots(ctx)
+    detail["task_definitions"] = _delete_tagged_task_definitions(ctx)
     return detail
+
+
+def _delete_tagged_task_definitions(ctx: _NukeContext) -> list:
+    """Every task-definition revision this infra ever registered. App cleanup only
+    removes the current revision; real AWS (e2e-ecs) still had revisions 1-12 ACTIVE."""
+    tagging = ctx.boto_client("resourcegroupstaggingapi")
+    arns = []
+    paginator = tagging.get_paginator("get_resources")
+    for page in paginator.paginate(
+        TagFilters=[{"Key": TAG_INFRA_KEY, "Values": [str(ctx.infra.id)]}],
+        ResourceTypeFilters=["ecs:task-definition"],
+    ):
+        arns.extend(r["ResourceARN"] for r in page.get("ResourceTagMappingList", []))
+    if not arns:
+        return []
+
+    ecs = ctx.boto_client("ecs")
+    for arn in arns:
+        try:
+            ecs.deregister_task_definition(taskDefinition=arn)
+        except ClientError as e:
+            _raise_if_access_denied(e)
+            if e.response.get("Error", {}).get("Code") not in ("ClientException", "InvalidParameterException"):
+                raise
+    for start in range(0, len(arns), 10):
+        ecs.delete_task_definitions(taskDefinitions=arns[start:start + 10])
+    return arns
 
 
 def _cluster_log_group_names(ctx: _NukeContext) -> list:
@@ -805,6 +836,13 @@ def _is_deleted_tombstone(ctx: _NukeContext, arn: str) -> bool:
             ec2 = ctx.boto_client("ec2")
             gateways = ec2.describe_nat_gateways(NatGatewayIds=[resource_id])["NatGateways"]
             return not gateways or gateways[0]["State"] == "deleted"
+        if kind in ("cluster", "task-definition") and arn.split(":")[2] == "ecs":
+            ecs = ctx.boto_client("ecs")
+            if kind == "cluster":
+                clusters = ecs.describe_clusters(clusters=[arn])["clusters"]
+                return not clusters or clusters[0]["status"] == "INACTIVE"
+            definition = ecs.describe_task_definition(taskDefinition=arn)["taskDefinition"]
+            return definition["status"] == "DELETE_IN_PROGRESS"
         if kind == "instance":
             ec2 = ctx.boto_client("ec2")
             reservations = ec2.describe_instances(InstanceIds=[resource_id])["Reservations"]
