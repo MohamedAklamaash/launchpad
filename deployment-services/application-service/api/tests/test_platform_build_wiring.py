@@ -26,6 +26,23 @@ SHA = "c" * 40
 DIGEST = "sha256:" + "d" * 64
 
 
+@pytest.fixture(autouse=True)
+def _unlimited_build_budget(monkeypatch):
+    """F7 ticket 7's caps and their release-on-every-path guarantee are covered by
+    test_platform_build_limits.py — these wiring tests are about the build step itself
+    and must not depend on Redis being reachable."""
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.ApplicationDeploymentService"
+        "._enforce_build_budgets",
+        lambda self, application: None,
+    )
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.ApplicationDeploymentService"
+        "._release_build_concurrency_slot",
+        lambda self, key: None,
+    )
+
+
 @pytest.fixture
 def new_app(schema_db):
     """A brand-new ECS app — no target group/service/task definition has ever been

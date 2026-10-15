@@ -93,6 +93,10 @@ INFRASTRUCTURE_SERVICE_URL = "http://localhost:8002"
 # `settings.PLATFORM_BUILD_ENABLED = True` explicitly via the pytest-django fixture.
 PLATFORM_BUILD_ENABLED = os.environ.get('PLATFORM_BUILD_ENABLED', 'False').lower() == 'true'
 
+# F7 ticket 7
+PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA = int(os.environ.get('PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA', '2'))
+PLATFORM_BUILD_MAX_PER_USER_PER_HOUR = int(os.environ.get('PLATFORM_BUILD_MAX_PER_USER_PER_HOUR', '20'))
+
 # H1: test-only key for Application.envs encryption (api/fields.py), generated fresh each
 # test run rather than a fixed literal — a committed key-shaped string gets flagged by
 # secret scanners (and is exactly the "copy this into prod" trap load_keys guards

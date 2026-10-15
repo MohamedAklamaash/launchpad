@@ -95,10 +95,20 @@ class ApplicationDeploymentService:
             # instead of `_image_tag`'s placeholder.
             image_tag = _image_tag(application)
             if self._platform_build_enabled():
-                handle = self._start_platform_build(application)
-                build_id, resolved_sha = handle.build_id, handle.sha
-                result = self._wait_for_platform_build(application, handle)
-                resolved_sha, image_digest = result.resolved_sha, result.image_digest
+                # F7 ticket 7: charge the per-user rate budget and acquire a per-infra
+                # concurrency slot before anything else on this path — fails closed
+                # (ValueError) on Redis down or either cap being exceeded. The slot is
+                # released on every exit from the try below: success, a build failure,
+                # a timeout, or any other exception.
+                self._enforce_build_budgets(application)
+                concurrency_key = self._build_concurrency_key(application)
+                try:
+                    handle = self._start_platform_build(application)
+                    build_id, resolved_sha = handle.build_id, handle.sha
+                    result = self._wait_for_platform_build(application, handle)
+                    resolved_sha, image_digest = result.resolved_sha, result.image_digest
+                finally:
+                    self._release_build_concurrency_slot(concurrency_key)
             else:
                 build_id = self._trigger_build(session, application, environment, image_tag)
                 application.build_id = build_id
@@ -477,6 +487,58 @@ class ApplicationDeploymentService:
     def _platform_build_enabled(self) -> bool:
         from django.conf import settings
         return bool(getattr(settings, 'PLATFORM_BUILD_ENABLED', False))
+
+    def _build_concurrency_key(self, application: Application) -> str:
+        return f"builds_concurrent:{application.infrastructure_id}"
+
+    def _enforce_build_budgets(self, application: Application) -> None:
+        """F7 ticket 7. Two independent Redis-backed caps on the platform build path,
+        checked in order — a per-user rate budget (misconfigured webhook retry storms,
+        scripted abuse) and a per-infra concurrency budget (bounds one tenant's share of
+        the shared Fargate builder fleet). Both fail closed: an unreachable Redis raises
+        a `ValueError` here rather than letting the build through for free, matching
+        every other `customer_call_budget` caller's posture in this codebase.
+
+        Only acquires the concurrency slot — never releases it. The caller is
+        responsible for calling `_release_build_concurrency_slot` on every exit path
+        once this returns without raising."""
+        from django.conf import settings
+        from shared.errors.exception import HttpError
+        from shared.ratelimit.budget import (
+            acquire_concurrency_slot,
+            customer_call_budget,
+        )
+
+        rate_limit = getattr(settings, 'PLATFORM_BUILD_MAX_PER_USER_PER_HOUR', 20)
+        try:
+            retry_after = customer_call_budget(application.user_id, 'builds_started', rate_limit, 3600)
+        except HttpError as e:
+            raise ValueError("Build rate limiter is unavailable — deploy not started") from e
+        if retry_after is not None:
+            raise ValueError(
+                f"Build rate limit exceeded ({rate_limit} builds/hour for this user) — "
+                f"try again in {retry_after}s"
+            )
+
+        concurrency_limit = getattr(settings, 'PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA', 2)
+        build_timeout = getattr(settings, 'PLATFORM_BUILDER_BUILD_TIMEOUT_SECONDS', 1800)
+        try:
+            # TTL backstop comfortably above the build timeout: if this worker crashes
+            # before it can release, the slot self-heals instead of leaking forever.
+            acquired = acquire_concurrency_slot(
+                self._build_concurrency_key(application), concurrency_limit, build_timeout + 300,
+            )
+        except HttpError as e:
+            raise ValueError("Build concurrency limiter is unavailable — deploy not started") from e
+        if not acquired:
+            raise ValueError(
+                f"Too many concurrent builds for this infrastructure (max {concurrency_limit}) "
+                "— try again shortly"
+            )
+
+    def _release_build_concurrency_slot(self, key: str) -> None:
+        from shared.ratelimit.budget import release_concurrency_slot
+        release_concurrency_slot(key)
 
     def _resolve_sha_for_build(self, application: Application) -> str:
         """A webhook deploy already carries a resolved commit sha in
