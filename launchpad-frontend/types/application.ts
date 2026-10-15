@@ -56,6 +56,8 @@ export interface Deployment {
   created_at: string;
   /** False for a row tagged 'latest' (predates the per-commit buildspec) — not a valid rollback target. */
   rollback_addressable: boolean;
+  /** True if this row's image came from a platform build whose logs can still be tailed. */
+  has_build_logs: boolean;
 }
 
 export interface RollbackPreview {
@@ -105,6 +107,25 @@ export interface RuntimeLogsQuery {
   minutes?: number;
   cursor?: string;
   previous?: boolean;
+}
+
+export type BuildLogContainer = 'init' | 'kaniko';
+
+export interface BuildLogEvent {
+  timestamp: string;
+  message: string;
+  container: BuildLogContainer;
+}
+
+export interface BuildLogsResponse {
+  events: BuildLogEvent[];
+  next_cursor: string | null;
+  complete: boolean;
+}
+
+export interface BuildLogsQuery {
+  cursor?: string;
+  limit?: number;
 }
 
 export type AppMetricsRange = '1h' | '6h' | '24h' | '7d';

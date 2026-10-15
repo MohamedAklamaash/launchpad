@@ -167,6 +167,7 @@ class DeploymentListItem(BaseModel):
     triggered_by: str
     created_at: str
     rollback_addressable: bool = True
+    has_build_logs: bool = False
 
 
 class RollbackPreviewResponse(BaseModel):
@@ -256,6 +257,40 @@ async def application_logs(app_id: uuid.UUID, request: Request):
     `previous` (EKS only) — passed through untouched; app_id is typed as a UUID here so a
     malformed id 404s at the gateway rather than reaching the upstream as a raw string."""
     return await proxy_request(f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/logs/", request)
+
+
+class BuildLogEvent(BaseModel):
+    timestamp: str
+    message: str
+    container: str
+
+
+class BuildLogsResponse(BaseModel):
+    events: list[BuildLogEvent]
+    next_cursor: str | None = None
+    complete: bool
+
+
+@router.get("/{app_id}/deployments/{deployment_id}/build-logs", summary="Tail a completed deployment's build logs",
+            response_model=BuildLogsResponse)
+async def application_build_logs(app_id: uuid.UUID, deployment_id: uuid.UUID, request: Request):
+    """Owner only. Query params: `cursor`, `limit` — passed through untouched. 404 if this
+    deployment has no associated platform build; 409 `code=legacy_build` if it used the
+    pre-F7 CodeBuild path."""
+    return await proxy_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/{deployment_id}/build-logs/", request,
+    )
+
+
+@router.get("/{app_id}/build-logs/current", summary="Tail the in-progress build's logs",
+            response_model=BuildLogsResponse)
+async def application_build_logs_current(app_id: uuid.UUID, request: Request):
+    """Owner only. Query params: `cursor`, `limit`. 404 once the application is no longer
+    BUILDING/PUSHING_IMAGE — switch to the deployment-history build-logs route once that
+    deploy's row appears."""
+    return await proxy_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/build-logs/current/", request,
+    )
 
 
 class MetricPoint(BaseModel):

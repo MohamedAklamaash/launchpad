@@ -70,6 +70,7 @@ class ApplicationDeploymentService:
         image_tag = None
         resolved_sha = None
         build_id = None
+        build_task_id = None
         image_digest = None
 
         try:
@@ -111,6 +112,7 @@ class ApplicationDeploymentService:
                 try:
                     handle = self._start_platform_build(application)
                     build_id, resolved_sha = handle.build_id, handle.sha
+                    build_task_id = application.build_task_id
                     result = self._wait_for_platform_build(application, handle)
                     resolved_sha, image_digest = result.resolved_sha, result.image_digest
                 finally:
@@ -128,6 +130,7 @@ class ApplicationDeploymentService:
                 return self._deploy_to_eks(
                     session, application, environment, pinned_tag, created_resources,
                     resolved_sha=resolved_sha, image_digest=image_digest, build_id=build_id,
+                    build_task_id=build_task_id,
                 )
 
 
@@ -175,7 +178,7 @@ class ApplicationDeploymentService:
                 application, image_tag=self._pinned_image_tag(application, resolved_sha),
                 resolved_sha=resolved_sha, status='SUCCEEDED', triggered_by='DEPLOY',
                 session=session, environment=environment,
-                image_digest=image_digest, build_id=build_id,
+                image_digest=image_digest, build_id=build_id, build_task_id=build_task_id,
             )
             logger.info(f"Application {application.name} deployed successfully at {deployment_url}")
             return deployment_url
@@ -207,7 +210,7 @@ class ApplicationDeploymentService:
                 self._record_deployment(
                     application, image_tag=failed_tag, resolved_sha=resolved_sha,
                     status='FAILED', triggered_by='DEPLOY',
-                    image_digest=image_digest, build_id=build_id,
+                    image_digest=image_digest, build_id=build_id, build_task_id=build_task_id,
                 )
             raise
     
@@ -254,7 +257,8 @@ class ApplicationDeploymentService:
     
     def _deploy_to_eks(self, session, application: Application, environment: Environment,
                        image_tag: str, created_resources: list, resolved_sha: str | None = None,
-                       image_digest: str | None = None, build_id: str | None = None):
+                       image_digest: str | None = None, build_id: str | None = None,
+                       build_task_id: str | None = None):
         ecr = ECRClient(session)
         # Pin by digest when the build already reported one (platform builder path) —
         # same tag-is-mutable reasoning as _create_task_definition's ECS pin, see
@@ -278,7 +282,7 @@ class ApplicationDeploymentService:
             application, image_tag=image_tag, resolved_sha=resolved_sha,
             status='SUCCEEDED', triggered_by='DEPLOY',
             session=session, environment=environment,
-            image_digest=image_digest, build_id=build_id,
+            image_digest=image_digest, build_id=build_id, build_task_id=build_task_id,
         )
         logger.info(f"Application {application.name} deployed to EKS at {deployment_url}")
         return deployment_url
@@ -297,7 +301,7 @@ class ApplicationDeploymentService:
                            status: str, triggered_by: str, tag_source: str | None = None,
                            rolled_back_from=None, image_digest: str | None = None,
                            session=None, environment: Environment | None = None,
-                           build_id: str | None = None):
+                           build_id: str | None = None, build_task_id: str | None = None):
         """Append-only deploy history. Snapshot the env's shape, never its values.
         Best-effort — a history row must never be the reason a deploy or rollback that
         actually succeeded gets reported as failed.
@@ -307,9 +311,11 @@ class ApplicationDeploymentService:
         Otherwise, given `session`+`environment`, it is looked up — the ECR repository is
         tag-MUTABLE, so a tag alone is not a stable pointer to what was actually deployed.
 
-        `build_id`: the build this row's image came from (ticket 8's log-tail endpoint
-        reads it off this row rather than off `Application.build_id`, which the next
-        deploy overwrites). None for a rollback, which skips the build entirely."""
+        `build_id`/`build_task_id`: the build this row's image came from (ticket 8's
+        log-tail endpoint reads them off this row rather than off `Application.build_id`/
+        `build_task_id`, which the next deploy overwrites). Both None for a rollback,
+        which skips the build entirely; `build_task_id` alone is None for the legacy
+        CodeBuild path (no ECS task exists) or a mock build with no real stream."""
         from api.models.deployment import Deployment
         from api.services.deployment_snapshot import snapshot_env
 
@@ -337,6 +343,7 @@ class ApplicationDeploymentService:
                 triggered_by=triggered_by,
                 rolled_back_from=rolled_back_from,
                 build_id=build_id,
+                build_task_id=build_task_id,
             )
         except Exception:
             logger.exception(
@@ -579,6 +586,11 @@ class ApplicationDeploymentService:
 
         handle = platform_builder.start_build(application, application.infrastructure, sha)
         application.build_id = handle.build_id
+        # `handle.task_arn` is always set, even for a mock build (`"mock-task-<id>"`,
+        # `platform_builder.MOCK_TASK_ID_PREFIX`) — ticket 8's log-tail endpoint checks
+        # for that prefix itself rather than this field being null, so it can tell "mock
+        # build, no real stream" apart from "legacy CodeBuild build, no ECS task at all".
+        application.build_task_id = platform_builder.task_id_from_arn(handle.task_arn)
         application.status = 'BUILDING'
         application.save()
         return handle

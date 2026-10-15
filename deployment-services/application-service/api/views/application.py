@@ -468,6 +468,9 @@ class DeploymentListItemSerializer(serializers.Serializer):
     rollback_addressable = serializers.BooleanField(
         help_text="False for a row tagged 'latest' (predates the per-commit buildspec) — not a valid rollback target",
     )
+    has_build_logs = serializers.BooleanField(
+        help_text="True if this row's image came from a platform build whose logs can still be tailed",
+    )
 
 
 class RollbackPreviewSerializer(serializers.Serializer):
@@ -531,6 +534,7 @@ class ApplicationDeploymentsView(APIView):
             "compute_type": d.compute_type, "status": d.status, "triggered_by": d.triggered_by,
             "created_at": d.created_at,
             "rollback_addressable": d.tag_source == Deployment.TAG_SOURCE_RESOLVED_SHA,
+            "has_build_logs": bool(d.build_id and d.build_task_id),
         } for d in deployments])
 
 
