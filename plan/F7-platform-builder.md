@@ -326,6 +326,21 @@ pushing into a real customer-infra ECR repo:
 6. **Build scripts must use `set -o pipefail`** — the spike's first run piped the build
    through `tail` and reported exit 0 on a failed build.
 
+### Decision: how the per-build push credential reaches the build (2026-10-15)
+
+ECS fixes a container's `secrets` at task-definition registration, not per RunTask, so a
+per-build Secrets Manager secret would need a task-definition revision per build. Instead
+the credential travels like the source: the worker writes
+`sources/<uuid4>/docker-config.json` beside `sources/<uuid4>/source.tar.gz`; an init
+container in the same (fixed) task definition copies it into a shared task volume and the
+Kaniko container (`dependsOn` the init container succeeding) reads it from there. Both
+objects are deleted when the build ends (1-day lifecycle as backstop). The build task role
+keeps only `s3:GetObject` on the prefix and **no `s3:ListBucket`**: a customer `RUN` step can
+reach the task role's credentials, so the per-build key must be an unguessable uuid4 —
+one build can't enumerate or fetch another's source or credential. This drops the
+Secrets Manager pieces from `infra/platform-builder` (ticket 5 removes them and adds the
+init container + volume).
+
 ## Decision
 
 **Option B (self-hosted BuildKit on platform Fargate, one task per build)**, with Option A

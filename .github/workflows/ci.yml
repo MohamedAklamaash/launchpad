@@ -188,6 +188,7 @@ jobs:
         run: |
           terraform fmt -check -recursive deployment-services/infrastructure-service/infra/aws
           terraform fmt -check -recursive infra/platform-dns
+          terraform fmt -check -recursive infra/platform-builder
 
       - name: Terraform validate (modules)
         run: |
@@ -204,3 +205,11 @@ jobs:
         run: |
           terraform -chdir=infra/platform-dns init -backend=false -input=false
           terraform -chdir=infra/platform-dns validate
+
+      # Platform-owned, same reasoning as platform-dns above: this is where every customer
+      # build runs, so a credential-scoping typo here is not something to discover at
+      # apply time either.
+      - name: Terraform validate (platform-builder)
+        run: |
+          terraform -chdir=infra/platform-builder init -backend=false -input=false
+          terraform -chdir=infra/platform-builder validate
