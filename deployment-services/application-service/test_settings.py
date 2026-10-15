@@ -89,6 +89,10 @@ EKS_MAX_APP_MEMORY = float(os.environ.get('EKS_MAX_APP_MEMORY', '256'))
 MAX_SNI_CERTIFICATES_PER_LISTENER = 24
 INFRASTRUCTURE_SERVICE_URL = "http://localhost:8002"
 
+# F7 ticket 6: off by default here too — tests that want the platform-build path set
+# `settings.PLATFORM_BUILD_ENABLED = True` explicitly via the pytest-django fixture.
+PLATFORM_BUILD_ENABLED = os.environ.get('PLATFORM_BUILD_ENABLED', 'False').lower() == 'true'
+
 # H1: test-only key for Application.envs encryption (api/fields.py), generated fresh each
 # test run rather than a fixed literal — a committed key-shaped string gets flagged by
 # secret scanners (and is exactly the "copy this into prod" trap load_keys guards
