@@ -1,10 +1,10 @@
-"""Source fetching for platform-side builds (F7 ticket 4).
+"""Source fetching for F7's platform-side builds.
 
 Resolves a branch/ref to a commit SHA and fetches the corresponding GitHub source
 tarball, then uploads it to the platform builder's own S3 source bucket for Kaniko to
 read as its `--context`. Not yet wired into `application_deployment_service.py` — see
 plan/F7-platform-builder.md ("Source checkout") for the design this implements and
-ticket 6 for where it gets called.
+where it eventually gets called from.
 
 Security invariants, matching the design doc:
 - The GitHub token travels only in an Authorization header, never in a URL, a `.git`
@@ -53,8 +53,17 @@ class SourceFetchError(Exception):
     leak into something a caller logs or displays."""
 
 
+_github_http_client: ResilientHttpClient | None = None
+
+
 def _github_client() -> ResilientHttpClient:
-    return ResilientHttpClient(name="GitHubSourceClient", base_url=GITHUB_API_BASE)
+    """One client for the module's lifetime, matching how `ApplicationService.__init__`
+    holds its `github_client` — a fresh instance per call would reset the circuit
+    breaker's failure count every time and it would never trip."""
+    global _github_http_client
+    if _github_http_client is None:
+        _github_http_client = ResilientHttpClient(name="GitHubSourceClient", base_url=GITHUB_API_BASE)
+    return _github_http_client
 
 
 def _github_api_timeout() -> float:
@@ -103,8 +112,9 @@ def parse_owner_repo(remote_url: str) -> tuple[str, str]:
 def get_github_token_for_application(application) -> str | None:
     """Mirrors the lookup `application_deployment_service.py::_trigger_build` already
     does (`application.user.metadata['github']['token']`) — duplicated here rather than
-    imported to avoid a circular import between this module and the deploy service;
-    ticket 6 (wiring) is the natural place to fold both call sites onto one helper."""
+    imported to avoid a circular import between this module and the deploy service; the
+    slice that wires this module in is the natural place to fold both call sites onto
+    one helper."""
     try:
         user = application.user
     except Exception as e:
@@ -120,8 +130,14 @@ def get_github_token_for_application(application) -> str | None:
 def _auth_headers(token: str | None) -> dict[str, str]:
     headers = {"Accept": "application/vnd.github+json"}
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        # Same scheme application_service.py's _validate_github_repo already sends.
+        headers["Authorization"] = f"token {token}"
     return headers
+
+
+def _http_error_message(e: requests.exceptions.HTTPError, detail: str) -> str:
+    status = e.response.status_code if e.response is not None else "unknown"
+    return f"GitHub API returned status {status} {detail}"
 
 
 def _validate_sha(sha: str) -> None:
@@ -151,6 +167,7 @@ def resolve_commit_sha(application, ref: str | None = None) -> str:
 
     token = get_github_token_for_application(application)
 
+    detail = f"resolving {owner}/{repo}@{target_ref}"
     try:
         response = _github_client().get(
             f"/repos/{owner}/{repo}/commits/{target_ref}",
@@ -158,19 +175,26 @@ def resolve_commit_sha(application, ref: str | None = None) -> str:
             timeout=_github_api_timeout(),
             verify=True,
         )
+    except requests.exceptions.HTTPError as e:
+        # ResilientHttpClient only raises (rather than returning the response) for a
+        # >=500 — every 4xx comes back as a response below, including 404.
+        raise SourceFetchError(_http_error_message(e, detail)) from None
     except requests.exceptions.RequestException:
         raise SourceFetchError(f"Could not reach GitHub to resolve {owner}/{repo}@{target_ref}") from None
 
     if response.status_code == 404:
         raise SourceFetchError(f"Repository {owner}/{repo} not found or no access")
     if response.status_code != 200:
-        raise SourceFetchError(
-            f"GitHub API returned status {response.status_code} resolving {owner}/{repo}@{target_ref}"
-        )
+        raise SourceFetchError(f"GitHub API returned status {response.status_code} {detail}")
 
-    sha = (response.json() or {}).get("sha") or ""
+    try:
+        payload = response.json()
+    except ValueError:
+        raise SourceFetchError(f"GitHub API returned a non-JSON response {detail}") from None
+
+    sha = (payload or {}).get("sha") or ""
     if not _SHA_RE.fullmatch(sha):
-        raise SourceFetchError(f"GitHub API did not return a valid commit SHA for {owner}/{repo}@{target_ref}")
+        raise SourceFetchError(f"GitHub API did not return a valid commit SHA {detail}")
     return sha
 
 
@@ -191,8 +215,11 @@ def fetch_source_tarball(application, sha: str, dest_path) -> str:
     disk with a size cap (`PLATFORM_BUILDER_SOURCE_MAX_BYTES`, default 500 MB). TLS
     verification is always on; the token (if any) travels only in the Authorization
     header, never the URL — so nothing written to `dest_path` or logged can contain it.
-    Returns `dest_path` (as str) on success; partial downloads that exceed the cap are
-    removed before raising."""
+    This endpoint 302s to codeload.github.com with a signed, self-authenticating URL;
+    `requests` already drops the Authorization header on a cross-host redirect, which
+    is correct here and must not be "fixed" by forwarding it. Returns `dest_path` (as
+    str) on success; a partial download (size cap or a dropped connection) is removed
+    before raising."""
     _validate_sha(sha)
     dest = Path(dest_path)
 
@@ -201,6 +228,7 @@ def fetch_source_tarball(application, sha: str, dest_path) -> str:
 
     owner, repo = parse_owner_repo(application.project_remote_url)
     token = get_github_token_for_application(application)
+    detail = f"downloading {owner}/{repo}@{sha}"
 
     try:
         response = _github_client().get(
@@ -211,6 +239,8 @@ def fetch_source_tarball(application, sha: str, dest_path) -> str:
             verify=True,
             allow_redirects=True,
         )
+    except requests.exceptions.HTTPError as e:
+        raise SourceFetchError(_http_error_message(e, detail)) from None
     except requests.exceptions.RequestException:
         raise SourceFetchError(f"Could not reach GitHub to download {owner}/{repo}@{sha}") from None
 
@@ -239,6 +269,9 @@ def fetch_source_tarball(application, sha: str, dest_path) -> str:
     except SourceFetchError:
         dest.unlink(missing_ok=True)
         raise
+    except requests.exceptions.RequestException:
+        dest.unlink(missing_ok=True)
+        raise SourceFetchError(f"Connection to GitHub was interrupted while {detail}") from None
     finally:
         response.close()
 
