@@ -117,15 +117,27 @@ resource "aws_iam_role_policy" "build_task" {
 # --- pattern as platform-dns's access key: this skeleton defines the grant shape, not the
 # --- principal that holds it.
 data "aws_iam_policy_document" "builder_launcher" {
+  # RunTask takes a task-definition ARN. DescribeTasks/StopTask take a task ARN, not a
+  # task-definition ARN — the two resource shapes are not interchangeable, so this is two
+  # statements, not one, even though all three actions are "run and monitor build tasks".
   statement {
-    sid    = "RunAndMonitorBuildTasks"
-    effect = "Allow"
-    actions = [
-      "ecs:RunTask",
-      "ecs:DescribeTasks",
-      "ecs:StopTask",
-    ]
+    sid       = "RunBuildTask"
+    effect    = "Allow"
+    actions   = ["ecs:RunTask"]
     resources = ["${aws_ecs_task_definition.kaniko.arn_without_revision}:*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "ecs:cluster"
+      values   = [aws_ecs_cluster.builder.arn]
+    }
+  }
+
+  statement {
+    sid       = "MonitorBuildTask"
+    effect    = "Allow"
+    actions   = ["ecs:DescribeTasks", "ecs:StopTask"]
+    resources = ["arn:aws:ecs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:task/${aws_ecs_cluster.builder.name}/*"]
 
     condition {
       test     = "ArnEquals"

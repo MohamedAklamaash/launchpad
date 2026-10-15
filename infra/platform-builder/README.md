@@ -73,7 +73,11 @@ upstream kaniko in June 2025 — see F7's Decision section) into
 ```bash
 # After a first apply that creates the (empty) mirror repo, or via a throwaway
 # aws_ecr_repository data source if you want the repo URL before applying everything else.
-crane copy ghcr.io/chainguard-images/kaniko:latest <mirror-repo-url>:latest
+# <upstream-kaniko-source> — confirm the current published image reference against the
+# Chainguard fork's own README before using it here; not hardcoded in this doc since an
+# image reference copied from memory is exactly the kind of unverified claim this repo's
+# conventions (see platform-dns README's "I have not verified..." note) ask not to assert.
+crane copy <upstream-kaniko-source> <mirror-repo-url>:latest
 crane digest <mirror-repo-url>:latest   # sha256:... — use this for kaniko_image_digest
 ```
 
