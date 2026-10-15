@@ -152,7 +152,7 @@ def _log_group() -> str:
 
 
 def _region() -> str:
-    return _env("PLATFORM_BUILDER_AWS_REGION", required=False, default="us-west-2") or "us-west-2"
+    return _env("PLATFORM_BUILDER_AWS_REGION", required=False, default="us-east-1") or "us-east-1"
 
 
 def _build_timeout() -> int:

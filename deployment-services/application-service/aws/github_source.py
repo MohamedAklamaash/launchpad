@@ -336,7 +336,7 @@ def _build_platform_s3_client():
     exactly the one platform identity it was given."""
     return boto3.client(
         "s3",
-        region_name=os.environ.get("PLATFORM_BUILDER_AWS_REGION", "us-west-2"),
+        region_name=os.environ.get("PLATFORM_BUILDER_AWS_REGION", "us-east-1"),
         aws_access_key_id=app_config.aws_access_key_id,
         aws_secret_access_key=app_config.aws_secret_access_key,
         config=get_boto3_config(),
