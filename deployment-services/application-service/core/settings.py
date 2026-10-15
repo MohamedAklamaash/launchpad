@@ -368,3 +368,12 @@ PLATFORM_BUILDER_BUILD_TIMEOUT_SECONDS = int(os.environ.get('PLATFORM_BUILDER_BU
 # rollout (plan/F7-platform-builder.md, "Retiring the old path"). Not a per-infra
 # setting, matching that doc's note: an infra doesn't choose where its images get built.
 PLATFORM_BUILD_ENABLED = os.environ.get('PLATFORM_BUILD_ENABLED', 'False').lower() == 'true'
+
+# F7 ticket 7: abuse limits on the platform build path, enforced in
+# ApplicationDeploymentService._enforce_build_budgets via shared/ratelimit/budget.py's
+# Redis-backed primitives. Per-infra concurrency bounds how much of the shared Fargate
+# builder fleet one tenant's simultaneous deploys can occupy; per-user rate bounds a
+# misconfigured webhook retry storm or scripted abuse. Both fail closed on Redis down —
+# an unavailable limiter is a reason to refuse the build, not let it through for free.
+PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA = int(os.environ.get('PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA', '2'))
+PLATFORM_BUILD_MAX_PER_USER_PER_HOUR = int(os.environ.get('PLATFORM_BUILD_MAX_PER_USER_PER_HOUR', '20'))

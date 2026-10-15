@@ -8,13 +8,19 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
 from shared.errors.exception import HttpError
-from shared.ratelimit.budget import customer_call_budget, rate_limited
+from shared.ratelimit.budget import (
+    acquire_concurrency_slot,
+    customer_call_budget,
+    rate_limited,
+    release_concurrency_slot,
+)
 
 
 class _FakeRedis:
-    """In-memory stand-in for the one redis-py surface customer_call_budget uses
-    (pipelined INCR+TTL, then EXPIRE on a fresh key) — no fakeredis dependency exists
-    in this codebase, so tests mock the client the same way api/tests/test_database_api.py
+    """In-memory stand-in for the one redis-py surface customer_call_budget/
+    acquire_concurrency_slot use (pipelined INCR+TTL for the fixed window, plain
+    INCR/EXPIRE/DECR/DELETE for the semaphore) — no fakeredis dependency exists in this
+    codebase, so tests mock the client the same way api/tests/test_database_api.py
     mocks InfraQueue."""
 
     def __init__(self):
@@ -24,8 +30,20 @@ class _FakeRedis:
     def pipeline(self):
         return _FakePipeline(self)
 
+    def incr(self, key):
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
+
     def expire(self, key, seconds):
         self.expiry[key] = seconds
+
+    def decr(self, key):
+        self.counts[key] = self.counts.get(key, 0) - 1
+        return self.counts[key]
+
+    def delete(self, key):
+        self.counts.pop(key, None)
+        self.expiry.pop(key, None)
 
 
 class _FakePipeline:
@@ -133,3 +151,80 @@ def test_decorator_returns_503_when_redis_down(monkeypatch):
     monkeypatch.setattr("shared.ratelimit.budget._redis", _boom)
     resp = _dummy_view(_authed_get("user-b"))
     assert resp.status_code == 503
+
+
+# ── acquire_concurrency_slot / release_concurrency_slot (F7 ticket 7) ────────────
+
+def test_concurrency_slot_acquired_under_limit(fake_redis):
+    assert acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60) is True
+    assert acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60) is True
+
+
+def test_concurrency_slot_ttl_refreshes_on_every_successful_acquire(fake_redis):
+    """A semaphore's holders overlap and release at different times — a one-time EXPIRE
+    set only when the key is first created would let the backstop fire while a slot
+    acquired later is still legitimately running."""
+    acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60)
+    assert fake_redis.expiry["concurrency:builds:infra-1"] == 60
+
+    fake_redis.expiry["concurrency:builds:infra-1"] = 1  # simulate time passing
+    acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60)
+    assert fake_redis.expiry["concurrency:builds:infra-1"] == 60
+
+
+def test_concurrency_slot_refused_at_limit_and_nothing_left_incremented(fake_redis):
+    acquire_concurrency_slot("builds:infra-1", limit=1, ttl=60)
+
+    assert acquire_concurrency_slot("builds:infra-1", limit=1, ttl=60) is False
+    # The refused attempt must not have left a dangling increment behind — a slot it
+    # never actually got must not count against the next caller either.
+    assert fake_redis.counts["concurrency:builds:infra-1"] == 1
+
+
+def test_concurrency_slots_are_independent_per_key(fake_redis):
+    acquire_concurrency_slot("builds:infra-1", limit=1, ttl=60)
+
+    assert acquire_concurrency_slot("builds:infra-1", limit=1, ttl=60) is False
+    assert acquire_concurrency_slot("builds:infra-2", limit=1, ttl=60) is True
+
+
+def test_release_frees_the_slot_for_the_next_acquire(fake_redis):
+    acquire_concurrency_slot("builds:infra-1", limit=1, ttl=60)
+    assert acquire_concurrency_slot("builds:infra-1", limit=1, ttl=60) is False
+
+    release_concurrency_slot("builds:infra-1")
+
+    assert acquire_concurrency_slot("builds:infra-1", limit=1, ttl=60) is True
+
+
+def test_release_deletes_the_key_once_the_count_reaches_zero(fake_redis):
+    acquire_concurrency_slot("builds:infra-1", limit=3, ttl=60)
+    release_concurrency_slot("builds:infra-1")
+
+    assert "concurrency:builds:infra-1" not in fake_redis.counts
+
+
+def test_release_is_safe_to_call_without_a_matching_acquire(fake_redis):
+    """The acquire-side backstop TTL can already have expired the key — a release
+    arriving after that must not leave the count negative forever."""
+    release_concurrency_slot("builds:infra-1")
+
+    assert "concurrency:builds:infra-1" not in fake_redis.counts
+
+
+def test_acquire_raises_503_when_redis_down(monkeypatch):
+    def _boom():
+        raise redis.exceptions.ConnectionError("no route to redis")
+
+    monkeypatch.setattr("shared.ratelimit.budget._redis", _boom)
+    with pytest.raises(HttpError) as exc_info:
+        acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60)
+    assert exc_info.value.status_code == 503
+
+
+def test_release_never_raises_when_redis_down(monkeypatch):
+    def _boom():
+        raise redis.exceptions.ConnectionError("no route to redis")
+
+    monkeypatch.setattr("shared.ratelimit.budget._redis", _boom)
+    release_concurrency_slot("builds:infra-1")  # must not raise
