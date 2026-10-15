@@ -385,10 +385,16 @@ def test_ansi_and_control_chars_are_stripped(factory, make_app, harness):
 
 @pytest.mark.django_db
 def test_registry_auth_lines_are_redacted(factory, make_app, harness):
+    import base64
+    import secrets
+
     stack = make_app()
     deployment = _record_deployment(stack)
-    leaked_basic_auth = "Authorization: Basic QVdTOnNlY3JldC1lY3ItcGFzc3dvcmQ="
-    leaked_docker_config = '{"auths":{"example.com":{"auth":"QVdTOnNlY3JldC1lY3ItcGFzc3dvcmQ="}}}'
+    # Generated at test time, never a literal, so this fixture can't be mistaken for a
+    # real credential by a secret scanner — see "generated, not literal" in the task.
+    fake_token = base64.b64encode(f"AWS:{secrets.token_hex(16)}".encode()).decode()
+    leaked_basic_auth = f"Authorization: Basic {fake_token}"
+    leaked_docker_config = f'{{"auths":{{"example.com":{{"auth":"{fake_token}"}}}}}}'
     harness.logs.get_log_events.side_effect = [
         _stream_response([_log_event(leaked_basic_auth, 1000)]),
         _stream_response([_log_event(leaked_docker_config, 2000)]),
@@ -396,7 +402,7 @@ def test_registry_auth_lines_are_redacted(factory, make_app, harness):
     resp = _get_deployment_logs(factory, stack.owner, str(stack.app.id), str(deployment.id))
     assert resp.status_code == 200
     joined = " ".join(e["message"] for e in resp.data["events"])
-    assert "QVdTOnNlY3JldC1lY3ItcGFzc3dvcmQ=" not in joined
+    assert fake_token not in joined
     assert "<redacted>" in joined
 
 
