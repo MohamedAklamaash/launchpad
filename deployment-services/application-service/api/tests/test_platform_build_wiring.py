@@ -162,6 +162,13 @@ def test_platform_build_happy_path_pins_digest_and_sets_pushing_image(
     assert deployment.image_digest == DIGEST
     assert deployment.commit_sha == SHA
 
+    # F7 ticket 8: build_task_id (the ECS task id behind build_id, used to locate the
+    # build's CloudWatch streams) is threaded onto both the Application and the
+    # Deployment history row.
+    expected_task_id = platform_builder_mod.task_id_from_arn(handle_holder["handle"].task_arn)
+    assert app.build_task_id == expected_task_id
+    assert deployment.build_task_id == expected_task_id
+
 
 @pytest.mark.django_db
 def test_platform_build_uses_the_webhook_sha_as_the_resolve_ref(
@@ -286,6 +293,35 @@ def test_flag_off_never_touches_the_platform_builder(new_app, mock_service, monk
     # byte-for-byte guarantee this test is actually for.
     deployment = Deployment.objects.get(application=app)
     assert deployment.build_id == app.build_id
+
+    # F7 ticket 8: no ECS task exists on the legacy CodeBuild path — build_task_id must
+    # stay None on both rows, which is what makes the build-logs endpoint's
+    # legacy-build (409) rule correct.
+    assert app.build_task_id is None
+    assert deployment.build_task_id is None
+
+
+@pytest.mark.django_db
+def test_flag_flipped_off_clears_a_stale_platform_build_task_id(new_app, mock_service, monkeypatch, settings):
+    """Regression for F7 ticket 8: an app that previously built on the platform path
+    carries a real ECS task id in build_task_id. If PLATFORM_BUILD_ENABLED is then
+    flipped off and the app deploys again on the legacy CodeBuild path, that stale task
+    id must not survive — otherwise /build-logs/current would tail the *previous*
+    build's stream while claiming to show the current (CodeBuild) one."""
+    settings.PLATFORM_BUILD_ENABLED = False
+    settings.PLATFORM_BASE_DOMAIN = None
+    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
+    app, _env = new_app
+    app.build_id = "platform-stale-build"
+    app.build_task_id = "stale-ecs-task-id"
+    app.save(update_fields=["build_id", "build_task_id"])
+    service, _session = mock_service
+
+    service.deploy_application(app)
+
+    app.refresh_from_db()
+    assert app.build_task_id is None
+    assert ":mock-" in app.build_id  # overwritten with this attempt's own (legacy) build id
 
 
 @pytest.mark.django_db

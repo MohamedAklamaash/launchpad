@@ -325,24 +325,37 @@ def test_cursor_from_a_different_build_is_rejected(factory, make_app, harness):
 
 @pytest.mark.django_db
 def test_cursor_round_trips_into_next_request(factory, make_app, harness):
+    """limit=1 with exactly 1 event per stream means neither stream is "caught up" (the
+    page is exactly as full as it was allowed to be) — complete is False, a cursor is
+    issued, and the next request's nextToken must be exactly what the first response
+    handed back, proving forward pagination actually forwards rather than re-reading
+    from the start."""
     stack = make_app()
     deployment = _record_deployment(stack)
     harness.logs.get_log_events.side_effect = [
         _stream_response([_log_event("init line", 1000)], token="init-f/1"),
         _stream_response([_log_event("kaniko line", 1000)], token="kaniko-f/1"),
     ]
-    first = _get_deployment_logs(factory, stack.owner, str(stack.app.id), str(deployment.id))
+    first = _get_deployment_logs(factory, stack.owner, str(stack.app.id), str(deployment.id), limit="1")
     assert first.status_code == 200
+    assert first.data["complete"] is False
     cursor = first.data["next_cursor"]
-    # complete=True here since both streams returned fewer events than the per-stream
-    # limit — so no cursor is actually needed, but if one WAS issued it must verify.
-    if cursor:
-        harness.logs.get_log_events.side_effect = [
-            _stream_response([], token="init-f/1"),
-            _stream_response([], token="kaniko-f/1"),
-        ]
-        second = _get_deployment_logs(factory, stack.owner, str(stack.app.id), str(deployment.id), cursor=cursor)
-        assert second.status_code == 200
+    assert cursor
+
+    harness.logs.get_log_events.side_effect = [
+        _stream_response([], token="init-f/1"),
+        _stream_response([], token="kaniko-f/1"),
+    ]
+    second = _get_deployment_logs(
+        factory, stack.owner, str(stack.app.id), str(deployment.id), cursor=cursor, limit="1",
+    )
+    assert second.status_code == 200
+    calls = harness.logs.get_log_events.call_args_list[-2:]
+    assert calls[0].kwargs["nextToken"] == "init-f/1"
+    assert calls[1].kwargs["nextToken"] == "kaniko-f/1"
+    # Both streams returned no new events this round and their token didn't move —
+    # caught up, and the deployment_id path already knows the build itself has finished.
+    assert second.data["complete"] is True
 
 
 # ── page bound ────────────────────────────────────────────────────────────────

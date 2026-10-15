@@ -218,10 +218,6 @@ def build_log_group() -> str:
     return _log_group()
 
 
-def build_cluster() -> str:
-    return _cluster()
-
-
 def _tarball_top_dir(tarball_path) -> str:
     """GitHub's tarball API wraps every file under a single `{owner}-{repo}-{sha7}/`
     directory — read it from the tarball actually fetched rather than reconstructing it

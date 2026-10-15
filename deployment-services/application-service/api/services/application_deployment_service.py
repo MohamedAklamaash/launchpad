@@ -120,6 +120,13 @@ class ApplicationDeploymentService:
             else:
                 build_id = self._trigger_build(session, application, environment, image_tag)
                 application.build_id = build_id
+                # Clears out a stale platform-build task id from a previous deploy on
+                # this same Application row — otherwise, if PLATFORM_BUILD_ENABLED was
+                # flipped off after an earlier platform build, build_task_id would still
+                # name that old ECS task while build_id now names this CodeBuild build,
+                # and ticket 8's /build-logs/current would tail the wrong build's stream
+                # instead of 404ing as a build with no task id should.
+                application.build_task_id = None
                 application.status = 'BUILDING'
                 application.save()
                 resolved_sha = self._wait_for_build(session, build_id)
@@ -315,7 +322,9 @@ class ApplicationDeploymentService:
         log-tail endpoint reads them off this row rather than off `Application.build_id`/
         `build_task_id`, which the next deploy overwrites). Both None for a rollback,
         which skips the build entirely; `build_task_id` alone is None for the legacy
-        CodeBuild path (no ECS task exists) or a mock build with no real stream."""
+        CodeBuild path (no ECS task exists). A mock build still carries a value here
+        (`platform_builder.MOCK_TASK_ID_PREFIX`) — the log-tail endpoint checks for that
+        prefix itself rather than relying on this field being null."""
         from api.models.deployment import Deployment
         from api.services.deployment_snapshot import snapshot_env
 
