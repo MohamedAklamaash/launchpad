@@ -343,3 +343,21 @@ from api.common.envs_encryption import load_keys as _load_envs_encryption_keys
 APP_ENVS_ENCRYPTION_KEYS = _load_envs_encryption_keys(
     os.environ.get('APP_ENVS_ENCRYPTION_KEYS', ''), is_dev_mode(app_config.mode),
 )
+
+# F7 ticket 5 (aws/platform_builder.py): the platform builder's own cluster/task
+# definition/network, in the platform account (infra/platform-builder/), reached through
+# a dedicated builder-launcher IAM role the worker assumes into — never the worker's own
+# LaunchpadDeploymentRole session, which must never reach a build container. Documented
+# here for discoverability (a future dashboard build-log endpoint, ticket 8, will read
+# PLATFORM_BUILDER_LOG_GROUP); `aws/platform_builder.py` itself reads these directly from
+# os.environ, matching how `aws/github_source.py`'s PLATFORM_BUILDER_SOURCE_BUCKET/
+# PLATFORM_BUILDER_AWS_REGION already do, rather than importing this settings module —
+# intentional: the aws/ package stays usable without a Django settings context. Not yet
+# wired into deploys (ticket 6).
+PLATFORM_BUILDER_LAUNCHER_ROLE_ARN = os.environ.get('PLATFORM_BUILDER_LAUNCHER_ROLE_ARN', '')
+PLATFORM_BUILDER_CLUSTER = os.environ.get('PLATFORM_BUILDER_CLUSTER', '')
+PLATFORM_BUILDER_TASK_DEFINITION = os.environ.get('PLATFORM_BUILDER_TASK_DEFINITION', '')
+PLATFORM_BUILDER_SUBNET_IDS = os.environ.get('PLATFORM_BUILDER_SUBNET_IDS', '')
+PLATFORM_BUILDER_SECURITY_GROUP_ID = os.environ.get('PLATFORM_BUILDER_SECURITY_GROUP_ID', '')
+PLATFORM_BUILDER_LOG_GROUP = os.environ.get('PLATFORM_BUILDER_LOG_GROUP', '')
+PLATFORM_BUILDER_BUILD_TIMEOUT_SECONDS = int(os.environ.get('PLATFORM_BUILDER_BUILD_TIMEOUT_SECONDS', '1800'))

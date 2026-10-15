@@ -286,10 +286,45 @@ def _validate_build_id(build_id) -> str:
 
 
 def _source_bucket() -> str:
+    return source_bucket()
+
+
+def source_bucket() -> str:
+    """Public alias of the same lookup, for `aws/platform_builder.py` (ticket 5) to build
+    the `docker-config.json` key/upload against the identical bucket this module uses for
+    the source tarball — one bucket, read from one place."""
     bucket = os.environ.get("PLATFORM_BUILDER_SOURCE_BUCKET", "").strip()
     if not bucket:
         raise SourceFetchError("PLATFORM_BUILDER_SOURCE_BUCKET is not configured")
     return bucket
+
+
+def _source_prefix() -> str:
+    """Must equal `infra/platform-builder`'s `var.source_prefix` — every IAM grant on the
+    sources bucket (build task role's `s3:GetObject`, launcher's `s3:PutObject`/
+    `DeleteObject`, the bucket's lifecycle rule) is scoped to this same prefix. Drift here
+    is an AccessDenied in the build task, not a Python exception, so both the task role's
+    read and the key this module writes have to agree on it by construction, not by eye."""
+    return os.environ.get("PLATFORM_BUILDER_SOURCE_PREFIX", "sources").strip() or "sources"
+
+
+def source_object_key(build_id) -> str:
+    """`sources/<build_id>/source.tar.gz` — the tarball Kaniko reads as `--context`.
+    Nested under the build id (not a flat `<build_id>.tar.gz`) so it shares a prefix with
+    `docker_config_object_key`'s sibling object, per F7's Decision section: both objects
+    for one build live and die together."""
+    safe_build_id = _validate_build_id(build_id)
+    return f"{_source_prefix()}/{safe_build_id}/source.tar.gz"
+
+
+def docker_config_object_key(build_id) -> str:
+    """`sources/<build_id>/docker-config.json` — the per-build scoped ECR push credential,
+    written here (never logged, never a Secrets Manager secret — see F7's Decision section
+    on why ECS's fixed-at-registration `secrets` block can't carry a per-build value) for
+    the build task's init container to copy into Kaniko's `/kaniko/.docker` before Kaniko
+    starts."""
+    safe_build_id = _validate_build_id(build_id)
+    return f"{_source_prefix()}/{safe_build_id}/docker-config.json"
 
 
 def _build_platform_s3_client():
@@ -310,13 +345,16 @@ def _build_platform_s3_client():
 
 def upload_source_for_build(tarball_path, build_id, s3_client=None) -> str:
     """Uploads the tarball at `tarball_path` to the platform builder source bucket at
-    `sources/{build_id}.tar.gz`, returning the `s3://` URI Kaniko reads as `--context`.
-    Always uses the platform's own AWS credentials, never a customer's AssumeRole
-    session. `s3_client` is accepted for dependency injection in tests; real callers
-    omit it."""
+    `sources/{build_id}/source.tar.gz` (see `source_object_key`), returning the `s3://`
+    URI Kaniko reads as `--context`. Defaults to the platform's own AWS credentials,
+    never a customer's AssumeRole session — but the platform IAM *user* keys alone
+    cannot `PutObject` (it stays assume-only; only the builder-launcher role can write
+    here), so the real build-launch path (`aws/platform_builder.py`) always passes an
+    `s3_client` built from that role's assumed session. `s3_client` is still accepted
+    for dependency injection in tests."""
     safe_build_id = _validate_build_id(build_id)
     bucket = _source_bucket()
-    key = f"sources/{safe_build_id}.tar.gz"
+    key = source_object_key(safe_build_id)
     s3_uri = f"s3://{bucket}/{key}"
 
     if is_dev_mode(app_config.mode):

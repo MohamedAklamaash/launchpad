@@ -55,6 +55,11 @@ output "kaniko_mirror_repository_url" {
 }
 
 output "builder_launcher_policy_json" {
-  description = "Attach this document to whichever IAM principal application-service's build-launcher process runs as. Not attached to anything by this module — see README."
+  description = "The policy document attached to aws_iam_role.builder_launcher below. Exposed for audit/diffing, not for attaching elsewhere."
   value       = data.aws_iam_policy_document.builder_launcher.json
+}
+
+output "builder_launcher_role_arn" {
+  description = "Pass as PLATFORM_BUILDER_LAUNCHER_ROLE_ARN. application-service's worker assumes into this role (from var.launcher_principal_arn) before any S3/ECS/CloudWatch call on the build-launch path — never with the platform IAM user's own keys directly."
+  value       = aws_iam_role.builder_launcher.arn
 }

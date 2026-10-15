@@ -113,8 +113,9 @@ resource "aws_route_table_association" "private" {
 # is wide (all protocols/ports) at the security-group layer because the real narrowing for
 # this threat model is the task role's IAM scope and the lack of a route back into any
 # other platform VPC, not the security group; a build legitimately needs to reach ECR,
-# the mirrored image registry, S3, Secrets Manager, and whatever registries the customer's
-# Dockerfile names, none of which resolve to a fixed, enumerable CIDR/port set up front.
+# the mirrored image registry, the public ECR Gallery (the init container's aws-cli
+# image), S3, and whatever registries the customer's Dockerfile names, none of which
+# resolve to a fixed, enumerable CIDR/port set up front.
 resource "aws_security_group" "builder_task" {
   name        = "launchpad-platform-builder-task-sg"
   description = "Build task security group: no ingress, egress only"
@@ -132,5 +133,5 @@ resource "aws_security_group_rule" "builder_task_egress_all" {
   to_port           = 0
   protocol          = "-1"
   cidr_blocks       = ["0.0.0.0/0"]
-  description       = "Outbound only: pull mirrored image, fetch base images, push to customer ECR, read platform S3/Secrets Manager"
+  description       = "Outbound only: pull mirrored/public images, fetch base images, push to customer ECR, read/write platform S3"
 }

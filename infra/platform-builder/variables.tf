@@ -22,9 +22,41 @@ variable "build_log_retention_days" {
 }
 
 variable "source_prefix" {
-  description = "Key prefix in the sources bucket that every per-build object and IAM grant is scoped to. Not a secret; just the shared narrowing point for the task role, the launcher policy, and the lifecycle rule."
+  description = "Key prefix in the sources bucket that every per-build object and IAM grant is scoped to. Not a secret; just the shared narrowing point for the task role, the launcher policy, and the lifecycle rule. Must equal PLATFORM_BUILDER_SOURCE_PREFIX in application-service's env — aws/github_source.py writes `<prefix>/<build_id>/source.tar.gz` and `<prefix>/<build_id>/docker-config.json` under exactly this value."
   type        = string
-  default     = "launchpad-builds"
+  default     = "sources"
+}
+
+# No default: the platform worker's own IAM user ARN must be named deliberately, never
+# left to resolve to something unintended — the same "no silent default" stance
+# kaniko_image_digest below takes. This user stays assume-only (no policy attached to it
+# directly): it is granted sts:AssumeRole onto aws_iam_role.builder_launcher, nothing more.
+variable "launcher_principal_arn" {
+  description = "ARN of the IAM principal (application-service's build-launcher process, typically a dedicated IAM user) that assumes into aws_iam_role.builder_launcher. Must not be the infrastructure-service provisioning worker's identity — see README 'Why this can't live in the customer tree'."
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws:iam::\\d{12}:(user|role)/\\S+$", var.launcher_principal_arn))
+    error_message = "launcher_principal_arn must be an IAM user or role ARN (arn:aws:iam::<account>:user/... or :role/...)."
+  }
+}
+
+# No default, same reasoning as kaniko_image_digest: a digest must be deliberately
+# chosen. Pulled from the public ECR Gallery (public.ecr.aws/aws-cli/aws-cli), not Docker
+# Hub — a Docker Hub 429 on this image's pull would be a platform-side failure that the
+# build's own error path would otherwise misreport as a customer Dockerfile problem (see
+# the Docker Hub rate-limit special case this tree's README and aws/platform_builder.py
+# both carry for the *customer's* FROM line; the init container must never hit the same
+# failure mode for a platform-chosen base image). Anonymous pulls from the public gallery
+# need no IAM grant, unlike the mirrored Kaniko image.
+variable "aws_cli_image_digest" {
+  description = "sha256 digest of public.ecr.aws/aws-cli/aws-cli, pinned by digest, never by tag. Used by the init container that copies docker-config.json into Kaniko's shared volume."
+  type        = string
+
+  validation {
+    condition     = can(regex("^sha256:[a-f0-9]{64}$", var.aws_cli_image_digest))
+    error_message = "aws_cli_image_digest must be a sha256 digest in the form sha256:<64 hex chars>."
+  }
 }
 
 variable "task_cpu" {

@@ -16,9 +16,11 @@ import requests
 from aws import github_source
 from aws.github_source import (
     SourceFetchError,
+    docker_config_object_key,
     fetch_source_tarball,
     parse_owner_repo,
     resolve_commit_sha,
+    source_object_key,
     upload_source_for_build,
 )
 
@@ -405,8 +407,10 @@ def test_upload_source_for_build_key_shape_and_injected_client(tmp_path, monkeyp
 
     uri = upload_source_for_build(tarball, "build-123", s3_client=fake_s3)
 
-    assert uri == "s3://lp-builder-sources/sources/build-123.tar.gz"
-    fake_s3.upload_file.assert_called_once_with(str(tarball), "lp-builder-sources", "sources/build-123.tar.gz")
+    assert uri == "s3://lp-builder-sources/sources/build-123/source.tar.gz"
+    fake_s3.upload_file.assert_called_once_with(
+        str(tarball), "lp-builder-sources", "sources/build-123/source.tar.gz"
+    )
 
 
 def test_upload_source_for_build_uses_platform_client_when_none_injected(tmp_path, monkeypatch):
@@ -438,11 +442,30 @@ def test_upload_source_for_build_rejects_path_traversal_build_id(tmp_path, monke
         upload_source_for_build(tmp_path / "t.tar.gz", "../../etc/passwd", s3_client=MagicMock())
 
 
+# ── per-build key shape ──────────────────────────────────────────────────────
+
+def test_source_and_docker_config_keys_share_build_id_prefix():
+    assert source_object_key("build-1") == "sources/build-1/source.tar.gz"
+    assert docker_config_object_key("build-1") == "sources/build-1/docker-config.json"
+
+
+def test_source_prefix_is_configurable_and_shared_by_both_keys(monkeypatch):
+    monkeypatch.setenv("PLATFORM_BUILDER_SOURCE_PREFIX", "custom-prefix")
+
+    assert source_object_key("build-1") == "custom-prefix/build-1/source.tar.gz"
+    assert docker_config_object_key("build-1") == "custom-prefix/build-1/docker-config.json"
+
+
+def test_source_object_key_rejects_path_traversal_build_id():
+    with pytest.raises(SourceFetchError):
+        source_object_key("../../etc/passwd")
+
+
 def test_upload_source_for_build_mock_mode_skips_s3(tmp_path, dev_mode, monkeypatch):
     monkeypatch.setenv("PLATFORM_BUILDER_SOURCE_BUCKET", "lp-builder-sources")
     fake_s3 = MagicMock()
 
     uri = upload_source_for_build(tmp_path / "t.tar.gz", "build-789", s3_client=fake_s3)
 
-    assert uri == "s3://lp-builder-sources/sources/build-789.tar.gz"
+    assert uri == "s3://lp-builder-sources/sources/build-789/source.tar.gz"
     fake_s3.upload_file.assert_not_called()
