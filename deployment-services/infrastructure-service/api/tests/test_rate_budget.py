@@ -18,9 +18,10 @@ from shared.ratelimit.budget import (
 
 class _FakeRedis:
     """In-memory stand-in for the one redis-py surface customer_call_budget/
-    acquire_concurrency_slot use (pipelined INCR+TTL, EXPIRE on a fresh key, DECR,
-    DELETE) — no fakeredis dependency exists in this codebase, so tests mock the client
-    the same way api/tests/test_database_api.py mocks InfraQueue."""
+    acquire_concurrency_slot use (pipelined INCR+TTL for the fixed window, plain
+    INCR/EXPIRE/DECR/DELETE for the semaphore) — no fakeredis dependency exists in this
+    codebase, so tests mock the client the same way api/tests/test_database_api.py
+    mocks InfraQueue."""
 
     def __init__(self):
         self.counts = {}
@@ -28,6 +29,10 @@ class _FakeRedis:
 
     def pipeline(self):
         return _FakePipeline(self)
+
+    def incr(self, key):
+        self.counts[key] = self.counts.get(key, 0) + 1
+        return self.counts[key]
 
     def expire(self, key, seconds):
         self.expiry[key] = seconds
@@ -153,6 +158,18 @@ def test_decorator_returns_503_when_redis_down(monkeypatch):
 def test_concurrency_slot_acquired_under_limit(fake_redis):
     assert acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60) is True
     assert acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60) is True
+
+
+def test_concurrency_slot_ttl_refreshes_on_every_successful_acquire(fake_redis):
+    """A semaphore's holders overlap and release at different times — a one-time EXPIRE
+    set only when the key is first created would let the backstop fire while a slot
+    acquired later is still legitimately running."""
+    acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60)
+    assert fake_redis.expiry["concurrency:builds:infra-1"] == 60
+
+    fake_redis.expiry["concurrency:builds:infra-1"] = 1  # simulate time passing
+    acquire_concurrency_slot("builds:infra-1", limit=2, ttl=60)
+    assert fake_redis.expiry["concurrency:builds:infra-1"] == 60
 
 
 def test_concurrency_slot_refused_at_limit_and_nothing_left_incremented(fake_redis):

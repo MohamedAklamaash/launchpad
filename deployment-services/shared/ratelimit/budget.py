@@ -81,18 +81,22 @@ def acquire_concurrency_slot(key: str, limit: int, ttl: int) -> bool:
 
     Raises HttpError(status_code=503) if Redis is unreachable — fails closed, same
     posture as `customer_call_budget`: an unavailable limiter is not a reason to let an
-    unbounded number of concurrent operations through for free."""
+    unbounded number of concurrent operations through for free.
+
+    Unlike `customer_call_budget`'s fixed window, `ttl` is refreshed on every successful
+    acquire, not only when the key is first created: a semaphore's holders overlap and
+    release at different times, so "time since the *first* acquire in the window" (what
+    a one-time `EXPIRE` would leave this as) would let the backstop fire while a slot
+    acquired after it is still legitimately running."""
     full_key = f"concurrency:{key}"
     try:
-        with _redis().pipeline() as pipe:
-            pipe.incr(full_key)
-            pipe.ttl(full_key)
-            count, ttl_remaining = pipe.execute()
-        if ttl_remaining == -1:
-            _redis().expire(full_key, ttl)
+        count = _redis().incr(full_key)
         if count > limit:
-            _redis().decr(full_key)
+            remaining = _redis().decr(full_key)
+            if remaining <= 0:
+                _redis().delete(full_key)
             return False
+        _redis().expire(full_key, ttl)
         return True
     except redis.RedisError as e:
         raise HttpError(message="Rate limiter unavailable", status_code=503) from e
