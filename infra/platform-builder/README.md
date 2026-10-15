@@ -13,9 +13,12 @@ with a zero CodeBuild concurrency quota (confirmed, not hypothetical — see
 `plan/F7-platform-builder.md`'s "quota fact" section). Moving the build onto platform-owned
 Fargate capacity removes that dependency.
 
-This is Terraform **ticket 2** of F7's execution plan: the skeleton only. No application
-code lives here — nothing launches a build, mints a credential, or fetches source. That is
-tickets 3–6, in `deployment-services/application-service/aws/`.
+This tree started as Terraform **ticket 2** of F7's execution plan (the skeleton) and was
+extended by **ticket 5** (the builder-launcher role, the init-container/volume credential
+path, dropping Secrets Manager — see "Credential delivery" below) once the builder client
+landed in `deployment-services/application-service/aws/platform_builder.py`. No
+application code lives *here* — it's still just the cluster, task definition, roles, and
+bucket that `aws/platform_builder.py` drives.
 
 ## Why this can't live in the customer tree, and can't share the provisioning worker's credentials
 
@@ -30,11 +33,14 @@ tickets 3–6, in `deployment-services/application-service/aws/`.
 - **Credential.** The infrastructure-service provisioning worker already holds
   `JWT_SECRET`, `INTERNAL_API_TOKEN`, database credentials, and the platform IAM user keys
   used to assume `LaunchpadDeploymentRole` into every customer account. None of that
-  worker's credentials can launch, monitor, or read the logs of a build task — the
-  `builder_launcher_policy_json` output below is wired to a *separate* principal that
-  `application-service`'s build-launcher process holds, and nothing else. This is the same
-  reasoning `infra/platform-dns/README.md` gives for keeping the DNS writer out of the
-  provisioning worker's hands.
+  worker's credentials can launch, monitor, or read the logs of a build task — only
+  `aws_iam_role.builder_launcher` can, and only `application-service`'s build-launcher
+  process (`aws/platform_builder.py`) is trusted to assume into it
+  (`var.launcher_principal_arn`). This is the same reasoning `infra/platform-dns/README.md`
+  gives for keeping the DNS writer out of the provisioning worker's hands — and the same
+  "assume-only, no policy attached to the user itself" stance the platform IAM user
+  already keeps for `LaunchpadDeploymentRole` (see `aws/session.py`): that user is never
+  given `builder_launcher`'s permissions directly, only `sts:AssumeRole` onto this role.
 - **Network.** Private subnets with NAT, no inbound, and no route back into any other
   platform VPC. A hostile customer Dockerfile's `RUN` step has outbound reach (to pull
   images and push the result) and nowhere to pivot to.
@@ -48,16 +54,19 @@ tickets 3–6, in `deployment-services/application-service/aws/`.
 | `ecr.tf` | One ECR repo for the mirrored Kaniko image — immutable tags, scan on push. |
 | `logs.tf` | One CloudWatch log group for build output, short retention (`var.build_log_retention_days`, default 7). See "Log group vs. per-build log stream" below — this is a deliberate deviation from the design doc's literal wording. |
 | `s3.tf` | One S3 bucket for per-build source tarballs — private, SSE-S3 encrypted, all public access blocked, versioning off, 1-day lifecycle expiry under `var.source_prefix`, deny-insecure-transport bucket policy. |
-| `ecs.tf` | Fargate-only ECS cluster + the Kaniko executor task definition (cpu/memory from variables, x86_64, pinned by digest, awslogs). |
-| `iam.tf` | Task execution role, build task role, and the `builder_launcher_policy_json` output (not attached to anything here). |
-| `variables.tf` / `outputs.tf` | Documented inline; outputs are everything the build-launcher code (tickets 3–6) needs to actually drive this: cluster, task def, subnets, SG, bucket, log group, both role ARNs, the launcher policy document. |
+| `ecs.tf` | Fargate-only ECS cluster + the Kaniko task definition: a shared `docker-config` ephemeral volume, a non-essential `init` container (pinned by digest, copies `docker-config.json` from S3 into that volume) that `kaniko` (essential, `dependsOn` `init`'s `SUCCESS`) mounts read-only at `/kaniko/.docker`. |
+| `iam.tf` | Task execution role, build task role, the `builder_launcher` policy document, and `aws_iam_role.builder_launcher` (trusts `var.launcher_principal_arn`) that document is actually attached to. |
+| `variables.tf` / `outputs.tf` | Documented inline; outputs are everything `aws/platform_builder.py` needs to actually drive this: cluster, task def, subnets, SG, bucket, log group, both ECS role ARNs, the launcher role ARN, the launcher policy document (for audit). |
 
 ## Apply it in its own account
 
 ```bash
 cd infra/platform-builder
 terraform init
-terraform apply -var kaniko_image_digest=sha256:<digest from the mirror step below>
+terraform apply \
+  -var kaniko_image_digest=sha256:<digest from the mirror step below> \
+  -var aws_cli_image_digest=sha256:<digest of public.ecr.aws/aws-cli/aws-cli, see below> \
+  -var launcher_principal_arn=arn:aws:iam::<account>:user/<application-service's build-launcher user>
 ```
 
 No backend configuration is defined — add one (S3 + DynamoDB lock, or your platform's
@@ -84,22 +93,51 @@ crane digest <mirror-repo-url>:latest   # sha256:... — use this for kaniko_ima
 Re-apply with `-var kaniko_image_digest=<that digest>` once you have it. Re-mirror and
 re-apply whenever the upstream image is updated; nothing here does that automatically.
 
-### Wire the launcher policy to a real principal — out of band
+### Pin the init container's image digest
+
+`aws_cli_image_digest` has no default, same reasoning as `kaniko_image_digest`. Unlike
+Kaniko, this one is **not** mirrored into this account's ECR — it's pulled straight from
+the public ECR Gallery (`public.ecr.aws/aws-cli/aws-cli`), which needs no IAM grant to
+pull anonymously and isn't subject to Docker Hub's rate limits:
 
 ```bash
-terraform output -raw builder_launcher_policy_json
+crane digest public.ecr.aws/aws-cli/aws-cli:latest   # sha256:... — confirm the tag you want first
 ```
 
-Attach that document to whichever IAM principal `application-service`'s build-launcher
-process authenticates as (a dedicated IAM user with long-lived keys, or a role if the
-process already runs somewhere that can assume one). Creating and attaching that principal
-is deliberately not a resource here — the same reasoning `platform-dns` gives for creating
-its DNS-writer access key out of band: Terraform state is a file people copy, and a
-long-lived secret has no business sitting in it.
+### Creating the build-launcher principal — out of band
+
+`aws_iam_role.builder_launcher` trusts exactly one principal, named by
+`var.launcher_principal_arn` (no default — must be set on every apply). That principal
+itself — a dedicated IAM user for `application-service`'s build-launcher process, with
+long-lived keys — is created **out of band**, the same reasoning `platform-dns` gives for
+creating its DNS-writer access key outside Terraform: state is a file people copy, and a
+long-lived secret has no business sitting in it. Hand this tree only the ARN.
 
 That principal must **not** be the infrastructure-service provisioning worker's identity,
 and must not be given `sts:AssumeRole` onto `LaunchpadDeploymentRole` — see "Why this can't
-live in the customer tree" above.
+live in the customer tree" above. It needs exactly one permission of its own:
+`sts:AssumeRole` onto `aws_iam_role.builder_launcher.arn` (this tree's own output) —
+everything else it can do flows from that role's policy, not from anything attached to
+the user directly.
+
+## Credential delivery (ticket 5)
+
+The original skeleton (ticket 2) sketched a per-build Secrets Manager secret for the
+scoped ECR push credential. That's gone: ECS fixes a container's `secrets` block at
+task-definition *registration*, not per `RunTask`, so a per-build secret would need a
+task-definition revision per build — see `plan/F7-platform-builder.md`'s Decision section.
+Instead, the credential travels exactly like the source tarball does: `application-service`
+writes `sources/<build_id>/docker-config.json` beside `sources/<build_id>/source.tar.gz`
+in the sources bucket; the task definition's `init` container (non-essential, `aws-cli`
+pinned by digest) copies it into the shared `docker-config` volume, and `kaniko`
+(`dependsOn: [{init, SUCCESS}]`) mounts that volume read-only at `/kaniko/.docker`, where
+Kaniko reads registry auth from by default. Both S3 objects are deleted by the worker once
+the build task stops, success or failure.
+
+The build task role keeps only `s3:GetObject` on `var.source_prefix/*` — no
+`s3:ListBucket` anywhere. A hostile `RUN` step that reaches the task role's own
+credentials still can't enumerate another build's source or credential; it can only ever
+read the exact key it already knows, and that key is an unguessable `uuid4`.
 
 ## Log group vs. per-build log stream
 
@@ -121,19 +159,21 @@ redesign, not a skeleton change — flagged as an open question in the PR, not r
 
 ## What's intentionally not here
 
-- **Any application code.** Nothing in this tree launches a build, mints a scoped ECR
-  push credential, fetches source, or creates/deletes a per-build Secrets Manager secret.
-  That's F7 tickets 3–6, in `deployment-services/application-service/aws/`.
-- **A registered IAM principal for the launcher policy.** The document is an output; wiring
-  it to a real user/role is an out-of-band step (above), same pattern as `platform-dns`'s
-  access key.
-- **Per-build resources of any kind** (Secrets Manager secrets, S3 objects, task-definition
-  revisions). Everything per-build is created and torn down by the application code this
-  skeleton doesn't contain.
+- **Most application code.** This tree's roles and task definition are driven by
+  `deployment-services/application-service/aws/platform_builder.py` (ticket 5), but the
+  per-build values themselves — build id, S3 keys, `--destination` — are never baked into
+  Terraform; they arrive per `RunTask` as `containerOverrides`. Ticket 6 (wiring this into
+  `application_deployment_service.py`) is still unstarted.
+- **The build-launcher *user*.** `aws_iam_role.builder_launcher` is defined and attached
+  here; the IAM user that assumes into it is created out of band (above), same pattern as
+  `platform-dns`'s access key.
+- **Any Secrets Manager resource.** Dropped in ticket 5 — see "Credential delivery" above.
+- **Per-build resources of any kind** (S3 objects, task-definition revisions). Everything
+  per-build is created and torn down by `aws/platform_builder.py`, not this tree.
 - **A backend block.** Left to the operator, matching `platform-dns`.
-- **VPC endpoints for ECR/S3/Secrets Manager.** The NAT path works without them; adding
-  interface endpoints later is a cost/latency optimization, not a correctness requirement,
-  and is left for whoever operates this once real build volume exists.
+- **VPC endpoints for ECR/S3.** The NAT path works without them; adding interface
+  endpoints later is a cost/latency optimization, not a correctness requirement, and is
+  left for whoever operates this once real build volume exists.
 - **Dropping the per-infra CodeBuild path** in the customer account, or narrowing
   `LaunchpadDeploymentPolicy`'s `codebuild:*` grant. F7's Non-goals are explicit that this
   ships behind a feature flag with the old path kept as fallback — unrelated to this tree

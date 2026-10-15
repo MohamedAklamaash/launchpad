@@ -30,11 +30,16 @@ data "aws_iam_policy_document" "ecs_tasks_trust" {
   }
 }
 
-# --- Task execution role: pull the mirrored image, write the task's own log stream, read
-# --- secrets under launchpad-builds/ (scoped by ARN prefix, per F7's per-build Secrets
-# --- Manager credential delivery). Deliberately does NOT attach the AWS-managed
-# --- AmazonECSTaskExecutionRolePolicy — that policy's ECR pull permissions are
-# --- Resource: "*", wider than the one mirror repo this builder ever needs.
+# --- Task execution role: pull the mirrored image (and the public aws-cli image the init
+# --- container uses — anonymous pull, no IAM needed), write the task's own log stream.
+# --- Deliberately does NOT attach the AWS-managed AmazonECSTaskExecutionRolePolicy —
+# --- that policy's ECR pull permissions are Resource: "*", wider than the one mirror repo
+# --- this builder ever needs. No Secrets Manager grant: F7's Decision section drops the
+# --- per-build Secrets Manager secret entirely (ECS fixes a container's `secrets` at
+# --- task-definition registration, not per RunTask, so a per-build secret would need a
+# --- task-definition revision per build) — the credential now travels the same way the
+# --- source does, through the init container's S3 copy into the shared `docker-config`
+# --- volume, never through this role.
 resource "aws_iam_role" "execution" {
   name               = "launchpad-platform-builder-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
@@ -65,13 +70,6 @@ data "aws_iam_policy_document" "execution" {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["${aws_cloudwatch_log_group.builder.arn}:*"]
   }
-
-  statement {
-    sid       = "ReadBuildSecrets"
-    effect    = "Allow"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = ["arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:launchpad-builds/*"]
-  }
 }
 
 resource "aws_iam_role_policy" "execution" {
@@ -80,16 +78,20 @@ resource "aws_iam_role_policy" "execution" {
   policy = data.aws_iam_policy_document.execution.json
 }
 
-# --- Build task role: the identity the running Kaniko container has. No standing AWS
-# --- permission beyond reading its own build's source object. The push credential
-# --- (scoped ECR session, per F7's "Credential flow") is minted per build by the
-# --- application-service worker from the customer's own LaunchpadDeploymentRole session
-# --- and handed to the container as a SECRETS_MANAGER-sourced env var it never has
-# --- standing AWS permission to read on its own beyond what the execution role already
-# --- resolves at launch — the task role itself carries no ecr:*, no sts:AssumeRole, and no
-# --- access to anything outside this one build's inputs. Per-build narrowing (which exact
-# --- object this build may read) happens at runtime via the worker's own request, not via
-# --- a Terraform-managed policy here; this role only bounds the prefix.
+# --- Build task role: the identity the running Kaniko (and init) containers have. No
+# --- standing AWS permission beyond reading this one build's own source objects. The
+# --- push credential (scoped ECR session, per F7's "Credential flow") is minted per build
+# --- by the application-service worker from the customer's own LaunchpadDeploymentRole
+# --- session, written to `docker-config.json` beside the source tarball, and copied by
+# --- the init container into the `docker-config` volume Kaniko reads from — never a
+# --- Secrets Manager env var (see the execution role's comment above for why). The task
+# --- role itself carries no ecr:*, no sts:AssumeRole, no secretsmanager:*, and no access
+# --- to anything outside this one build's inputs. Per-build narrowing (which exact object
+# --- this build may read) happens at runtime via the worker's own request (an unguessable
+# --- build id, per F7's Decision section — this role has no s3:ListBucket, so a hostile
+# --- Dockerfile's RUN step that reaches this role's credentials still can't enumerate
+# --- another build's key), not via a Terraform-managed policy here; this role only
+# --- bounds the prefix.
 resource "aws_iam_role" "build_task" {
   name               = "launchpad-platform-builder-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
@@ -110,12 +112,13 @@ resource "aws_iam_role_policy" "build_task" {
   policy = data.aws_iam_policy_document.build_task.json
 }
 
-# --- Builder-launcher policy: output only, attached to no user or role here. This is
-# --- exactly what application-service's build-launcher process needs to launch and
-# --- monitor a build task — nothing more. Wiring a real principal to this document (an IAM
-# --- user/role in the application-service deployment environment) is out of band, the same
-# --- pattern as platform-dns's access key: this skeleton defines the grant shape, not the
-# --- principal that holds it.
+# --- Builder-launcher policy: exactly what application-service's build-launcher process
+# --- needs to launch and monitor a build task — nothing more. Attached, below, to
+# --- aws_iam_role.builder_launcher rather than to a user directly — the principal that
+# --- assumes into that role (application-service's own IAM user, named out of band by
+# --- var.launcher_principal_arn) is still created and wired out of band, the same pattern
+# --- as platform-dns's access key: this tree defines the grant shape and the role that
+# --- carries it, not the user that assumes into it.
 data "aws_iam_policy_document" "builder_launcher" {
   # RunTask takes a task-definition ARN. DescribeTasks/StopTask take a task ARN, not a
   # task-definition ARN — the two resource shapes are not interchangeable, so this is two
@@ -167,20 +170,37 @@ data "aws_iam_policy_document" "builder_launcher" {
   }
 
   statement {
-    sid    = "ManageBuildSecrets"
-    effect = "Allow"
-    actions = [
-      "secretsmanager:CreateSecret",
-      "secretsmanager:DeleteSecret",
-      "secretsmanager:TagResource",
-    ]
-    resources = ["arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:launchpad-builds/*"]
-  }
-
-  statement {
     sid       = "ReadBuildLogs"
     effect    = "Allow"
     actions   = ["logs:GetLogEvents"]
     resources = ["${aws_cloudwatch_log_group.builder.arn}:*"]
   }
+}
+
+# --- The real principal: a dedicated role in this account, trusted to exactly the
+# --- principal application-service's build-launcher process authenticates as (its own
+# --- IAM user, named by var.launcher_principal_arn — no default, must be set explicitly).
+# --- That user stays assume-only, the same "assume-only, no policy attached to the user
+# --- itself" stance LaunchpadDeploymentRole's own caller already keeps (see
+# --- plan/F7-platform-builder.md's Credential flow) — it is given sts:AssumeRole onto
+# --- this role, never the builder_launcher policy document directly.
+resource "aws_iam_role" "builder_launcher" {
+  name = "launchpad-platform-builder-launcher"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Action    = "sts:AssumeRole"
+        Principal = { AWS = var.launcher_principal_arn }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "builder_launcher" {
+  name   = "launchpad-platform-builder-launcher"
+  role   = aws_iam_role.builder_launcher.id
+  policy = data.aws_iam_policy_document.builder_launcher.json
 }
