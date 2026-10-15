@@ -51,6 +51,12 @@ EKS_REQUIRED_ENVIRONMENT_FIELDS = ('vpc_id', 'cluster_arn', 'ecr_repository_url'
 def _is_eks(application: Application) -> bool:
     return application.infrastructure.compute_type == ComputeType.EKS
 
+class BuildLimitExceeded(ValueError):
+    """A deploy refused by a build budget (F7 ticket 7). Deterministic for this attempt:
+    the worker must not retry it — each retry would charge the budget again and write
+    another FAILED deployment row."""
+
+
 class ApplicationDeploymentService:
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
@@ -515,7 +521,7 @@ class ApplicationDeploymentService:
         except HttpError as e:
             raise ValueError("Build rate limiter is unavailable — deploy not started") from e
         if retry_after is not None:
-            raise ValueError(
+            raise BuildLimitExceeded(
                 f"Build rate limit exceeded ({rate_limit} builds/hour for this user) — "
                 f"try again in {retry_after}s"
             )
@@ -531,7 +537,7 @@ class ApplicationDeploymentService:
         except HttpError as e:
             raise ValueError("Build concurrency limiter is unavailable — deploy not started") from e
         if not acquired:
-            raise ValueError(
+            raise BuildLimitExceeded(
                 f"Too many concurrent builds for this infrastructure (max {concurrency_limit}) "
                 "— try again shortly"
             )

@@ -16,7 +16,10 @@ from aws.platform_builder import BuildError, BuildHandle, BuildResult
 from shared.errors.exception import HttpError
 
 from api.mock.mock_session import MockSession
-from api.services.application_deployment_service import ApplicationDeploymentService
+from api.services.application_deployment_service import (
+    ApplicationDeploymentService,
+    BuildLimitExceeded,
+)
 
 ACCOUNT_ID = "123456789012"
 SHA = "e" * 40
@@ -129,7 +132,7 @@ def test_rate_cap_blocks_the_build_and_never_starts_it(new_app, mock_service, mo
         lambda user_id, bucket, limit, window: 42,  # already over budget
     )
 
-    with pytest.raises(ValueError, match="rate limit"):
+    with pytest.raises(BuildLimitExceeded, match="rate limit"):
         service.deploy_application(app)
 
     app.refresh_from_db()
@@ -152,7 +155,7 @@ def test_concurrency_cap_blocks_the_build_and_never_starts_it(new_app, mock_serv
     monkeypatch.setattr("shared.ratelimit.budget.customer_call_budget", lambda *a, **k: None)
     monkeypatch.setattr("shared.ratelimit.budget.acquire_concurrency_slot", lambda *a, **k: False)
 
-    with pytest.raises(ValueError, match="oncurrent build"):
+    with pytest.raises(BuildLimitExceeded, match="oncurrent build"):
         service.deploy_application(app)
 
     app.refresh_from_db()
@@ -257,8 +260,10 @@ def test_redis_down_on_rate_check_fails_closed(new_app, mock_service, monkeypatc
         lambda *a, **k: (_ for _ in ()).throw(HttpError(message="down", status_code=503)),
     )
 
-    with pytest.raises(ValueError, match="unavailable"):
+    with pytest.raises(ValueError, match="unavailable") as excinfo:
         service.deploy_application(app)
+    # A limiter outage may be transient, so it stays retryable (not BuildLimitExceeded).
+    assert not isinstance(excinfo.value, BuildLimitExceeded)
 
     app.refresh_from_db()
     assert app.status == "FAILED"
@@ -282,8 +287,25 @@ def test_redis_down_on_concurrency_check_fails_closed(new_app, mock_service, mon
         lambda *a, **k: (_ for _ in ()).throw(HttpError(message="down", status_code=503)),
     )
 
-    with pytest.raises(ValueError, match="unavailable"):
+    with pytest.raises(ValueError, match="unavailable") as excinfo:
         service.deploy_application(app)
+    # A limiter outage may be transient, so it stays retryable (not BuildLimitExceeded).
+    assert not isinstance(excinfo.value, BuildLimitExceeded)
 
     app.refresh_from_db()
     assert app.status == "FAILED"
+
+
+def test_worker_acks_a_build_limit_refusal_instead_of_retrying():
+    """A refusal is recorded once; retrying would charge the budget again and write
+    another FAILED row per attempt."""
+    import inspect
+
+    from api.management.commands import run_worker
+
+    source = inspect.getsource(run_worker)
+    limit_branch = source.index("except BuildLimitExceeded")
+    generic_branch = source.index("except Exception:", limit_branch - 400)
+    assert limit_branch < generic_branch
+    assert "DeploymentQueue.ack_job(job)" in source[limit_branch:generic_branch]
+

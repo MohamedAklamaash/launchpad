@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from django.core.management.base import BaseCommand
 from django.db import connections
 
+from api.services.application_deployment_service import BuildLimitExceeded
+
 os.environ['DB_CONN_MAX_AGE'] = '0'
 
 logger = logging.getLogger(__name__)
@@ -178,6 +180,11 @@ class Command(BaseCommand):
                 return
             try:
                 execute_deploy_job(app_id, job)
+            except BuildLimitExceeded as e:
+                # Not retried: the refusal is already recorded on the deployment, and a
+                # retry would charge the build budget again (F7 ticket 7).
+                logger.warning(f"Deploy for {app_id} refused by a build limit: {e}")
+                DeploymentQueue.ack_job(job)
             except Exception:
                 logger.exception(f"Deployment failed for {app_id}")
                 DeploymentQueue.nack_job(job)
