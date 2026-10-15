@@ -273,8 +273,8 @@ def test_worker_refuses_to_delete_rows_while_platform_dns_is_still_live(make_nuk
 
 
 def test_worker_resume_skips_only_the_resumable_steps(make_nuke_run, monkeypatch):
-    """apps/databases/terraform_teardown/leftovers are skipped once already "success".
-    state_backend/verify/deployment_role always re-run, even if a prior attempt already
+    """apps/databases/terraform_teardown are skipped once already "success".
+    leftovers/state_backend/verify/deployment_role always re-run, even if a prior attempt already
     marked them "success" — the last-infra decision and the leftover scan must reflect
     the account's current state on every attempt, not the first one."""
     from api.models.nuke_run import NukeRun
@@ -293,7 +293,9 @@ def test_worker_resume_skips_only_the_resumable_steps(make_nuke_run, monkeypatch
     with patch("api.services.nuke_worker.NotificationService"):
         NukeWorker.run(str(infra.id))
 
-    assert calls == ["state_backend", "verify", "deployment_role"]
+    # leftovers re-runs too (real AWS, e2e-ecs): it sweeps what terraform destroy itself
+    # leaves (a final snapshot), so a retry must not skip it.
+    assert calls == ["leftovers", "state_backend", "verify", "deployment_role"]
     assert NukeRun.objects.get(id=run.id).status == "COMPLETED"
 
 
@@ -886,4 +888,42 @@ def test_verify_flags_this_infras_state_if_still_present(make_nuke_run):
         leftovers = _own_state_leftovers(ctx)
 
     assert {item["type"] for item in leftovers} == {"terraform_state", "terraform_lock"}
+
+
+def test_leftovers_sweeps_every_tagged_task_definition_revision(make_nuke_run):
+    """Real AWS (e2e-ecs): revisions 1-12 were still ACTIVE after the nuke."""
+    from api.services.nuke_worker import _delete_tagged_task_definitions, _NukeContext
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+    arns = [f"arn:aws:ecs:us-east-1:123456789012:task-definition/web:{n}" for n in range(1, 13)]
+    tagging = MagicMock()
+    tagging.get_paginator.return_value.paginate.return_value = [
+        {"ResourceTagMappingList": [{"ResourceARN": a} for a in arns]}
+    ]
+    ecs = MagicMock()
+    clients = {"resourcegroupstaggingapi": tagging, "ecs": ecs}
+    with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
+        deleted = _delete_tagged_task_definitions(ctx)
+
+    assert deleted == arns
+    assert ecs.deregister_task_definition.call_count == 12
+    batches = [c.kwargs["taskDefinitions"] for c in ecs.delete_task_definitions.call_args_list]
+    assert [len(b) for b in batches] == [10, 2]
+
+
+def test_verify_ignores_inactive_ecs_cluster_and_deleting_task_definitions(make_nuke_run):
+    from api.services.nuke_worker import _is_deleted_tombstone, _NukeContext
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+    ecs = MagicMock()
+    ecs.describe_clusters.return_value = {"clusters": [{"status": "INACTIVE"}]}
+    ecs.describe_task_definition.side_effect = lambda taskDefinition: {
+        "taskDefinition": {"status": "DELETE_IN_PROGRESS" if taskDefinition.endswith(":1") else "ACTIVE"}
+    }
+    with patch.object(_NukeContext, "boto_client", lambda self, service: ecs):
+        assert _is_deleted_tombstone(ctx, "arn:aws:ecs:us-east-1:123456789012:cluster/c")
+        assert _is_deleted_tombstone(ctx, "arn:aws:ecs:us-east-1:123456789012:task-definition/web:1")
+        assert not _is_deleted_tombstone(ctx, "arn:aws:ecs:us-east-1:123456789012:task-definition/web:2")
 
