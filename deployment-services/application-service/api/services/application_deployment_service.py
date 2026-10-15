@@ -3,11 +3,13 @@ import logging
 import re
 import time
 
+from aws import platform_builder
 from aws.alb import ALBClient
 from aws.codebuild import CodeBuildClient
 from aws.container_config import HOST_MODE_HEALTH_CHECK_PATH
 from aws.ecr import ECRClient
 from aws.ecs import ECSClient
+from aws.github_source import resolve_commit_sha
 from aws.session import create_boto3_session
 from aws.tags import app_tags, as_key_value_tags, infra_tags
 from aws.tags import target_group_tags as _target_group_tags
@@ -61,6 +63,8 @@ class ApplicationDeploymentService:
         # Deployment history row.
         image_tag = None
         resolved_sha = None
+        build_id = None
+        image_digest = None
 
         try:
             # Step 1: Validate Infrastructure
@@ -79,28 +83,42 @@ class ApplicationDeploymentService:
                 if not _is_eks(application) else (False, None, "eks")
             )
 
-            # Step 3: Trigger Build
+            # Step 3-4: Build (and, behind settings.PLATFORM_BUILD_ENABLED, push) the
+            # image. `build_id`/`resolved_sha` are bound as soon as either builder hands
+            # them back — before the matching wait call, which can itself raise on a
+            # build failure — so the except block below always has this attempt's real
+            # values (or none, if the trigger step itself never got that far), never a
+            # stale value left over from a previous deploy of this same `application`
+            # object. The platform path already knows its sha before the build even
+            # starts (that's the point of resolving it up front), so a build that fails
+            # during the wait still records a FAILED row pinned to the real commit
+            # instead of `_image_tag`'s placeholder.
             image_tag = _image_tag(application)
-            build_id = self._trigger_build(session, application, environment, image_tag)
-            application.build_id = build_id
-            application.status = 'BUILDING'
-            application.save()
-
-            # Step 4: Wait for Build Completion
-            resolved_sha = self._wait_for_build(session, build_id)
+            if self._platform_build_enabled():
+                handle = self._start_platform_build(application)
+                build_id, resolved_sha = handle.build_id, handle.sha
+                result = self._wait_for_platform_build(application, handle)
+                resolved_sha, image_digest = result.resolved_sha, result.image_digest
+            else:
+                build_id = self._trigger_build(session, application, environment, image_tag)
+                application.build_id = build_id
+                application.status = 'BUILDING'
+                application.save()
+                resolved_sha = self._wait_for_build(session, build_id)
+                image_digest = None
 
             if _is_eks(application):
                 pinned_tag = self._pinned_image_tag(application, resolved_sha)
                 return self._deploy_to_eks(
                     session, application, environment, pinned_tag, created_resources,
-                    resolved_sha=resolved_sha,
+                    resolved_sha=resolved_sha, image_digest=image_digest, build_id=build_id,
                 )
 
 
             # Step 5: Create ECS Task Definition
             task_def_arn = self._create_task_definition(
                 session, application, environment, resolved_sha=resolved_sha,
-                host_mode=host_mode, app_hostname=app_hostname,
+                image_digest=image_digest, host_mode=host_mode, app_hostname=app_hostname,
             )
             application.task_definition_arn = task_def_arn
             application.status = 'DEPLOYING'
@@ -141,6 +159,7 @@ class ApplicationDeploymentService:
                 application, image_tag=self._pinned_image_tag(application, resolved_sha),
                 resolved_sha=resolved_sha, status='SUCCEEDED', triggered_by='DEPLOY',
                 session=session, environment=environment,
+                image_digest=image_digest, build_id=build_id,
             )
             logger.info(f"Application {application.name} deployed successfully at {deployment_url}")
             return deployment_url
@@ -172,6 +191,7 @@ class ApplicationDeploymentService:
                 self._record_deployment(
                     application, image_tag=failed_tag, resolved_sha=resolved_sha,
                     status='FAILED', triggered_by='DEPLOY',
+                    image_digest=image_digest, build_id=build_id,
                 )
             raise
     
@@ -217,9 +237,14 @@ class ApplicationDeploymentService:
                 raise
     
     def _deploy_to_eks(self, session, application: Application, environment: Environment,
-                       image_tag: str, created_resources: list, resolved_sha: str | None = None):
+                       image_tag: str, created_resources: list, resolved_sha: str | None = None,
+                       image_digest: str | None = None, build_id: str | None = None):
         ecr = ECRClient(session)
-        image_uri = ecr.get_image_uri(environment.ecr_repository_url, image_tag)
+        # Pin by digest when the build already reported one (platform builder path) —
+        # same tag-is-mutable reasoning as _create_task_definition's ECS pin, see
+        # ECRClient.get_image_ref. None here (CodeBuild path) keeps today's tag-only
+        # behavior exactly.
+        image_uri = ecr.get_image_ref(environment.ecr_repository_url, image_tag, image_digest)
 
         application.status = 'DEPLOYING'
         application.save()
@@ -237,6 +262,7 @@ class ApplicationDeploymentService:
             application, image_tag=image_tag, resolved_sha=resolved_sha,
             status='SUCCEEDED', triggered_by='DEPLOY',
             session=session, environment=environment,
+            image_digest=image_digest, build_id=build_id,
         )
         logger.info(f"Application {application.name} deployed to EKS at {deployment_url}")
         return deployment_url
@@ -254,15 +280,20 @@ class ApplicationDeploymentService:
     def _record_deployment(self, application: Application, image_tag: str, resolved_sha: str | None,
                            status: str, triggered_by: str, tag_source: str | None = None,
                            rolled_back_from=None, image_digest: str | None = None,
-                           session=None, environment: Environment | None = None):
+                           session=None, environment: Environment | None = None,
+                           build_id: str | None = None):
         """Append-only deploy history. Snapshot the env's shape, never its values.
         Best-effort — a history row must never be the reason a deploy or rollback that
         actually succeeded gets reported as failed.
 
         `image_digest`: pass it explicitly when it's already known (a rollback just copies
-        its target's digest). Otherwise, given `session`+`environment`, it is looked up —
-        the ECR repository is tag-MUTABLE, so a tag alone is not a stable pointer to what
-        was actually deployed."""
+        its target's digest, and the platform builder reports it from BuildResult).
+        Otherwise, given `session`+`environment`, it is looked up — the ECR repository is
+        tag-MUTABLE, so a tag alone is not a stable pointer to what was actually deployed.
+
+        `build_id`: the build this row's image came from (ticket 8's log-tail endpoint
+        reads it off this row rather than off `Application.build_id`, which the next
+        deploy overwrites). None for a rollback, which skips the build entirely."""
         from api.models.deployment import Deployment
         from api.services.deployment_snapshot import snapshot_env
 
@@ -289,6 +320,7 @@ class ApplicationDeploymentService:
                 status=status,
                 triggered_by=triggered_by,
                 rolled_back_from=rolled_back_from,
+                build_id=build_id,
             )
         except Exception:
             logger.exception(
@@ -441,7 +473,62 @@ class ApplicationDeploymentService:
         resolved_sha = codebuild.wait_for_build(build_id)
         logger.info(f"Build {build_id} completed successfully (commit {resolved_sha or 'unknown'})")
         return resolved_sha
-    
+
+    def _platform_build_enabled(self) -> bool:
+        from django.conf import settings
+        return bool(getattr(settings, 'PLATFORM_BUILD_ENABLED', False))
+
+    def _resolve_sha_for_build(self, application: Application) -> str:
+        """A webhook deploy already carries a resolved commit sha in
+        project_commit_hash; a manual deploy without one resolves the branch HEAD.
+        Mirrors the "None"/"null" string guard api/common/naming.py:image_tag already
+        applies to the same field — legacy rows can hold those literal strings."""
+        commit_hash = (application.project_commit_hash or "").strip()
+        ref = commit_hash if commit_hash.lower() not in ("", "none", "null") else None
+        return resolve_commit_sha(application, ref)
+
+    def _start_platform_build(self, application: Application):
+        """F7 ticket 6, first half. Resolves the commit sha up front (closing the old
+        requested-vs-resolved-sha divergence _pinned_image_tag's docstring describes),
+        then launches the build on platform Fargate capacity. Image_tag is computed by
+        `aws.platform_builder.start_build` itself from the resolved sha — this never
+        uses `_image_tag(application)`'s random-suffix fallback, so the pushed tag is
+        always `{slug}-{sha}`, matching `_pinned_image_tag`.
+
+        Split from `_wait_for_platform_build` so the caller can bind `build_id` right
+        after this returns — before the wait call that can itself raise on a build
+        failure — the same way the pre-existing CodeBuild path already binds its
+        build_id before calling `_wait_for_build`."""
+        sha = self._resolve_sha_for_build(application)
+        if application.project_commit_hash != sha:
+            application.project_commit_hash = sha
+            application.save(update_fields=["project_commit_hash"])
+
+        # H2: re-check for exit immediately before the first mutation this path
+        # performs — minting a push credential and starting a build that pushes into
+        # the customer's ECR.
+        self._abort_if_exited(application)
+
+        handle = platform_builder.start_build(application, application.infrastructure, sha)
+        application.build_id = handle.build_id
+        application.status = 'BUILDING'
+        application.save()
+        return handle
+
+    def _wait_for_platform_build(self, application: Application, handle):
+        """F7 ticket 6, second half. The build task builds AND pushes in one Fargate
+        task (aws/platform_builder.py) — there is no separate, worker-observable "push"
+        phase the way CodeBuild's post_build step was. The push is already done by the
+        time this returns; PUSHING_IMAGE is set here anyway, right before the
+        digest-pinning/task-definition work the caller does next, so the dashboard shows
+        something other than BUILDING while that bookkeeping runs — the closest honest
+        mapping onto an already-collapsed build+push step, not a literal mid-push
+        signal."""
+        result = platform_builder.wait_for_build(handle)
+        application.status = 'PUSHING_IMAGE'
+        application.save()
+        return result
+
     def _database_env_prefix(self, db_name: str) -> str:
         return re.sub(r'[^A-Z0-9]', '_', db_name.upper())
 

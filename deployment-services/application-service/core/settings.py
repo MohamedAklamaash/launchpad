@@ -352,8 +352,8 @@ APP_ENVS_ENCRYPTION_KEYS = _load_envs_encryption_keys(
 # PLATFORM_BUILDER_LOG_GROUP); `aws/platform_builder.py` itself reads these directly from
 # os.environ, matching how `aws/github_source.py`'s PLATFORM_BUILDER_SOURCE_BUCKET/
 # PLATFORM_BUILDER_AWS_REGION already do, rather than importing this settings module —
-# intentional: the aws/ package stays usable without a Django settings context. Not yet
-# wired into deploys (ticket 6).
+# intentional: the aws/ package stays usable without a Django settings context. Wired
+# into deploys behind PLATFORM_BUILD_ENABLED below (ticket 6).
 PLATFORM_BUILDER_LAUNCHER_ROLE_ARN = os.environ.get('PLATFORM_BUILDER_LAUNCHER_ROLE_ARN', '')
 PLATFORM_BUILDER_CLUSTER = os.environ.get('PLATFORM_BUILDER_CLUSTER', '')
 PLATFORM_BUILDER_TASK_DEFINITION = os.environ.get('PLATFORM_BUILDER_TASK_DEFINITION', '')
@@ -361,3 +361,10 @@ PLATFORM_BUILDER_SUBNET_IDS = os.environ.get('PLATFORM_BUILDER_SUBNET_IDS', '')
 PLATFORM_BUILDER_SECURITY_GROUP_ID = os.environ.get('PLATFORM_BUILDER_SECURITY_GROUP_ID', '')
 PLATFORM_BUILDER_LOG_GROUP = os.environ.get('PLATFORM_BUILDER_LOG_GROUP', '')
 PLATFORM_BUILDER_BUILD_TIMEOUT_SECONDS = int(os.environ.get('PLATFORM_BUILDER_BUILD_TIMEOUT_SECONDS', '1800'))
+
+# F7 ticket 6: behind this flag, ApplicationDeploymentService builds every app on
+# platform Fargate capacity (aws/platform_builder.py) instead of customer-account
+# CodeBuild. Default off — an instant revert switch back to the CodeBuild path during
+# rollout (plan/F7-platform-builder.md, "Retiring the old path"). Not a per-infra
+# setting, matching that doc's note: an infra doesn't choose where its images get built.
+PLATFORM_BUILD_ENABLED = os.environ.get('PLATFORM_BUILD_ENABLED', 'False').lower() == 'true'

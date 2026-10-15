@@ -62,6 +62,16 @@ class Deployment(models.Model):
         "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="rollbacks",
     )
 
+    # F7 ticket 6: the build id this row's image was built under — CodeBuild's build id
+    # string on the legacy path, or the platform builder's uuid4 build id
+    # (aws/platform_builder.py) on the new one. Null for a rollback (skips the build
+    # entirely) or a row written before this field existed. Ticket 8's log-tail endpoint
+    # needs this per Deployment row rather than off `Application.build_id`, which the next
+    # deploy overwrites — history here is append-only and must keep pointing at its own
+    # build. Never a UUIDv7 prefix (CLAUDE.md): both id shapes above are either a CodeBuild
+    # id or a full uuid4 hex, neither of which carries a timestamp to truncate.
+    build_id = models.CharField(max_length=255, null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
