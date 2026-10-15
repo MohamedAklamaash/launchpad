@@ -147,12 +147,14 @@ def test_platform_build_happy_path_pins_digest_and_sets_pushing_image(
 
 
 @pytest.mark.django_db
-def test_platform_build_skips_sha_resolution_when_webhook_already_supplied_one(
+def test_platform_build_uses_the_webhook_sha_as_the_resolve_ref(
     new_app, mock_service, monkeypatch, settings,
 ):
     """A webhook deploy already set project_commit_hash to a full sha — the platform
-    path must use it as the resolve ref (which, for an already-resolved sha, GitHub
-    just confirms) rather than falling back to the branch HEAD."""
+    path must pass it as the resolve ref (which, for an already-resolved sha, GitHub
+    just confirms) rather than falling back to the branch HEAD. resolve_commit_sha is
+    still called in both cases (there's no "skip" branch) — this only exercises which
+    ref it's called with."""
     settings.PLATFORM_BUILD_ENABLED = True
     settings.PLATFORM_BASE_DOMAIN = None
     app, _env = new_app
@@ -222,6 +224,13 @@ def test_platform_build_failure_is_sanitized_and_recorded(new_app, mock_service,
     deployment = Deployment.objects.get(application=app)
     assert deployment.status == Deployment.STATUS_FAILED
     assert deployment.build_id == app.build_id
+    # The platform path resolves the sha before the build even starts — a build that
+    # fails during the wait must still record the real commit, not _image_tag's
+    # random-suffix placeholder (image_tag is only computed as a pre-build bound for
+    # the except block's "was a build attempted" check, never actually built against).
+    assert deployment.commit_sha == SHA
+    assert deployment.image_tag == f"my-app-{SHA}"
+    assert deployment.tag_source == Deployment.TAG_SOURCE_RESOLVED_SHA
 
 
 # ── flag off: byte-for-byte the old path ──────────────────────────────────────────────

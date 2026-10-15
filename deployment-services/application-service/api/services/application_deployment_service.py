@@ -84,15 +84,19 @@ class ApplicationDeploymentService:
             )
 
             # Step 3-4: Build (and, behind settings.PLATFORM_BUILD_ENABLED, push) the
-            # image. `build_id` is bound as soon as either builder hands one back —
-            # before the matching wait call, which can itself raise on a build failure
-            # — so the except block below always has this attempt's real build_id (or
-            # none, if the trigger step itself never got that far), never a stale value
-            # left over from a previous deploy of this same `application` object.
+            # image. `build_id`/`resolved_sha` are bound as soon as either builder hands
+            # them back — before the matching wait call, which can itself raise on a
+            # build failure — so the except block below always has this attempt's real
+            # values (or none, if the trigger step itself never got that far), never a
+            # stale value left over from a previous deploy of this same `application`
+            # object. The platform path already knows its sha before the build even
+            # starts (that's the point of resolving it up front), so a build that fails
+            # during the wait still records a FAILED row pinned to the real commit
+            # instead of `_image_tag`'s placeholder.
             image_tag = _image_tag(application)
             if self._platform_build_enabled():
                 handle = self._start_platform_build(application)
-                build_id = handle.build_id
+                build_id, resolved_sha = handle.build_id, handle.sha
                 result = self._wait_for_platform_build(application, handle)
                 resolved_sha, image_digest = result.resolved_sha, result.image_digest
             else:
