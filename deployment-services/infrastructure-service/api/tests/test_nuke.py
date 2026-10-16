@@ -806,6 +806,17 @@ def test_deployment_role_cfn_last_infra_returns_customer_delete_required(make_nu
     fake_boto_client.assert_not_called()
 
 
+def test_cfn_console_url_encodes_a_tag_supplied_stack_name(make_nuke_run):
+    """cfn_stack_name comes from a role tag the customer controls; it must not be able to
+    break out of the stackId query value."""
+    from api.services.nuke_worker import _cfn_console_url
+
+    _owner, infra, _env, _run = make_nuke_run(name="prod-infra")
+    infra.cfn_stack_name = 'x"&region=evil#<script>'
+    url = _cfn_console_url(infra)
+    assert url.endswith("stackId=x%22%26region%3Devil%23%3Cscript%3E")
+
+
 def test_deployment_role_cfn_last_infra_falls_back_to_iam_console_without_stack_name(make_nuke_run):
     from api.services.nuke_worker import _manage_deployment_role, _NukeContext
 

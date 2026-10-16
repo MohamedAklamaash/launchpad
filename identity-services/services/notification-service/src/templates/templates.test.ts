@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     getInfraEmailTemplate,
+    safeConsoleUrl,
     getInfraEmailSubject,
     summarizeInfraError,
     ALL_INFRA_EVENTS,
@@ -266,4 +267,62 @@ test('forgot-password email shows the reset code', () => {
     const html = getForgotPasswordTemplate('482915', 'Mohamed');
     assert.match(html, /482915/);
     assert.match(html, /Reset your password/);
+});
+
+test('last-infra CloudFormation nuke: destroy email links the stack and drops the "all removed" claim', () => {
+    const url =
+        'https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks?filteringText=LaunchpadDeploymentRole';
+    const html = getInfraEmailTemplate(
+        'destroy_success',
+        'prod',
+        'Sam',
+        undefined,
+        'https://app.example.com',
+        undefined,
+        url,
+    );
+    assert.ok(html.includes('One step left'));
+    assert.ok(html.includes('Open CloudFormation stack'));
+    assert.ok(html.includes(url.replace(/&/g, '&amp;')));
+    assert.ok(!html.includes('All associated AWS resources were removed'));
+});
+
+test('destroy email without a manual step keeps the original copy and dashboard CTA', () => {
+    const html = getInfraEmailTemplate(
+        'destroy_success',
+        'prod',
+        'Sam',
+        undefined,
+        'https://app.example.com',
+    );
+    assert.ok(html.includes('All associated AWS resources were removed'));
+    assert.ok(!html.includes('One step left'));
+    assert.ok(html.includes('https://app.example.com'));
+});
+
+test('only an https AWS console URL is ever rendered as the manual-step link', () => {
+    for (const bad of [
+        'javascript:alert(1)',
+        'https://evil.example.com/cloudformation',
+        'https://console.aws.amazon.com.evil.example/x',
+        'http://console.aws.amazon.com/cloudformation',
+        'https://console.aws.amazon.com/x" onclick="y',
+    ]) {
+        assert.equal(safeConsoleUrl(bad), undefined, bad);
+        const html = getInfraEmailTemplate(
+            'destroy_success',
+            'prod',
+            'Sam',
+            undefined,
+            undefined,
+            undefined,
+            bad,
+        );
+        assert.ok(!html.includes('One step left'), bad);
+    }
+    assert.ok(
+        safeConsoleUrl(
+            'https://console.aws.amazon.com/iamv2/home#/roles/details/LaunchpadDeploymentRole',
+        ),
+    );
 });
