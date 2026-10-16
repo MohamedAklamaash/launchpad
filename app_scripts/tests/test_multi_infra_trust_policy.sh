@@ -7,6 +7,8 @@
 #   2. dedupe: re-running for the same infra never duplicates its own id
 #   3. compute-type union: an eks run after an ecs_fargate run installs the eks policy
 #      document and never downgrades a later ecs_fargate-only run back off it
+#   4. cross-path exclusivity (F8): the script refuses outright against a role tagged
+#      launchpad:managed-by=cloudformation, without touching the trust policy
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -288,6 +290,52 @@ test_missing_platform_user_fails_outside_mock() {
   teardown
 }
 
+# ── Test 6: cross-path exclusivity — refuse a CloudFormation-managed role ──────────
+# (F8 ticket 2) create_aws_role.sh must never write to a role a CFN stack owns.
+
+_seed_cfn_managed_role() {
+  cat > "$STATE_DIR/role.json" <<JSON
+{
+  "Role": {
+    "AssumeRolePolicyDocument": {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": {"AWS": "arn:aws:iam::${PLATFORM_ACCOUNT_ID}:user/${PLATFORM_USER}"},
+          "Action": "sts:AssumeRole",
+          "Condition": {"StringEquals": {"sts:ExternalId": ["infra-cfn"]}}
+        }
+      ]
+    },
+    "MaxSessionDuration": 3600,
+    "Tags": [{"Key": "launchpad:managed-by", "Value": "cloudformation"}]
+  }
+}
+JSON
+}
+
+test_refuses_cloudformation_managed_role() {
+  setup
+  _seed_cfn_managed_role
+
+  set +e
+  run_create_role "infra-new" "ecs_fargate"
+  local exit_code=$?
+  set -e
+  local log
+  log=$(cat "$STATE_DIR/last-run.log")
+
+  [ "$exit_code" -ne 0 ] && pass "refuses to run against a launchpad:managed-by=cloudformation role" \
+    || { fail "should have refused against a CloudFormation-managed role"; echo "$log"; }
+  assert_contains "$log" "managed by a CloudFormation stack" "error message explains why it refused"
+  [ ! -f "$STATE_DIR/last-applied-trust-policy.json" ] && \
+    pass "never wrote a trust policy against the CloudFormation-managed role" \
+    || fail "should not have written a trust policy against the CloudFormation-managed role"
+
+  teardown
+}
+
 test_mock_mode_falls_back_to_dev_placeholder_principal() {
   # Mirrors core/settings.py's own MODE=dev placeholder
   # (arn:aws:iam::000000000000:user/dev-placeholder) so mock mode stays self-consistent
@@ -320,6 +368,7 @@ test_dedupe_same_infra
 test_compute_type_union_never_downgrades
 test_legacy_role_detected_via_policy_document_alone
 test_legacy_role_detected_via_max_session_alone
+test_refuses_cloudformation_managed_role
 test_missing_platform_account_id_fails_outside_mock
 test_missing_platform_user_fails_outside_mock
 test_mock_mode_falls_back_to_dev_placeholder_principal

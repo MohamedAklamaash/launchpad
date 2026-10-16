@@ -99,6 +99,20 @@ for tag in role["Role"].get("Tags", []):
 print("None")
 PYEOF
         ;;
+      *managed-by*)
+        python3 - "$ROLE_FILE" <<'PYEOF'
+import json, sys
+
+with open(sys.argv[1]) as f:
+    role = json.load(f)
+
+for tag in role["Role"].get("Tags", []):
+    if tag.get("Key") == "launchpad:managed-by":
+        print(tag["Value"])
+        sys.exit(0)
+print("None")
+PYEOF
+        ;;
       *MaxSessionDuration*)
         python3 -c "import json;print(json.load(open('$ROLE_FILE'))['Role'].get('MaxSessionDuration', 3600))"
         ;;

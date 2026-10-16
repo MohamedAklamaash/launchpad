@@ -6,7 +6,7 @@ from django.conf import settings
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 from shared.enums.cloud_provider import CloudProvider
-from shared.enums.orchestrator import ComputeType
+from shared.enums.orchestrator import ComputeType, OnboardingMethod
 from shared.utils.uuid import uuid7_pk
 
 from .reserved_dns_label import ReservedDnsLabel
@@ -74,6 +74,22 @@ class Infrastructure(models.Model):
     # stale. Source of truth for the version itself is
     # api/cloud_providers/aws/iam_policy/policy.json.
     policy_version = models.IntegerField(null=True, blank=True)
+    # How this account's LaunchpadDeploymentRole was onboarded: the shell script
+    # (default, and the only method that existed before F8) or a CloudFormation quick-
+    # create stack. An account picks one method at its first successful onboarding and
+    # keeps it for life — see create_aws_role.sh's launchpad:managed-by tag check, which
+    # enforces the same exclusivity from the other side.
+    onboarding_method = models.CharField(
+        max_length=20,
+        choices=OnboardingMethod.choices,
+        default=OnboardingMethod.SCRIPT,
+    )
+    # The CFN stack's name, discovered from the role's launchpad:cfn-stack-name tag at
+    # verify time — never assumed to be the literal "LaunchpadDeploymentRole", since a
+    # quick-create link's suggested name is editable by the customer before they click
+    # Create. Null for every script-onboarded row and for a CFN-chosen infra that hasn't
+    # completed verify yet.
+    cfn_stack_name = models.CharField(max_length=128, null=True, blank=True)
     # Monotonic — set once by the destroy path, never cleared, deliberately independent of
     # Environment.status (which the reaper can rewrite, e.g. DESTROYING -> ERROR after
     # MAX_REAP_ATTEMPTS). The platform DNS writer treats a set value as "desired state is
