@@ -25,7 +25,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download, Terminal, Flame } from 'lucide-react';
+import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download, Terminal, Flame, CloudCog } from 'lucide-react';
 import { Infrastructure, InvitedUserSummary } from '@/types/infrastructure';
 import { ApplicationSummary, ApplicationStatus } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
@@ -37,8 +37,10 @@ import { DatabasesSection } from '@/components/databases-section';
 import { ProvisioningLogsPanel } from '@/components/provisioning-logs-panel';
 import { CostsPanel } from '@/components/costs-panel';
 import { PolicyRefreshDialog } from '@/components/policy-refresh-dialog';
+import { CfnRefreshDialog } from '@/components/cfn-refresh-dialog';
 import { NukeInfrastructureDialog } from '@/components/nuke-infrastructure-dialog';
 import { buildBootstrapEnvExports, getOnboardingMisconfiguration, resolveOnboardingScript } from '@/lib/onboarding-scripts';
+import { isCfnOnboardingEnabled } from '@/lib/onboarding-cloudformation';
 
 const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
 
@@ -103,6 +105,8 @@ export default function InfrastructureDetailPage() {
   const [nukeOpen, setNukeOpen] = useState(false);
   const [reprovisioning, setReprovisioning] = useState(false);
   const [refreshPolicyOpen, setRefreshPolicyOpen] = useState(false);
+  const [cfnRefreshOpen, setCfnRefreshOpen] = useState(false);
+  const [verifyingCfn, setVerifyingCfn] = useState(false);
   const [provisioningError, setProvisioningError] = useState<string | null>(null);
   const [downloadingEvidence, setDownloadingEvidence] = useState(false);
   const [reissuingToken, setReissuingToken] = useState(false);
@@ -377,6 +381,38 @@ export default function InfrastructureDetailPage() {
     }
   };
 
+  // GUI-path equivalent of the script callback: claims the onboarding token, AssumeRoles
+  // into the customer's account, and confirms the CFN quick-create stack actually ran.
+  // Nothing persists "this infra chose CFN" before this succeeds, so the script's
+  // "Show setup command" button stays visible alongside this one — see
+  // plan/F8-cloudformation-onboarding.md §4.
+  const handleCfnVerify = async () => {
+    setVerifyingCfn(true);
+    try {
+      await infrastructureApi.cfnVerify(id);
+      toast.success('Connection verified — provisioning queued');
+      await loadData();
+    } catch (error: unknown) {
+      const err = error as { response?: { status?: number; data?: { error?: string; retry_after_seconds?: number } } };
+      const status = err.response?.status;
+      const message = err.response?.data?.error;
+      if (status === 400) {
+        toast.error(message || 'LaunchpadDeploymentRole is not tagged as CloudFormation-managed yet. Launch the stack first.');
+      } else if (status === 403) {
+        const retrySeconds = err.response?.data?.retry_after_seconds;
+        toast.error(message || (retrySeconds ? `AssumeRole failed — try again in ${retrySeconds}s.` : 'AssumeRole failed.'));
+      } else if (status === 404) {
+        toast.error(message || 'CloudFormation onboarding is not available on this deployment.');
+      } else if (status === 429) {
+        toast.error(message || 'Too many requests for this operation, try again later.');
+      } else {
+        toast.error(message || 'Failed to verify the connection');
+      }
+    } finally {
+      setVerifyingCfn(false);
+    }
+  };
+
   const handleReprovision = async () => {
     setReprovisioning(true);
     try {
@@ -478,9 +514,16 @@ export default function InfrastructureDetailPage() {
             </p>
           </div>
           {isOwner && (
-            <Button variant="outline" size="sm" onClick={handleShowSetupCommand} disabled={reissuingToken} className="ml-[18px] h-7 gap-1.5">
-              <Terminal className="w-3.5 h-3.5" /> {reissuingToken ? 'Preparing…' : 'Show setup command'}
-            </Button>
+            <div className="ml-[18px] flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={handleShowSetupCommand} disabled={reissuingToken} className="h-7 gap-1.5">
+                <Terminal className="w-3.5 h-3.5" /> {reissuingToken ? 'Preparing…' : 'Show setup command'}
+              </Button>
+              {isCfnOnboardingEnabled() && !infra.is_mock && (
+                <Button variant="outline" size="sm" onClick={handleCfnVerify} disabled={verifyingCfn} className="h-7 gap-1.5">
+                  <CloudCog className="w-3.5 h-3.5" /> {verifyingCfn ? 'Verifying…' : 'Verify connection'}
+                </Button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -649,20 +692,32 @@ export default function InfrastructureDetailPage() {
               </div>
             </div>
 
-            {isOwner && infra.is_cloud_authenticated && (
-              <div className="space-y-2">
-                <p className="eyebrow px-1">AWS Permissions</p>
-                <div className={`rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3 ${policyState.kind === 'stale' ? 'ring-1 ring-warning/40' : ''}`}>
-                  <div>
-                    <p className="text-xs font-medium text-foreground">{policyState.title}</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">{policyState.detail}</p>
+            {isOwner && infra.is_cloud_authenticated && (() => {
+              // Branch between the script and CFN refresh flows by how this account was
+              // onboarded. `onboarding_method` is undefined until the backend serializer
+              // exposes it (see Infrastructure['onboarding_method']'s doc comment) — treat
+              // that the same as the model's own 'script' default.
+              const isCfnManaged = isCfnOnboardingEnabled() && infra.onboarding_method === 'cloudformation';
+              return (
+                <div className="space-y-2">
+                  <p className="eyebrow px-1">AWS Permissions</p>
+                  <div className={`rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3 ${policyState.kind === 'stale' ? 'ring-1 ring-warning/40' : ''}`}>
+                    <div>
+                      <p className="text-xs font-medium text-foreground">{policyState.title}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{policyState.detail}</p>
+                    </div>
+                    <Button
+                      variant={policyState.kind === 'stale' ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => (isCfnManaged ? setCfnRefreshOpen(true) : setRefreshPolicyOpen(true))}
+                      className="gap-1.5 shrink-0"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" /> Refresh
+                    </Button>
                   </div>
-                  <Button variant={policyState.kind === 'stale' ? 'default' : 'outline'} size="sm" onClick={() => setRefreshPolicyOpen(true)} className="gap-1.5 shrink-0">
-                    <ShieldCheck className="w-3.5 h-3.5" /> Refresh
-                  </Button>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {isOwner && (
               <div className="space-y-2">
@@ -960,6 +1015,7 @@ export default function InfrastructureDetailPage() {
       </Dialog>
 
       <PolicyRefreshDialog open={refreshPolicyOpen} onOpenChange={setRefreshPolicyOpen} infraId={id} />
+      <CfnRefreshDialog open={cfnRefreshOpen} onOpenChange={setCfnRefreshOpen} infraId={id} />
     </motion.div>
   );
 }
