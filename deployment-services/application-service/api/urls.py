@@ -16,7 +16,12 @@ from api.views.application import (
     application_github_webhook,
     application_rotate_webhook_secret,
 )
-from api.views.build_logs import build_logs, current_build_logs
+from api.views.build_logs import (
+    build_logs,
+    build_logs_stream,
+    current_build_logs,
+    current_build_logs_stream,
+)
 from api.views.custom_domains_internal import (
     application_summary_for_custom_domains,
     custom_domain_attach,
@@ -27,7 +32,7 @@ from api.views.health import health_check, liveness_check, readiness_check
 from api.views.infrastructure_validation import infrastructure_validation
 from api.views.metrics import metrics_view
 from api.views.nuke_internal import nuke_applications
-from api.views.runtime_logs import runtime_logs
+from api.views.runtime_logs import runtime_logs, runtime_logs_stream
 
 urlpatterns = [
     path('applications/', ApplicationListCreateView.as_view(), name='application-list-create'),
@@ -72,4 +77,16 @@ urlpatterns = [
     # F7 ticket 8: platform build log tailing.
     path('applications/<uuid:app_id>/deployments/<uuid:deployment_id>/build-logs/', build_logs, name='application-build-logs'),
     path('applications/<uuid:app_id>/build-logs/current/', current_build_logs, name='application-build-logs-current'),
+    # SSE log streaming: replaces the above two endpoints' polling with a long-lived
+    # text/event-stream connection each. The JSON endpoints above stay as-is for
+    # compatibility.
+    path('applications/<uuid:app_id>/logs/stream/', runtime_logs_stream, name='application-runtime-logs-stream'),
+    path(
+        'applications/<uuid:app_id>/deployments/<uuid:deployment_id>/build-logs/stream/',
+        build_logs_stream, name='application-build-logs-stream',
+    ),
+    path(
+        'applications/<uuid:app_id>/build-logs/current/stream/',
+        current_build_logs_stream, name='application-build-logs-current-stream',
+    ),
 ]

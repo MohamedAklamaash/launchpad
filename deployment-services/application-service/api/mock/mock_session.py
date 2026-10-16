@@ -420,7 +420,15 @@ class MockClient:
                 # the boundary.
                 ts = min(end_time, base_ts + offset)
                 if start_time <= ts <= end_time:
-                    events.append({"logStreamName": stream, "timestamp": ts, "message": message, "ingestionTime": ts})
+                    # eventId: CloudWatch always assigns one; the SSE tail loop's
+                    # watermark dedupe (runtime_logs_service._apply_watermark) keys off
+                    # it to avoid re-emitting a same-millisecond event on the next tick,
+                    # so the mock must carry one too.
+                    event_id = hashlib.md5(f"{stream}:{ts}:{offset}".encode()).hexdigest()
+                    events.append({
+                        "logStreamName": stream, "timestamp": ts, "message": message,
+                        "ingestionTime": ts, "eventId": event_id,
+                    })
         return {"events": events[:limit]}
 
     def describe_subnets(self, **kwargs):

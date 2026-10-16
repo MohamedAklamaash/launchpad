@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
-from app.services.proxy import proxy_request
+from app.services.proxy import proxy_request, proxy_stream_request
 
 router = APIRouter(prefix="/applications", tags=["Applications"])
 
@@ -290,6 +290,38 @@ async def application_build_logs_current(app_id: uuid.UUID, request: Request):
     deploy's row appears."""
     return await proxy_request(
         f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/build-logs/current/", request,
+    )
+
+
+@router.get("/{app_id}/logs/stream", summary="Stream an application's runtime logs over SSE")
+async def application_logs_stream(app_id: uuid.UUID, request: Request):
+    """Owner only. Query params: `container` (app|proxy), passed through untouched.
+    A long-lived `text/event-stream` response proxied with no buffering; see
+    `proxy_stream_request` for how the upstream connection is kept open for exactly as
+    long as the browser connection it serves."""
+    return await proxy_stream_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/logs/stream/", request,
+    )
+
+
+@router.get(
+    "/{app_id}/deployments/{deployment_id}/build-logs/stream",
+    summary="Stream a completed deployment's build logs over SSE",
+)
+async def application_build_logs_stream(app_id: uuid.UUID, deployment_id: uuid.UUID, request: Request):
+    """Owner only. Same semantics as GET .../build-logs, streamed instead of polled."""
+    return await proxy_stream_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/{deployment_id}/build-logs/stream/",
+        request,
+    )
+
+
+@router.get("/{app_id}/build-logs/current/stream", summary="Stream the in-progress build's logs over SSE")
+async def application_build_logs_current_stream(app_id: uuid.UUID, request: Request):
+    """Owner only. Same semantics as GET .../build-logs/current, streamed instead of
+    polled. Ends once the application leaves BUILDING/PUSHING_IMAGE."""
+    return await proxy_stream_request(
+        f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/build-logs/current/stream/", request,
     )
 
 

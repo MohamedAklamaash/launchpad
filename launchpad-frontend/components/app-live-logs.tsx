@@ -8,6 +8,7 @@ import {
   ArrowDownToLine, ChevronDown, Copy, Download, Lock, RefreshCw, ScrollText, Search,
 } from 'lucide-react';
 import { applicationApi } from '@/lib/api/applications';
+import { connectSSE, SSEConnection } from '@/lib/sse';
 import { RuntimeLogContainer, RuntimeLogEvent } from '@/types/application';
 import { ComputeType } from '@/types/infrastructure';
 import { toast } from 'sonner';
@@ -140,6 +141,12 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
   const [atBottom, setAtBottom] = useState(true);
   const [newSinceScroll, setNewSinceScroll] = useState(0);
   const [refreshDialog, setRefreshDialog] = useState<{ open: boolean }>({ open: false });
+  // SSE is tried first for live tailing; a stream that keeps failing to open or drops
+  // repeatedly (lib/sse.ts's own backoff gives up after a few attempts) flips this to
+  // false, and the polling effect below, otherwise skipped while SSE is in play, takes
+  // over exactly as if SSE had never been tried. Reset to true each time Live is turned
+  // back on, so a later retry always gets a fresh SSE attempt.
+  const [sseActive, setSseActive] = useState(true);
 
   const seqRef = useRef(0);
   const seenKeysRef = useRef<Set<string>>(new Set());
@@ -148,6 +155,7 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
   const backoffRef = useRef(LIVE_POLL_MS);
   const scrollRef = useRef<HTMLDivElement>(null);
   const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sseLastEventIdRef = useRef<string | undefined>(undefined);
 
   const resetQuery = useCallback(() => {
     setEvents([]);
@@ -160,6 +168,8 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
     seqRef.current = 0;
     atBottomRef.current = true;
     setAtBottom(true);
+    sseLastEventIdRef.current = undefined;
+    setSseActive(true);
   }, []);
 
   // Dedupe on (timestamp, message) — the same key across two calls (e.g. the same
@@ -256,8 +266,15 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
     }
   }, [appId, container, previous, ingest]);
 
+  // Polling fallback. The EKS "previous instance" checkbox has no SSE equivalent (the
+  // stream endpoint only ever tails the current instance, see runtime_logs.py's
+  // RuntimeLogsStreamQuerySerializer), so that combination skips SSE and lands here
+  // directly rather than wasting a round trip on a 400 first; every other combination
+  // only reaches here once SSE has given up (`sseActive` false below).
+  const usingSSE = sseActive && !previous;
+
   useEffect(() => {
-    if (!live) return;
+    if (!live || usingSSE) return;
     let cancelled = false;
     backoffRef.current = LIVE_POLL_MS;
 
@@ -273,7 +290,83 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
       cancelled = true;
       if (liveTimerRef.current) clearTimeout(liveTimerRef.current);
     };
-  }, [live, fetchLiveTick]);
+  }, [live, usingSSE, fetchLiveTick]);
+
+  // SSE live tail: one long-lived connection instead of a 5s poll. The server's own
+  // `end` reason decides what happens next (see the `onEnd` handler below): a hard
+  // 10-minute duration just opens a fresh connection with the last frame's id so the
+  // server resumes the watermark, visible to the user as nothing more than a connection
+  // blip, while any other end reason, or repeated open/drop failures, hands off to the
+  // polling effect above via `sseActive`.
+  useEffect(() => {
+    if (!live || !usingSSE) return;
+    let cancelled = false;
+    let connection: SSEConnection | null = null;
+
+    const open = () => {
+      if (cancelled) return;
+      if (document.visibilityState === 'hidden') {
+        // Mirrors the polling path's own hidden-tab skip, but a stream can't be
+        // "skipped" per tick: close it outright and reopen on visibilitychange below,
+        // so a backgrounded tab doesn't pin one of this user's 3 concurrent-stream slots
+        // for no reason.
+        connection = null;
+        return;
+      }
+      setHasLoaded(true);
+      connection = connectSSE(
+        `/api/applications/${appId}/logs/stream`,
+        { container },
+        {
+          onEvent: (data, eventType, id) => {
+            if (id) sseLastEventIdRef.current = id;
+            if (eventType !== 'message') return;
+            const payload = data as { events?: RuntimeLogEvent[] };
+            if (!payload.events) return;
+            ingest(payload.events);
+            setError(null);
+          },
+          onEnd: (reason) => {
+            if (cancelled) return;
+            if (reason === 'max_duration') {
+              // Expected and benign: the server always ends a stream by this point.
+              open();
+              return;
+            }
+            // Any other reason (an upstream hiccup the server already gave up on) is
+            // treated as a failure rather than reconnected immediately: hammering the
+            // backend's per-user budget with instant reopen/fail/reopen loops would
+            // just burn through it and 429 within seconds. The polling fallback below
+            // already knows how to show a 502/AccessDenied error and the policy-refresh
+            // dialog, so hand off to it instead.
+            setSseActive(false);
+          },
+          onFallback: () => {
+            if (!cancelled) setSseActive(false);
+          },
+        },
+        sseLastEventIdRef.current,
+      );
+    };
+
+    const handleVisibility = () => {
+      if (cancelled) return;
+      if (document.visibilityState === 'hidden') {
+        connection?.close();
+        connection = null;
+      } else if (!connection) {
+        open();
+      }
+    };
+
+    open();
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', handleVisibility);
+      connection?.close();
+    };
+  }, [live, usingSSE, appId, container, ingest]);
 
   const handleContainerChange = (value: RuntimeLogContainer) => {
     if (value === container) return;
