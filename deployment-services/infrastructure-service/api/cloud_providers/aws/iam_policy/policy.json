@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "version_hashes": {
     "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
     "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de",
@@ -7,7 +7,8 @@
     "4": "89e56ce04e59320bd516b48e95fd73661c464bb011b730da9d3c14995d96a2e5",
     "5": "0d54c2a8f760090d272842305f05b55a10cf0d2ba54606246d26489777214c97",
     "6": "0dc4a42cf691a1587aba06f6f385ab3356c9a12f5c03454861a29d67b1b281d7",
-    "7": "800b94ea3c02e9189395d6d45e647e8d3f018e3ae7e4f82e55159308ae0f816e"
+    "7": "800b94ea3c02e9189395d6d45e647e8d3f018e3ae7e4f82e55159308ae0f816e",
+    "8": "dcd97db1831b999964a303ab4f1ccfc9aa6a1073b86e5548d510fb60b13478f1"
   },
   "document_hashes": {
     "1": {
@@ -36,10 +37,14 @@
     "7": {
       "ecs_fargate": "676758d718edf475e3d60c889355b02e02d5f00297068038ed1fe5db6831145a",
       "eks": "06f29b9cdb01c6f68ea81925b1bfd2729717865a029e04b381bfab299380ebe0"
+    },
+    "8": {
+      "eks": "b1cc9a7483da115e1db3bf4d2f9f9037811bbfd3abd13b3d3c55aa33e7ad48fb",
+      "ecs_fargate": "4ee09329e36f291cf586cfbc5a2385aa2143193d1a6dd98eeb73cc1e009ba1b5"
     }
   },
   "notes": [
-    "ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure",
+    "ec2/ecs/elb/ecr/logs: deploy and manage container infrastructure",
     "s3: terraform state bucket + application asset storage",
     "dynamodb: terraform state lock table",
     "rds/elasticache/secretsmanager: create and manage managed databases you provision",
@@ -106,7 +111,13 @@
     "  eks:DescribePodIdentityAssociation/ListPodIdentityAssociations reads were already",
     "  covered by eks:Describe*/eks:List* above (unrestricted resource); CreateAddon on the",
     "  add-on itself was already covered by the addon/infra-*/* and cluster/infra-*",
-    "  resource grants"
+    "  resource grants",
+    "codebuild:BatchGetProjects/DeleteProject (narrowed in v8, platform-side builds):",
+    "  Launchpad now builds every image on its own infrastructure, never inside your",
+    "  account, so no new infrastructure creates a CodeBuild project. These two actions",
+    "  stay only so Nuke can find and delete a per-infra project from before that change;",
+    "  create/start/build actions (codebuild:CreateProject/UpdateProject/StartBuild/",
+    "  BatchGetBuilds) are dropped since nothing in your account needs them anymore"
   ],
   "statements": [
     {
@@ -119,7 +130,8 @@
         "logs:*",
         "s3:*",
         "dynamodb:*",
-        "codebuild:*",
+        "codebuild:BatchGetProjects",
+        "codebuild:DeleteProject",
         "rds:*",
         "elasticache:*",
         "secretsmanager:*"

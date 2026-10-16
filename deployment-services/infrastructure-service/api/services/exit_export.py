@@ -7,10 +7,9 @@ for a real apply, never `terraform output` or a read of the remote state file, a
 call is made from this module at all — the whole archive is built from rows Launchpad
 already owns plus a same-origin call to application-service.
 
-H6 is the design: three of the archive's content types carry secrets today (ECS task-def
-`environment`, Kubernetes `Deployment` env / `Secret.data`, the buildspec's GitHub-token
-fallback) and a fourth risk exists indirectly (`backend.hcl` points at a state bucket whose
-objects hold plaintext secrets Launchpad never fetches). Every value is redacted **before**
+H6 is the design: ECS task-def `environment` and Kubernetes `Deployment` env /
+`Secret.data` carry secrets today, and a risk exists indirectly (`backend.hcl` points at
+a state bucket whose objects hold plaintext secrets Launchpad never fetches). Every value is redacted **before**
 it reaches this module — see `application-service/api/services/exit_inventory.py` — this
 module only assembles already-redacted text into a zip.
 """
@@ -189,7 +188,10 @@ def _render_readme(infra, environment, inventory: dict, tf_facts: dict) -> str:
         f"- ALB: `{environment.alb_arn if environment else 'unknown'}` (`{environment.alb_dns if environment else 'unknown'}`)",
         f"- ECR repository: `{environment.ecr_repository_url if environment else 'unknown'}`",
         f"- ECS task execution role: `{environment.ecs_task_execution_role_arn if environment else 'unknown'}`" if infra.compute_type != ComputeType.EKS else f"- EKS cluster: `{environment.cluster_arn if environment else 'unknown'}`",
-        f"- CodeBuild project: `{codebuild_project_arn}`",
+        (
+            f"- CodeBuild project: `{codebuild_project_arn}` (only present for infrastructures "
+            "onboarded before Launchpad's platform-side builds; may not exist in your account)"
+        ),
         f"- CodeBuild service role: `{codebuild_role_arn}`",
         "",
         "### Applications",
@@ -241,13 +243,16 @@ def _render_readme(infra, environment, inventory: dict, tf_facts: dict) -> str:
 
     lines += [
         "",
-        "## CI seed",
+        "## Build",
         "",
         (
-            "`buildspec/buildspec.yml` is the exact build definition Launchpad's CodeBuild "
-            "project runs. `buildspec/env.example` lists the environment variables it "
-            "needs per app, with `GITHUB_TOKEN` always shown as `<redacted>` — Launchpad "
-            "never stores this value in a form this export can read; supply your own."
+            "Launchpad built each image on its own infrastructure, not inside your AWS "
+            "account — there is no CodeBuild project or buildspec for a new deploy to "
+            "hand over. `build/env.example` lists each app's repository, branch, "
+            "Dockerfile path, and build context, with `GITHUB_TOKEN` always shown as "
+            "`<redacted>` — Launchpad never stores this value in a form this export can "
+            "read; supply your own and `docker build` the same path to rebuild an image "
+            "yourself."
         ),
         "",
         "## GitHub webhooks",
@@ -373,7 +378,6 @@ def build_archive(infra, environment, inventory: dict) -> bytes:
         zf.writestr("terraform/main.tf", main_tf)
         zf.writestr("terraform/backend.hcl", backend_hcl)
         _copy_terraform_modules(zf)
-        zf.writestr("buildspec/buildspec.yml", inventory.get("buildspec", ""))
         env_lines = []
         for app in inventory.get("apps", []):
             env_lines.append(f"# {app['name']}")
@@ -384,7 +388,7 @@ def build_archive(infra, environment, inventory: dict) -> bytes:
             env_lines.append(f"BUILD_CONTEXT={app['build_context'] or ''}")
             env_lines.append("GITHUB_TOKEN=<redacted>")
             env_lines.append("")
-        zf.writestr("buildspec/env.example", "\n".join(env_lines))
+        zf.writestr("build/env.example", "\n".join(env_lines))
         for app in inventory.get("apps", []):
             path = _app_paths(app["id"])
             if app.get("task_definition_json"):

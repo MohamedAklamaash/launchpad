@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import pytest
 from aws.alb import ALBClient
-from aws.codebuild import CodeBuildClient
 from aws.ecs import ECSClient
 from aws.tags import app_tags, as_key_value_tags, as_lower_tags, infra_tags
 from django.core.management import call_command
@@ -210,7 +209,12 @@ def test_create_listener_rule_carries_both_tag_keys(monkeypatch):
     }
 
 
-# ── CodeBuild ────────────────────────────────────────────────────────────────────
+# ── backfill command ─────────────────────────────────────────────────────────────
+#
+# No CodeBuildClient wrapper to test directly any more (F7 ticket 10 deleted
+# aws/codebuild.py) — _FakeCodeBuildClient below stands in for the raw boto3 codebuild
+# client tag_existing_app_resources.py talks to directly, retagging a legacy per-infra
+# project that may still exist from before that ship.
 
 class _FakeCodeBuildClient:
     def __init__(self, existing_project=False):
@@ -226,29 +230,6 @@ class _FakeCodeBuildClient:
 
     def create_project(self, **kwargs):
         self.create_calls.append(kwargs)
-
-
-def test_ensure_project_exists_tags_a_new_project_infra_level_only():
-    fake = _FakeCodeBuildClient(existing_project=False)
-    codebuild = CodeBuildClient(_FakeSession(fake))
-
-    codebuild.ensure_project_exists("p", "arn:aws:iam::1:role/x", "us-east-1", tags=infra_tags("infra-1"))
-
-    sent = _tag_dict_lower(fake.create_calls[0]["tags"])
-    assert sent == {"launchpad:infra": "infra-1"}
-    assert "launchpad:app" not in sent
-
-
-def test_ensure_project_exists_retags_an_existing_project():
-    fake = _FakeCodeBuildClient(existing_project=True)
-    codebuild = CodeBuildClient(_FakeSession(fake))
-
-    codebuild.ensure_project_exists("p", "arn:aws:iam::1:role/x", "us-east-1", tags=infra_tags("infra-1"))
-
-    assert _tag_dict_lower(fake.update_calls[0]["tags"]) == {"launchpad:infra": "infra-1"}
-
-
-# ── backfill command ─────────────────────────────────────────────────────────────
 
 class _FakeBackfillSession:
     def __init__(self):

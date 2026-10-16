@@ -116,7 +116,7 @@ class ApplicationService:
 
         infra_compute = getattr(infra, "compute_type", ComputeType.ECS_FARGATE)
         if infra_compute == ComputeType.EKS:
-            # Fail before CodeBuild rather than inside the deployer, which runs after the
+            # Fail before the build rather than inside the deployer, which runs after the
             # customer has already paid for an image that could never be deployed.
             slug = require_k8s_safe_slug(name)
         else:

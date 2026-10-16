@@ -10,17 +10,12 @@ import json
 from unittest.mock import patch
 
 import pytest
-from aws.codebuild import CodeBuildClient
 from aws.ecr import RETAINED_COMMIT_IMAGES, ECRClient
 
 
 class _FakeClient:
-    def __init__(self, builds=None):
-        self._builds = builds or []
+    def __init__(self):
         self.lifecycle_calls = []
-
-    def batch_get_builds(self, **kwargs):
-        return {"builds": self._builds}
 
     def put_lifecycle_policy(self, **kwargs):
         self.lifecycle_calls.append(kwargs)
@@ -33,63 +28,6 @@ class _FakeSession:
 
     def client(self, name, **kwargs):
         return self._client
-
-
-# ── buildspec ─────────────────────────────────────────────────────────────────
-
-@pytest.fixture
-def buildspec():
-    return CodeBuildClient(_FakeSession(_FakeClient()))._get_buildspec()
-
-
-def test_buildspec_pushes_both_the_moving_and_the_immutable_tag(buildspec):
-    assert 'docker push "$ECR_URL:$APP_NAME-latest"' in buildspec
-    assert 'docker push "$ECR_URL:$APP_NAME-$RESOLVED_SHA"' in buildspec
-
-
-def test_latest_is_still_pushed_so_ecs_does_not_regress(buildspec):
-    """Existing task definitions reference -latest. Dropping it would break them."""
-    assert 'docker tag "$APP_NAME:latest" "$ECR_URL:$APP_NAME-latest"' in buildspec
-
-
-def test_sha_comes_from_the_checkout_not_the_requested_commit(buildspec):
-    """On a manual deploy COMMIT_HASH is empty and the branch HEAD is what builds, so the
-    tag has to describe what git actually produced."""
-    assert "RESOLVED_SHA=$(git rev-parse HEAD)" in buildspec
-    assert buildspec.index("git rev-parse HEAD") < buildspec.index("docker build")
-
-
-def test_buildspec_exports_the_sha_so_the_caller_can_read_it_back(buildspec):
-    assert "exported-variables" in buildspec
-    assert "- RESOLVED_SHA" in buildspec
-
-
-# ── reading the SHA back ──────────────────────────────────────────────────────
-
-def _client_with_build(**build):
-    base = {"buildStatus": "SUCCEEDED", "currentPhase": "COMPLETED", "logs": {}}
-    base.update(build)
-    return CodeBuildClient(_FakeSession(_FakeClient([base])))
-
-
-def test_wait_for_build_returns_the_exported_sha():
-    codebuild = _client_with_build(
-        exportedEnvironmentVariables=[{"name": "RESOLVED_SHA", "value": "a" * 40}]
-    )
-    assert codebuild.wait_for_build("build-1") == "a" * 40
-
-
-def test_wait_for_build_returns_none_when_the_project_predates_the_export():
-    """An existing CodeBuild project still runs the old buildspec until it is updated.
-    That must degrade to -latest, not fail every deploy on that infrastructure."""
-    assert _client_with_build().wait_for_build("build-1") is None
-
-
-def test_wait_for_build_ignores_other_exported_variables():
-    codebuild = _client_with_build(
-        exportedEnvironmentVariables=[{"name": "SOMETHING_ELSE", "value": "x"}]
-    )
-    assert codebuild.wait_for_build("build-1") is None
 
 
 # ── lifecycle policy ──────────────────────────────────────────────────────────

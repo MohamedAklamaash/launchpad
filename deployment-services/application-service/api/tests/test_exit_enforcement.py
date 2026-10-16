@@ -470,7 +470,7 @@ def test_deploying_on_a_non_exited_infra_is_unaffected(exited_app, active_app, m
 # ── AWS/k8s mutation, not just at dequeue time — a deploy/rollback can run for minutes.
 
 @pytest.fixture
-def deployable_app(schema_db):
+def deployable_app(schema_db, platform_builder_mock_mode):
     """A full ECS app + environment, NOT exited — mirrors test_rollback.py's ecs_app so a
     real deploy_application()/rollback_application() run can go through MockSession."""
     from api.models.application import Application

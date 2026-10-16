@@ -1,8 +1,15 @@
 # F7 — Platform-side image builds
 
-**Status:** design only, not started · **Depends on:** nothing · **Blocked by:** owner
-decisions below (Open questions), and one unverified AWS fact that gates the recommended
-option.
+**Status:** done, real-AWS verified (tickets 2-9, #129-#136); ticket 10 + the retirement
+ticket shipped together — `PLATFORM_BUILD_ENABLED` is gone, the platform builder is the
+only build path, and the customer-account CodeBuild code (`aws/codebuild.py`,
+`_trigger_build`/`_wait_for_build`, per-infra CodeBuild project/role creation) is deleted
+from application-service. Nuke and exit-export still find/report/delete a legacy
+per-infra CodeBuild project/role for infrastructures onboarded before this ship — see
+"Retiring the old path" below, which this status line now matches. `policy.json` v8
+narrowed `codebuild:*` to `BatchGetProjects`/`DeleteProject` for the same reason.
+**Depends on:** nothing · **Blocked by:** nothing — the open questions below, and the
+"unverified AWS fact" note, were resolved by the real-AWS spike (see "Spike results").
 
 ## Problem
 
@@ -558,31 +565,39 @@ applies to the *error summary* shown on `Application.error_message`, while the r
 shown by the dedicated log-tail endpoint follows F2's "never `str(exc)`, never stored
 beyond CloudWatch retention" rule.
 
-### Retiring the old path
+### Retiring the old path — done (ticket 10 + the retirement ticket, shipped together)
 
-- **Feature-flag it**, matching the existing `EKS_ENABLED` pattern noted in `CLAUDE.md` for
-  gating compute-type behavior: `PLATFORM_BUILD_ENABLED` (or similar), checked once at the
-  top of `_trigger_build`'s replacement — default on once validated, with an instant revert
-  switch back to the customer-account CodeBuild path during rollout. This is not a
-  per-infra setting (an infra doesn't choose its build location), just a release toggle.
-- **Do not delete `aws/codebuild.py` or its call sites in this ship.** Keep it as the
-  fallback path behind the flag until the new path has a real-AWS validation run of its
-  own (mirroring how `plan/README.md` treats every feature as "done against mocks" until
-  checked off `REAL-AWS-VALIDATION.md`).
+What actually happened, superseding the original plan below (kept for history): the
+real-AWS validation pass (ticket 9) came back clean, so ticket 10 ("flip the flag on by
+default") and the separate retirement ticket this section originally deferred were
+combined into one PR rather than staged through an interim default-on period.
+
+- **`PLATFORM_BUILD_ENABLED` is deleted, not defaulted on.** There is no flag and no
+  fallback — `application_deployment_service.py`'s build step unconditionally calls
+  `aws/platform_builder.py`. `aws/codebuild.py` (the `CodeBuildClient` class,
+  `_trigger_build`/`_wait_for_build`, per-infra CodeBuild project/role creation) is
+  deleted, along with its dedicated tests.
 - **Already-onboarded infras keep their per-infra CodeBuild project/role sitting idle** in
-  the customer account — this design does not retroactively delete them (that is a
-  customer-account mutation with no customer-facing benefit tied to this ship). They are
-  already covered by **Nuke** (`nuke_worker.py:_delete_codebuild_resources`, unconditional)
-  and by **exit export** (`exit_inventory.py` reports them in the customer's own teardown
-  README) — both keep working unchanged, since neither depends on whether the project was
-  ever actually *used* to build anything, only on the deterministic name it would have had.
-- A later, separate ticket can stop creating new per-infra CodeBuild projects/roles
-  entirely once the platform path is validated and the flag is permanently on — at that
-  point `_trigger_build`'s CodeBuild branch is dead code and can be deleted along with its
-  tests, and (separately again) a `policy.json` version bump could narrow or drop the
-  account-wide `codebuild:*` grant for *new* onboardings — gated by the same
-  `required_version_for`-per-compute-type and `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF` rules as
-  every other policy change, and explicitly out of scope for this ship (see Non-goals).
+  the customer account — this still does not retroactively delete them (a customer-account
+  mutation with no customer-facing benefit). They stay covered by **Nuke**
+  (`nuke_worker.py:_delete_codebuild_resources`, unconditional) and by **exit export**
+  (`exit_inventory.py` reports them in the customer's own teardown README) — both keep
+  working unchanged, with a comment at each call site noting new infras never get one.
+- **`policy.json` bumped to v8**, narrowing the account-wide `codebuild:*` grant to
+  exactly `codebuild:BatchGetProjects`/`codebuild:DeleteProject` — what Nuke needs to find
+  and delete a legacy project, nothing that creates, starts, or updates one.
+  `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF` must move in the same release per the standing rule
+  in `CLAUDE.md`/`plan/README.md`. Because this narrows a *base* statement, every existing
+  infrastructure's rendered document changes regardless of compute type —
+  `required_version_for` moves to 7 for both `ecs_fargate` and `eks`, so every
+  already-onboarded infra will show the stale-policy flag until it re-runs the refresh
+  script, even though the change only narrows permissions. `iam:*` was checked (grepped
+  every `iam.` call in both services) and left unchanged — it is a shared blanket grant
+  Terraform still needs for ECS/EKS role creation, not a CodeBuild-only grant with
+  anything narrow to carve out.
+- `aws/codebuild.py` originally reserved below for "a later, separate ticket" (narrowing
+  `iam:PassRole`/role-creation) found nothing to narrow: there never was a CodeBuild-only
+  IAM statement, only the single blanket `iam:*` the rest of the policy already explains.
 
 ## Platform infra needed
 

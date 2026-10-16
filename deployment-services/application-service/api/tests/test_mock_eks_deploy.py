@@ -1,8 +1,10 @@
 """SEAM 3 for EKS: the real deploy state machine against MockSession + mock_k8s.
 
-Exercises ApplicationDeploymentService, EKSDeployer, EKSClient and CodeBuildClient with no
-boto3 and no cluster, asserting every wait loop terminates, a rollout failure harvests pod
+Exercises ApplicationDeploymentService, EKSDeployer and EKSClient with no boto3 and no
+cluster, asserting every wait loop terminates, a rollout failure harvests pod
 diagnostics into error_message, and the failure unwind deletes in reverse creation order.
+The platform build step itself is faked (aws.platform_builder.start_build/wait_for_build)
+— this file is about what happens after a build succeeds, not the build itself.
 """
 import uuid
 
@@ -70,7 +72,7 @@ def application(schema_db):
 
 
 @pytest.fixture
-def deploy(monkeypatch):
+def deploy(monkeypatch, platform_builder_mock_mode):
     from api.services import application_deployment_service as svc
 
     def _deploy(application):

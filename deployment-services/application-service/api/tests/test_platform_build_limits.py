@@ -66,7 +66,6 @@ def mock_service(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _platform_build_on(settings, monkeypatch):
-    settings.PLATFORM_BUILD_ENABLED = True
     settings.PLATFORM_BASE_DOMAIN = None
     monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
     monkeypatch.setattr(

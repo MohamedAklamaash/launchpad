@@ -114,6 +114,18 @@ def test_acm_add_tags_and_delete_are_conditioned_not_unconditional():
     assert request["Condition"]["StringEquals"]["aws:RequestTag/ManagedBy"] == "launchpad"
 
 
+def test_v8_narrows_codebuild_to_delete_capable_actions():
+    """F7 ticket 10: Launchpad builds every image on its own infrastructure now, never
+    inside the customer's account — codebuild:* narrows to exactly what Nuke needs to
+    clean up a legacy per-infra project, nothing that creates, starts, or updates one."""
+    assert iam_policy.grants("codebuild:BatchGetProjects")
+    assert iam_policy.grants("codebuild:DeleteProject")
+    assert not iam_policy.grants("codebuild:CreateProject")
+    assert not iam_policy.grants("codebuild:UpdateProject")
+    assert not iam_policy.grants("codebuild:StartBuild")
+    assert not iam_policy.grants("codebuild:BatchGetBuilds")
+
+
 def test_v3_grants_the_cost_explorer_actions():
     """v3 adds account-wide Cost Explorer read + tag-activation grants for F4."""
     assert iam_policy.grants("ce:GetCostAndUsage")
@@ -123,7 +135,7 @@ def test_v3_grants_the_cost_explorer_actions():
 
 def test_hand_editing_a_generated_region_fails_the_check(sandbox):
     sandbox.script.write_text(
-        sandbox.script.read_text().replace('"codebuild:*",', '"codebuild:*",\n        "acm:*",')
+        sandbox.script.read_text().replace('"ecr:*",', '"ecr:*",\n        "acm:*",')
     )
     with pytest.raises(generate.DriftError, match="out of date"):
         generate.run(write=False)
@@ -308,12 +320,12 @@ def test_document_hash_of_ecs_fargate_equals_the_default_document():
 
 def test_required_version_for_matches_committed_data():
     """v6 (Nuke infrastructure verification) added a base-statement grant
-    (tag:GetResources), which changes every compute type's rendered document — both
-    required v6. v7 (pod identity for the CloudWatch observability add-on) only touched
-    compute_type_statements["eks"], so ecs_fargate's rendered document is unchanged and
-    still requires v6, while eks now requires v7."""
-    assert policy_data.required_version_for("ecs_fargate") == 6
-    assert policy_data.required_version_for("eks") == 7
+    (tag:GetResources); v7 (pod identity for the CloudWatch observability add-on) only
+    touched compute_type_statements["eks"]. v8 (F7 ticket 10, platform-side builds)
+    narrowed the base-statement codebuild:* grant to delete-capable actions only, which
+    changes every compute type's rendered document — both now require v8."""
+    assert policy_data.required_version_for("ecs_fargate") == 8
+    assert policy_data.required_version_for("eks") == 8
 
 
 def test_check_fails_when_a_compute_type_is_missing_from_document_hashes(sandbox):

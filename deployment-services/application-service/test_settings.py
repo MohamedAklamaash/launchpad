@@ -92,10 +92,6 @@ EKS_MAX_APP_MEMORY = float(os.environ.get('EKS_MAX_APP_MEMORY', '256'))
 MAX_SNI_CERTIFICATES_PER_LISTENER = 24
 INFRASTRUCTURE_SERVICE_URL = "http://localhost:8002"
 
-# F7 ticket 6: off by default here too — tests that want the platform-build path set
-# `settings.PLATFORM_BUILD_ENABLED = True` explicitly via the pytest-django fixture.
-PLATFORM_BUILD_ENABLED = os.environ.get('PLATFORM_BUILD_ENABLED', 'False').lower() == 'true'
-
 # F7 ticket 7
 PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA = int(os.environ.get('PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA', '2'))
 PLATFORM_BUILD_MAX_PER_USER_PER_HOUR = int(os.environ.get('PLATFORM_BUILD_MAX_PER_USER_PER_HOUR', '20'))

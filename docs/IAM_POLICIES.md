@@ -98,7 +98,8 @@ Attach this policy to the role:
         "logs:*",
         "s3:*",
         "dynamodb:*",
-        "codebuild:*",
+        "codebuild:BatchGetProjects",
+        "codebuild:DeleteProject",
         "rds:*",
         "elasticache:*",
         "secretsmanager:*"
@@ -298,7 +299,8 @@ cat > deployment-policy.json <<'EOF'
         "logs:*",
         "s3:*",
         "dynamodb:*",
-        "codebuild:*",
+        "codebuild:BatchGetProjects",
+        "codebuild:DeleteProject",
         "rds:*",
         "elasticache:*",
         "secretsmanager:*"
@@ -468,14 +470,14 @@ can't reach Launchpad, the IAM update still succeeds.
 
 **IAM Management**:
 - Create service roles for ECS tasks
-- Create service roles for CodeBuild
 - PassRole to allow services to assume roles
 - Manage permissions for created resources
 
-**CodeBuild Management**:
-- Build Docker images from your code
-- Run builds in your account (not Launchpad's)
-- Access build logs and status
+**CodeBuild Management** (legacy cleanup only):
+- Launchpad builds every image on its own infrastructure, not inside your account —
+  nothing here starts or runs a build in your account
+- `BatchGetProjects`/`DeleteProject` only, so Nuke can find and remove a per-infra
+  CodeBuild project from before this change, if your account onboarded prior to it
 
 **CloudWatch Logs**:
 - Store application logs
@@ -512,7 +514,7 @@ can't reach Launchpad, the IAM update still succeeds.
 The policy grants broad permissions within specific services. This is necessary because:
 - Infrastructure requirements vary per application
 - Terraform needs flexibility to create resources
-- Dynamic resource creation (CodeBuild projects, IAM roles)
+- Dynamic resource creation (IAM roles)
 
 ### Trust Policy Security
 
@@ -600,7 +602,7 @@ This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
 <!-- BEGIN GENERATED: policy version — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
-**Policy version**: 7
+**Policy version**: 8
 <!-- END GENERATED -->
 
 **Document revision**: 2.2.0  

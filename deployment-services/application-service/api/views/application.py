@@ -279,7 +279,7 @@ class ApplicationDeployView(APIView):
 
     @extend_schema(
         summary="Queue application for deployment",
-        description="No request body. Pushes the application onto the Redis deployment queue. The worker picks it up and runs CodeBuild + ECS deploy.",
+        description="No request body. Pushes the application onto the Redis deployment queue. The worker picks it up and builds on Launchpad's own infrastructure, then deploys to ECS/EKS.",
         parameters=[OpenApiParameter("pk", OpenApiTypes.UUID, OpenApiParameter.PATH, description="Application UUID")],
         request=None,
         responses={202: QueuedResponseSerializer, 400: ErrorSerializer, 404: ErrorSerializer, 500: ErrorSerializer},
@@ -572,7 +572,7 @@ class ApplicationRollbackView(APIView):
     @extend_schema(
         summary="Roll back to a previous deployment",
         description=(
-            "Owner only. No request body. Skips CodeBuild — pins to the image already in ECR "
+            "Owner only. No request body. Skips the build — pins to the image already in ECR "
             "and restores the CPU/memory/port that shipped with it. Env values are always "
             "re-read from the application's current config, never from the snapshot. Also "
             "pauses auto-deploy on push until a manual deploy or the resume endpoint clears it."

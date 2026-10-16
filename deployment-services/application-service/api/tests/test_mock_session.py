@@ -1,15 +1,14 @@
 """SEAM 3: MockSession drives the real deploy/sleep/cleanup state machine with no boto3.
 
-Exercises the actual ECSClient / ALBClient / CodeBuildClient wrappers and the cleanup
-service against a MockSession, asserting every wait loop (build, service-stable,
-target-healthy, INACTIVE transition) terminates successfully and client.exceptions.*
-are real Exception subclasses.
+Exercises the actual ECSClient / ALBClient wrappers and the cleanup service against a
+MockSession, asserting every wait loop (service-stable, target-healthy, INACTIVE
+transition) terminates successfully and client.exceptions.* are real Exception
+subclasses.
 """
 import re
 
 import pytest
 from aws.alb import ALBClient
-from aws.codebuild import CodeBuildClient
 from aws.ecs import ECSClient
 
 from api.mock.mock_session import MockSession
@@ -40,19 +39,6 @@ def test_client_exceptions_are_exception_subclasses(session):
 
 def test_meta_region_name_present(session):
     assert session.client("ecs").meta.region_name == "us-east-1"
-
-
-# --- build wait (CodeBuild) ------------------------------------------------
-
-def test_codebuild_wait_for_build_succeeds(session):
-    cb = CodeBuildClient(session)
-    build_id = cb.client.start_build(projectName="proj")["build"]["id"]
-    assert build_id
-    status = cb.get_build_status(build_id)
-    assert status["status"] == "SUCCEEDED"
-    # Returns the commit SHA the build resolved, not a bare True — that value is what
-    # the task definition pins its image tag to.
-    assert cb.wait_for_build(build_id, timeout=5) == "0" * 39 + "1"
 
 
 # --- service-stable wait (ECS) ---------------------------------------------
@@ -116,13 +102,6 @@ def test_ec2_describe_subnets_and_create_sg_shapes(session):
         assert SUBNET_RE.match(s["SubnetId"]), s["SubnetId"]
     sg = ec2.create_security_group(GroupName="app-sg")["GroupId"]
     assert SG_RE.match(sg), sg
-
-
-def test_iam_get_role_shape(session):
-    iam = session.client("iam")
-    role = iam.get_role(RoleName="exec")["Role"]
-    assert role["RoleName"] == "exec"
-    assert role["Arn"].startswith("arn:aws:iam::")
 
 
 # --- listener rule state (ALB) ---------------------------------------------

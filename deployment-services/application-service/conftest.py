@@ -86,3 +86,35 @@ def schema_db(django_db_setup):
     transaction that is rolled back, keeping tests isolated.
     """
     yield
+
+
+@pytest.fixture
+def platform_builder_mock_mode(monkeypatch):
+    """Routes aws/platform_builder.py's real mock branch for a test that drives
+    ApplicationDeploymentService.deploy_application through MockSession without hitting
+    GitHub or real AWS, and without patching platform_builder.start_build/wait_for_build
+    itself.
+
+    Setting `Infrastructure.is_mock = True` alone is NOT enough: aws/session.py's
+    gate_mismatch (called by both aws/platform_builder.py:start_build and
+    aws/platform_builder_credentials.py:mint_push_credential) treats an is_mock infra
+    running under a non-dev MODE as a *mismatch* to refuse, not a silent mock — and
+    test_settings.py deliberately pins MODE=prod (see its own docstring). So every
+    module that reads `app_config.mode` on this path has to agree it's "dev" too —
+    mirrors test_platform_build_wiring.py's test_mock_builder_end_to_end's four-way
+    patch, pulled out here for reuse."""
+    from types import SimpleNamespace
+
+    import aws.github_source as github_source_mod
+    import aws.platform_builder as platform_builder_mod
+    import aws.platform_builder_credentials as platform_builder_credentials_mod
+    import aws.session as aws_session_mod
+
+    dev = SimpleNamespace(mode="dev", aws_access_key_id="x", aws_secret_access_key="y")
+    monkeypatch.setattr(aws_session_mod, "app_config", dev)
+    monkeypatch.setattr(platform_builder_credentials_mod, "app_config", dev)
+    monkeypatch.setattr(platform_builder_mod, "app_config", dev)
+    monkeypatch.setattr(github_source_mod, "app_config", dev)
+    # _mock_build_handle's fetch/upload calls no-op in dev mode but still read the bucket
+    # name unconditionally first (aws/github_source.py:source_bucket).
+    monkeypatch.setenv("PLATFORM_BUILDER_SOURCE_BUCKET", "launchpad-platform-builder-sources")

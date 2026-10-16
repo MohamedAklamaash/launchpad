@@ -1,7 +1,7 @@
 """F6 exit export: application-service's inventory endpoint. Owner-only authz ladder,
 and the credential scan the plan requires — a seeded secret in every content type this
 service can leak (Application.envs values, github_webhook_secret, User.metadata's GitHub
-token, and the buildspec's would-be token) must never appear in the response."""
+token) must never appear in the response."""
 import json
 import uuid
 from types import SimpleNamespace
@@ -109,7 +109,7 @@ def test_invited_admin_gets_403(owner):
 @pytest.mark.django_db
 def test_repo_url_userinfo_is_scrubbed(owner):
     """A private repo pasted as https://user:TOKEN@github.com/org/repo must never carry
-    the embedded token into the README, buildspec/env.example, or this response."""
+    the embedded token into the README, build/env.example, or this response."""
     seeded_url_token = "SEEDED-URL-TOKEN"
     infra = _make_infra(owner)
     _make_app(owner, infra, project_remote_url=f"https://x:{seeded_url_token}@github.com/acme/my-app")
@@ -218,17 +218,6 @@ def test_no_webhook_secret_means_no_webhook_url(owner):
     entry = resp.data["apps"][0]
     assert entry["has_webhook_secret"] is False
     assert entry["webhook_url"] is None
-
-
-@pytest.mark.django_db
-def test_buildspec_has_no_literal_github_token(owner):
-    infra = _make_infra(owner)
-    _make_app(owner, infra)
-
-    resp = _call(infra.id, _as_user(owner))
-    buildspec = resp.data["buildspec"]
-    assert SEEDED_GITHUB_TOKEN not in buildspec
-    assert "$GITHUB_TOKEN@" in buildspec  # still references the env var by name, never a value
 
 
 @pytest.mark.django_db
