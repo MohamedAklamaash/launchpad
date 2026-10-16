@@ -360,19 +360,57 @@ def test_bumping_over_a_changed_base_statement_raises_the_required_version_for_e
     assert policy_data.required_version_for("eks") == next_version
 
 
-def test_v9_adds_the_cloudformation_base_grant():
-    """F8 ticket 1: cloudformation:* is a base-statement grant (both compute types),
-    account- and stack-name-wildcarded — the quick-create link lets the customer rename
-    the suggested stack before creating it, so narrowing by name is unenforceable."""
-    assert iam_policy.grants("cloudformation:CreateStack")
-    assert iam_policy.grants("cloudformation:UpdateStack")
+_CFN_GRANTED_ACTIONS = {
+    "cloudformation:DescribeStacks",
+    "cloudformation:DescribeStackEvents",
+    "cloudformation:DescribeStackResources",
+    "cloudformation:GetTemplate",
+    "cloudformation:GetTemplateSummary",
+    "cloudformation:CreateChangeSet",
+    "cloudformation:DescribeChangeSet",
+    "cloudformation:ListChangeSets",
+    "cloudformation:DeleteChangeSet",
+    "cloudformation:UpdateStack",
+}
+
+
+def test_v9_adds_an_explicit_cloudformation_grant_not_a_wildcard():
+    """F8 ticket 1: the CFN grant is an explicit action list, not cloudformation:*, on
+    stack/*/* (both account and stack name wildcarded — the quick-create link lets the
+    customer rename the suggested stack before creating it, so narrowing by name is
+    unenforceable). cloudformation:* on every stack reads to a customer's security
+    review as "Launchpad can delete any CloudFormation stack in my account", which it
+    cannot do — DeleteStack, CreateStack, and ExecuteChangeSet are deliberately
+    excluded (see plan/F8-cloudformation-onboarding.md's "last-infra teardown" section
+    for why DeleteStack specifically is never called)."""
+    for action in _CFN_GRANTED_ACTIONS:
+        assert iam_policy.grants(action), f"expected {action} to be granted"
+
     for statement in policy_data.statements():
         actions = statement["Action"]
         actions = [actions] if isinstance(actions, str) else actions
-        if "cloudformation:*" in actions:
-            assert statement["Resource"] == "arn:aws:cloudformation:*:*:stack/*/*"
-            return
-    raise AssertionError("no statement grants cloudformation:*")
+        cfn_actions = [a for a in actions if a.startswith("cloudformation:")]
+        if not cfn_actions:
+            continue
+        assert statement["Resource"] == "arn:aws:cloudformation:*:*:stack/*/*"
+        assert set(cfn_actions) == _CFN_GRANTED_ACTIONS
+        return
+    raise AssertionError("no statement grants any cloudformation: action")
+
+
+def test_cloudformation_wildcard_and_delete_stack_are_never_granted():
+    assert not iam_policy.grants("cloudformation:*")
+    assert not iam_policy.grants("cloudformation:DeleteStack")
+    assert not iam_policy.grants("cloudformation:CreateStack")
+    assert not iam_policy.grants("cloudformation:ExecuteChangeSet")
+
+    for statement in policy_data.statements():
+        actions = statement["Action"]
+        actions = [actions] if isinstance(actions, str) else actions
+        assert "cloudformation:*" not in actions
+        assert "cloudformation:DeleteStack" not in actions
+        assert "cloudformation:CreateStack" not in actions
+        assert "cloudformation:ExecuteChangeSet" not in actions
 
 
 # ── CloudFormation template generation (F8 ticket 1) ──────────────────────────

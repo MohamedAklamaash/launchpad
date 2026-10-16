@@ -374,14 +374,26 @@ fi
 #   stay only so Nuke can find and delete a per-infra project from before that change;
 #   create/start/build actions (codebuild:CreateProject/UpdateProject/StartBuild/
 #   BatchGetBuilds) are dropped since nothing in your account needs them anymore
-# - cloudformation:* (v9, CloudFormation onboarding): account- and stack-name-wildcarded
-#   (stack/*/*) by design — the CloudFormation quick-create link lets you rename the
-#   suggested stack before creating it, so narrowing this grant to a literal stack name
-#   would be unenforceable. Only used by accounts onboarded through the CloudFormation
-#   path (stack update for policy refresh / infra removal); script-onboarded accounts
-#   never exercise it. The iam:* grant above already dominates this as a trust
-#   boundary — defense-in-depth bookkeeping, not a hard boundary, same reasoning
-#   acm:AddTagsToCertificate's note above already uses
+# - cloudformation:Describe*/Get*/*ChangeSet/UpdateStack (v9, CloudFormation onboarding):
+#   an explicit action list, not cloudformation:*, even though the iam:* grant above
+#   already dominates it as a trust boundary — this policy is what a customer's
+#   security reviewer reads, and cloudformation:* on stack/*/* reads as "Launchpad can
+#   delete any CloudFormation stack in my account", which it cannot do: DeleteStack,
+#   CreateStack, and ExecuteChangeSet are deliberately excluded. Launchpad never calls
+#   DeleteStack on its own stack (it would detach/delete its own IAM permissions
+#   mid-teardown; see plan/F8-cloudformation-onboarding.md's "last-infra teardown"
+#   section) and never calls CreateStack (a customer's quick-create click does) or
+#   ExecuteChangeSet (a customer always reviews and applies a widening change set
+#   themselves). Account- and stack-name-wildcarded (stack/*/*) by design — the
+#   quick-create link lets the customer rename the suggested stack before creating it,
+#   so narrowing this grant to a literal stack name would be unenforceable. Granted
+#   actions are exactly what the verify/refresh (ticket 3) and nuke (ticket 6) flows
+#   call: DescribeStacks (verify's best-effort stack read, nuke's poll-to-terminal),
+#   DescribeStackEvents/DescribeStackResources (diagnosing a stuck update),
+#   GetTemplate/GetTemplateSummary (reading the currently applied template),
+#   CreateChangeSet/DescribeChangeSet/ListChangeSets/DeleteChangeSet (the refresh
+#   flow's change-set review link), and UpdateStack (nuke's non-last-infra ExternalIds
+#   narrowing)
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
 POLICY_VERSION=9
 case "$COMPUTE_TYPE" in
@@ -483,7 +495,18 @@ case "$COMPUTE_TYPE" in
     },
     {
       "Effect": "Allow",
-      "Action": "cloudformation:*",
+      "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ListChangeSets",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:UpdateStack"
+      ],
       "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
     }
   ]
@@ -588,7 +611,18 @@ EOF
     },
     {
       "Effect": "Allow",
-      "Action": "cloudformation:*",
+      "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ListChangeSets",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:UpdateStack"
+      ],
       "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
     },
     {

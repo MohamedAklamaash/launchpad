@@ -181,7 +181,18 @@ Attach this policy to the role:
     },
     {
       "Effect": "Allow",
-      "Action": "cloudformation:*",
+      "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ListChangeSets",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:UpdateStack"
+      ],
       "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
     }
   ]
@@ -387,7 +398,18 @@ cat > deployment-policy.json <<'EOF'
     },
     {
       "Effect": "Allow",
-      "Action": "cloudformation:*",
+      "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ListChangeSets",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:UpdateStack"
+      ],
       "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
     }
   ]
