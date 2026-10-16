@@ -128,6 +128,7 @@ class ApplicationDeploymentService:
                 # instead of 404ing as a build with no task id should.
                 application.build_task_id = None
                 application.status = 'BUILDING'
+                application.error_message = None
                 application.save()
                 resolved_sha = self._wait_for_build(session, build_id)
                 image_digest = None
@@ -601,6 +602,8 @@ class ApplicationDeploymentService:
         # build, no real stream" apart from "legacy CodeBuild build, no ECS task at all".
         application.build_task_id = platform_builder.task_id_from_arn(handle.task_arn)
         application.status = 'BUILDING'
+        # A new attempt must not keep showing the previous attempt's failure.
+        application.error_message = None
         application.save()
         return handle
 

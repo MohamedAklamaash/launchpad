@@ -184,6 +184,10 @@ def resolve_commit_sha(application, ref: str | None = None) -> str:
 
     if response.status_code == 404:
         raise SourceFetchError(f"Repository {owner}/{repo} not found or no access")
+    if response.status_code == 422:
+        # GitHub's answer for a ref that doesn't exist in an existing repo (real case: an
+        # app configured for "main" on a repo whose default branch is "master").
+        raise SourceFetchError(f"Branch or commit '{target_ref}' not found in {owner}/{repo}")
     if response.status_code != 200:
         raise SourceFetchError(f"GitHub API returned status {response.status_code} {detail}")
 
