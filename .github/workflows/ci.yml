@@ -235,6 +235,7 @@ jobs:
           terraform fmt -check -recursive deployment-services/infrastructure-service/infra/aws
           terraform fmt -check -recursive infra/platform-dns
           terraform fmt -check -recursive infra/platform-builder
+          terraform fmt -check -recursive infra/platform-templates
 
       - name: Terraform validate (modules)
         run: |
@@ -259,3 +260,12 @@ jobs:
         run: |
           terraform -chdir=infra/platform-builder init -backend=false -input=false
           terraform -chdir=infra/platform-builder validate
+
+      # Platform-owned, same reasoning as platform-dns/platform-builder above: this
+      # bucket is deliberately public-readable under its prefix, so a typo in the
+      # public-access-block or bucket-policy wiring is not something to discover at
+      # apply time either.
+      - name: Terraform validate (platform-templates)
+        run: |
+          terraform -chdir=infra/platform-templates init -backend=false -input=false
+          terraform -chdir=infra/platform-templates validate
