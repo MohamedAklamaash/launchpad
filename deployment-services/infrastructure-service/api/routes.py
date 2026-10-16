@@ -1,5 +1,9 @@
 from api.views.aws import list_aws_regions
 from api.views.capabilities import list_capabilities
+from api.views.cfn_onboarding import (
+    infrastructure_cfn_refresh,
+    infrastructure_cfn_verify,
+)
 from api.views.costs import infrastructure_costs
 from api.views.custom_domain import (
     custom_domain_detail,
@@ -56,6 +60,8 @@ urlpatterns = [
     path('infrastructures/<str:infra_id>/exit-export/', exit_export, name='exit-export'),
     path('infrastructures/<str:infra_id>/exit/', infrastructure_complete_exit, name='infrastructure-complete-exit'),
     path('infrastructures/<str:infra_id>/nuke/', infrastructure_nuke, name='infrastructure-nuke'),
+    path('infrastructures/<str:infra_id>/cfn-verify/', infrastructure_cfn_verify, name='infrastructure-cfn-verify'),
+    path('infrastructures/<str:infra_id>/cfn-refresh/', infrastructure_cfn_refresh, name='infrastructure-cfn-refresh'),
     path('infrastructures/onboarding/callback/', infrastructure_onboarding_callback, name='infrastructure-onboarding-callback'),
     path('infrastructures/<str:infra_id>/users/<str:user_id>/', infrastructure_remove_user, name='infrastructure-remove-user'),
     path('healthz/', health, name='health'),

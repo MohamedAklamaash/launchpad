@@ -155,6 +155,27 @@ async def infrastructure_nuke_status(infra_id: UUID, request: Request):
     )
 
 
+@router.post("/{infra_id}/cfn-verify", summary="Verify a CloudFormation-onboarded connection",
+             status_code=202)
+async def infrastructure_cfn_verify(infra_id: UUID, request: Request):
+    """Owner only. Claims the onboarding token, AssumeRoles into the customer's account, and
+    confirms LaunchpadDeploymentRole is CloudFormation-managed. 404 when CFN onboarding is
+    disabled on this deployment."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/cfn-verify/", request
+    )
+
+
+@router.post("/{infra_id}/cfn-refresh", summary="Start a policy refresh for a CloudFormation-onboarded infrastructure")
+async def infrastructure_cfn_refresh(infra_id: UUID, request: Request):
+    """Owner only. Calls CreateChangeSet against the already-onboarded CFN stack and returns a
+    console review link for the customer to execute. 404 when CFN onboarding is disabled on
+    this deployment."""
+    return await proxy_request(
+        f"{settings.INFRASTRUCTURE_SERVICE_URL}/api/v1/infrastructures/{infra_id}/cfn-refresh/", request
+    )
+
+
 class AppCost(BaseModel):
     app: str
     amount_usd: float

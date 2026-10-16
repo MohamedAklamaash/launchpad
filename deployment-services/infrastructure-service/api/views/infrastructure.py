@@ -1,6 +1,10 @@
 import logging
 import secrets
-import time
+
+# Unused directly here, but kept so tests can still patch api.views.infrastructure.time.sleep —
+# the retry loop itself now lives in api.services.onboarding, which patches the same global
+# time module object.
+import time  # noqa: F401
 import uuid
 
 from api.services.infrastructure import InfrastructureService
@@ -282,9 +286,13 @@ def infrastructure_reissue_token(request: HttpRequest, infra_id):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def infrastructure_onboarding_callback(request: HttpRequest):
-    from api.cloud_providers.aws.authenticate import authenticate_infrastructure
     from api.models.infrastructure import Infrastructure as InfraModel
-    from api.services.infra_queue import InfraQueue
+    from api.services.onboarding import (
+        OnboardingAssumeRoleFailed,
+        OnboardingAssumeRoleValueError,
+        OnboardingFinishFailed,
+        OnboardingTokenClaimFailed,
+    )
     from shared.enums.cloud_provider import CloudProvider
 
     infra_id = request.data.get('infra_id')
@@ -329,44 +337,19 @@ def infrastructure_onboarding_callback(request: HttpRequest):
     if not secrets.compare_digest(expected_hash, infra.onboarding_token_hash):
         return Response({'error': 'Invalid onboarding token'}, status=status.HTTP_403_FORBIDDEN)
 
-    # Atomically claim the single-use token. The read-check-then-save it replaces let two
-    # concurrent callbacks both pass the used_at check and double-run AssumeRole/provisioning;
-    # the conditional UPDATE makes exactly one request win. Failure paths below release the
-    # claim so a transient AssumeRole/queue error doesn't permanently brick onboarding.
-    claimed = InfraModel.objects.filter(
-        id=infra.id, onboarding_token_used_at__isnull=True,
-    ).update(onboarding_token_used_at=timezone.now())
-    if claimed == 0:
+    # Claim the single-use token, then run the bounded-retry AssumeRole — extracted into
+    # InfrastructureService (F8 ticket 3) so this path and the CFN cfn-verify endpoint
+    # can't drift in claim ordering or retry behaviour. See api.services.onboarding for
+    # the exact claim/retry/release contract this preserves unchanged.
+    try:
+        infrastructure_service.claim_and_authenticate(infra)
+    except OnboardingTokenClaimFailed:
         return Response({'error': 'Onboarding token already used'}, status=status.HTTP_403_FORBIDDEN)
-
-    def release_token_claim():
-        InfraModel.objects.filter(id=infra.id).update(onboarding_token_used_at=None)
-
-    # Bounded retry around AssumeRole: IAM role/policy creation in the customer account is
-    # eventually consistent, so the first call can race the script's policy-attach step.
-    # Sleeps are short — this blocks a sync worker; persistent failures are pushed back to
-    # the caller via Retry-After instead of longer server-side waits.
-    last_exc = None
-    for attempt in range(3):
-        try:
-            authenticate_infrastructure(infra)
-            last_exc = None
-            break
-        except ValueError as e:
-            release_token_claim()
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            last_exc = e
-            logger.warning(
-                f"Onboarding callback AssumeRole attempt {attempt + 1}/3 failed for infra {infra_id}: {e}"
-            )
-            if attempt < 2:
-                time.sleep(2)
-
-    if last_exc is not None:
-        release_token_claim()
+    except OnboardingAssumeRoleValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except OnboardingAssumeRoleFailed as e:
         response = Response(
-            {'error': 'AssumeRole failed', 'details': type(last_exc).__name__,
+            {'error': 'AssumeRole failed', 'details': e.exc_type_name,
              'retry_after_seconds': 30},
             status=status.HTTP_403_FORBIDDEN,
         )
@@ -375,60 +358,18 @@ def infrastructure_onboarding_callback(request: HttpRequest):
 
     # Record which LaunchpadDeploymentPolicy version the customer actually applied, so the
     # dashboard can tell them to re-run the refresh script once Launchpad widens the grant
-    # set. Targeted update: authenticate_infrastructure just wrote metadata on its own row
-    # instance, and a full save() here would write back the pre-AssumeRole copy.
+    # set.
     reported_version = InfraModel.parse_reported_policy_version(request.data.get('policy_version'))
-    if reported_version is not None:
-        InfraModel.objects.filter(id=infra.id).update(policy_version=reported_version)
-        # R4: same policy-refresh recovery as the script-API-key callback — this path is
-        # normally onboarding (environment not yet ACTIVE, so this is a no-op), but a
-        # later re-run of the same callback against an already-active infra must not leave
-        # a POLICY_STALE certificate stuck.
-        from api.services.cert_bootstrap import maybe_reenqueue_after_policy_refresh
-        maybe_reenqueue_after_policy_refresh(infra.id)
-
-    # Publish infrastructure.created so application-service / other consumers materialize their
-    # local read-models. Deferred from create_infrastructure to here because pre-authenticated
-    # infras shouldn't be deployable downstream.
     try:
-        from api.messaging.producer.producer import infra_producer
-        infra_producer.publish_infra_created(
-            user_id=infra.user_id,
-            infra_id=infra.id,
-            name=infra.name,
-            cloud_provider=infra.cloud_provider,
-            compute_type=infra.compute_type,
-            max_cpu=infra.max_cpu,
-            max_memory=infra.max_memory,
-            code=infra.code,
-            is_cloud_authenticated=True,
-            is_mock=infra.is_mock,
-            metadata=infra.metadata or {},
-        )
-    except Exception:
-        logger.exception(f"Onboarding callback failed to publish infra.created for {infra_id}")
-        # Don't fail the callback — provisioning can still proceed; ops will need to backfill the read-model.
+        result = infrastructure_service.finish_onboarding(infra, policy_version=reported_version)
+    except OnboardingFinishFailed:
+        # Provisioning never got queued; finish_onboarding already released the claim so
+        # the customer can simply re-run the script. The infra.created event may be
+        # re-published on that retry; consumers are idempotent on infra_id.
+        return Response({'error': 'Internal error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    try:
-        logger.info(f"onboarding callback succeeded for infra {infra_id}")
-        was_enqueued = InfraQueue.enqueue_provision(str(infra_id))
-        if not was_enqueued:
-            return Response(
-                {'status': 'already_queued', 'infrastructure_id': str(infra_id), 'is_cloud_authenticated': True},
-                status=status.HTTP_200_OK,
-            )
-        return Response(
-            {'status': 'accepted', 'infrastructure_id': str(infra_id), 'is_cloud_authenticated': True},
-            status=status.HTTP_202_ACCEPTED,
-        )
-    except Exception:
-        logger.exception(f"Onboarding callback enqueue failed for infra {infra_id}")
-        # Provisioning never got queued — release the claim so the customer can simply
-        # re-run the script. The infra.created event may be re-published on that retry;
-        # consumers are idempotent on infra_id.
-        release_token_claim()
-        return Response({'error': 'Internal error'},
-                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    status_code = status.HTTP_200_OK if result['status'] == 'already_queued' else status.HTTP_202_ACCEPTED
+    return Response(result, status=status_code)
 
 
 @extend_schema(
