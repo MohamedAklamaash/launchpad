@@ -35,7 +35,13 @@ def record_access(
         "duration_ms": duration_ms,
         "client_ip": client_ip,
     }
-    RuntimeLogAccess.objects.create(
-        window_start=_ms_to_dt(window_start_ms), window_end=_ms_to_dt(window_end_ms), **fields,
-    )
+    try:
+        RuntimeLogAccess.objects.create(
+            window_start=_ms_to_dt(window_start_ms), window_end=_ms_to_dt(window_end_ms), **fields,
+        )
+    except Exception:
+        # A durable-row failure must never turn an otherwise-successful (or correctly
+        # denied) response into a 500 — the structured log line right below is written
+        # either way, so the access is never silently unaudited, just missing its DB row.
+        audit_logger.exception("runtime_logs access row could not be written", extra=fields)
     audit_logger.info("runtime_logs access", extra={**fields, "window_start_ms": window_start_ms, "window_end_ms": window_end_ms})

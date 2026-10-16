@@ -145,6 +145,12 @@ REDIS_DB = int(app_config.redis_db)
 RATE_BUDGET_RUNTIME_LOGS_LIMIT = int(os.environ.get('RATE_BUDGET_RUNTIME_LOGS_LIMIT', '30'))
 RATE_BUDGET_RUNTIME_LOGS_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_RUNTIME_LOGS_WINDOW_SECONDS', '60'))
 
+# F7 ticket 8: build-log tail. Same cost shape as runtime logs (a launcher-role AssumeRole
+# plus up to two CloudWatch GetLogEvents calls per request) but polled more often while a
+# build is in progress — the dashboard's live tail ticks every 3-5s.
+RATE_BUDGET_BUILD_LOGS_LIMIT = int(os.environ.get('RATE_BUDGET_BUILD_LOGS_LIMIT', '40'))
+RATE_BUDGET_BUILD_LOGS_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_BUILD_LOGS_WINDOW_SECONDS', '60'))
+
 # Higher than runtime logs: the dashboard polls this on an interval and the 30s response
 # cache (api/services/app_metrics_service.py) absorbs most repeat requests within a window,
 # so the budget only has to bound cache-miss traffic (new range, cache eviction, new app).

@@ -5,6 +5,8 @@ import {
   ApplicationUpdate,
   AppMetricsRange,
   AppMetricsResponse,
+  BuildLogsQuery,
+  BuildLogsResponse,
   Deployment,
   RollbackPreview,
   RuntimeLogsQuery,
@@ -74,6 +76,17 @@ export const applicationApi = {
   // Never cache/persist the response — it's unredacted customer application output.
   logs: async (id: string, params: RuntimeLogsQuery): Promise<RuntimeLogsResponse> => {
     const { data } = await apiClient.get(`/api/applications/${id}/logs`, { params });
+    return data;
+  },
+
+  // Never cache/persist — build output, same posture as runtime logs above.
+  buildLogs: async (id: string, deploymentId: string, params: BuildLogsQuery): Promise<BuildLogsResponse> => {
+    const { data } = await apiClient.get(`/api/applications/${id}/deployments/${deploymentId}/build-logs`, { params });
+    return data;
+  },
+
+  currentBuildLogs: async (id: string, params: BuildLogsQuery): Promise<BuildLogsResponse> => {
+    const { data } = await apiClient.get(`/api/applications/${id}/build-logs/current`, { params });
     return data;
   },
 

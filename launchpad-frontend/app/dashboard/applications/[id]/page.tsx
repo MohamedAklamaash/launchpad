@@ -19,9 +19,14 @@ import { EnvEditor } from '@/components/env-editor';
 import { DeploymentHistory } from '@/components/deployment-history';
 import { AppMetricsPanel } from '@/components/app-metrics-panel';
 import { AppLiveLogs } from '@/components/app-live-logs';
+import { BuildLogs } from '@/components/build-logs';
 import { CustomDomainsPanel } from '@/components/custom-domains-panel';
 
 const POLLING_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
+// Narrower than POLLING_STATUSES: CREATED has no build yet (queued on a budget slot) and
+// DEPLOYING means the build already finished — only these two states have a build worth
+// tailing live (F7 ticket 8).
+const IN_PROGRESS_BUILD_STATUSES = ['BUILDING', 'PUSHING_IMAGE'];
 
 const IN_FLIGHT_HINT: Record<string, string> = {
   CREATED: 'Queued — waiting for a build slot…',
@@ -270,6 +275,10 @@ export default function ApplicationDetailPage() {
           <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
           <p className="text-xs text-azure">{IN_FLIGHT_HINT[app.status]}</p>
         </div>
+      )}
+
+      {isOwner && IN_PROGRESS_BUILD_STATUSES.includes(app.status) && (
+        <BuildLogs appId={id} />
       )}
 
       {app.is_sleeping && (

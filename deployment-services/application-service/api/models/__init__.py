@@ -1,4 +1,5 @@
 from .application import Application
+from .build_log_access import BuildLogAccess
 from .custom_domain_route import CustomDomainRoute
 from .database import Database
 from .deployment import Deployment
@@ -9,6 +10,6 @@ from .runtime_log_access import RuntimeLogAccess
 from .user import User
 
 __all__ = [
-    "Application", "CustomDomainRoute", "Database", "Deployment", "Environment",
-    "Infrastructure", "InfrastructureUserRole", "RuntimeLogAccess", "User",
+    "Application", "BuildLogAccess", "CustomDomainRoute", "Database", "Deployment",
+    "Environment", "Infrastructure", "InfrastructureUserRole", "RuntimeLogAccess", "User",
 ]

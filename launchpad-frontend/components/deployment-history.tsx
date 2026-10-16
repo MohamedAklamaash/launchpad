@@ -1,10 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { History, RotateCcw, GitCommitHorizontal } from 'lucide-react';
+import { History, RotateCcw, GitCommitHorizontal, Hammer } from 'lucide-react';
 import { applicationApi } from '@/lib/api/applications';
 import { Deployment } from '@/types/application';
 import { RollbackDialog } from '@/components/rollback-dialog';
+import { BuildLogs } from '@/components/build-logs';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 interface Props {
   appId: string;
@@ -19,6 +21,7 @@ interface Props {
 export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack, onAccessChange }: Props) {
   const [deployments, setDeployments] = useState<Deployment[] | null>(null);
   const [target, setTarget] = useState<Deployment | null>(null);
+  const [logsTarget, setLogsTarget] = useState<Deployment | null>(null);
 
   const refresh = useCallback(() => {
     applicationApi
@@ -65,6 +68,15 @@ export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack,
                 </p>
               </div>
             </div>
+            {d.has_build_logs && (
+              <button
+                onClick={() => setLogsTarget(d)}
+                className="shrink-0 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
+                title="View this build's logs"
+              >
+                <Hammer className="w-3 h-3" /> Build logs
+              </button>
+            )}
             {canRollback && (
               d.rollback_addressable ? (
                 <button
@@ -98,6 +110,15 @@ export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack,
           onRolledBack();
         }}
       />
+
+      <Dialog open={logsTarget !== null} onOpenChange={(o) => { if (!o) setLogsTarget(null); }}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="font-mono text-sm">{logsTarget?.image_tag}</DialogTitle>
+          </DialogHeader>
+          {logsTarget && <BuildLogs appId={appId} deploymentId={logsTarget.id} />}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

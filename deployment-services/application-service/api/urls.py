@@ -16,6 +16,7 @@ from api.views.application import (
     application_github_webhook,
     application_rotate_webhook_secret,
 )
+from api.views.build_logs import build_logs, current_build_logs
 from api.views.custom_domains_internal import (
     application_summary_for_custom_domains,
     custom_domain_attach,
@@ -68,4 +69,7 @@ urlpatterns = [
     # Per-app dashboard metrics. Distinct from `metrics/` above (that's the Prometheus
     # scrape endpoint at the service root, not per-application).
     path('applications/<uuid:app_id>/metrics/', application_metrics, name='application-metrics'),
+    # F7 ticket 8: platform build log tailing.
+    path('applications/<uuid:app_id>/deployments/<uuid:deployment_id>/build-logs/', build_logs, name='application-build-logs'),
+    path('applications/<uuid:app_id>/build-logs/current/', current_build_logs, name='application-build-logs-current'),
 ]

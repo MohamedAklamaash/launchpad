@@ -74,6 +74,9 @@ KANIKO_CONTAINER_NAME = "kaniko"
 INIT_CONTAINER_NAME = "init"
 # Must match infra/platform-builder/ecs.tf's `awslogs-stream-prefix`.
 LOG_STREAM_PREFIX = "build"
+# Ticket 8's build-logs service checks for this prefix to short-circuit a mock build's
+# log tail without any AWS call — there is no real ECS task or CloudWatch stream behind it.
+MOCK_TASK_ID_PREFIX = "mock-task-"
 
 DEFAULT_BUILD_TIMEOUT_SECONDS = 1800
 POLL_INTERVAL_SECONDS = 10
@@ -159,25 +162,40 @@ def _build_timeout() -> int:
     return int(os.environ.get("PLATFORM_BUILDER_BUILD_TIMEOUT_SECONDS", str(DEFAULT_BUILD_TIMEOUT_SECONDS)))
 
 
-def _launcher_session():
+def _launcher_session(*, duration_seconds: int = LAUNCHER_SESSION_DURATION_SECONDS,
+                       sts_config: Config | None = None, policy: str | None = None):
     """Assumes `PLATFORM_BUILDER_LAUNCHER_ROLE_ARN` from the platform IAM user's own keys
     and returns a session scoped to exactly that role's policy — RunTask/DescribeTasks/
     StopTask on the builder cluster, PutObject/DeleteObject under the sources bucket's
     prefix, GetLogEvents on the build log group, PassRole for the task's own two roles.
     Never the worker's `LaunchpadDeploymentRole` session (that one must never reach a
     build container) and never the bare platform user keys (which carry no policy of
-    their own by design — see `infra/platform-builder/README.md`)."""
+    their own by design — see `infra/platform-builder/README.md`).
+
+    `duration_seconds`/`sts_config` default to the build flow's own values (a full hour,
+    a fixed 5s/10s STS config) so every existing caller is unaffected; ticket 8's log-tail
+    read path passes shorter values of both, since that path runs on every poll of an
+    in-progress build and sits behind the gateway's own request timeout.
+
+    `policy`: an optional STS session policy (JSON string) that further *narrows* the
+    role's own permissions for this one session — it can only subtract, never add, so a
+    caller that only needs to read logs gets a session that can only read logs, even
+    though the role itself can also RunTask/PutObject/etc. Security-pre-review item on
+    #135: the read path must not hand a reader everything the build path can do."""
     sts_client = boto3.client(
         "sts",
         aws_access_key_id=app_config.aws_access_key_id,
         aws_secret_access_key=app_config.aws_secret_access_key,
-        config=Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2}),
+        config=sts_config or Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 2}),
     )
-    response = sts_client.assume_role(
-        RoleArn=_launcher_role_arn(),
-        RoleSessionName="launchpad-builder-launcher"[:64],
-        DurationSeconds=LAUNCHER_SESSION_DURATION_SECONDS,
-    )
+    kwargs = {
+        "RoleArn": _launcher_role_arn(),
+        "RoleSessionName": "launchpad-builder-launcher"[:64],
+        "DurationSeconds": duration_seconds,
+    }
+    if policy:
+        kwargs["Policy"] = policy
+    response = sts_client.assume_role(**kwargs)
     creds = response["Credentials"]
     return boto3.Session(
         aws_access_key_id=creds["AccessKeyId"],
@@ -185,6 +203,63 @@ def _launcher_session():
         aws_session_token=creds["SessionToken"],
         region_name=_region(),
     )
+
+
+# Short-lived: a log-tail read is a single request-scoped call, never held across polls,
+# so it doesn't need the hour-long session a build launch mints for itself.
+READ_SESSION_DURATION_SECONDS = 900
+
+
+def _build_log_group_arn() -> str:
+    """The launcher role itself lives in the platform account (the same account the
+    build log group lives in) — `PLATFORM_BUILDER_LAUNCHER_ROLE_ARN` already names that
+    account, so it's parsed out rather than requiring a second, redundant account-id env
+    var that could drift from the role ARN's own."""
+    account_id = _launcher_role_arn().split(":")[4]
+    return f"arn:aws:logs:{_region()}:{account_id}:log-group:{_log_group()}"
+
+
+def _read_only_logs_policy() -> str:
+    """Session policy for ticket 8's log-tail read: `logs:GetLogEvents` on this build log
+    group's streams, nothing else — the role itself also grants RunTask/PutObject/
+    DescribeTasks/StopTask/PassRole for launching builds, none of which a log reader has
+    any business holding even transiently. A session policy only narrows, so this is a
+    pure subtraction from the role's own permissions, not a new grant.
+
+    Resource is the log-group ARN plus `:log-stream:*` — CloudWatch Logs' own ARN
+    convention for "every stream in this group" (`aws/platform_builder.py`'s build log
+    group has no fixed stream set; a new one is created per build)."""
+    return json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": "logs:GetLogEvents",
+            "Resource": f"{_build_log_group_arn()}:log-stream:*",
+        }],
+    })
+
+
+def launcher_session_for_read(*, config: Config | None = None):
+    """Public entrypoint for ticket 8's build-log-tail endpoint: the same launcher role
+    every build assumes, sized for a single bounded read rather than a build's full
+    lifetime, and narrowed by a session policy to `logs:GetLogEvents` on the build log
+    group alone. `config` should be deadline-aware (see `_budget_config`-style callers)
+    so a slow AssumeRole can't by itself blow the request past the gateway's proxy
+    timeout."""
+    return _launcher_session(
+        duration_seconds=READ_SESSION_DURATION_SECONDS, sts_config=config,
+        policy=_read_only_logs_policy(),
+    )
+
+
+def task_id_from_arn(task_arn: str) -> str:
+    """The ECS task id is the ARN's final path segment — the only part the awslogs
+    stream-name convention (`<prefix>/<container>/<task id>`) actually uses."""
+    return task_arn.rsplit("/", 1)[-1]
+
+
+def build_log_group() -> str:
+    return _log_group()
 
 
 def _tarball_top_dir(tarball_path) -> str:
@@ -326,7 +401,7 @@ def _mock_build_handle(application, infrastructure, sha: str, repository_name: s
         sha=sha,
         destination=destination,
         is_mock=True,
-        task_arn=f"mock-task-{build_id}",
+        task_arn=f"{MOCK_TASK_ID_PREFIX}{build_id}",
         bucket=None,
         source_key=source_object_key(build_id),
         docker_config_key=docker_config_object_key(build_id),
@@ -496,7 +571,7 @@ def _tail_build_logs(session, handle: BuildHandle, container_name: str) -> str |
     container's own awslogs driver wrote to."""
     if not handle.task_arn:
         return None
-    task_id = handle.task_arn.rsplit("/", 1)[-1]
+    task_id = task_id_from_arn(handle.task_arn)
     stream_name = f"{LOG_STREAM_PREFIX}/{container_name}/{task_id}"
 
     logs_client = session.client("logs", config=get_boto3_config())

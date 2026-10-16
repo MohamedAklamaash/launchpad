@@ -72,6 +72,12 @@ class Deployment(models.Model):
     # id or a full uuid4 hex, neither of which carries a timestamp to truncate.
     build_id = models.CharField(max_length=255, null=True, blank=True)
 
+    # F7 ticket 8: the ECS task id behind `build_id`, needed to locate the build's
+    # CloudWatch log streams (`aws.platform_builder.task_id_from_arn`). Null on the
+    # legacy CodeBuild path (no ECS task exists) — the build-logs endpoint maps
+    # `build_id` set + `build_task_id` null to "legacy build" (409), not "no build" (404).
+    build_task_id = models.CharField(max_length=64, null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

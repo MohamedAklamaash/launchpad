@@ -87,6 +87,12 @@ class Application(models.Model):
     host_route_applied = models.BooleanField(default=False)
     deployment_url = models.CharField(max_length=512, null=True, blank=True)
     build_id = models.CharField(max_length=255, null=True, blank=True)
+    # F7 ticket 8: the ECS task id (not the full ARN — `aws.platform_builder.task_id_from_arn`)
+    # of the in-progress or most recently started platform build, set alongside `build_id`.
+    # Null for a build on the legacy CodeBuild path (no ECS task exists) or before this
+    # field existed — the log-tail endpoint's "legacy build" rule is keyed off this being
+    # null while `build_id` is set.
+    build_task_id = models.CharField(max_length=64, null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
 
     # H4: the CloudWatch log group this app's first deploy created, once it carries a
