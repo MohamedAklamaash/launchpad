@@ -247,17 +247,22 @@ New tables, **auth-service owns the canonical copies** (it already owns User/Inv
 mints the JWT, and runs invite/OTP — keeping ownership there is the smaller diff, not a new
 direction):
 
-- **`Account`** `(id, email, display_name, created_at)`. One per *legacy row*, not one per
-  email — `id` is a plain `uuidv7()` like every other table here, created 1:1 against each
-  existing `users`/`invited_users` row during backfill (not deduped by email: a same-email
-  pair across the two tables deliberately gets two Account rows, consistent with the Non-goal
-  that this project doesn't resolve that collision). `users.account_id` and
-  `invited_users.account_id` added via idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
-  in `db/index.ts` (H3's `purpose`-column precedent), nullable, backfilled, then enforced
-  `NOT NULL` once backfill is confirmed complete (separate ticket, see Execution plan).
-  Email is **not** used as a key anywhere in the id scheme below — it's mutable, and a
-  content-addressed id built from it would silently break ("every service recomputes the same
-  id") the first time anyone changed their email.
+- **`Account`** `(id, email, display_name, created_at)`. Backfill id =
+  `uuid5(ACCOUNT_NAMESPACE, normalized email)`, one per *distinct normalized email*, not one
+  per legacy row — deduped by construction: a same-email pair across `users`/`invited_users`
+  (or even within one table, since `email`'s unique index is case-sensitive) deliberately
+  computes the same id and ends up sharing one Account row, consistent with the Non-goal that
+  this project doesn't resolve that collision, just link it (documented, not fixed). This is
+  safe despite email being mutable because the id is computed **once**, at backfill time, and
+  stored in the FK — no service ever recomputes `Account.id` from a row's *current* email
+  later (that pattern — a service deriving the same id independently, with no coordination —
+  is `Organization`'s `uuid5(ORG_NAMESPACE, legacy_user_id)` below, keyed on an immutable id,
+  not email). Organic rows created by later tickets (OAuth signup, invite accept) have no
+  prior row to agree with, so they get a plain `uuidv7()` like every other table here.
+  `users.account_id` and `invited_users.account_id` added via idempotent
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in `db/index.ts` (H3's `purpose`-column
+  precedent), nullable, backfilled, then enforced `NOT NULL` once backfill is confirmed
+  complete (separate ticket, see Execution plan).
 - **`Organization`** `(id, owner_account_id, name, created_at, updated_at)`. Personal-org id
   for an existing owner = `uuid5(ORG_NAMESPACE, legacy_user_id)`, where `legacy_user_id` is
   the pre-F9 `users.id` (auth-service) — the same id already sitting in every mirror's

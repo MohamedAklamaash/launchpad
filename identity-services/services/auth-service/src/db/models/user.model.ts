@@ -13,11 +13,15 @@ export interface UserAttributes {
     created_at: Date;
     updated_at: Date;
     metadata: Record<string, unknown>;
+    // F9 ticket 1: additive, nullable identity link to the new accounts table. Backfilled
+    // by src/scripts/backfill-accounts.ts; no code reads it yet (ORGS_ENABLED gates every
+    // behavior change that will, starting with later F9 tickets).
+    account_id: string | null;
 }
 
 export type UserCreationAttributes = Optional<
     UserAttributes,
-    'id' | 'created_at' | 'updated_at' | 'metadata' | 'profile_url' | 'infra_id'
+    'id' | 'created_at' | 'updated_at' | 'metadata' | 'profile_url' | 'infra_id' | 'account_id'
 >;
 
 export class User extends Model<UserAttributes, UserCreationAttributes> {
@@ -30,6 +34,7 @@ export class User extends Model<UserAttributes, UserCreationAttributes> {
     declare created_at: Date;
     declare updated_at: Date;
     declare metadata: Record<string, unknown>;
+    declare account_id: string | null;
 }
 
 User.init(
@@ -75,6 +80,10 @@ User.init(
         },
         metadata: {
             type: DataTypes.JSON,
+            allowNull: true,
+        },
+        account_id: {
+            type: DataTypes.UUID,
             allowNull: true,
         },
     },

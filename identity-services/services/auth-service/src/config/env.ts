@@ -71,6 +71,11 @@ const envSchema = z.object({
     AMQP_MAX_RETRIES: z.coerce.number().default(0),
     AMQP_RETRY_DELAY_MS: z.coerce.number().default(1_000),
     AMQP_PREFETCH_COUNT: z.coerce.number().default(10),
+
+    // F9: gates every behavior change the Organizations/Membership work introduces.
+    // Ticket 1 (Account table + backfill) reads nothing behind this flag yet — it exists
+    // now so later F9 tickets don't need to touch env.ts again to use it.
+    ORGS_ENABLED: z.preprocess((v) => v === 'true' || v === true, z.boolean()).default(false),
 });
 
 const parsedEnv = createEnv(envSchema, {

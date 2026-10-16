@@ -13,7 +13,8 @@
     "lint": "eslint \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit --project tsconfig.json",
     "test": "node --import tsx --test --test-force-exit \"src/**/*.test.ts\"",
-    "format": "prettier --check \"src/**/*.ts\""
+    "format": "prettier --check \"src/**/*.ts\"",
+    "backfill:accounts": "tsx src/scripts/backfill-accounts.ts"
   },
   "keywords": [],
   "author": "",
