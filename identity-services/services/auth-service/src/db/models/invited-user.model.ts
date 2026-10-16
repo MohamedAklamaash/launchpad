@@ -24,6 +24,10 @@ export interface InvitedUserAttributes {
     // bug the atomic UPDATE exists to close.
     failed_otp_attempts: number;
     otp_attempts_window_start: Date | null;
+    // F9 ticket 1: additive, nullable identity link to the new accounts table. Backfilled
+    // by src/scripts/backfill-accounts.ts; no code reads it yet (ORGS_ENABLED gates every
+    // behavior change that will, starting with later F9 tickets).
+    account_id: string | null;
 }
 
 export type InvitedUserCreationAttributes = Optional<
@@ -37,6 +41,7 @@ export type InvitedUserCreationAttributes = Optional<
     | 'roles'
     | 'failed_otp_attempts'
     | 'otp_attempts_window_start'
+    | 'account_id'
 >;
 
 export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreationAttributes> {
@@ -55,6 +60,7 @@ export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreatio
     declare updated_at: Date;
     declare failed_otp_attempts: number;
     declare otp_attempts_window_start: Date | null;
+    declare account_id: string | null;
 }
 
 InvitedUser.init(
@@ -125,6 +131,10 @@ InvitedUser.init(
         },
         otp_attempts_window_start: {
             type: DataTypes.DATE,
+            allowNull: true,
+        },
+        account_id: {
+            type: DataTypes.UUID,
             allowNull: true,
         },
     },
