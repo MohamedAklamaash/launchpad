@@ -198,6 +198,11 @@ export default function NewInfrastructurePage() {
   const scriptSiblings = (accountSiblings ?? []).filter((s) => (s.onboarding_method ?? 'script') === 'script');
   const cfnAccountState: 'fresh' | 'cfn_sibling' | 'script_sibling' =
     cfnSiblings.length > 0 ? 'cfn_sibling' : scriptSiblings.length > 0 ? 'script_sibling' : 'fresh';
+  // `accountSiblings` is null before the list() call resolves — until then
+  // `cfnAccountState` defaults to 'fresh', which must never be treated as "confirmed
+  // fresh" (it would briefly show a quick-create link for what turns out to be a
+  // script-managed account). The tab stays disabled until this is true.
+  const siblingsResolved = accountSiblings !== null || siblingsError;
 
   // Never just this infra's own compute_type — run every sibling (if any) through the
   // same widest-compute-type computation the backend uses, so a narrower account never
@@ -268,14 +273,14 @@ export default function NewInfrastructurePage() {
             <Tabs defaultValue="script" className="w-full">
               <TabsList className="w-full">
                 <TabsTrigger value="script" className="flex-1">Script</TabsTrigger>
-                <span title={cfnAccountState === 'script_sibling' ? 'This AWS account already uses the shell-script onboarding method — use the Script tab instead.' : undefined} className="flex-1">
-                  <TabsTrigger value="cloudformation" disabled={cfnAccountState === 'script_sibling'} className="w-full">
+                <span title={!siblingsResolved ? 'Checking this AWS account’s onboarding status…' : cfnAccountState === 'script_sibling' ? 'This AWS account already uses the shell-script onboarding method — use the Script tab instead.' : undefined} className="flex-1">
+                  <TabsTrigger value="cloudformation" disabled={!siblingsResolved || cfnAccountState === 'script_sibling'} className="w-full">
                     CloudFormation
                   </TabsTrigger>
                 </span>
               </TabsList>
 
-              {cfnAccountState === 'script_sibling' && (
+              {siblingsResolved && cfnAccountState === 'script_sibling' && (
                 <p className="text-[11px] text-muted-foreground px-1 pt-2">
                   This AWS account already uses the shell-script onboarding method — an account picks one method
                   for life. Use the Script tab above instead.
@@ -296,7 +301,7 @@ export default function NewInfrastructurePage() {
                 <CloudFormationOnboardingPanel
                   createdInfra={createdInfra}
                   accountState={cfnAccountState}
-                  siblingsLoading={siblingsLoading}
+                  siblingsLoading={siblingsLoading || !siblingsResolved}
                   siblingsError={siblingsError}
                   onRetry={loadSiblings}
                   misconfig={cfnMisconfig}
@@ -623,9 +628,12 @@ function ScriptOnboardingPanel({ createdInfra, onboardingMisconfig, bootstrapScr
 }
 
 // F8 ticket 5: the CloudFormation sibling to ScriptOnboardingPanel. Covers the three
-// account states plan/F8-cloudformation-onboarding.md §5/§5a describe — 'script_sibling'
-// is handled by the caller disabling this whole tab, so this component only ever renders
-// for 'fresh' or 'cfn_sibling'.
+// account states plan/F8-cloudformation-onboarding.md §5/§5a describe. The caller
+// disables the whole tab for 'script_sibling', but `Tabs` is uncontrolled — a disabled
+// trigger doesn't retroactively move the customer off an already-active panel, and the
+// state can flip to 'script_sibling' *after* the tab was opened (the fresh-until-resolved
+// default while `list()` is in flight, or a Retry after an error). The explicit guard
+// below is the actual backstop; the disabled trigger is just the common-case UX.
 function CloudFormationOnboardingPanel({
   createdInfra, accountState, siblingsLoading, siblingsError, onRetry, misconfig,
   quickCreate, recommendedComputeType, mergedExternalIds, cfnStackName, copiedKey, copy,
@@ -660,6 +668,15 @@ function CloudFormationOnboardingPanel({
           <Loader2 className="w-3.5 h-3.5" /> Retry
         </Button>
       </div>
+    );
+  }
+
+  if (accountState === 'script_sibling') {
+    return (
+      <p className="text-xs text-muted-foreground">
+        This AWS account already uses the shell-script onboarding method — an account picks one method for life.
+        Use the Script tab instead.
+      </p>
     );
   }
 
