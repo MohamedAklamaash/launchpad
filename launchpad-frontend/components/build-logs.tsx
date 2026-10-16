@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, Hammer, Lock } from 'lucide-react';
 import { applicationApi } from '@/lib/api/applications';
+import { connectSSE, SSEConnection } from '@/lib/sse';
 import { BuildLogEvent } from '@/types/application';
 
 // Mirrors app-live-logs.tsx's cadence reasoning: settings.RATE_BUDGET_BUILD_LOGS_* budgets
@@ -81,6 +82,10 @@ export function BuildLogs({ appId, deploymentId, onFinished }: Props) {
   const [loading, setLoading] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
   const [newSinceScroll, setNewSinceScroll] = useState(0);
+  // SSE is tried first; see app-live-logs.tsx's identically-named state for why a
+  // repeatedly-failing stream flips this to false and hands off to the polling effect
+  // below instead of this component trying to recover on its own.
+  const [sseActive, setSseActive] = useState(true);
 
   const seqRef = useRef(0);
   const seenKeysRef = useRef<Set<string>>(new Set());
@@ -90,6 +95,7 @@ export function BuildLogs({ appId, deploymentId, onFinished }: Props) {
   const backoffRef = useRef(LIVE_POLL_MS);
   const scrollRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sseLastEventIdRef = useRef<string | undefined>(undefined);
 
   const ingest = useCallback((newEvents: BuildLogEvent[]) => {
     if (newEvents.length === 0) return;
@@ -128,6 +134,13 @@ export function BuildLogs({ appId, deploymentId, onFinished }: Props) {
       setError(null);
     } catch (e: unknown) {
       const info = describeError(e);
+      if (info.status === 400 && cursorRef.current) {
+        // A cursor handed over from a falling-back SSE connection (or a stale poll
+        // cursor) that the JSON endpoint now rejects, same shape as a build id moving
+        // on underneath it. Restart from the head rather than staying wedged on a
+        // cursor that will never validate again.
+        cursorRef.current = null;
+      }
       if (info.status === 429) {
         backoffRef.current = Math.min(MAX_BACKOFF_MS, backoffRef.current * 2);
       } else if (info.status === 404 && !deploymentId) {
@@ -144,7 +157,7 @@ export function BuildLogs({ appId, deploymentId, onFinished }: Props) {
   }, [appId, deploymentId, ingest, onFinished]);
 
   useEffect(() => {
-    if (complete) return;
+    if (complete || sseActive) return;
     let cancelled = false;
     const tick = () => {
       if (cancelled) return;
@@ -157,7 +170,78 @@ export function BuildLogs({ appId, deploymentId, onFinished }: Props) {
       cancelled = true;
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [complete, fetchTick]);
+  }, [complete, sseActive, fetchTick]);
+
+  // SSE live tail: one long-lived connection instead of a 4s poll. `build_finished` is
+  // terminal: the build has stopped, so nothing further will ever arrive on either
+  // stream, and this stops rather than reconnecting. A hard 10-minute duration
+  // reconnects with the last frame's cursor; any other end reason falls back to
+  // polling, same reasoning as app-live-logs.tsx's runtime-logs stream.
+  useEffect(() => {
+    if (complete || !sseActive) return;
+    let cancelled = false;
+    let connection: SSEConnection | null = null;
+
+    const markLoaded = () => setLoading(false);
+
+    // The JSON endpoint's pagination cursor and the SSE watermark cursor are the same
+    // signed token for build logs (both wrap build_logs_cursor's per-container forward
+    // tokens), so handing it to the poll loop resumes exactly where the stream left off
+    // instead of re-reading from the start.
+    const fallBackToPolling = () => {
+      if (sseLastEventIdRef.current) cursorRef.current = sseLastEventIdRef.current;
+      setSseActive(false);
+    };
+
+    const open = () => {
+      if (cancelled) return;
+      const path = deploymentId
+        ? `/api/applications/${appId}/deployments/${deploymentId}/build-logs/stream`
+        : `/api/applications/${appId}/build-logs/current/stream`;
+      connection = connectSSE(
+        path, {},
+        {
+          onEvent: (data, eventType, id) => {
+            if (id) sseLastEventIdRef.current = id;
+            markLoaded();
+            if (eventType !== 'message') return;
+            const payload = data as { events?: BuildLogEvent[] };
+            if (payload.events) ingest(payload.events);
+            setError(null);
+          },
+          onEnd: (reason) => {
+            markLoaded();
+            if (cancelled) return;
+            if (reason === 'build_finished') {
+              setComplete(true);
+              if (!deploymentId) onFinished?.();
+              return;
+            }
+            if (reason === 'max_duration') {
+              // Expected and benign: the server always ends a stream by this point.
+              open();
+              return;
+            }
+            // Any other reason (an upstream hiccup the server already gave up on) hands
+            // off to polling rather than hot-looping open/fail/open against the
+            // backend's per-user budget, same reasoning as app-live-logs.tsx.
+            fallBackToPolling();
+          },
+          onFallback: () => {
+            markLoaded();
+            if (!cancelled) fallBackToPolling();
+          },
+        },
+        sseLastEventIdRef.current,
+      );
+    };
+
+    open();
+    return () => {
+      cancelled = true;
+      connection?.close();
+    };
+  }, [complete, sseActive, appId, deploymentId, ingest, onFinished]);
 
   const handleScroll = () => {
     const el = scrollRef.current;

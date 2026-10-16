@@ -11,7 +11,7 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from aws.session import create_boto3_session, gate_mismatch
@@ -47,6 +47,22 @@ MAX_EKS_PODS = 5
 CALL_DEADLINE_SECONDS = 6.0
 TRUNCATION_MARKER = "...[truncated]"
 CONTAINERS = ("app", "proxy")
+
+# SSE tail loop (one open session, repeated small reads) rather than get_logs()'s
+# single bounded call: re-listing ECS tasks is only done every TASK_LIST_REFRESH_SECONDS
+# of ticks, not every tick, since a tick is seconds apart and the running task set
+# rarely changes between two of them. MAX_STREAM_PAGES_PER_TICK bounds how many
+# nextToken pages one tick will drain, so a sudden burst can't turn a single tick into
+# an unbounded chain of CloudWatch calls.
+TASK_LIST_REFRESH_SECONDS = 10
+MAX_STREAM_PAGES_PER_TICK = 3
+STREAM_CALL_DEADLINE_SECONDS = 4.0
+# How far behind the watermark the ECS tail re-queries on every tick, to catch an event
+# that lands in CloudWatch out of order across two different tasks' streams. Comfortably
+# above one tick's own cadence (settings.LOG_STREAM_TICK_SECONDS, 2s by default) so a
+# single late arrival is never skipped outright.
+ECS_WATERMARK_LOOKBACK_MS = 10_000
+MAX_SEEN_EVENT_IDS = 2_000
 
 # Short, non-adaptive timeouts distinct from aws.session.BOTO3_CONFIG (60s read, adaptive
 # retries): this endpoint sits behind the gateway's 10s proxy timeout and every AWS call on
@@ -99,6 +115,50 @@ class LogsResult:
     event_count: int
     total_bytes: int
     truncated: bool
+
+
+@dataclass
+class StreamContext:
+    """Everything a stream's tail loop needs, resolved once at open time: the owner-only
+    authz ladder has already run and the AWS/Kubernetes session (and its eager AssumeRole
+    calls, the initial one for a real infra plus a second `{cluster}-deploy` AssumeRole
+    on EKS) already exist. A tick only ever does the cheap per-poll call on top of this,
+    never re-authenticates, re-authorizes, or re-assumes a role.
+
+    For EKS, `k8s_cm` is the entered-but-not-yet-exited `api.k8s.deployer.k8s_apis`
+    context manager, held open for the stream's whole life rather than re-entered every
+    tick, since entering it is itself an AssumeRole plus an EKS token mint. `close()`
+    exits it; callers must call `close()` exactly once, from the generator's `finally`."""
+    app: object
+    infra: object
+    container: str
+    is_eks: bool
+    compute_type: str
+    # ECS
+    ecs_client: object = None
+    logs_client: object = None
+    log_group: str | None = None
+    stream_prefix: str | None = None
+    container_name: str | None = None
+    cluster_arn: str | None = None
+    service_name: str | None = None
+    task_ids: list = None
+    task_ids_refreshed_at: float = 0.0
+    ecs_seen: set = field(default_factory=set)
+    # EKS
+    k8s_cm: object = None
+    k8s: object = None
+    namespace: str | None = None
+    pod_label: str | None = None
+    pod_names: list = None
+    pod_names_refreshed_at: float = 0.0
+    eks_seen: set = field(default_factory=set)
+
+    def close(self) -> None:
+        if self.k8s_cm is not None:
+            self.k8s_cm.__exit__(None, None, None)
+            self.k8s_cm = None
+            self.k8s = None
 
 
 class RuntimeLogsService:
@@ -306,6 +366,156 @@ class RuntimeLogsService:
         if time.monotonic() > deadline:
             raise UpstreamError("Timed out contacting the customer's account", code="Timeout")
 
+    # ── SSE tail loop ────────────────────────────────────────────────────────
+
+    def open_stream(self, *, user_id, app_id, container: str) -> StreamContext:
+        """Runs the owner-only authz ladder and every AssumeRole/EKS-token-mint exactly
+        once, then returns a `StreamContext` a tick can poll cheaply. Raises the same
+        {LookupError, PermissionError, NotDeployedError, UpstreamUnavailableError}
+        contract as `get_logs()` so the view's existing exception mapping applies
+        unchanged."""
+        if container not in CONTAINERS:
+            raise ValueError("container must be 'app' or 'proxy'")
+
+        app = get_owner_authorized_app(user_id, app_id)
+        infra = app.infrastructure
+        is_eks = infra.compute_type == ComputeType.EKS
+
+        if gate_mismatch(infra):
+            raise UpstreamUnavailableError("AWS/Kubernetes access is misconfigured for this infrastructure")
+        if not bool(getattr(infra, "is_mock", False)) and not infra.code:
+            raise NotDeployedError("Infrastructure not authenticated with AWS")
+
+        env = get_deployed_environment(app, infra)
+
+        deadline = time.monotonic() + CALL_DEADLINE_SECONDS
+        session = create_boto3_session(infra, config=_budget_config(deadline))
+
+        ctx = StreamContext(
+            app=app, infra=infra, container=container, is_eks=is_eks, compute_type=infra.compute_type,
+        )
+        if is_eks:
+            slug = require_k8s_safe_slug(app.name)
+            ctx.namespace = namespace_for(slug)
+            ctx.pod_label = slug
+            ctx.container_name = f"{slug}-app" if container == "app" else f"{slug}-nginx"
+            cm = k8s_apis(session, infra, cluster_name_from_arn(env.cluster_arn), config=_budget_config(deadline))
+            try:
+                ctx.k8s = cm.__enter__()
+            except ApiException as e:
+                raise UpstreamError("Upstream call failed", code=f"k8s-{e.status}") from e
+            ctx.k8s_cm = cm
+        else:
+            slug = app_slug(app.name)
+            family = ecs_task_family_for(app)
+            ctx.log_group = ecs_log_group_for(app)
+            ctx.stream_prefix, ctx.container_name = _ecs_stream_parts(family, container)
+            ctx.cluster_arn = env.cluster_arn
+            ctx.service_name = f"{slug}-service"
+            ctx.ecs_client = session.client("ecs", config=_budget_config(deadline))
+            ctx.logs_client = session.client("logs", config=_budget_config(deadline))
+        return ctx
+
+    def tail_stream(self, ctx: StreamContext, watermark: dict | None):
+        """One tick. `watermark` is `None` on the first tick (tails from "now" with no
+        history) or the `{"ts": ms, "ids": [...]}` payload decoded from a resumed
+        `Last-Event-ID`. Returns `(events, new_watermark)`. `events` is `[]` on a quiet
+        tick, in which case `new_watermark` is simply `watermark` unchanged."""
+        now_ms = _now_ms()
+        if watermark is None:
+            watermark = {"ts": now_ms, "ids": []}
+        if ctx.is_eks:
+            return self._tail_eks_stream(ctx, watermark, now_ms)
+        return self._tail_ecs_stream(ctx, watermark, now_ms)
+
+    def _tail_ecs_stream(self, ctx: StreamContext, watermark: dict, now_ms: int):
+        if ctx.task_ids is None or now_ms - ctx.task_ids_refreshed_at >= TASK_LIST_REFRESH_SECONDS * 1000:
+            deadline = time.monotonic() + STREAM_CALL_DEADLINE_SECONDS
+            ctx.task_ids = self._ecs_task_ids(ctx.ecs_client, ctx.cluster_arn, ctx.service_name, deadline)
+            ctx.task_ids_refreshed_at = now_ms
+
+        if not ctx.task_ids:
+            return [], watermark
+        streams = [f"{ctx.stream_prefix}/{ctx.container_name}/{t}" for t in ctx.task_ids][:100]
+
+        deadline = time.monotonic() + STREAM_CALL_DEADLINE_SECONDS
+        # Re-query a window that starts before the watermark, not at it: with up to 10
+        # ECS tasks each on their own log stream, one task's event at T can land in
+        # CloudWatch after another task's event at T+1 already has (clock drift, network
+        # jitter between tasks). Querying from exactly the watermark forward would drop
+        # that late arrival for good the moment the watermark passes it. The lookback
+        # re-fetches that window on every tick; `ctx.ecs_seen` (keyed on CloudWatch's own
+        # eventId) is what keeps the re-fetch from re-emitting what already went out.
+        start_ms = max(0, watermark["ts"] - ECS_WATERMARK_LOOKBACK_MS)
+        raw_events = []
+        token = None
+        for _ in range(MAX_STREAM_PAGES_PER_TICK):
+            kwargs = {
+                "logGroupName": ctx.log_group, "logStreamNames": streams,
+                "startTime": start_ms, "endTime": now_ms, "limit": MAX_EVENTS_PER_PAGE,
+            }
+            if token:
+                kwargs["nextToken"] = token
+            try:
+                response = ctx.logs_client.filter_log_events(**kwargs)
+            except ctx.logs_client.exceptions.ResourceNotFoundException:
+                response = {"events": []}
+            except (ConnectTimeoutError, ReadTimeoutError) as e:
+                raise UpstreamError("Timed out contacting the customer's account", code="Timeout") from e
+            except ClientError as e:
+                raise UpstreamError("Upstream call failed", code=_aws_error_code(e)) from e
+            raw_events.extend(response.get("events", []))
+            token = response.get("nextToken")
+            if not token or time.monotonic() > deadline:
+                break
+
+        return _apply_watermark(ctx, raw_events, watermark)
+
+    def _tail_eks_stream(self, ctx: StreamContext, watermark: dict, now_ms: int):
+        if ctx.pod_names is None or now_ms - ctx.pod_names_refreshed_at >= TASK_LIST_REFRESH_SECONDS * 1000:
+            try:
+                pods = ctx.k8s.core.list_namespaced_pod(
+                    ctx.namespace, label_selector=f"app={ctx.pod_label}", _request_timeout=(2, 4),
+                ).items
+            except ApiException as e:
+                raise UpstreamError("Upstream call failed", code=f"k8s-{e.status}") from e
+            ctx.pod_names = [p.metadata.name for p in pods[:MAX_EKS_PODS]]
+            ctx.pod_names_refreshed_at = now_ms
+
+        since_seconds = max(1, (now_ms - watermark["ts"]) // 1000 + 1)
+        events_out: list = []
+        total_bytes = 0
+        for pod_name in ctx.pod_names:
+            if total_bytes >= MAX_TOTAL_BYTES:
+                break
+            try:
+                raw = ctx.k8s.core.read_namespaced_pod_log(
+                    pod_name, ctx.namespace, container=ctx.container_name,
+                    limit_bytes=512 * 1024, since_seconds=since_seconds,
+                    timestamps=True, follow=False, _request_timeout=(2, 4),
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    continue
+                raise UpstreamError("Upstream call failed", code=f"k8s-{e.status}") from e
+            lines, line_bytes, _ = _cap_pod_log_lines(raw, MAX_TOTAL_BYTES - total_bytes)
+            for line in lines:
+                key = f"{line['timestamp']}|{line['message']}"
+                if key in ctx.eks_seen:
+                    continue
+                ctx.eks_seen.add(key)
+                events_out.append(line)
+            total_bytes += line_bytes
+
+        if len(ctx.eks_seen) > 2000:
+            # Bounded dedupe set: EKS has no event id to key a watermark on, so overlap
+            # is caught by this set rather than a timestamp+id pair like ECS. Drop the
+            # oldest entries wholesale rather than letting it grow for a whole stream's
+            # 10-minute life.
+            ctx.eks_seen = set(list(ctx.eks_seen)[-1000:])
+
+        return events_out, {"ts": now_ms, "ids": []}
+
 
 def _clamp_minutes(minutes) -> int:
     if minutes is None:
@@ -362,6 +572,46 @@ def _truncate_message(message: str) -> tuple:
     if len(raw) <= MAX_MESSAGE_BYTES:
         return message, False
     return raw[:MAX_MESSAGE_BYTES].decode("utf-8", "ignore") + TRUNCATION_MARKER, True
+
+
+def _apply_watermark(ctx: "StreamContext", raw_events: list, watermark: dict) -> tuple:
+    """Deduplicates `raw_events` (re-fetched from `watermark["ts"] -
+    ECS_WATERMARK_LOOKBACK_MS` forward, so the same window is seen on more than one
+    tick) against `ctx.ecs_seen`, a set of CloudWatch eventIds this stream has already
+    emitted. `watermark["ids"]` (carried over from a resumed `Last-Event-ID`) seeds that
+    set on the first call after a reconnect, so the lookback window doesn't immediately
+    re-emit what the previous connection already sent. Returns `(events, new_watermark)`
+    with `events` already sanitized/capped via `_cap_events`; `new_watermark["ts"]`
+    only ever advances, never the trigger for dropping an event by itself."""
+    seen = ctx.ecs_seen
+    seen.update(watermark.get("ids", ()))
+
+    fresh = []
+    newest_ts = watermark["ts"]
+    for ev in sorted(raw_events, key=lambda e: e.get("timestamp", 0)):
+        event_id = ev.get("eventId")
+        if event_id is not None:
+            if event_id in seen:
+                continue
+            seen.add(event_id)
+        fresh.append(ev)
+        newest_ts = max(newest_ts, ev.get("timestamp", 0))
+
+    if len(seen) > MAX_SEEN_EVENT_IDS:
+        # Sets are unordered, so this drops an arbitrary half rather than truly the
+        # oldest half. Harmless: dropping an id early only risks re-emitting that one
+        # event once more, and the client already dedupes on (timestamp, message).
+        ctx.ecs_seen = set(list(seen)[-(MAX_SEEN_EVENT_IDS // 2):])
+
+    # A slice of what's been seen, not the whole (unbounded, and already capped above)
+    # set, carried in the watermark purely so a reconnect's fresh `ctx.ecs_seen` can be
+    # re-seeded from it before that connection's own first lookback-window re-fetch.
+    seed_ids = list(seen)[-200:]
+    if not fresh:
+        return [], {"ts": newest_ts, "ids": seed_ids}
+
+    events_out, _, _ = _cap_events(fresh)
+    return events_out, {"ts": newest_ts, "ids": seed_ids}
 
 
 def _cap_events(raw_events: list) -> tuple:

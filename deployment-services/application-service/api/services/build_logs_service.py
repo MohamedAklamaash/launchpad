@@ -98,6 +98,28 @@ class BuildLogsResult:
     total_bytes: int
 
 
+@dataclass
+class BuildStreamContext:
+    """Resolved once at stream-open time: `_resolve_build` (the owner-only authz ladder
+    plus the app/deployment lookup) and `launcher_session_for_read` (the launcher-role
+    AssumeRole) both run exactly once here, never again per tick.
+
+    `finished` mirrors `_resolve_build`'s own flag: always True for the deployment_id
+    path (its build has necessarily already stopped), always False for the in-progress
+    path at open time. The in-progress path's generator re-checks the application's own
+    status on every tick via `app` (see build_logs.py's stream view) and overrides this
+    once the build is no longer BUILDING/PUSHING_IMAGE. `_resolve_build` itself is
+    deliberately not re-run for that, since it would re-authorize and threatens to 404 on
+    every poll the instant the application's status moves at all."""
+    app: object
+    build_id: str
+    task_id: str
+    mock: bool
+    finished: bool
+    logs_client: object = None
+    log_group: str | None = None
+
+
 class BuildLogsService:
     def get_logs(self, *, user_id, app_id, deployment_id, cursor, limit) -> BuildLogsResult:
         app = get_owner_authorized_app(user_id, app_id)
@@ -211,6 +233,58 @@ class BuildLogsService:
             next_cursor=None, complete=True, build_id=build_id,
             infra_id=app.infrastructure_id, event_count=1, total_bytes=0,
         )
+
+    def mock_stream_event(self) -> dict:
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "container": platform_builder.KANIKO_CONTAINER_NAME,
+            "message": "Mock build (dev mode): no platform build logs are produced.",
+        }
+
+    # ── SSE tail loop ────────────────────────────────────────────────────────
+
+    def open_stream(self, *, user_id, app_id, deployment_id) -> BuildStreamContext:
+        app = get_owner_authorized_app(user_id, app_id)
+        build_id, task_id, finished = self._resolve_build(app, deployment_id)
+        mock = task_id.startswith(platform_builder.MOCK_TASK_ID_PREFIX)
+
+        logs_client = None
+        log_group = None
+        if not mock:
+            deadline = time.monotonic() + CALL_DEADLINE_SECONDS
+            session = platform_builder.launcher_session_for_read(config=_budget_config(deadline))
+            logs_client = session.client("logs", config=_budget_config(deadline))
+            log_group = platform_builder.build_log_group()
+
+        return BuildStreamContext(
+            app=app, build_id=build_id, task_id=task_id, mock=mock, finished=finished,
+            logs_client=logs_client, log_group=log_group,
+        )
+
+    def tail_stream(self, ctx: BuildStreamContext, tokens: dict, limit=None):
+        """One tick over both the `init` and `kaniko` streams, continuing from
+        `tokens` (each container's own `nextForwardToken`, `{}` on the first tick).
+        Returns `(events, next_tokens, caught_up)`. `caught_up` is this tick's own
+        signal (see `_fetch_stream`), not `ctx.finished and caught_up`: the in-progress
+        path's "is the build actually done" check lives in the view, which has the only
+        up-to-date read of `Application.status`."""
+        per_stream_limit = _clamp_limit(limit)
+        raw_events = []
+        next_tokens = {}
+        caught_up = True
+        for container in CONTAINERS:
+            stream_name = f"{platform_builder.LOG_STREAM_PREFIX}/{container}/{ctx.task_id}"
+            events, forward_token, stream_caught_up = self._fetch_stream(
+                ctx.logs_client, ctx.log_group, stream_name, tokens.get(container), per_stream_limit,
+            )
+            next_tokens[container] = forward_token
+            caught_up = caught_up and stream_caught_up
+            for event in events:
+                raw_events.append((event.get("timestamp", 0), container, event.get("message", "")))
+
+        raw_events.sort(key=lambda e: e[0])
+        events_out, _ = _cap_and_sanitize(raw_events)
+        return events_out, next_tokens, caught_up
 
 
 _ERROR_CODE_RE = re.compile(r"[A-Za-z0-9.]{1,64}")

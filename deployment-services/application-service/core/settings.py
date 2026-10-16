@@ -163,6 +163,19 @@ RUNTIME_LOGS_CURSOR_SECRET = os.environ.get('RUNTIME_LOGS_CURSOR_SECRET') or (
     "dev-only-runtime-logs-cursor-secret-not-for-prod" if is_dev_mode(app_config.mode) else ""
 )
 
+# SSE log streaming (runtime logs + build logs): this process runs under `manage.py
+# runserver`, a threaded WSGI server, not an ASGI/async-capable one. Every open stream
+# pins one of that server's worker threads for up to LOG_STREAM_MAX_DURATION_SECONDS.
+# Production deployments of this service must move to an ASGI server before raising
+# either number; this PR does not change the run command. The concurrency cap is a single
+# budget shared by runtime-logs and build-logs streams per user (key `log_streams`), not
+# per-endpoint, so one tab can't hold three runtime-log tabs open and still get a build-log
+# stream for free.
+LOG_STREAM_MAX_CONCURRENT_PER_USER = int(os.environ.get('LOG_STREAM_MAX_CONCURRENT_PER_USER', '3'))
+LOG_STREAM_MAX_DURATION_SECONDS = int(os.environ.get('LOG_STREAM_MAX_DURATION_SECONDS', '600'))
+LOG_STREAM_TICK_SECONDS = float(os.environ.get('LOG_STREAM_TICK_SECONDS', '2'))
+LOG_STREAM_HEARTBEAT_SECONDS = int(os.environ.get('LOG_STREAM_HEARTBEAT_SECONDS', '15'))
+
 # Public-facing gateway URL used when generating webhook URLs to hand to GitHub.
 # Normalized to scheme://host[:port] at load — a value with a trailing path/slash
 # would otherwise produce malformed webhook URLs registered in GitHub.
