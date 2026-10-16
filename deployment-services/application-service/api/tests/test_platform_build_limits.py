@@ -27,6 +27,11 @@ DIGEST = "sha256:" + "f" * 64
 
 
 @pytest.fixture
+def unlimited_build_budget():
+    """Overrides conftest's autouse no-op so these tests run the real budget gate."""
+
+
+@pytest.fixture
 def new_app(schema_db):
     from api.models.application import Application
     from api.models.environment import Environment

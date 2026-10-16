@@ -56,6 +56,24 @@ def no_real_broker(monkeypatch):
     return published
 
 
+@pytest.fixture(autouse=True)
+def unlimited_build_budget(monkeypatch):
+    """Every deploy now runs the platform build step, which charges F7 ticket 7's
+    Redis-backed per-user budget and per-infra concurrency slot first. Tests must not
+    depend on Redis being reachable (CI has none), so the gate is a no-op by default;
+    test_platform_build_limits.py overrides this fixture to exercise the real wiring."""
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.ApplicationDeploymentService"
+        "._enforce_build_budgets",
+        lambda self, application: None,
+    )
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.ApplicationDeploymentService"
+        "._release_build_concurrency_slot",
+        lambda self, key: None,
+    )
+
+
 @pytest.fixture(scope="session")
 def django_db_setup(django_db_blocker):
     """Create an empty test database WITHOUT running migrations.
