@@ -20,11 +20,13 @@ cross-account IAM AssumeRole (`LaunchpadDeploymentRole`, ExternalId = infrastruc
 Customer-account Terraform lives at
 `deployment-services/infrastructure-service/infra/aws/`. There is no repo-root `infra/aws/`.
 
-Two trees are the exception — **platform-owned** infrastructure, deliberately outside the
+Three trees are the exception — **platform-owned** infrastructure, deliberately outside the
 customer tree and not reachable by the provisioning worker's credentials (see each README):
 - `infra/platform-dns/` — the Route53 zone for app hostnames, applied to a dedicated DNS account.
 - `infra/platform-builder/` — F7's image builder (Fargate cluster, Kaniko task, source bucket);
   see `plan/F7-platform-builder.md`.
+- `infra/platform-templates/` — F8's hosted CloudFormation templates (public-read S3 bucket
+  for the onboarding quick-create link); see `plan/F8-cloudformation-onboarding.md`.
 
 ## Auth model
 
