@@ -68,6 +68,14 @@ _RETRY_LATER_CODES = {
 }
 
 
+
+# The target group's owning Ingress, as tagged by the load balancer controller. EKS Auto
+# Mode's built-in controller uses the ingress.eks.amazonaws.com namespace (real AWS:
+# "app-<slug>/<slug>-<slug>:80"); the self-managed AWS Load Balancer Controller uses
+# ingress.k8s.aws. Checking only the latter left every EKS ALB metric
+# target_group_not_found on Auto Mode clusters.
+_INGRESS_RESOURCE_TAG_KEYS = ("ingress.eks.amazonaws.com/resource", "ingress.k8s.aws/resource")
+
 class MetricsUnavailableError(Exception):
     """CloudWatch signaled a transient condition (throttling, timeout) — 503, retry later."""
 
@@ -329,7 +337,7 @@ class AppMetricsService:
             response = elbv2.describe_tags(ResourceArns=batch)
             for description in response.get("TagDescriptions", []):
                 tags = {t["Key"]: t["Value"] for t in description.get("Tags", [])}
-                resource = tags.get("ingress.k8s.aws/resource", "")
+                resource = next((tags[k] for k in _INGRESS_RESOURCE_TAG_KEYS if k in tags), "")
                 if resource.startswith(prefix):
                     candidates.append((resource, description["ResourceArn"]))
         if not candidates:

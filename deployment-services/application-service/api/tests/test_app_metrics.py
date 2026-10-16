@@ -440,13 +440,19 @@ def test_throttling_maps_to_503(make_stack, monkeypatch):
 # ── 7: EKS target-group discovery via elbv2 tags ─────────────────────────────
 
 @pytest.mark.django_db
-def test_eks_discovers_target_group_by_controller_tags(make_stack, monkeypatch):
+@pytest.mark.parametrize("controller_tags", [
+    # Self-managed AWS Load Balancer Controller.
+    {"ingress.k8s.aws/resource": "app-api/api-api:80", "elbv2.k8s.aws/cluster": "infra"},
+    # EKS Auto Mode's built-in controller (real AWS, 2026-10-16).
+    {"ingress.eks.amazonaws.com/resource": "app-api/api-api:80", "eks:eks-cluster-name": "infra"},
+])
+def test_eks_discovers_target_group_by_controller_tags(make_stack, monkeypatch, controller_tags):
     stack = make_stack(compute_type="eks")
     lb_arn = f"arn:aws:elasticloadbalancing:{REGION}:{ACCOUNT_ID}:loadbalancer/app/shared-alb/xyz"
     tg_arn = f"arn:aws:elasticloadbalancing:{REGION}:{ACCOUNT_ID}:targetgroup/k8s-appapi-abcdef/123"
     fake_elbv2 = _FakeElbv2(
         lb_dns=stack.env.alb_dns, lb_arn=lb_arn, target_groups=[tg_arn],
-        tags={tg_arn: {"ingress.k8s.aws/resource": "app-api/api-api:80", "elbv2.k8s.aws/cluster": "infra"}},
+        tags={tg_arn: controller_tags},
     )
     fake_cw = _FakeCloudWatch(responses=[{"MetricDataResults": []}])
     _real_infra(stack, monkeypatch, _FakeSession({"cloudwatch": fake_cw, "elbv2": fake_elbv2}))
