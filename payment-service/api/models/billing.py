@@ -26,6 +26,11 @@ class Billing(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     metadata = models.JSONField(null=True, blank=True)
+    # Personal-org backfill, nullable until a later migration confirms the backfill
+    # is complete and flips this to NOT NULL.
+    # Computed as uuid5(ORG_NAMESPACE, user_id) -- see shared/utils/org_id.py. Nothing
+    # reads this yet.
+    organization_id = models.UUIDField(null=True, blank=True, editable=False)
 
     def __str__(self):
         return f"{self.user_id} - {self.amount}"

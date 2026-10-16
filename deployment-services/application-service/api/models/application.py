@@ -32,6 +32,15 @@ class Application(models.Model):
     # clears it.
     auto_deploy_paused = models.BooleanField(default=False)
 
+    # Personal-org backfill, nullable until a later migration confirms the backfill
+    # is complete and flips this to NOT NULL.
+    # Computed from this app's parent Infrastructure's owner, never from `user` above --
+    # `user` is whoever created the app (an invited admin can), but the tenant an app
+    # belongs to is its infra's, so this must always agree with
+    # `self.infrastructure.organization_id`. See shared/utils/org_id.py:personal_org_id.
+    # Nothing reads this yet.
+    organization_id = models.UUIDField(null=True, blank=True, editable=False)
+
     class Meta:
         unique_together = [('infrastructure', 'name')]  # k8s object names derive from name alone
         indexes = [

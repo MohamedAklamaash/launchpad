@@ -50,6 +50,12 @@ class Database(models.Model):
 
     error_message = models.TextField(null=True, blank=True)
 
+    # Personal-org backfill, nullable until a later migration confirms the backfill
+    # is complete and flips this to NOT NULL.
+    # Computed from this row's parent Infrastructure's owner (Database has no user of
+    # its own) -- see shared/utils/org_id.py:personal_org_id. Nothing reads this yet.
+    organization_id = models.UUIDField(null=True, blank=True, editable=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

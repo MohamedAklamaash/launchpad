@@ -65,6 +65,13 @@ class Infrastructure(models.Model):
     # custom-domain-attach once set.
     exited_at = models.DateTimeField(null=True, blank=True, editable=False)
 
+    # Personal-org backfill, nullable until a later migration confirms the backfill
+    # is complete and flips this to NOT NULL.
+    # Computed once, at backfill time, as uuid5(ORG_NAMESPACE, user_id) -- see
+    # shared/utils/org_id.py:personal_org_id and plan/F9-teams-and-orgs.md. Nothing
+    # reads this yet; nothing is wired to it.
+    organization_id = models.UUIDField(null=True, blank=True, editable=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
