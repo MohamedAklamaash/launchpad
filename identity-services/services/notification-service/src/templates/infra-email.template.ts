@@ -232,6 +232,15 @@ const FAILURE_EVENTS = new Set<InfraEvent>([
     'database_delete_failure',
 ]);
 
+// A nuke of the last CloudFormation-onboarded infra in an account succeeds with one
+// step left for the customer: deleting the stack (the platform never deletes it — it
+// would strip its own permissions mid-delete). The URL embeds the customer-chosen stack
+// name, so only an https AWS console URL is ever rendered as a link.
+const AWS_CONSOLE_URL = /^https:\/\/([a-z0-9-]+\.)?console\.aws\.amazon\.com\/[^\s"'<>]*$/;
+
+export const safeConsoleUrl = (url?: string): string | undefined =>
+    url && AWS_CONSOLE_URL.test(url) ? url : undefined;
+
 export const getInfraEmailTemplate = (
     event: InfraEvent,
     infraName: string,
@@ -239,8 +248,13 @@ export const getInfraEmailTemplate = (
     error?: string,
     dashboardUrl?: string,
     databaseName?: string,
+    manualStepUrl?: string,
 ) => {
-    const { eyebrow, title, color, label, intro } = EVENT_LABELS[event];
+    const { eyebrow, title, color, label } = EVENT_LABELS[event];
+    const consoleUrl = event === 'destroy_success' ? safeConsoleUrl(manualStepUrl) : undefined;
+    const intro = consoleUrl
+        ? 'has been torn down. One step is left for you: delete the CloudFormation stack that holds the Launchpad access role.'
+        : EVENT_LABELS[event].intro;
     const name = escapeHtml(infraName || 'your environment');
     const safeUserName = escapeHtml(userName || 'there');
     const isDatabaseEvent = DATABASE_EVENTS.has(event);
@@ -280,9 +294,18 @@ export const getInfraEmailTemplate = (
            </div>`
             : '';
 
-    const cta = dashboardUrl
-        ? { label: isFailure ? 'Open dashboard' : 'Go to dashboard', url: dashboardUrl }
-        : undefined;
+    const manualStepCard = consoleUrl
+        ? `<div style="margin:16px 0 0;padding:18px 20px;background:#0e0e10;border:1px solid #26262b;border-left:3px solid ${color};border-radius:10px;">
+             <div style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;letter-spacing:1px;color:#8a8a94;text-transform:uppercase;margin:0 0 8px;">One step left</div>
+             <p style="margin:0;font-size:14px;line-height:1.6;color:#d4d4d8;">This was the last environment using this AWS account, so Launchpad can no longer remove its own access role. Delete the stack in the AWS console to finish cleanup.</p>
+           </div>`
+        : '';
+
+    const cta = consoleUrl
+        ? { label: 'Open CloudFormation stack', url: escapeHtml(consoleUrl) }
+        : dashboardUrl
+          ? { label: isFailure ? 'Open dashboard' : 'Go to dashboard', url: dashboardUrl }
+          : undefined;
 
     const introText = isDatabaseEvent
         ? `Hi ${safeUserName}, your database <strong style="color:#f4f4f5;">${escapeHtml(databaseName || 'unnamed')}</strong> in environment <strong style="color:#f4f4f5;">${name}</strong> ${intro}`
@@ -294,7 +317,7 @@ export const getInfraEmailTemplate = (
         heading: title,
         headingColor: color,
         intro: introText,
-        contentHtml: `${detailsCard}${guidanceCard}`,
+        contentHtml: `${detailsCard}${guidanceCard}${manualStepCard}`,
         cta,
     });
 };

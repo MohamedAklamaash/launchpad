@@ -35,6 +35,7 @@ import logging
 import re
 import time
 from typing import ClassVar
+from urllib.parse import quote
 
 import boto3
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
@@ -701,7 +702,7 @@ def _cfn_console_url(infra: Infrastructure) -> str:
     if infra.cfn_stack_name:
         return (
             f"https://{CFN_STACK_REGION}.console.aws.amazon.com/cloudformation/home"
-            f"?region={CFN_STACK_REGION}#/stacks/stackinfo?stackId={infra.cfn_stack_name}"
+            f"?region={CFN_STACK_REGION}#/stacks/stackinfo?stackId={quote(infra.cfn_stack_name, safe='')}"
         )
     return f"https://console.aws.amazon.com/iamv2/home#/roles/details/{_ROLE_NAME}"
 

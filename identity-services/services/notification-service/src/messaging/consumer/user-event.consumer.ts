@@ -78,6 +78,7 @@ export const userEventsWorker = new Worker(
                     event,
                     error,
                     database_name,
+                    manual_step_url,
                 } = job.data;
 
                 if (!email || !event) {
@@ -93,6 +94,7 @@ export const userEventsWorker = new Worker(
                     error,
                     env.DASHBOARD_URL,
                     database_name,
+                    manual_step_url,
                 );
                 const subject = getInfraEmailSubject(event, infra_name, database_name);
 
