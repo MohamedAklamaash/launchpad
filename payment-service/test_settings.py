@@ -60,4 +60,10 @@ INTERNAL_AUTH_EXEMPT_PATHS = []
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = "x" * 40
 
+# F9 ticket 5: backs OrgPermissions's role cache (shared.services.org_role_cache).
+REDIS_HOST = "localhost"
+REDIS_PORT = 6379
+REDIS_PASSWORD = ""
+REDIS_DB = 0
+
 ORGS_ENABLED = os.environ.get("ORGS_ENABLED", "False").lower() == "true"

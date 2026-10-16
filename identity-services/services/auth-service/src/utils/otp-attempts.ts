@@ -38,6 +38,11 @@ interface ClaimRow {
     infra_id: string[];
     created_at: Date;
     failed_otp_attempts: number;
+    // F9 ticket 1: nullable until an account is linked (backfill, or not yet run on a
+    // brand-new row). Carried through so authenticateWithOTP can stamp it onto the
+    // minted token the same way password login already does from the InvitedUser row
+    // directly.
+    account_id: string | null;
 }
 
 export interface OTPAttemptClaim {
@@ -49,6 +54,7 @@ export interface OTPAttemptClaim {
     infra_id: string[];
     created_at: Date;
     attempts: number;
+    accountId: string | null;
 }
 
 export const otpAttempts = {
@@ -87,7 +93,8 @@ export const otpAttempts = {
                     ELSE otp_attempts_window_start
                 END
              WHERE email = :email
-             RETURNING id, email, user_name, role, roles, infra_id, created_at, failed_otp_attempts`,
+             RETURNING id, email, user_name, role, roles, infra_id, created_at,
+                       failed_otp_attempts, account_id`,
             { replacements: { email }, type: QueryTypes.SELECT },
         );
         const row = rows[0];
@@ -101,6 +108,7 @@ export const otpAttempts = {
             infra_id: row.infra_id,
             created_at: row.created_at,
             attempts: row.failed_otp_attempts,
+            accountId: row.account_id,
         };
     },
 

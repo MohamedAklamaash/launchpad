@@ -3,6 +3,8 @@ import { InvitedUser, UserOTP, RefreshToken } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { comparePassword } from '@/utils/handle-password';
 import { verifyRefreshToken } from '@/utils/handle-token';
+import { personalOrgId } from '@/utils/org-id';
+import { env } from '@/config/env';
 import { MAX_OTP_ATTEMPTS, NIL_INVITED_USER_ID, otpAttempts } from '@/utils/otp-attempts';
 import { Op } from 'sequelize';
 import { HttpError } from '@launchpad/common';
@@ -38,7 +40,10 @@ export class InvitedUserAuthService extends BaseService {
                 );
 
             const refreshToken = await this.createRefreshToken(user.id, transaction);
-            return this.buildAuthResponse(user, refreshToken.token_id);
+            return this.buildAuthResponse(user, refreshToken.token_id, undefined, {
+                accountId: user.account_id,
+                orgId: refreshToken.active_org_id,
+            });
         });
     }
 
@@ -104,6 +109,8 @@ export class InvitedUserAuthService extends BaseService {
                     created_at: claim.created_at,
                 },
                 refreshToken.token_id,
+                undefined,
+                { accountId: claim.accountId, orgId: refreshToken.active_org_id },
             );
         });
     }
@@ -120,8 +127,19 @@ export class InvitedUserAuthService extends BaseService {
             const user = await InvitedUser.findByPk(payload.sub, { transaction });
             if (!user) throw new HttpError(404, 'User not found');
 
+            // Copied forward, never reset to the personal-org default — a refresh token
+            // minted before this column existed has no active_org_id and gets stamped
+            // with the personal org exactly once, on its first refresh after this change
+            // ships (same one-time-grace shape as auth_time below); every refresh after
+            // that carries the real value forward instead of silently undoing an org
+            // switch on every rotation. Computed only when ORGS_ENABLED — see
+            // createRefreshToken for why this must not run against a flag-off deployment.
+            const activeOrgId = env.ORGS_ENABLED
+                ? (tokenRecord.active_org_id ?? personalOrgId(user.id))
+                : undefined;
+
             await tokenRecord.destroy({ transaction });
-            const newTokenRecord = await this.createRefreshToken(user.id, transaction);
+            const newTokenRecord = await this.createRefreshToken(user.id, transaction, activeOrgId);
 
             // Copied unchanged from the refresh token being redeemed, never reset to
             // `now` — a refresh proves possession of a refresh token, not a fresh
@@ -131,7 +149,10 @@ export class InvitedUserAuthService extends BaseService {
             // forward. That one-time grace window is bounded by the existing refresh-token
             // trust boundary (still requires a valid, unexpired, single-use refresh
             // token) — not a new bypass, just an unavoidable migration edge.
-            return this.buildAuthResponse(user, newTokenRecord.token_id, payload.auth_time);
+            return this.buildAuthResponse(user, newTokenRecord.token_id, payload.auth_time, {
+                accountId: user.account_id,
+                orgId: activeOrgId,
+            });
         });
     }
 

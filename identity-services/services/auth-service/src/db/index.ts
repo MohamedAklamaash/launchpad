@@ -65,6 +65,10 @@ const applyPendingSchemaPatches = async () => {
         `DROP INDEX IF EXISTS ${MEMBERSHIPS_ONE_OWNER_PER_ORG_LEGACY_INDEX_NAME}`,
     );
     await sequelize.query(MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL);
+    // F9 ticket 5: switch-org updates this column; /auth/refresh reads it so a rotated
+    // access token carries the org the caller last switched to, not blindly back to their
+    // personal org (plan/F9-teams-and-orgs.md, Decision: JWT and authorization).
+    await sequelize.query('ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS active_org_id UUID');
 };
 
 export const initModels = async () => {

@@ -7,8 +7,10 @@ import { verifySessionToken } from '@/utils/handle-token';
 import { superAdminMiddleware } from '@/utils/super-admin';
 import { resolveRevokeCallerId } from '@/utils/revoke-authz';
 import { env } from '@/config/env';
+import { SwitchOrgService } from '@/service/organizations/switch-org.service';
 
 const invitedUserFacade = new InvitedUserFacade();
+const switchOrgService = new SwitchOrgService();
 
 export const RegisterInvitedUser = async (req: Request, res: Response) => {
     try {
@@ -231,6 +233,31 @@ export const RevokeRefreshToken = async (req: Request, res: Response) => {
         const userId = resolveRevokeCallerId(req.headers.authorization, refreshToken);
         await invitedUserFacade.revokeRefreshToken(userId);
         return res.status(204).send();
+    } catch (error: unknown) {
+        if (error instanceof HttpError) throw error;
+        throw new HttpError(500, 'Internal Server Error');
+    }
+};
+
+// F9 ticket 5. The caller's own id comes from a verified access token, never the body —
+// switchOrgService cross-checks it against the refresh token's own `sub` so both
+// credentials presented must agree on who is asking. Behind ORGS_ENABLED
+// (SwitchOrgService.switchOrg calls assertOrgsEnabled); with the flag off this 404s the
+// same way every other org.events-gated path does.
+export const SwitchOrg = async (req: Request, res: Response) => {
+    try {
+        const token = getAuthHeader(req);
+        const payload = verifySessionToken(token);
+        const { organization_id, refresh_token } = req.body as {
+            organization_id: string;
+            refresh_token: string;
+        };
+        const authRes = await switchOrgService.switchOrg({
+            callerId: payload.sub,
+            refreshToken: refresh_token,
+            organizationId: organization_id,
+        });
+        return res.status(200).json(authRes);
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
         throw new HttpError(500, 'Internal Server Error');

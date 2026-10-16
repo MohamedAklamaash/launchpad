@@ -8,6 +8,7 @@ from shared.resilience import ResilientPikaConsumer
 
 from api.common.env.application import app_config
 from api.repositories.organization import OrganizationRepository, PendingOrganization
+from api.services.org_permissions import OrgPermissions
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,17 @@ class OrgEventConsumer:
                     self.org_repo.upsert_membership(organization_id, account_id, payload.get("role"), version)
                 else:
                     self.org_repo.remove_membership(organization_id, account_id, version)
+
+            # F9 ticket 5: evict the cached role right after the DB write durably
+            # commits (we're past the `with transaction.atomic()` block), so a role
+            # change/removal is reflected sub-second instead of waiting out the cache's
+            # TTL backstop. Best-effort — see OrgPermissions.evict/org_role_cache: a
+            # Redis failure here must never nack or fail an event whose DB write already
+            # succeeded.
+            if routing_key == ORG_CREATED_ROUTING_KEY:
+                OrgPermissions.evict(organization_id, payload.get("owner_account_id"))
+            else:
+                OrgPermissions.evict(organization_id, account_id)
 
             self._retry_counts.pop(retry_key, None)
             ch.basic_ack(delivery_tag=method.delivery_tag)

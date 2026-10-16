@@ -13,6 +13,7 @@ import {
     UpdatePassword,
     RefreshTokenForUser,
     RevokeRefreshToken,
+    SwitchOrg,
 } from '@/controllers/invited-user.controller';
 import {
     registerSchema,
@@ -24,6 +25,7 @@ import {
     updatePasswordSchema,
     refreshSchema,
     revokeSchema,
+    switchOrgSchema,
 } from '@/schemas/invited-user.schema';
 
 export const authRouter: Router = Router();
@@ -399,3 +401,37 @@ authRouter.post(
  *       401: { description: No valid access token or refresh token was presented }
  */
 authRouter.post('/revoke', validateRequest({ body: revokeSchema.shape.body }), RevokeRefreshToken);
+
+/**
+ * @swagger
+ * /api/v1/auth/switch-org:
+ *   post:
+ *     summary: Switch the caller's active organization scope
+ *     description: >
+ *       Behind ORGS_ENABLED. Verifies an active (non-tombstoned) Membership row for the
+ *       caller in the target organization, rotates the refresh token presented (so its
+ *       `active_org_id` moves to the target), and mints a new access token carrying the
+ *       new `org_id`/`account_id`. A non-member or a removed member gets the same 404 —
+ *       never a distinguishing 403.
+ *     tags: [Auth]
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [organization_id, refresh_token]
+ *             properties:
+ *               organization_id: { type: string, format: uuid }
+ *               refresh_token: { type: string, example: eyJhbGciOiJIUzI1NiJ9... }
+ *     responses:
+ *       200:
+ *         description: New tokens scoped to the target organization
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/AuthTokens' }
+ *       401: { description: No valid access token, or the refresh token doesn't match the caller }
+ *       404: { description: Organization not found, or the caller is not an active member }
+ */
+authRouter.post('/switch-org', validateRequest({ body: switchOrgSchema.shape.body }), SwitchOrg);

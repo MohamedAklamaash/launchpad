@@ -31,6 +31,17 @@ class ApplicationConfig:
     backend_url: str
     public_backend_url: str
 
+    # F9 ticket 5: backs OrgPermissions's role cache (shared.services.org_role_cache) —
+    # this service never used Redis before this ticket. Optional with safe defaults
+    # (mirrors infrastructure-service's non-required style) so an existing deployment's
+    # env doesn't need to change for OrgPermissions to work at all; a Redis outage or an
+    # unconfigured instance both just fall back to the authoritative DB read, never to
+    # "allow" (see org_role_cache.get_cached_role).
+    redis_host: str
+    redis_port: int
+    redis_password: str
+    redis_db: int
+
     @classmethod
     def from_env(cls) -> "ApplicationConfig":
         stripe_webhook_secret = os.environ["STRIPE_WEBHOOK_SECRET"]
@@ -52,6 +63,10 @@ class ApplicationConfig:
             frontend_url=os.environ.get("FRONTEND_URL", "http://localhost:3000"),
             backend_url=os.environ.get("BACKEND_URL", "http://localhost:8003"),
             public_backend_url=_origin_only(os.environ["PUBLIC_BACKEND_URL"]),
+            redis_host=os.environ.get("REDIS_HOST", "localhost"),
+            redis_port=int(os.environ.get("REDIS_PORT", "6379")),
+            redis_password=os.environ.get("REDIS_PASSWORD", ""),
+            redis_db=int(os.environ.get("REDIS_DB", "0")),
         )
 
 app_config = ApplicationConfig.from_env()

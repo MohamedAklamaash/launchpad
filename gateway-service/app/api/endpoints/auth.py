@@ -53,6 +53,10 @@ class UpdatePasswordBody(BaseModel):
 class RefreshBody(BaseModel):
     token: str = Field(example="eyJhbGciOiJIUzI1NiJ9...")
 
+class SwitchOrgBody(BaseModel):
+    organization_id: UUID
+    refresh_token: str = Field(example="eyJhbGciOiJIUzI1NiJ9...")
+
 class RevokeBody(BaseModel):
     refreshToken: str | None = Field(default=None, example="eyJhbGciOiJIUzI1NiJ9...")
 
@@ -138,6 +142,16 @@ async def auth_refresh(body: RefreshBody, request: Request):
 @router.post("/revoke", summary="Revoke all of the caller's own refresh tokens", status_code=204)
 async def auth_revoke(body: RevokeBody, request: Request):
     return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/revoke", request)
+
+
+@router.post("/switch-org", summary="Switch the caller's active organization scope",
+             response_model=AuthTokens,
+             description="Behind ORGS_ENABLED (auth-service). Requires both a valid "
+                         "Authorization bearer token and the caller's current "
+                         "refresh_token in the body; non-members and removed members "
+                         "both get a 404.")
+async def auth_switch_org(body: SwitchOrgBody, request: Request):
+    return await proxy_request(f"{settings.AUTH_SERVICE_URL}/api/v1/auth/switch-org", request)
 
 
 @router.get("/github", summary="Initiate GitHub OAuth login",

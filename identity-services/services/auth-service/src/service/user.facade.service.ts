@@ -162,7 +162,10 @@ export class UserFacadeService extends BaseService {
 
             const refreshTokenRecord = await this.createRefreshToken(user.id, transaction);
 
-            return this.buildAuthResponse(user, refreshTokenRecord.token_id);
+            return this.buildAuthResponse(user, refreshTokenRecord.token_id, undefined, {
+                accountId: user.account_id,
+                orgId: refreshTokenRecord.active_org_id,
+            });
         });
     }
 }

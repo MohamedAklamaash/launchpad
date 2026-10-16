@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 import jwt
 from django.conf import settings
@@ -6,6 +7,7 @@ from django.http import JsonResponse
 
 from shared.errors.exception import HttpError
 from shared.utils.jwt import decode_jwt
+from shared.utils.org_id import personal_org_id
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,24 @@ class JWTAuthMiddleware:
 
             token = auth_header.split(" ", 1)[1]
             request.user = decode_jwt(token, settings.JWT_SECRET)
+
+            # F9 ticket 5 (plan/F9-teams-and-orgs.md, Decision: JWT and authorization).
+            # Entirely gated on ORGS_ENABLED — with the flag off, request.user never
+            # gains an org_id attribute at all, so request behavior is byte-for-byte
+            # what it was before this ticket (scope item 4).
+            if settings.ORGS_ENABLED:
+                org_id = getattr(request.user, "org_id", None)
+                if org_id:
+                    try:
+                        uuid.UUID(str(org_id))
+                    except (ValueError, AttributeError, TypeError):
+                        raise HttpError("Invalid organization scope", status_code=401)
+                else:
+                    # A pre-F9 token (minted before org_id existed) carries no claim at
+                    # all — resolves to the caller's own personal org, computed with no
+                    # DB lookup from the signature-covered subject, never to a wider
+                    # scope.
+                    request.user.org_id = str(personal_org_id(request.user.id))
 
         except HttpError as e:
             return JsonResponse(

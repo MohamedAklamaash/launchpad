@@ -1,13 +1,38 @@
 import { Transaction } from 'sequelize';
 import crypto from 'crypto';
 import { RefreshToken, UserOTP } from '@/db';
-import { signAccessToken, signRefreshToken } from '@/utils/handle-token';
+import { signAccessToken, signRefreshToken, AccessTokenPayload } from '@/utils/handle-token';
 import { generateOTP } from '@/utils/generate-otp';
+import { personalOrgId } from '@/utils/org-id';
+import { env } from '@/config/env';
 import { AuthResponse, USER_ROLE, UserData } from '@/types/auth.invited_user.types';
 import { OTP_PURPOSE, OtpPurpose } from '@/types/otp-purpose';
 
+// F9 ticket 5: the org context buildAuthResponse stamps onto a minted access token.
+// Both fields are only ever read when ORGS_ENABLED — see buildAuthResponse — but kept as
+// a plain object (not flag-gated at the call site) so every caller can pass whatever it
+// has in hand without its own env check.
+export interface AuthOrgContext {
+    accountId?: string | null;
+    orgId?: string | null;
+}
+
 export abstract class BaseService {
-    protected async createRefreshToken(userId: string, transaction: Transaction) {
+    // `activeOrgId`, when given, is stamped straight onto the new row (switch-org's
+    // rotation path). Omitted, it defaults to the caller's personal org — computed with
+    // no DB lookup, same formula the personal-org backfill used — so every refresh token
+    // this service ever mints already has a sticky, correct `active_org_id` from the
+    // moment this column exists, with no separate backfill migration required.
+    //
+    // Flag-gated: with ORGS_ENABLED off this never computes or stores anything here,
+    // both so a flag-off deployment is byte-for-byte unchanged (scope item 4) and so a
+    // non-UUID test/legacy id never has to round-trip through personalOrgId's UUID
+    // validation when nothing will ever read the result.
+    protected async createRefreshToken(
+        userId: string,
+        transaction: Transaction,
+        activeOrgId?: string,
+    ) {
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + 30);
 
@@ -16,6 +41,7 @@ export abstract class BaseService {
                 user_id: userId,
                 token_id: crypto.randomUUID(),
                 expires_at: expiresAt,
+                active_org_id: env.ORGS_ENABLED ? (activeOrgId ?? personalOrgId(userId)) : null,
             },
             { transaction },
         );
@@ -39,9 +65,10 @@ export abstract class BaseService {
         // and gets `now`. InvitedUserAuthService.refresh is the one caller that must pass
         // the value read off the incoming refresh token, never a fresh timestamp.
         authTime?: number,
+        orgContext?: AuthOrgContext,
     ): AuthResponse {
         const auth_time = authTime ?? Math.floor(Date.now() / 1000);
-        const tokenClaims = {
+        const tokenClaims: AccessTokenPayload = {
             sub: user.id,
             email: user.email,
             user_name: user.user_name,
@@ -49,6 +76,18 @@ export abstract class BaseService {
             roles: user.roles,
             auth_time,
         };
+        // Flag-gated here, at the one choke point every login/refresh/switch-org call
+        // goes through — with ORGS_ENABLED off, the claims below are never added, so a
+        // minted token is byte-for-byte what it was before this ticket (scope item 4).
+        if (env.ORGS_ENABLED && orgContext?.orgId) {
+            tokenClaims.org_id = orgContext.orgId;
+            // Omitted entirely (not sent as null/empty) when the caller's credential row
+            // has no linked Account yet — a consumer must be able to tell "no claim" apart
+            // from "empty claim" (handle-token.ts's AccessTokenPayload.account_id).
+            if (orgContext.accountId) {
+                tokenClaims.account_id = orgContext.accountId;
+            }
+        }
         return {
             user: {
                 id: user.id,
