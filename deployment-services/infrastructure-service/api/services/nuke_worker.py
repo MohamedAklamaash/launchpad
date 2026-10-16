@@ -823,6 +823,20 @@ def _own_state_leftovers(ctx: _NukeContext) -> list:
     return leftovers
 
 
+# ARN resource kind -> (describe method, id-list parameter, result key).
+_EC2_DESCRIBE_BY_ID = {
+    "subnet": ("describe_subnets", "SubnetIds", "Subnets"),
+    "vpc": ("describe_vpcs", "VpcIds", "Vpcs"),
+    "security-group": ("describe_security_groups", "GroupIds", "SecurityGroups"),
+    "route-table": ("describe_route_tables", "RouteTableIds", "RouteTables"),
+    "internet-gateway": ("describe_internet_gateways", "InternetGatewayIds", "InternetGateways"),
+    "network-acl": ("describe_network_acls", "NetworkAclIds", "NetworkAcls"),
+    "network-interface": ("describe_network_interfaces", "NetworkInterfaceIds", "NetworkInterfaces"),
+    "elastic-ip": ("describe_addresses", "AllocationIds", "Addresses"),
+    "vpc-endpoint": ("describe_vpc_endpoints", "VpcEndpointIds", "VpcEndpoints"),
+}
+
+
 def _is_deleted_tombstone(ctx: _NukeContext, arn: str) -> bool:
     """The tagging API keeps listing some already-deleted resources for a while: a NAT
     gateway stays describable in state "deleted" for about an hour, a terminated
@@ -848,6 +862,13 @@ def _is_deleted_tombstone(ctx: _NukeContext, arn: str) -> bool:
             reservations = ec2.describe_instances(InstanceIds=[resource_id])["Reservations"]
             states = [i["State"]["Name"] for r in reservations for i in r["Instances"]]
             return not states or all(state == "terminated" for state in states)
+        if arn.split(":")[2] == "ec2" and kind in _EC2_DESCRIBE_BY_ID:
+            # The tagging API also keeps listing outright-deleted VPC resources for
+            # minutes (real run: a subnet terraform had destroyed failed verify). These
+            # have no "deleted" state; a describe by id raises *.NotFound, handled below.
+            method, id_param, result_key = _EC2_DESCRIBE_BY_ID[kind]
+            ec2 = ctx.boto_client("ec2")
+            return not getattr(ec2, method)(**{id_param: [resource_id]})[result_key]
     except ClientError as e:
         _raise_if_access_denied(e)
         return e.response.get("Error", {}).get("Code", "").endswith(".NotFound")
