@@ -710,6 +710,17 @@ mechanism.
   with an explicit "widen-only" transition would (rejected in Non-goals for a different
   reason: avoiding an unverified CFN list-conditional idiom).
 
+### Known limit (found in ticket 5): create-time template recommendation is caller-scoped
+
+The create wizard picks the widest compute type from the infras the *caller* can list.
+A same-account sibling owned by an unrelated user is invisible there. That is deliberate:
+at create time `code` is an unverified, client-supplied account id, so a server-side
+"widest compute type across every infra with this `code`" lookup would let anyone probe
+which compute types other tenants run in an arbitrary account. The full cross-tenant
+never-downgrade selection runs server-side only after AssumeRole has proven the account
+(`cfn-refresh`, `_cfn_siblings`). If a customer updates a shared stack with a narrower
+template, the next refresh from the wider sibling's owner proposes the wide template again.
+
 ## Execution plan
 
 Each ticket is independently shippable and reviewable as one PR; 1→4 are prerequisites

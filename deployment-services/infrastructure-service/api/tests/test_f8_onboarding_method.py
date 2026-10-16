@@ -89,3 +89,19 @@ def test_migration_0038_adds_exactly_the_two_additive_fields():
 
     stack_name_field = added["cfn_stack_name"].field
     assert stack_name_field.null is True
+
+
+def test_serializer_exposes_onboarding_method_and_stack_name(make_infra):
+    """The dashboard branches its refresh/verify UI on these (F8 ticket 5); without them
+    every infra reads as script-onboarded and the CFN UI is unreachable."""
+    from api.serializers.infrastructure import InfrastructureSerializer
+
+    script = InfrastructureSerializer.serialize_instance(make_infra())
+    assert script["onboarding_method"] == "script"
+    assert script["cfn_stack_name"] is None
+
+    cfn = InfrastructureSerializer.serialize_instance(make_infra(
+        onboarding_method=OnboardingMethod.CLOUDFORMATION, cfn_stack_name="my-stack",
+    ))
+    assert cfn["onboarding_method"] == "cloudformation"
+    assert cfn["cfn_stack_name"] == "my-stack"
