@@ -714,7 +714,9 @@ def test_verify_reports_tagged_leftovers(make_nuke_run):
     fake_codebuild.batch_get_projects.return_value = {"projects": []}
     fake_iam = MagicMock()
     fake_iam.get_role.side_effect = ClientError({"Error": {"Code": "NoSuchEntity", "Message": "x"}}, "GetRole")
-    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock(), "logs": _no_log_groups(), **_empty_state_clients()}
+    fake_ec2 = MagicMock()
+    fake_ec2.describe_security_groups.return_value = {"SecurityGroups": [{"GroupId": "sg-abc"}]}
+    clients = {"resourcegroupstaggingapi": fake_tagging, "codebuild": fake_codebuild, "iam": fake_iam, "rds": MagicMock(), "logs": _no_log_groups(), "ec2": fake_ec2, **_empty_state_clients()}
 
     with patch.object(_NukeContext, "boto_client", lambda self, service: clients[service]):
         result = _verify_nothing_left(ctx)
@@ -910,6 +912,26 @@ def test_leftovers_sweeps_every_tagged_task_definition_revision(make_nuke_run):
     assert ecs.deregister_task_definition.call_count == 12
     batches = [c.kwargs["taskDefinitions"] for c in ecs.delete_task_definitions.call_args_list]
     assert [len(b) for b in batches] == [10, 2]
+
+
+def test_verify_ignores_deleted_vpc_resources_the_tagging_api_still_lists(make_nuke_run):
+    """Real AWS: verify failed a nuke on a subnet terraform had already destroyed; the
+    tagging API kept listing it while describe-subnets returned InvalidSubnetID.NotFound."""
+    from api.services.nuke_worker import _is_deleted_tombstone, _NukeContext
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+    ec2 = MagicMock()
+    ec2.describe_subnets.side_effect = ClientError(
+        {"Error": {"Code": "InvalidSubnetID.NotFound", "Message": "gone"}}, "DescribeSubnets",
+    )
+    ec2.describe_vpcs.return_value = {"Vpcs": [{"VpcId": "vpc-live"}]}
+    ec2.describe_security_groups.return_value = {"SecurityGroups": []}
+    with patch.object(_NukeContext, "boto_client", lambda self, service: ec2):
+        assert _is_deleted_tombstone(ctx, "arn:aws:ec2:us-east-1:123456789012:subnet/subnet-gone")
+        assert _is_deleted_tombstone(ctx, "arn:aws:ec2:us-east-1:123456789012:security-group/sg-gone")
+        assert not _is_deleted_tombstone(ctx, "arn:aws:ec2:us-east-1:123456789012:vpc/vpc-live")
+    ec2.describe_subnets.assert_called_once_with(SubnetIds=["subnet-gone"])
 
 
 def test_verify_ignores_inactive_ecs_cluster_and_deleting_task_definitions(make_nuke_run):
