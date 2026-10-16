@@ -17,6 +17,13 @@ from shared.mode import is_dev_mode
 logger = logging.getLogger(__name__)
 
 CLUSTER_TAG_KEY = "elbv2.k8s.aws/cluster"
+# EKS Auto Mode's built-in load balancer controller tags its ALBs and security groups
+# with these instead (real AWS, 2026-10-16) — matching only CLUSTER_TAG_KEY meant the
+# reaper never found an Auto Mode orphan. The cluster key alone is also on other
+# EKS-managed resources, so an Auto Mode match additionally requires a controller
+# ownership tag.
+AUTO_MODE_CLUSTER_TAG_KEY = "eks:eks-cluster-name"
+AUTO_MODE_CONTROLLER_TAG_PREFIXES = ("ingress.eks.amazonaws.com/", "service.eks.amazonaws.com/")
 APP_NAMESPACE_PREFIX = "app-"
 GONE_CLUSTER_STATUSES = {"DELETED", "FAILED"}
 ELB_REAP_TIMEOUT_SECONDS = 480
@@ -139,6 +146,17 @@ def _wait_until_load_balancers_reaped(session, cluster_name: str, vpc_id: str | 
     )
 
 
+def _owned_by_cluster_controller(tags: list, cluster_name: str) -> bool:
+    """True for a resource the cluster's load balancer controller created — the
+    self-managed controller (elbv2.k8s.aws/cluster) or EKS Auto Mode's built-in one."""
+    by_key = {t["Key"]: t["Value"] for t in tags}
+    if by_key.get(CLUSTER_TAG_KEY) == cluster_name:
+        return True
+    return by_key.get(AUTO_MODE_CLUSTER_TAG_KEY) == cluster_name and any(
+        key.startswith(AUTO_MODE_CONTROLLER_TAG_PREFIXES) for key in by_key
+    )
+
+
 def _matching_load_balancers(elbv2, cluster_name: str, vpc_id: str) -> list[dict]:
     load_balancers = []
     for page in elbv2.get_paginator("describe_load_balancers").paginate():
@@ -153,7 +171,7 @@ def _matching_load_balancers(elbv2, cluster_name: str, vpc_id: str) -> list[dict
         tagged_arns = {
             description["ResourceArn"]
             for description in tag_descriptions
-            if any(t["Key"] == CLUSTER_TAG_KEY and t["Value"] == cluster_name for t in description["Tags"])
+            if _owned_by_cluster_controller(description["Tags"], cluster_name)
         }
         matches.extend(lb for lb in batch if lb["LoadBalancerArn"] in tagged_arns)
     return matches
@@ -190,12 +208,14 @@ def _reap_orphaned_security_groups(session, cluster_name: str, vpc_id: str | Non
     if not vpc_id:
         return
     ec2 = session.client("ec2")
-    security_groups = ec2.describe_security_groups(
-        Filters=[
-            {"Name": "vpc-id", "Values": [vpc_id]},
-            {"Name": f"tag:{CLUSTER_TAG_KEY}", "Values": [cluster_name]},
-        ]
-    )["SecurityGroups"]
+    security_groups = [
+        group
+        for page in ec2.get_paginator("describe_security_groups").paginate(
+            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+        )
+        for group in page["SecurityGroups"]
+        if _owned_by_cluster_controller(group.get("Tags", []), cluster_name)
+    ]
     if len(security_groups) > MAX_ORPHANS_PER_BATCH and not bypass_cap:
         lines.append(
             f"[k8s-reap] REFUSING to delete {len(security_groups)} security groups "
