@@ -8,6 +8,7 @@ from api.common.envs.application import app_config
 from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from api.serializers.infrastructure import InfrastructureSerializer
+from api.services import onboarding as onboarding_service
 from api.services.infra_queue import InfraQueue
 from api.services.infrastructure_permissions import InfrastructurePermissions
 from django.conf import settings
@@ -208,6 +209,30 @@ class InfrastructureService:
         serialized_infra = InfrastructureSerializer.serialize_instance(infra)
         serialized_infra["onboarding_token"] = onboarding_token
         return serialized_infra
+
+    def claim_and_authenticate(self, infra):
+        """Atomically claims `infra`'s onboarding token and runs the bounded-retry
+        AssumeRole. Shared by the script onboarding callback and the CFN cfn-verify
+        endpoint — see api.services.onboarding for the exception contract."""
+        return onboarding_service.claim_and_authenticate(infra)
+
+    def release_onboarding_token_claim(self, infra_id) -> None:
+        onboarding_service.release_onboarding_token_claim(infra_id)
+
+    def finish_onboarding(self, infra, *, policy_version=None, cfn_stack_name=None, sibling_targets=None) -> dict:
+        """Shared post-AssumeRole tail. See api.services.onboarding.finish_onboarding."""
+        return onboarding_service.finish_onboarding(
+            infra, policy_version=policy_version, cfn_stack_name=cfn_stack_name,
+            sibling_targets=sibling_targets,
+        )
+
+    def write_policy_state(self, infra, *, policy_version=None, cfn_stack_name=None, sibling_targets=None) -> None:
+        """Sibling-wide policy_version/cfn_stack_name write, without the rest of the
+        onboarding tail. See api.services.onboarding.write_policy_state."""
+        onboarding_service.write_policy_state(
+            infra, policy_version=policy_version, cfn_stack_name=cfn_stack_name,
+            sibling_targets=sibling_targets,
+        )
 
     @staticmethod
     def _assert_dns_teardown_complete(infra_id):

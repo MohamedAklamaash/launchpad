@@ -352,6 +352,17 @@ if EKS_ENABLED and not is_dev_mode(app_config.mode):
             f"{os.environ.get('EKS_PUBLIC_ACCESS_CIDRS', '')!r}): {exc}"
         ) from exc
 
+# F8 ticket 3: CloudFormation onboarding's cfn-verify/cfn-refresh endpoints, gated off by
+# default pending real-AWS validation — same belt-and-suspenders precedent as EKS_ENABLED
+# and PLATFORM_BUILD_ENABLED. Both endpoints 404 while this is False.
+CFN_ONBOARDING_ENABLED = os.environ.get('CFN_ONBOARDING_ENABLED', 'False').lower() == 'true'
+
+# Per-user budget for cfn-verify/cfn-refresh — each call AssumeRoles into the customer's
+# account, the exact class of call these budgets exist to bound (same posture as
+# RATE_BUDGET_EVIDENCE_*).
+RATE_BUDGET_CFN_ONBOARDING_LIMIT = int(os.environ.get('RATE_BUDGET_CFN_ONBOARDING_LIMIT', '10'))
+RATE_BUDGET_CFN_ONBOARDING_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_CFN_ONBOARDING_WINDOW_SECONDS', '300'))
+
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
