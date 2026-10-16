@@ -41,6 +41,9 @@ widen — see [Keeping the policy current](#keeping-the-policy-current).
 
 ## Automated Setup — CloudFormation
 
+> **Rollout:** CloudFormation onboarding is being rolled out and appears in the dashboard
+> only once it is enabled for your workspace. Until then, use the script above.
+
 If you prefer a GUI over a shell command, create your infrastructure in the dashboard and
 use the **Launch stack** quick-create link on the CloudFormation tab instead of running
 `create_aws_role.sh`. This provisions the exact same `LaunchpadDeploymentRole` +
