@@ -45,6 +45,27 @@ python3 "$GENERATE_PY" --check
 REF="$(git -C "$REPO_ROOT" rev-parse --verify "${REF_INPUT}^{commit}")"
 echo "Resolved $REF_INPUT -> $REF" >&2
 
+# The upload below reads bytes off the working tree, and generate.py --check above also
+# only validated the working tree — not whatever $REF actually points at. Without this
+# guard, publishing a tag/branch while checked out on a different commit would key the
+# upload by $REF but fill it with unrelated bytes, silently defeating the one guarantee
+# this script exists to give: that a published key's content matches what that ref says
+# it is.
+HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+if [ "$HEAD_SHA" != "$REF" ]; then
+  echo "refusing to publish: $REF_INPUT resolves to $REF, but HEAD is $HEAD_SHA." >&2
+  echo "check out $REF_INPUT exactly before publishing (git checkout $REF_INPUT)." >&2
+  exit 1
+fi
+if ! git -C "$REPO_ROOT" diff --quiet -- "$CFN_DIR" || \
+   ! git -C "$REPO_ROOT" diff --cached --quiet -- "$CFN_DIR"; then
+  echo "refusing to publish: $CFN_DIR has uncommitted changes relative to $REF." >&2
+  exit 1
+fi
+
+ERR_FILE="$(mktemp)"
+trap 'rm -f "$ERR_FILE"' EXIT
+
 FAILED=0
 for FILE in "${TEMPLATES[@]}"; do
   SRC="$CFN_DIR/$FILE"
@@ -63,19 +84,18 @@ for FILE in "${TEMPLATES[@]}"; do
     --body "$SRC" \
     --content-type application/json \
     --if-none-match '*' \
-    >/dev/null 2>/tmp/publish-put-object.err; then
+    >/dev/null 2>"$ERR_FILE"; then
     echo "  published: https://$BUCKET.s3.amazonaws.com/$KEY" >&2
   else
-    if grep -qi "PreconditionFailed\|At least one of the pre-conditions" /tmp/publish-put-object.err; then
+    if grep -qi "PreconditionFailed\|At least one of the pre-conditions" "$ERR_FILE"; then
       echo "  already published at this ref — refusing to overwrite (this is success, not an error)" >&2
     else
       echo "  FAILED:" >&2
-      cat /tmp/publish-put-object.err >&2
+      cat "$ERR_FILE" >&2
       FAILED=1
     fi
   fi
 done
-rm -f /tmp/publish-put-object.err
 
 if [ "$FAILED" -ne 0 ]; then
   exit 1

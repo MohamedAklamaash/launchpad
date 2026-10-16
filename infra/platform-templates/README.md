@@ -103,17 +103,22 @@ infra/platform-templates/publish.sh "$BUCKET" <git-ref>
 
 `<git-ref>` can be a tag, branch, or short SHA — `publish.sh` resolves it to a full commit
 SHA with `git rev-parse --verify "<ref>^{commit}"` before using it as the S3 key segment,
-so the published key is never a moving branch name. It runs `generate.py --check` first
-(refuses to publish drifted templates) and uploads both files to
-`s3://$BUCKET/<templates_prefix>/<resolved-sha>/<template-file>` with
+so the published key is never a moving branch name. **You must have `<git-ref>` actually
+checked out** (`HEAD` resolving to the same SHA, no uncommitted changes under the
+`cloudformation/` directory) — the script refuses otherwise. The upload reads bytes off
+the working tree, not off git's object store for that ref, so this guard is what keeps
+the published key's content matching what the ref name claims it is.
+
+It runs `generate.py --check` first (refuses to publish drifted templates) and uploads
+both files to `s3://$BUCKET/<templates_prefix>/<resolved-sha>/<template-file>` with
 `aws s3api put-object --if-none-match '*'` — the AWS CLI's documented conditional-PUT
 flag (confirmed supported in `aws-cli/2.35.15`; if your CLI predates this flag, upgrade
 rather than drop the condition, since dropping it reintroduces exactly the silent-overwrite
 risk this step exists to close). A re-run against an already-published ref exits
 successfully without writing (reported as "already published", not an error) — the CLI
-surfaces this as an `AtLeastOnePreconditionFailed`/`PreconditionFailed` response from the
-conditional PUT, not a local check, so the no-overwrite guarantee holds even against a
-concurrent publisher.
+surfaces this as a `PreconditionFailed` error ("At least one of the pre-conditions you
+specified did not hold") from the conditional PUT, not a local check, so the no-overwrite
+guarantee holds even against a concurrent publisher.
 
 Bucket versioning stays on as defense-in-depth against an accidental delete of an already
 published key — the conditional PUT is what actually prevents the overwrite in the first
