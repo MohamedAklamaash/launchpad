@@ -693,3 +693,25 @@ against `aws iam get-role` have never executed against the real AWS CLI/IAM back
       real IAM denial, so the `policy_refresh_required` mapping's assumption that AWS
       returns `AccessDenied`/`AccessDeniedException` (not some other code) for this
       specific action is unconfirmed.
+
+## F7 platform builds — verified 2026-10-16 (account 403260035234, us-east-1)
+
+- [x] `infra/platform-builder` applied (33 resources); Kaniko mirrored from
+      `ghcr.io/kaniko-build/dist/chainguard-dev-kaniko/executor` with `skopeo copy --all
+      --preserve-digests` (digest unchanged); platform user can additionally assume only
+      `launchpad-platform-builder-launcher`.
+- [x] End-to-end deploy of a **private** GitHub repo (`dummy-backend`) with
+      `PLATFORM_BUILD_ENABLED=True` and every CodeBuild quota at 0: init + kaniko exit 0
+      (~32 s build), image pushed with the scoped 900 s credential, deploy pinned by digest,
+      app serves 200; per-build S3 objects deleted. Repeated after #136: no stale error while
+      BUILDING.
+- [x] Build-log endpoint on a finished platform build: 38 events from `init` + `kaniko`,
+      `complete=true`, no registry-auth strings.
+- [x] Scoped push credential: own repo push allowed; other repo / delete / list / S3 denied
+      (spike); module-minted credential refuses foreign/malformed repo names.
+- [ ] Live tail during BUILDING returned 0 events at +15 s (stream not yet written) — check
+      the UI tail picks lines up as they arrive.
+- [ ] Non-default `build_context` / Dockerfile path (`--context-sub-path` mapping).
+- [ ] ECR token lifetime beyond the 900 s session (code clamps to the session expiry).
+- [ ] EKS app deployed through the platform builder (no EKS infra currently).
+
