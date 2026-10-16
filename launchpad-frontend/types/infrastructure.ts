@@ -35,6 +35,15 @@ export interface Infrastructure {
    *  script before the missing grants cause an AccessDenied mid-deploy. */
   policy_refresh_required?: boolean;
   invited_users?: InvitedUserSummary[];
+  /** How this AWS account's LaunchpadDeploymentRole was onboarded. `undefined` means the
+   *  backend predates this field in its serializer response — treat as `'script'`, the
+   *  model default and the only method that existed before F8 (see
+   *  F8-cloudformation-onboarding.md §7; as of this writing InfrastructureSerializer
+   *  does not yet emit this field at all, so it is always `undefined` in practice). */
+  onboarding_method?: 'script' | 'cloudformation';
+  /** The CFN stack's name, discovered at "Verify connection" time. Null/undefined for
+   *  every script-onboarded row and for a CFN-chosen infra that hasn't verified yet. */
+  cfn_stack_name?: string | null;
   /** Launchpad platform AWS account ID; the trust policy created by create_aws_role.sh
    *  must name this as principal. */
   platform_account_id: string;
@@ -150,4 +159,25 @@ export interface NukeStatus {
   leftovers: NukeLeftover[];
   started_at: string | null;
   finished_at: string | null;
+}
+
+// POST /api/infrastructures/{id}/cfn-verify. 202 while provisioning was freshly enqueued,
+// 200 when a concurrent call already queued it (see api/services/onboarding.py).
+export interface CfnVerifyResponse {
+  status: 'accepted' | 'already_queued';
+  infrastructure_id: string;
+  is_cloud_authenticated: true;
+  policy_version: number | null;
+  cfn_stack_name: string | null;
+}
+
+// POST /api/infrastructures/{id}/cfn-refresh. review_url points at the change set's
+// console review page — the customer executes it themselves, same posture as the
+// script's refresh flow.
+export interface CfnRefreshResponse {
+  infrastructure_id: string;
+  stack_name: string;
+  change_set_id: string;
+  target_compute_type: ComputeType;
+  review_url: string;
 }

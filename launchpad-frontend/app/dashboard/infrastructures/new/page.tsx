@@ -1,15 +1,26 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ArrowLeft, ArrowRight, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert, Rocket, Layers } from 'lucide-react';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { ArrowLeft, ArrowRight, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert, Rocket, Layers, CloudCog, ExternalLink, Loader2 } from 'lucide-react';
 import { LaunchSequence } from '@/components/launch';
 import { infrastructureApi, AwsRegion } from '@/lib/api/infrastructures';
-import { ComputeType, InfrastructureCreateResponse } from '@/types/infrastructure';
+import { ComputeType, Infrastructure, InfrastructureCreateResponse } from '@/types/infrastructure';
 import { resolveOnboardingScript, getOnboardingMisconfiguration, buildBootstrapEnvExports } from '@/lib/onboarding-scripts';
+import {
+  isCfnOnboardingEnabled,
+  getCfnOnboardingMisconfiguration,
+  buildQuickCreateLink,
+  buildStackInfoUrl,
+  resolveCfnTemplateUrl,
+  widestComputeType,
+  CFN_ROLE_NAME,
+  QuickCreateLink,
+} from '@/lib/onboarding-cloudformation';
 import { toast } from 'sonner';
 
 const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
@@ -143,6 +154,71 @@ export default function NewInfrastructurePage() {
     }
   }
 
+  // CFN onboarding is unavailable for mock (dev-mode) infras — the backend's
+  // CfnOnboardingMockUnsupported 400 matches this. Hide the whole tab rather than let
+  // a customer pick it and hit an error immediately.
+  const cfnUiEnabled = isCfnOnboardingEnabled() && !!createdInfra && !createdInfra.is_mock;
+
+  const [accountSiblings, setAccountSiblings] = useState<Infrastructure[] | null>(null);
+  const [siblingsLoading, setSiblingsLoading] = useState(false);
+  const [siblingsError, setSiblingsError] = useState(false);
+
+  // Which AWS account states this target account is in: fresh (no authenticated infra
+  // yet — this is the only lookup that can see), already has a CFN-managed sibling
+  // (second infra joining an existing stack, plan §5's customer-driven copy/paste flow),
+  // or already has a script-managed sibling (CFN tab disabled — plan §2's exclusivity
+  // rule). Scoped to infras this user can see via `list()`; a sibling owned by a
+  // different user sharing the same AWS account is invisible to this check — see the
+  // PR description for why that's a real gap, not a corner we cut for convenience.
+  const loadSiblings = useCallback(async () => {
+    if (!createdInfra) return;
+    setSiblingsLoading(true);
+    setSiblingsError(false);
+    try {
+      const all = await infrastructureApi.list();
+      setAccountSiblings(
+        all.filter((i) => i.id !== createdInfra.id && i.code === createdInfra.code && i.is_cloud_authenticated),
+      );
+    } catch {
+      setSiblingsError(true);
+    } finally {
+      setSiblingsLoading(false);
+    }
+  }, [createdInfra]);
+
+  useEffect(() => {
+    if (cfnUiEnabled) loadSiblings();
+  }, [cfnUiEnabled, loadSiblings]);
+
+  // `onboarding_method` is undefined until the backend serializer exposes it (see
+  // Infrastructure['onboarding_method']'s doc comment) — every sibling falls back to
+  // 'script', the model's own default, which is also the conservative read: without
+  // that field no sibling can ever actually be recognized as CFN-managed yet.
+  const cfnSiblings = (accountSiblings ?? []).filter((s) => s.onboarding_method === 'cloudformation');
+  const scriptSiblings = (accountSiblings ?? []).filter((s) => (s.onboarding_method ?? 'script') === 'script');
+  const cfnAccountState: 'fresh' | 'cfn_sibling' | 'script_sibling' =
+    cfnSiblings.length > 0 ? 'cfn_sibling' : scriptSiblings.length > 0 ? 'script_sibling' : 'fresh';
+
+  // Never just this infra's own compute_type — run every sibling (if any) through the
+  // same widest-compute-type computation the backend uses, so a narrower account never
+  // gets recommended a template that would downgrade a wider sibling. See plan §5a.
+  const recommendedComputeType: ComputeType = createdInfra
+    ? widestComputeType([createdInfra.compute_type, ...cfnSiblings.map((s) => s.compute_type)])
+    : 'ecs_fargate';
+  const mergedExternalIds = createdInfra ? [createdInfra.id, ...cfnSiblings.map((s) => s.id)] : [];
+  const cfnStackName = cfnSiblings.find((s) => s.cfn_stack_name)?.cfn_stack_name ?? null;
+
+  const cfnMisconfig = getCfnOnboardingMisconfiguration();
+  const quickCreate =
+    createdInfra && !cfnMisconfig
+      ? buildQuickCreateLink({
+        computeType: recommendedComputeType,
+        externalIds: mergedExternalIds,
+        platformAccountId: createdInfra.platform_account_id,
+        platformUser: createdInfra.platform_user,
+      })
+      : null;
+
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copy = (text: string, key: string) => {
     if (!text) return;
@@ -177,75 +253,70 @@ export default function NewInfrastructurePage() {
             </span>
             <div>
               <span className="eyebrow">Stage 02 / Ignition</span>
-              <h1 className="mt-1 text-2xl font-display font-semibold text-foreground tracking-tight">Bootstrap your AWS account</h1>
+              <h1 className="mt-1 text-2xl font-display font-semibold text-foreground tracking-tight">Connect your AWS account</h1>
               <p className="text-sm text-muted-foreground mt-1.5">
-                Run this command in a shell with AWS credentials for account <span className="font-mono text-foreground">{createdInfra.code}</span>.
-                Provisioning starts automatically once the script finishes.
+                {cfnUiEnabled ? (
+                  <>Finish onboarding account <span className="font-mono text-foreground">{createdInfra.code}</span> with the shell script or a CloudFormation stack. Provisioning starts automatically once either one finishes.</>
+                ) : (
+                  <>Run this command in a shell with AWS credentials for account <span className="font-mono text-foreground">{createdInfra.code}</span>. Provisioning starts automatically once the script finishes.</>
+                )}
               </p>
             </div>
           </div>
 
-          <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
-            <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
-            <div className="space-y-0.5">
-              <p className="text-sm font-medium text-warning">This token is shown only once</p>
-              <p className="text-xs text-warning/80">
-                Copy the snippet now. If you navigate away you will need to delete and recreate this infrastructure to get a new token.
-              </p>
-            </div>
-          </div>
+          {cfnUiEnabled ? (
+            <Tabs defaultValue="script" className="w-full">
+              <TabsList className="w-full">
+                <TabsTrigger value="script" className="flex-1">Script</TabsTrigger>
+                <span title={cfnAccountState === 'script_sibling' ? 'This AWS account already uses the shell-script onboarding method — use the Script tab instead.' : undefined} className="flex-1">
+                  <TabsTrigger value="cloudformation" disabled={cfnAccountState === 'script_sibling'} className="w-full">
+                    CloudFormation
+                  </TabsTrigger>
+                </span>
+              </TabsList>
 
-          {onboardingMisconfig && (
-            <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
-              <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
-              <div className="space-y-1 flex-1">
-                <p className="text-sm font-medium text-warning">Onboarding is misconfigured</p>
-                <p className="text-xs text-warning/80">{onboardingMisconfig}</p>
-                <p className="text-xs text-warning/80">
-                  Your onboarding token and AWS account ID are still valid — use them with a manually-fetched copy of the bootstrap script.
+              {cfnAccountState === 'script_sibling' && (
+                <p className="text-[11px] text-muted-foreground px-1 pt-2">
+                  This AWS account already uses the shell-script onboarding method — an account picks one method
+                  for life. Use the Script tab above instead.
                 </p>
-                <div className="mt-2 space-y-1.5">
-                  {[
-                    { k: 'Account ID', v: createdInfra.code, copyable: false, key: '' },
-                    { k: 'Infra ID', v: createdInfra.id, copyable: false, key: '' },
-                    { k: 'Onboarding token', v: createdInfra.onboarding_token, copyable: true, key: 'token' },
-                  ].map((row) => (
-                    <div key={row.k} className="flex items-center gap-2">
-                      <span className="eyebrow w-28 shrink-0">{row.k}</span>
-                      <code className="text-xs font-mono text-warning break-all">{row.v}</code>
-                      {row.copyable && (
-                        <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-warning/70 hover:text-warning transition-colors">
-                          {copiedKey === row.key ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {bootstrapScript && (
-            <div className="rounded-xl panel p-4 space-y-3">
-              <div className="flex items-start gap-3">
-                <Terminal className="w-4 h-4 text-success shrink-0 mt-0.5" />
-                <div className="space-y-0.5 flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground">{bootstrapScript.label}</p>
-                  <p className="text-xs text-muted-foreground">{bootstrapScript.description}</p>
-                </div>
-                <button onClick={() => copy(bootstrapScript!.invocation, 'bootstrap')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
-                  {copiedKey === 'bootstrap' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-              <pre className="bg-surface-3 border border-hairline rounded-lg px-3 py-2.5 text-[11px] font-mono text-success overflow-x-auto whitespace-pre">{bootstrapScript.invocation}</pre>
-              {bootstrapScript.locationIsUrl ? (
-                <a href={bootstrapScript.location} target="_blank" rel="noopener noreferrer" className="inline-block text-[10px] text-muted-foreground hover:text-brand transition-colors font-mono">
-                  View script source →
-                </a>
-              ) : (
-                <p className="text-[10px] text-muted-foreground font-mono">Local path: {bootstrapScript.location}</p>
               )}
-            </div>
+
+              <TabsContent value="script" className="space-y-4 pt-4">
+                <ScriptOnboardingPanel
+                  createdInfra={createdInfra}
+                  onboardingMisconfig={onboardingMisconfig}
+                  bootstrapScript={bootstrapScript}
+                  copiedKey={copiedKey}
+                  copy={copy}
+                />
+              </TabsContent>
+
+              <TabsContent value="cloudformation" className="space-y-4 pt-4">
+                <CloudFormationOnboardingPanel
+                  createdInfra={createdInfra}
+                  accountState={cfnAccountState}
+                  siblingsLoading={siblingsLoading}
+                  siblingsError={siblingsError}
+                  onRetry={loadSiblings}
+                  misconfig={cfnMisconfig}
+                  quickCreate={quickCreate}
+                  recommendedComputeType={recommendedComputeType}
+                  mergedExternalIds={mergedExternalIds}
+                  cfnStackName={cfnStackName}
+                  copiedKey={copiedKey}
+                  copy={copy}
+                />
+              </TabsContent>
+            </Tabs>
+          ) : (
+            <ScriptOnboardingPanel
+              createdInfra={createdInfra}
+              onboardingMisconfig={onboardingMisconfig}
+              bootstrapScript={bootstrapScript}
+              copiedKey={copiedKey}
+              copy={copy}
+            />
           )}
 
           <div className="flex gap-2 pt-1">
@@ -470,6 +541,251 @@ function Field({ icon, label, hint, children }: {
         {hint && <span className="text-[10px] text-muted-foreground/60 ml-auto font-mono">{hint}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+// The existing (pre-F8) bootstrap-script content, unchanged, just extracted so it can
+// render either standalone (flag off) or inside the Script tab (flag on).
+function ScriptOnboardingPanel({ createdInfra, onboardingMisconfig, bootstrapScript, copiedKey, copy }: {
+  createdInfra: InfrastructureCreateResponse;
+  onboardingMisconfig: string | null;
+  bootstrapScript: ReturnType<typeof resolveOnboardingScript> | null;
+  copiedKey: string | null;
+  copy: (text: string, key: string) => void;
+}) {
+  return (
+    <>
+      <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
+        <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+        <div className="space-y-0.5">
+          <p className="text-sm font-medium text-warning">This token is shown only once</p>
+          <p className="text-xs text-warning/80">
+            Copy the snippet now. If you navigate away you will need to delete and recreate this infrastructure to get a new token.
+          </p>
+        </div>
+      </div>
+
+      {onboardingMisconfig && (
+        <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
+          <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+          <div className="space-y-1 flex-1">
+            <p className="text-sm font-medium text-warning">Onboarding is misconfigured</p>
+            <p className="text-xs text-warning/80">{onboardingMisconfig}</p>
+            <p className="text-xs text-warning/80">
+              Your onboarding token and AWS account ID are still valid — use them with a manually-fetched copy of the bootstrap script.
+            </p>
+            <div className="mt-2 space-y-1.5">
+              {[
+                { k: 'Account ID', v: createdInfra.code, copyable: false, key: '' },
+                { k: 'Infra ID', v: createdInfra.id, copyable: false, key: '' },
+                { k: 'Onboarding token', v: createdInfra.onboarding_token, copyable: true, key: 'token' },
+              ].map((row) => (
+                <div key={row.k} className="flex items-center gap-2">
+                  <span className="eyebrow w-28 shrink-0">{row.k}</span>
+                  <code className="text-xs font-mono text-warning break-all">{row.v}</code>
+                  {row.copyable && (
+                    <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-warning/70 hover:text-warning transition-colors">
+                      {copiedKey === row.key ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bootstrapScript && (
+        <div className="rounded-xl panel p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <Terminal className="w-4 h-4 text-success shrink-0 mt-0.5" />
+            <div className="space-y-0.5 flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground">{bootstrapScript.label}</p>
+              <p className="text-xs text-muted-foreground">{bootstrapScript.description}</p>
+            </div>
+            <button onClick={() => copy(bootstrapScript!.invocation, 'bootstrap')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+              {copiedKey === 'bootstrap' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+          <pre className="bg-surface-3 border border-hairline rounded-lg px-3 py-2.5 text-[11px] font-mono text-success overflow-x-auto whitespace-pre">{bootstrapScript.invocation}</pre>
+          {bootstrapScript.locationIsUrl ? (
+            <a href={bootstrapScript.location} target="_blank" rel="noopener noreferrer" className="inline-block text-[10px] text-muted-foreground hover:text-brand transition-colors font-mono">
+              View script source →
+            </a>
+          ) : (
+            <p className="text-[10px] text-muted-foreground font-mono">Local path: {bootstrapScript.location}</p>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+// F8 ticket 5: the CloudFormation sibling to ScriptOnboardingPanel. Covers the three
+// account states plan/F8-cloudformation-onboarding.md §5/§5a describe — 'script_sibling'
+// is handled by the caller disabling this whole tab, so this component only ever renders
+// for 'fresh' or 'cfn_sibling'.
+function CloudFormationOnboardingPanel({
+  createdInfra, accountState, siblingsLoading, siblingsError, onRetry, misconfig,
+  quickCreate, recommendedComputeType, mergedExternalIds, cfnStackName, copiedKey, copy,
+}: {
+  createdInfra: InfrastructureCreateResponse;
+  accountState: 'fresh' | 'cfn_sibling' | 'script_sibling';
+  siblingsLoading: boolean;
+  siblingsError: boolean;
+  onRetry: () => void;
+  misconfig: string | null;
+  quickCreate: QuickCreateLink | null;
+  recommendedComputeType: ComputeType;
+  mergedExternalIds: string[];
+  cfnStackName: string | null;
+  copiedKey: string | null;
+  copy: (text: string, key: string) => void;
+}) {
+  if (siblingsLoading) {
+    return (
+      <div className="flex items-center gap-2.5 py-6 justify-center text-muted-foreground">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        <p className="text-xs">Checking your AWS account&apos;s onboarding status…</p>
+      </div>
+    );
+  }
+
+  if (siblingsError) {
+    return (
+      <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 space-y-2.5">
+        <p className="text-xs text-destructive">Couldn&apos;t check this AWS account&apos;s onboarding status.</p>
+        <Button variant="outline" size="sm" onClick={onRetry} className="gap-1.5">
+          <Loader2 className="w-3.5 h-3.5" /> Retry
+        </Button>
+      </div>
+    );
+  }
+
+  const templateUrl = resolveCfnTemplateUrl(recommendedComputeType);
+  const templateLabel = recommendedComputeType === 'eks' ? 'Kubernetes (ecs_fargate + eks)' : 'ECS Fargate';
+
+  const paramRows: { k: string; v: string; key: string }[] = [
+    { k: 'ExternalIds', v: mergedExternalIds.join(','), key: 'cfn-external-ids' },
+    { k: 'LaunchpadPlatformAccountId', v: createdInfra.platform_account_id, key: 'cfn-platform-account' },
+    { k: 'LaunchpadPlatformUser', v: createdInfra.platform_user, key: 'cfn-platform-user' },
+  ];
+
+  return (
+    <div className="space-y-4">
+      {misconfig ? (
+        <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
+          <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-warning">CloudFormation onboarding is misconfigured</p>
+            <p className="text-xs text-warning/80">{misconfig}</p>
+          </div>
+        </div>
+      ) : accountState === 'cfn_sibling' ? (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-azure/20 bg-azure/5 p-4 flex items-start gap-3">
+            <CloudCog className="w-4 h-4 text-azure shrink-0 mt-0.5" />
+            <p className="text-xs text-azure">
+              AWS account <span className="font-mono">{createdInfra.code}</span> already has a CloudFormation-managed
+              {' '}<span className="font-mono">{CFN_ROLE_NAME}</span> stack. Update it in place instead of creating a new one
+              — open the stack&apos;s <span className="font-medium">Update stack</span> flow, choose
+              {' '}<span className="font-medium">Replace current template</span>, and paste the values below.
+            </p>
+          </div>
+          <div className="rounded-xl panel p-4 space-y-2.5">
+            <div className="flex items-center gap-2">
+              <span className="eyebrow w-44 shrink-0">Template (recommended)</span>
+              <span className="text-xs text-foreground">{templateLabel}</span>
+            </div>
+            {templateUrl && (
+              <div className="flex items-center gap-2">
+                <span className="eyebrow w-44 shrink-0">Template URL</span>
+                <code className="text-xs font-mono text-foreground break-all flex-1">{templateUrl}</code>
+                <button onClick={() => copy(templateUrl, 'cfn-template-url')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+                  {copiedKey === 'cfn-template-url' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            )}
+            {paramRows.map((row) => (
+              <div key={row.key} className="flex items-center gap-2">
+                <span className="eyebrow w-44 shrink-0">{row.k}</span>
+                <code className="text-xs font-mono text-foreground break-all flex-1">{row.v}</code>
+                <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+                  {copiedKey === row.key ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                </button>
+              </div>
+            ))}
+          </div>
+          {cfnStackName ? (
+            <a href={buildStackInfoUrl(cfnStackName)} target="_blank" rel="noopener noreferrer">
+              <Button variant="outline" className="w-full gap-1.5">
+                <ExternalLink className="w-3.5 h-3.5" /> Open stack in AWS console
+              </Button>
+            </a>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              Open CloudFormation in the AWS console (region us-east-1) and find the stack backing{' '}
+              <span className="font-mono">{CFN_ROLE_NAME}</span> to apply this update.
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Once the update completes, click <span className="font-medium">Verify connection</span> on this
+            infrastructure&apos;s detail page to finish onboarding.
+          </p>
+        </div>
+      ) : quickCreate ? (
+        <div className="space-y-3">
+          <div className="rounded-xl panel p-4 space-y-2">
+            <div className="flex items-start gap-3">
+              <CloudCog className="w-4 h-4 text-success shrink-0 mt-0.5" />
+              <div className="space-y-0.5 flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground">Launch stack ({templateLabel})</p>
+                <p className="text-xs text-muted-foreground">
+                  Opens the CloudFormation console pre-filled with this infrastructure&apos;s parameters. Review
+                  and create the stack there — nothing happens on Launchpad&apos;s side until you verify the
+                  connection.
+                </p>
+              </div>
+            </div>
+          </div>
+          <a href={quickCreate.url} target="_blank" rel="noopener noreferrer">
+            <Button className="w-full gap-1.5">
+              <ExternalLink className="w-3.5 h-3.5" /> Launch stack in AWS console
+            </Button>
+          </a>
+          <p className="text-xs text-muted-foreground">
+            After the stack reaches <span className="font-mono">CREATE_COMPLETE</span>, click{' '}
+            <span className="font-medium">Verify connection</span> on this infrastructure&apos;s detail page to
+            finish onboarding.
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-xl panel p-4 space-y-2.5">
+          <p className="text-xs text-muted-foreground">
+            The parameter list is too large for a quick-create link — specify the template manually in the AWS
+            console and paste these parameters:
+          </p>
+          {templateUrl && (
+            <div className="flex items-center gap-2">
+              <span className="eyebrow w-44 shrink-0">Template URL</span>
+              <code className="text-xs font-mono text-foreground break-all flex-1">{templateUrl}</code>
+              <button onClick={() => copy(templateUrl, 'cfn-template-url')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+                {copiedKey === 'cfn-template-url' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          )}
+          {paramRows.map((row) => (
+            <div key={row.key} className="flex items-center gap-2">
+              <span className="eyebrow w-44 shrink-0">{row.k}</span>
+              <code className="text-xs font-mono text-foreground break-all flex-1">{row.v}</code>
+              <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+                {copiedKey === row.key ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { ComputeType, Infrastructure, InfrastructureCosts, InfrastructureCreate, InfrastructureCreateResponse, NukeStatus, ProvisioningLogs } from '@/types/infrastructure';
+import { CfnRefreshResponse, CfnVerifyResponse, ComputeType, Infrastructure, InfrastructureCosts, InfrastructureCreate, InfrastructureCreateResponse, NukeStatus, ProvisioningLogs } from '@/types/infrastructure';
 
 export interface AwsRegion {
   value: string;
@@ -132,6 +132,23 @@ export const infrastructureApi = {
   // Owner only. Still answers after a COMPLETED run has deleted the infrastructure.
   getNukeStatus: async (id: string): Promise<NukeStatus> => {
     const { data } = await apiClient.get(`/api/infrastructures/${id}/nuke`);
+    return data;
+  },
+
+  // Owner only, gated behind CFN_ONBOARDING_ENABLED (404 when off). Claims the
+  // onboarding token, AssumeRoles into the customer's account, and confirms
+  // LaunchpadDeploymentRole is CloudFormation-managed — the GUI-path equivalent of the
+  // script's onboarding callback. See plan/F8-cloudformation-onboarding.md §4.
+  cfnVerify: async (id: string): Promise<CfnVerifyResponse> => {
+    const { data } = await apiClient.post(`/api/infrastructures/${id}/cfn-verify`);
+    return data;
+  },
+
+  // Owner only, gated behind CFN_ONBOARDING_ENABLED. Starts a CreateChangeSet against the
+  // already-onboarded CFN stack and returns a console review link the customer executes
+  // themselves — never auto-applied. See plan §5.
+  cfnRefresh: async (id: string): Promise<CfnRefreshResponse> => {
+    const { data } = await apiClient.post(`/api/infrastructures/${id}/cfn-refresh`);
     return data;
   },
 };
