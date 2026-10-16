@@ -6,18 +6,28 @@ import { closeDatabase, connectToDatabase } from '@/db/sequalize';
 import { initModels } from '@/db';
 import { closePublisher, InitPublisher } from '@/messaging/producer/user-created.message';
 import { startInfraConsumer, stopInfraConsumer } from '@/messaging/consumer/infra-created.consumer';
+import {
+    closeOrgEventsPublisher,
+    InitOrgEventsPublisher,
+} from '@/messaging/producer/org-events.message';
 
 const main = async () => {
     await connectToDatabase();
     await initModels();
     await InitPublisher();
+    await InitOrgEventsPublisher();
     await startInfraConsumer();
 
     const app = createApp();
     const server = createServer(app);
 
     const shutdown = () => {
-        Promise.all([closeDatabase(), closePublisher(), stopInfraConsumer()])
+        Promise.all([
+            closeDatabase(),
+            closePublisher(),
+            closeOrgEventsPublisher(),
+            stopInfraConsumer(),
+        ])
             .catch((error: unknown) => {
                 logger.error({ error }, 'Error shutting down tasks');
             })
