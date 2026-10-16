@@ -146,6 +146,25 @@ LEGACY_EKS_DETECTED=""
 if [ "$MOCK_MODE" != "1" ] && aws iam get-role --role-name "${ROLE_NAME}" >/dev/null 2>&1; then
   ROLE_EXISTS=1
 
+  # A CloudFormation-onboarded account owns this role's trust/policy documents through
+  # its stack; writing to them out-of-band here (update-assume-role-policy,
+  # create-policy-version, etc.) would drift the stack's own view of its resources with
+  # no warning until the customer's next stack operation fails. Refuse outright and
+  # point at the stack's Update flow instead — the mirror image of the dashboard-side
+  # method lock, for a customer who runs this script from a stale bookmark without ever
+  # touching the dashboard.
+  MANAGED_BY_TAG_QUERY="Role.Tags[?Key=='launchpad:managed-by'].Value | [0]"
+  EXISTING_MANAGED_BY=$(aws iam get-role --role-name "${ROLE_NAME}" --query "$MANAGED_BY_TAG_QUERY" --output text)
+  [ "$EXISTING_MANAGED_BY" = "None" ] && EXISTING_MANAGED_BY=""
+  if [ "$EXISTING_MANAGED_BY" = "cloudformation" ]; then
+    echo "ERROR: ${ROLE_NAME} in this AWS account is managed by a CloudFormation stack" >&2
+    echo "       (tagged launchpad:managed-by=cloudformation), not this script. Running" >&2
+    echo "       this script against it would drift the stack's own view of its" >&2
+    echo "       resources. Use the stack's Update flow (or the dashboard's CloudFormation" >&2
+    echo "       refresh instructions) to change its policy or trust relationships instead." >&2
+    exit 1
+  fi
+
   # --output text flattens whatever shape "sts:ExternalId" is on the wire (a bare
   # string, or a list from a previous multi-infra run) into whitespace-separated
   # tokens. A UUID never contains whitespace, so word-splitting on IFS below recovers
