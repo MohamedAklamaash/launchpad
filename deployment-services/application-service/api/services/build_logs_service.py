@@ -236,7 +236,8 @@ def _clamp_limit(limit) -> int:
 # invisible/control character itself.
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _UNSAFE_CODEPOINTS = (
-    list(range(0x09)) + list(range(0x0B, 0x20)) + [0x7F]
+    list(range(0x09)) + list(range(0x0B, 0x20)) + [0x7F]  # C0 controls + DEL
+    + list(range(0x80, 0xA0))  # C1 controls
     + list(range(0x202A, 0x202F))
     + list(range(0x2066, 0x206A))
 )
@@ -250,6 +251,14 @@ _CREDENTIAL_PATTERNS = (
     re.compile(r"(?:AKIA|ASIA)[A-Z0-9]{16}"),
     re.compile(r"(?i)\bAuthorization:\s*(?:Basic|Bearer)\s+\S+"),
     re.compile(r'"auth"\s*:\s*"[A-Za-z0-9+/=]+"'),
+    # Security pre-review on #135: the same scoped ECR push credential this module's
+    # docstring already worries about can also surface in these two shapes — an
+    # environment-style assignment (`RUN export AWS_SECRET_ACCESS_KEY=...` echoed by a
+    # careless build script) and the other docker-config fields alongside "auth" that
+    # can carry a bare credential.
+    re.compile(r"(?i)\baws_secret_access_key\s*[=:]\s*\S+"),
+    re.compile(r"(?i)\baws_session_token\s*[=:]\s*\S+"),
+    re.compile(r'"(?:password|identitytoken|registrytoken)"\s*:\s*"[^"]+"'),
     re.compile(r"\bgh[ps]_[A-Za-z0-9]{20,}"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?i)x-access-token:[^@\s]+@"),

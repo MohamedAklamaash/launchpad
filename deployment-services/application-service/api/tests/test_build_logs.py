@@ -197,6 +197,35 @@ def test_owner_gets_200(factory, make_app, harness):
     assert {e["container"] for e in resp.data["events"]} == {"init", "kaniko"}
 
 
+@pytest.mark.django_db
+def test_read_session_is_scoped_to_get_log_events_only(factory, make_app, harness):
+    """Security pre-review on #135: the read path must assume the launcher role with a
+    session policy that only subtracts from (never adds to) the role's own permissions —
+    GetLogEvents on this build's log group, nothing else. Without this, a log reader's
+    session could also RunTask/PutObject/StopTask, which the role itself grants for
+    launching builds."""
+    import json
+
+    stack = make_app()
+    deployment = _record_deployment(stack)
+    harness.logs.get_log_events.side_effect = [_stream_response([]), _stream_response([])]
+
+    resp = _get_deployment_logs(factory, stack.owner, str(stack.app.id), str(deployment.id))
+
+    assert resp.status_code == 200
+    policy = json.loads(harness.sts.assume_role.call_args.kwargs["Policy"])
+    statements = policy["Statement"]
+    assert len(statements) == 1
+    statement = statements[0]
+    assert statement["Effect"] == "Allow"
+    assert statement["Action"] == "logs:GetLogEvents"
+    assert statement["Resource"].endswith(":log-stream:*")
+    assert ENV_VARS["PLATFORM_BUILDER_LOG_GROUP"] in statement["Resource"]
+    # The account id comes from the launcher role ARN, not a second env var that could
+    # drift from it.
+    assert f":{ACCOUNT_ID}:" in statement["Resource"]
+
+
 # ── legacy / no-build handling ───────────────────────────────────────────────
 
 @pytest.mark.django_db
@@ -309,6 +338,25 @@ def test_tampered_cursor_is_rejected(factory, make_app, harness):
 
 
 @pytest.mark.django_db
+def test_cursor_minted_for_another_user_is_rejected(factory, make_app, harness):
+    """A cursor is bound to the user it was issued to (`decode_cursor`'s `u` check), not
+    just the app/build — this is what stops a cursor from being replayed by anyone other
+    than the exact user who received it, even if they somehow reached the same app/
+    deployment another way."""
+    from api.services.build_logs_cursor import encode_cursor
+
+    stack = make_app()
+    deployment = _record_deployment(stack, build_id="build-1")
+    cursor_minted_for_someone_else = encode_cursor(
+        app_id=str(stack.app.id), user_id=str(uuid.uuid4()), build_id="build-1", tokens={},
+    )
+    resp = _get_deployment_logs(
+        factory, stack.owner, str(stack.app.id), str(deployment.id), cursor=cursor_minted_for_someone_else,
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.django_db
 def test_cursor_from_a_different_build_is_rejected(factory, make_app, harness):
     from api.services.build_logs_cursor import encode_cursor
 
@@ -416,6 +464,32 @@ def test_registry_auth_lines_are_redacted(factory, make_app, harness):
     assert resp.status_code == 200
     joined = " ".join(e["message"] for e in resp.data["events"])
     assert fake_token not in joined
+    assert "<redacted>" in joined
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("make_line", [
+    lambda v: f"export AWS_SECRET_ACCESS_KEY={v}",
+    lambda v: f"aws_session_token: {v}",
+    lambda v: f'{{"auths":{{"example.com":{{"password":"{v}"}}}}}}',
+    lambda v: f'{{"auths":{{"example.com":{{"identitytoken":"{v}"}}}}}}',
+    lambda v: f'{{"auths":{{"example.com":{{"registrytoken":"{v}"}}}}}}',
+])
+def test_additional_credential_shapes_are_redacted(factory, make_app, harness, make_line):
+    import secrets
+
+    stack = make_app()
+    deployment = _record_deployment(stack)
+    # Generated at test time, never a literal (GitGuardian).
+    fake_value = secrets.token_hex(20)
+    harness.logs.get_log_events.side_effect = [
+        _stream_response([_log_event(make_line(fake_value), 1000)]),
+        _stream_response([]),
+    ]
+    resp = _get_deployment_logs(factory, stack.owner, str(stack.app.id), str(deployment.id))
+    assert resp.status_code == 200
+    joined = " ".join(e["message"] for e in resp.data["events"])
+    assert fake_value not in joined
     assert "<redacted>" in joined
 
 
