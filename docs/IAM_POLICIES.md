@@ -209,7 +209,8 @@ Manual Setup, replace every occurrence yourself.
       "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
       "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*",
       "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:addon/infra-*/*",
-      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:nodegroup/infra-*/*"
+      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:nodegroup/infra-*/*",
+      "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:podidentityassociation/infra-*/*"
     ]
   },
   {
@@ -599,7 +600,7 @@ This policy may be updated as Launchpad adds features. Check for updates:
 - [GitHub](https://github.com/MohamedAklamaash/launchpad/blob/main/docs/IAM_POLICIES.md)
 
 <!-- BEGIN GENERATED: policy version — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json -->
-**Policy version**: 6
+**Policy version**: 7
 <!-- END GENERATED -->
 
 **Document revision**: 2.2.0  

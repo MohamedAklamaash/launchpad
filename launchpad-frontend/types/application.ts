@@ -154,7 +154,7 @@ export interface AppMetricsResponse {
   series: Record<MetricSeriesName, MetricPoint[]>;
   /** Series present in the record above were unavailable for this compute type/config —
    *  keyed the same as `series`, value is a machine reason code (e.g.
-   *  'eks_container_metrics_not_enabled') the UI maps to a friendly note. */
+   *  'eks_container_insights_pending') the UI maps to a friendly note. */
   unavailable?: Partial<Record<MetricSeriesName, string>>;
 }
 

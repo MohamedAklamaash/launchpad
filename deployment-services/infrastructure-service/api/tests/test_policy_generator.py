@@ -309,9 +309,11 @@ def test_document_hash_of_ecs_fargate_equals_the_default_document():
 def test_required_version_for_matches_committed_data():
     """v6 (Nuke infrastructure verification) added a base-statement grant
     (tag:GetResources), which changes every compute type's rendered document — both
-    now require v6."""
+    required v6. v7 (pod identity for the CloudWatch observability add-on) only touched
+    compute_type_statements["eks"], so ecs_fargate's rendered document is unchanged and
+    still requires v6, while eks now requires v7."""
     assert policy_data.required_version_for("ecs_fargate") == 6
-    assert policy_data.required_version_for("eks") == 6
+    assert policy_data.required_version_for("eks") == 7
 
 
 def test_check_fails_when_a_compute_type_is_missing_from_document_hashes(sandbox):

@@ -157,3 +157,49 @@ resource "aws_eks_access_policy_association" "deployer_namespaced_edit" {
 
   depends_on = [aws_eks_access_entry.deployer]
 }
+
+# Per-app CPU/memory charts need real time series, not a point-in-time metrics-server
+# sample, so this installs Container Insights the same way ECS already gets its
+# CPU/MemoryUtilization: as CloudWatch metrics api/services/app_metrics_service.py can
+# GetMetricData over 1h/6h/24h/7d windows. EKS Auto Mode's own built-in controllers
+# (load balancing, storage, compute) use AWS-managed identities with no customer-visible
+# role, but this add-on's CloudWatch Agent is a regular workload in the cluster and
+# needs its own AWS credentials — Auto Mode clusters run the Pod Identity Agent as a
+# built-in system component (no separate eks-pod-identity-agent add-on install), so a
+# pod identity association is enough; no IRSA/OIDC provider setup needed.
+data "aws_iam_policy_document" "cloudwatch_agent_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "cloudwatch_agent" {
+  name               = "${var.cluster_name}-cloudwatch-agent"
+  assume_role_policy = data.aws_iam_policy_document.cloudwatch_agent_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "cloudwatch_agent" {
+  role       = aws_iam_role.cloudwatch_agent.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_eks_addon" "cloudwatch_observability" {
+  cluster_name                = aws_eks_cluster.main.name
+  addon_name                  = "amazon-cloudwatch-observability"
+  resolve_conflicts_on_create = "OVERWRITE"
+  resolve_conflicts_on_update = "OVERWRITE"
+
+  pod_identity_association {
+    role_arn        = aws_iam_role.cloudwatch_agent.arn
+    service_account = "cloudwatch-agent"
+  }
+
+  depends_on = [
+    aws_eks_cluster.main,
+    aws_iam_role_policy_attachment.cloudwatch_agent,
+  ]
+}
