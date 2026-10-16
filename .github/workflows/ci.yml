@@ -36,6 +36,18 @@ jobs:
           python deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/generate.py
           --check
 
+  test-onboarding-script:
+    name: Onboarding script tests (create_aws_role.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Runs create_aws_role.sh against a stubbed `aws` CLI (app_scripts/tests/fake_aws.sh):
+      # trust-policy ExternalId merge, compute-type union, and the F8 refusal on a
+      # CloudFormation-managed role. No AWS credentials needed.
+      - name: Trust-policy and exclusivity tests
+        run: bash app_scripts/tests/test_multi_infra_trust_policy.sh
+
   check-cfn-template:
     name: CFN template lint
     runs-on: ubuntu-latest

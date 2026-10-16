@@ -92,6 +92,7 @@ Each Python service has an `env.example`. Identity services: `pnpm install` at `
 ## CI (.github/workflows/ci.yml)
 
 - iam-policy: `iam_policy/generate.py --check` — fails if a generated policy region drifted from `policy.json`.
+- onboarding-script: `bash app_scripts/tests/test_multi_infra_trust_policy.sh` — create_aws_role.sh against a stubbed `aws` CLI.
 - Python services (gateway, payment, deployment-services): `python -m compileall <dir> -q` and `ruff check <dir>` (config: root `ruff.toml`).
 - terraform: `terraform fmt -check -recursive` over `deployment-services/infrastructure-service/infra/aws`, then `init -backend=false && validate` per module (no plan/apply — CI has no AWS credentials).
 - identity-services: `pnpm install --frozen-lockfile`, `pnpm --filter @launchpad/common build`, `pnpm format` (prettier --check), `pnpm lint`, `pnpm -r --workspace-root=false exec tsc --noEmit`.
