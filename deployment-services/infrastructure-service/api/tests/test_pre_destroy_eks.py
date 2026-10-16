@@ -152,11 +152,22 @@ def test_reap_logs_match_set_then_deletes():
     assert any("arn:lb/ours" in line for line in lines)
 
 
-def test_security_group_reap_requires_zero_enis():
+def _ec2_with_groups(groups):
     ec2 = MagicMock()
-    ec2.describe_security_groups.return_value = {
-        "SecurityGroups": [{"GroupId": "sg-attached"}, {"GroupId": "sg-free"}]
-    }
+    ec2.get_paginator.return_value.paginate.return_value = [{"SecurityGroups": groups}]
+    return ec2
+
+
+AUTO_MODE_TAGS = [
+    {"Key": "eks:eks-cluster-name", "Value": CLUSTER},
+    {"Key": "ingress.eks.amazonaws.com/resource", "Value": "app-x/x-x:80"},
+]
+
+
+def test_security_group_reap_requires_zero_enis():
+    ec2 = _ec2_with_groups([
+        {"GroupId": "sg-attached", "Tags": CLUSTER_TAG}, {"GroupId": "sg-free", "Tags": CLUSTER_TAG},
+    ])
     ec2.describe_network_interfaces.side_effect = lambda Filters: {
         "NetworkInterfaces": [{}] if Filters[0]["Values"] == ["sg-attached"] else []
     }
@@ -203,3 +214,28 @@ def test_destroy_dispatch_runs_eks_reap_before_terraform(make_eks_infra):
     env.refresh_from_db()
     assert env.status == "DESTROYED"
     assert "[phase:k8s-reap]" in env.logs
+
+
+def test_owned_by_cluster_controller_recognises_both_controllers():
+    """Real AWS (2026-10-16): EKS Auto Mode tags its ALBs/SGs with eks:eks-cluster-name +
+    ingress.eks.amazonaws.com/*, never elbv2.k8s.aws/cluster — the reaper matched nothing."""
+    assert et._owned_by_cluster_controller(CLUSTER_TAG, CLUSTER)
+    assert et._owned_by_cluster_controller(AUTO_MODE_TAGS, CLUSTER)
+    # The cluster key alone is on other EKS-managed resources: never reap on it alone.
+    assert not et._owned_by_cluster_controller([{"Key": "eks:eks-cluster-name", "Value": CLUSTER}], CLUSTER)
+    other = [{"Key": "eks:eks-cluster-name", "Value": "someone-else"}, AUTO_MODE_TAGS[1]]
+    assert not et._owned_by_cluster_controller(other, CLUSTER)
+
+
+def test_security_group_reap_finds_auto_mode_groups_only():
+    ec2 = _ec2_with_groups([
+        {"GroupId": "sg-auto-mode", "Tags": AUTO_MODE_TAGS},
+        {"GroupId": "sg-cluster-only", "Tags": [{"Key": "eks:eks-cluster-name", "Value": CLUSTER}]},
+        {"GroupId": "sg-untagged", "Tags": []},
+    ])
+    ec2.describe_network_interfaces.return_value = {"NetworkInterfaces": []}
+    session = MagicMock()
+    session.client.return_value = ec2
+    et._reap_orphaned_security_groups(session, CLUSTER, "vpc-ours", [])
+    ec2.delete_security_group.assert_called_once_with(GroupId="sg-auto-mode")
+
