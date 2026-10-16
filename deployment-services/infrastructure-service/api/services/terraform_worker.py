@@ -1,3 +1,4 @@
+import fcntl
 import json
 import logging
 import os
@@ -287,14 +288,20 @@ class TerraformWorker:
                 "TF_PLUGIN_CACHE_DIR": str(plugin_cache_dir),
             })
             
-            init_result = subprocess.run(
-                ["terraform", "init", "-no-color", "-input=false"],
-                cwd=work_dir,
-                capture_output=True,
-                text=True,
-                env=env,
-                check=False
-            )
+            # Terraform's plugin cache is not safe for concurrent use: two inits filling
+            # an empty cache at once fail with "Failed to install provider" (seen with two
+            # nukes started together). Serialize init across every worker process on
+            # this host; plan/apply/destroy only read the installed providers.
+            with open(plugin_cache_dir / ".init.lock", "w") as init_lock:
+                fcntl.flock(init_lock, fcntl.LOCK_EX)
+                init_result = subprocess.run(
+                    ["terraform", "init", "-no-color", "-input=false"],
+                    cwd=work_dir,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    check=False
+                )
             logs.append(f"[INIT]\n{init_result.stdout}\n{init_result.stderr}")
 
             if init_result.returncode != 0:

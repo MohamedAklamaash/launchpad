@@ -115,6 +115,34 @@ def test_exec_tf_env_is_exactly_the_allowlist():
     }
 
 
+def test_exec_tf_holds_plugin_cache_lock_only_during_init():
+    """Concurrent inits into the shared plugin cache fail with "Failed to install
+    provider"; init must run under an exclusive host-wide lock, released before the
+    actual terraform command so plan/apply/destroy still run in parallel."""
+    import fcntl
+    from pathlib import Path
+
+    lock_path = Path("/tmp/tf-plugin-cache/.init.lock")
+    held = []
+
+    def fake_run(cmd, **kwargs):
+        with open(lock_path, "a") as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(probe, fcntl.LOCK_UN)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    with patch("api.services.terraform_worker.subprocess.run", side_effect=fake_run):
+        TerraformWorker._exec_tf(
+            ["terraform", "output", "-json"], TF_VARS, CREDENTIALS,
+            f"init-lock-{uuid.uuid4()}", "us-east-1", "123456789012", ensure_backend=False,
+        )
+    assert held == [True, False]
+
+
 # ---- state-lock contention and network blips are transient, never a permanent failure ----
 
 @pytest.mark.parametrize("error_text", [
