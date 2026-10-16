@@ -374,8 +374,16 @@ fi
 #   stay only so Nuke can find and delete a per-infra project from before that change;
 #   create/start/build actions (codebuild:CreateProject/UpdateProject/StartBuild/
 #   BatchGetBuilds) are dropped since nothing in your account needs them anymore
+# - cloudformation:* (v9, CloudFormation onboarding): account- and stack-name-wildcarded
+#   (stack/*/*) by design — the CloudFormation quick-create link lets you rename the
+#   suggested stack before creating it, so narrowing this grant to a literal stack name
+#   would be unenforceable. Only used by accounts onboarded through the CloudFormation
+#   path (stack update for policy refresh / infra removal); script-onboarded accounts
+#   never exercise it. The iam:* grant above already dominates this as a trust
+#   boundary — defense-in-depth bookkeeping, not a hard boundary, same reasoning
+#   acm:AddTagsToCertificate's note above already uses
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-POLICY_VERSION=8
+POLICY_VERSION=9
 case "$COMPUTE_TYPE" in
   ecs_fargate)
     cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
@@ -472,6 +480,11 @@ case "$COMPUTE_TYPE" in
       "Effect": "Allow",
       "Action": "tag:GetResources",
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudformation:*",
+      "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
     }
   ]
 }
@@ -572,6 +585,11 @@ EOF
       "Effect": "Allow",
       "Action": "tag:GetResources",
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudformation:*",
+      "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
     },
     {
       "Effect": "Allow",

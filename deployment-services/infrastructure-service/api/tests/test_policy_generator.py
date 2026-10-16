@@ -18,10 +18,13 @@ from api.cloud_providers.aws.iam_policy import generate, policy_data
 @pytest.fixture
 def sandbox(tmp_path, monkeypatch):
     """A throwaway copy of every file the generator owns, so a failing assertion can
-    never leave the real script or docs half-rendered."""
+    never leave the real script, docs, or CFN templates half-rendered — and so a
+    --write test never overwrites the real committed CFN templates with a test's
+    injected policy change."""
     script = tmp_path / "create_aws_role.sh"
     docs = tmp_path / "IAM_POLICIES.md"
     policy = tmp_path / "policy.json"
+    cfn_dir = tmp_path / "cloudformation"
     shutil.copy(generate.SCRIPT_PATH, script)
     shutil.copy(generate.DOCS_PATH, docs)
     shutil.copy(policy_data.POLICY_PATH, policy)
@@ -33,9 +36,13 @@ def sandbox(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(generate, "SCRIPT_PATH", script)
     monkeypatch.setattr(generate, "DOCS_PATH", docs)
+    monkeypatch.setattr(generate, "CFN_TEMPLATE_PATHS", {
+        "ecs_fargate": cfn_dir / "launchpad-deployment-role.ecs-fargate.template.json",
+        "eks": cfn_dir / "launchpad-deployment-role.eks.template.json",
+    })
     monkeypatch.setattr(policy_data, "POLICY_PATH", policy)
     policy_data.load.cache_clear()
-    yield type("Sandbox", (), {"script": script, "docs": docs, "policy": policy})
+    yield type("Sandbox", (), {"script": script, "docs": docs, "policy": policy, "cfn_dir": cfn_dir})
     policy_data.load.cache_clear()
 
 
@@ -323,9 +330,11 @@ def test_required_version_for_matches_committed_data():
     (tag:GetResources); v7 (pod identity for the CloudWatch observability add-on) only
     touched compute_type_statements["eks"]. v8 (F7 ticket 10, platform-side builds)
     narrowed the base-statement codebuild:* grant to delete-capable actions only, which
-    changes every compute type's rendered document — both now require v8."""
-    assert policy_data.required_version_for("ecs_fargate") == 8
-    assert policy_data.required_version_for("eks") == 8
+    changes every compute type's rendered document. v9 (F8 ticket 1, CloudFormation
+    onboarding) adds another base-statement grant (cloudformation:*) — both now require
+    v9."""
+    assert policy_data.required_version_for("ecs_fargate") == 9
+    assert policy_data.required_version_for("eks") == 9
 
 
 def test_check_fails_when_a_compute_type_is_missing_from_document_hashes(sandbox):
@@ -349,6 +358,149 @@ def test_bumping_over_a_changed_base_statement_raises_the_required_version_for_e
 
     assert policy_data.required_version_for("ecs_fargate") == next_version
     assert policy_data.required_version_for("eks") == next_version
+
+
+def test_v9_adds_the_cloudformation_base_grant():
+    """F8 ticket 1: cloudformation:* is a base-statement grant (both compute types),
+    account- and stack-name-wildcarded — the quick-create link lets the customer rename
+    the suggested stack before creating it, so narrowing by name is unenforceable."""
+    assert iam_policy.grants("cloudformation:CreateStack")
+    assert iam_policy.grants("cloudformation:UpdateStack")
+    for statement in policy_data.statements():
+        actions = statement["Action"]
+        actions = [actions] if isinstance(actions, str) else actions
+        if "cloudformation:*" in actions:
+            assert statement["Resource"] == "arn:aws:cloudformation:*:*:stack/*/*"
+            return
+    raise AssertionError("no statement grants cloudformation:*")
+
+
+# ── CloudFormation template generation (F8 ticket 1) ──────────────────────────
+
+
+def _cfn_policy_statements(template: dict) -> list[dict]:
+    return template["Resources"]["LaunchpadDeploymentPolicy"]["Properties"]["PolicyDocument"]["Statement"]
+
+
+def _cfn_resource_values(statement: dict, key: str) -> list:
+    value = statement.get(key)
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def test_committed_cfn_templates_exist_and_are_valid_json():
+    for path in generate.CFN_TEMPLATE_PATHS.values():
+        template = json.loads(path.read_text())
+        assert template["AWSTemplateFormatVersion"] == "2010-09-09"
+        assert "LaunchpadDeploymentRole" in template["Resources"]
+        assert "LaunchpadDeploymentPolicy" in template["Resources"]
+
+
+def test_ecs_fargate_template_has_no_fn_sub_and_no_placeholder():
+    """Parity check for 'the default branch never substitutes': the ecs_fargate
+    template is the one CFN never needs AWS::AccountId for, so it must carry zero
+    Fn::Sub objects at all, not just zero inside the policy document."""
+    rendered = generate.CFN_TEMPLATE_PATHS["ecs_fargate"].read_text()
+    assert "Fn::Sub" not in rendered
+    assert policy_data.ACCOUNT_ID_PLACEHOLDER not in rendered
+
+
+def test_eks_template_uses_fn_sub_and_leaves_no_bare_placeholder():
+    rendered = generate.CFN_TEMPLATE_PATHS["eks"].read_text()
+    assert "Fn::Sub" in rendered
+    assert policy_data.ACCOUNT_ID_PLACEHOLDER not in rendered
+
+
+def test_zero_stray_placeholder_survives_rendering(sandbox):
+    """_cfn_statement only wraps Resource/NotResource; a placeholder anywhere else in a
+    future statement (e.g. an Action) would ship unwrapped into the CFN template."""
+    data = json.loads(sandbox.policy.read_text())
+    data["compute_type_statements"]["eks"][0]["Action"].append(
+        f"eks:{policy_data.ACCOUNT_ID_PLACEHOLDER}Thing"
+    )
+    _rewrite_policy(sandbox.policy, compute_type_statements=data["compute_type_statements"])
+
+    with pytest.raises(generate.DriftError, match="bare occurrence"):
+        generate.run(write=False)
+
+
+def test_cfn_fn_sub_round_trips_to_policy_data_document():
+    """Unwrapping every Fn::Sub in the rendered PolicyDocument back to the literal
+    placeholder must reproduce policy_data.document(compute_type)['Statement']
+    exactly — a stronger guarantee than "every value appears somewhere in it": a
+    dropped statement or a mutated Action/Effect/Condition would fail this, not just
+    a mismatched Resource/NotResource."""
+    fn_sub_seen = {"ecs_fargate": 0, "eks": 0}
+    for compute_type, path in generate.CFN_TEMPLATE_PATHS.items():
+        template = json.loads(path.read_text())
+        policy_statements = _cfn_policy_statements(template)
+        unwrapped = [generate.unwrap_cfn_statement(s) for s in policy_statements]
+        assert unwrapped == policy_data.document(compute_type)["Statement"]
+
+        for statement in policy_statements:
+            for key in ("Resource", "NotResource"):
+                for value in _cfn_resource_values(statement, key):
+                    if isinstance(value, dict):
+                        fn_sub_seen[compute_type] += 1
+
+    assert fn_sub_seen["eks"] > 0, "eks template should wrap at least one resource string"
+    assert fn_sub_seen["ecs_fargate"] == 0
+
+
+def test_cfn_check_write_round_trip(sandbox):
+    """Mirrors the script/docs --check/--write round trip, for whole generated files
+    instead of delimited regions: a from-scratch write is reproduced exactly by --check."""
+    for path in generate.CFN_TEMPLATE_PATHS.values():
+        assert not path.exists()
+
+    assert generate.run(write=True) == 0
+    for path in generate.CFN_TEMPLATE_PATHS.values():
+        assert path.exists()
+
+    assert generate.run(write=False) == 0
+    assert generate.run(write=True) == 0  # idempotent: nothing left to write
+
+
+def test_cfn_templates_carry_the_four_role_tags():
+    for compute_type, path in generate.CFN_TEMPLATE_PATHS.items():
+        template = json.loads(path.read_text())
+        tags = {
+            tag["Key"]: tag["Value"]
+            for tag in template["Resources"]["LaunchpadDeploymentRole"]["Properties"]["Tags"]
+        }
+        assert tags["launchpad:managed-by"] == "cloudformation"
+        assert tags["launchpad:policy-version"] == str(policy_data.version())
+        assert tags["launchpad:cfn-stack-name"] == {"Ref": "AWS::StackName"}
+        expected_compute_types = "ecs_fargate+eks" if compute_type == "eks" else "ecs_fargate"
+        assert tags["launchpad:compute-types"] == expected_compute_types
+
+
+def test_eks_cfn_template_sets_max_session_duration_ecs_fargate_does_not():
+    eks = json.loads(generate.CFN_TEMPLATE_PATHS["eks"].read_text())
+    ecs_fargate = json.loads(generate.CFN_TEMPLATE_PATHS["ecs_fargate"].read_text())
+    assert eks["Resources"]["LaunchpadDeploymentRole"]["Properties"]["MaxSessionDuration"] == 7200
+    assert "MaxSessionDuration" not in ecs_fargate["Resources"]["LaunchpadDeploymentRole"]["Properties"]
+
+
+def test_cfn_parameters_require_external_ids_as_a_list_with_no_default():
+    for path in generate.CFN_TEMPLATE_PATHS.values():
+        template = json.loads(path.read_text())
+        external_ids = template["Parameters"]["ExternalIds"]
+        assert external_ids["Type"] == "CommaDelimitedList"
+        assert "Default" not in external_ids
+        account_id = template["Parameters"]["LaunchpadPlatformAccountId"]
+        assert account_id["AllowedPattern"] == "^[0-9]{12}$"
+
+
+def test_cfn_role_and_policy_names_are_fixed_matching_authenticate_py():
+    for path in generate.CFN_TEMPLATE_PATHS.values():
+        template = json.loads(path.read_text())
+        role = template["Resources"]["LaunchpadDeploymentRole"]["Properties"]
+        policy = template["Resources"]["LaunchpadDeploymentPolicy"]["Properties"]
+        assert role["RoleName"] == "LaunchpadDeploymentRole"
+        assert policy["ManagedPolicyName"] == "LaunchpadDeploymentPolicy"
+        assert policy["Roles"] == [{"Ref": "LaunchpadDeploymentRole"}]
 
 
 def test_bumping_over_a_changed_eks_only_statement_leaves_ecs_fargate_alone(sandbox):

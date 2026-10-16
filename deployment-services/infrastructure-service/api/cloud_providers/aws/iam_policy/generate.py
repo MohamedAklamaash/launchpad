@@ -34,9 +34,22 @@ DOCS_PATH = REPO_ROOT / "docs" / "IAM_POLICIES.md"
 
 SOURCE_HINT = "deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json"
 
+# Whole-file generated templates, not delimited regions: nobody hand-edits a
+# .template.json, so the entire file is machine output. One per compute_type, mirroring
+# how policy_data.document(compute_type) already produces two concrete documents.
+CFN_DIR = Path(__file__).resolve().parent / "cloudformation"
+CFN_TEMPLATE_PATHS = {
+    "ecs_fargate": CFN_DIR / "launchpad-deployment-role.ecs-fargate.template.json",
+    "eks": CFN_DIR / "launchpad-deployment-role.eks.template.json",
+}
+
 # Any dunder-style token in a rendered policy that isn't the one recognized account-id
 # placeholder. Catches a future placeholder introduced without generator/script support.
 _PLACEHOLDER_RE = re.compile(r"__[A-Z_]+__")
+
+# What the account-id placeholder becomes inside an Fn::Sub string. CFN's own
+# pseudo-parameter replaces the script's `sed` substitution; no customer action needed.
+_CFN_ACCOUNT_ID_SUB = "${AWS::AccountId}"
 
 
 class DriftError(Exception):
@@ -103,6 +116,136 @@ def _docs_cli_region() -> str:
 
 def _docs_version_region() -> str:
     return f"**Policy version**: {policy_data.version()}"
+
+
+def _cfn_resource_field(value):
+    """Wrap any string containing the account-id placeholder in an Fn::Sub, recursing
+    into lists (Resource/NotResource may be a bare string or a list of strings).
+    Strings without the placeholder pass through untouched — this is the only
+    rendering difference between the script's heredoc and the CFN template; Action,
+    Effect, and Condition are never touched."""
+    if isinstance(value, list):
+        return [_cfn_resource_field(item) for item in value]
+    if isinstance(value, str) and policy_data.ACCOUNT_ID_PLACEHOLDER in value:
+        return {"Fn::Sub": value.replace(policy_data.ACCOUNT_ID_PLACEHOLDER, _CFN_ACCOUNT_ID_SUB)}
+    return value
+
+
+def _cfn_statement(stmt: dict) -> dict:
+    """One policy statement, rendered for the CFN ManagedPolicy's PolicyDocument."""
+    rendered = dict(stmt)
+    for key in ("Resource", "NotResource"):
+        if key in rendered:
+            rendered[key] = _cfn_resource_field(rendered[key])
+    return rendered
+
+
+def _cfn_compute_types_tag(compute_type: str) -> str:
+    """Static, per-template literal — templates are files with no account-level state
+    to compute a union from. The eks template over-reports relative to a lone
+    ecs_fargate sibling's actual grants, which is harmless (see generate.py's CFN
+    template docstring / plan/F8-cloudformation-onboarding.md)."""
+    return "ecs_fargate+eks" if compute_type == "eks" else policy_data.DEFAULT_COMPUTE_TYPE
+
+
+def _cfn_template(compute_type: str) -> dict:
+    version = policy_data.version()
+    statements = [_cfn_statement(s) for s in policy_data.document(compute_type)["Statement"]]
+
+    role_properties = {
+        "RoleName": "LaunchpadDeploymentRole",
+        "AssumeRolePolicyDocument": {
+            "Version": policy_data.IAM_POLICY_LANGUAGE_VERSION,
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    # Fn::Join, not Fn::Sub: Fn::Sub is reserved exclusively for
+                    # _cfn_statement's __LAUNCHPAD_ACCOUNT_ID__ wrapping, so "the
+                    # ecs_fargate template contains zero Fn::Sub objects" stays literally
+                    # true and the round-trip check only ever has to reason about
+                    # PolicyDocument statements.
+                    "Principal": {
+                        "AWS": {
+                            "Fn::Join": [
+                                "",
+                                [
+                                    "arn:aws:iam::",
+                                    {"Ref": "LaunchpadPlatformAccountId"},
+                                    ":user/",
+                                    {"Ref": "LaunchpadPlatformUser"},
+                                ],
+                            ]
+                        }
+                    },
+                    "Action": "sts:AssumeRole",
+                    "Condition": {"StringEquals": {"sts:ExternalId": {"Ref": "ExternalIds"}}},
+                }
+            ],
+        },
+        "Tags": [
+            {"Key": "launchpad:managed-by", "Value": "cloudformation"},
+            {"Key": "launchpad:policy-version", "Value": str(version)},
+            {"Key": "launchpad:compute-types", "Value": _cfn_compute_types_tag(compute_type)},
+            {"Key": "launchpad:cfn-stack-name", "Value": {"Ref": "AWS::StackName"}},
+        ],
+    }
+    # Mirrors the script's conditional --max-session-duration: omitted (AWS default
+    # 3600) for ecs_fargate, baked in only for eks.
+    if compute_type == "eks":
+        role_properties["MaxSessionDuration"] = 7200
+
+    return {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Description": (
+            f"Launchpad deployment role + policy ({compute_type}, policy v{version}). "
+            "Generated from policy.json, do not hand-edit."
+        ),
+        "Parameters": {
+            "ExternalIds": {
+                "Type": "CommaDelimitedList",
+                "Description": (
+                    "ExternalId(s) this role trusts. One per infra sharing this AWS "
+                    "account; always a list, even for a single infra."
+                ),
+            },
+            "LaunchpadPlatformAccountId": {
+                "Type": "String",
+                "AllowedPattern": "^[0-9]{12}$",
+                "Description": "Launchpad platform AWS account id named as trust policy principal.",
+            },
+            "LaunchpadPlatformUser": {
+                "Type": "String",
+                "Description": "Launchpad platform IAM user name named as trust policy principal.",
+            },
+        },
+        "Resources": {
+            "LaunchpadDeploymentRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": role_properties,
+            },
+            "LaunchpadDeploymentPolicy": {
+                "Type": "AWS::IAM::ManagedPolicy",
+                "Properties": {
+                    "ManagedPolicyName": "LaunchpadDeploymentPolicy",
+                    "Roles": [{"Ref": "LaunchpadDeploymentRole"}],
+                    "PolicyDocument": {
+                        "Version": policy_data.IAM_POLICY_LANGUAGE_VERSION,
+                        "Statement": statements,
+                    },
+                },
+            },
+        },
+        "Outputs": {
+            "PolicyVersion": {
+                "Value": str(version),
+                "Description": "Convenience echo of launchpad:policy-version for a human reading the console.",
+            }
+        },
+    }
+
+
+def _cfn_template_json(compute_type: str) -> str:
+    return json.dumps(_cfn_template(compute_type), indent=2) + "\n"
 
 
 # (path, marker name, renderer). Marker names are the literal text between the comment
@@ -191,6 +334,74 @@ def _assert_invariants() -> None:
             f"version {current} is below the highest recorded version {max(recorded)}; "
             "versions are append-only"
         )
+
+
+def _assert_cfn_invariants() -> None:
+    """CFN-specific checks, deliberately NOT a reuse of _assert_invariants' "no $ or
+    backtick" rule — that's a bash-heredoc-safety check and would fail permanently on
+    the eks template, which legitimately renders ${AWS::AccountId} inside every
+    Fn::Sub."""
+    for compute_type, path in CFN_TEMPLATE_PATHS.items():
+        rendered = _cfn_template_json(compute_type)
+
+        # Reuses the stray-placeholder check's intent (see _assert_invariants), run
+        # against CFN output instead of the heredoc: every placeholder occurrence must
+        # have been wrapped in an Fn::Sub, never left bare in the rendered JSON text.
+        bare = re.findall(re.escape(policy_data.ACCOUNT_ID_PLACEHOLDER), rendered)
+        if bare:
+            raise DriftError(
+                f"{_rel(path)}: {len(bare)} bare occurrence(s) of "
+                f"{policy_data.ACCOUNT_ID_PLACEHOLDER} survived rendering; every occurrence "
+                "must be wrapped in an Fn::Sub"
+            )
+
+        # Parity check: the default branch never substitutes, so its template must
+        # carry zero Fn::Sub objects at all.
+        if compute_type == "ecs_fargate" and "Fn::Sub" in rendered:
+            raise DriftError(
+                f"{_rel(path)}: the {policy_data.DEFAULT_COMPUTE_TYPE} template must contain no "
+                "Fn::Sub objects — only the eks template's statements reference "
+                "__LAUNCHPAD_ACCOUNT_ID__"
+            )
+
+        # Round-trip: unwrapping every Fn::Sub in the rendered PolicyDocument (back to
+        # the literal placeholder) must reproduce policy_data.document(compute_type)'s
+        # Statement list exactly — not just "every Fn::Sub value appears somewhere in
+        # it" (set membership would miss a dropped statement or a mutated
+        # Action/Effect/Condition), but byte-for-byte equal once the only designed
+        # rendering difference — Resource/NotResource encoding — is reversed.
+        template = json.loads(rendered)
+        policy_statements = template["Resources"]["LaunchpadDeploymentPolicy"]["Properties"][
+            "PolicyDocument"
+        ]["Statement"]
+        unwrapped = [unwrap_cfn_statement(s) for s in policy_statements]
+        expected_statements = policy_data.document(compute_type)["Statement"]
+        if unwrapped != expected_statements:
+            raise DriftError(
+                f"{_rel(path)}: the rendered PolicyDocument, with every Fn::Sub unwrapped "
+                f"back to {policy_data.ACCOUNT_ID_PLACEHOLDER}, does not equal "
+                f"policy_data.document({compute_type!r})['Statement']. Only Resource/"
+                "NotResource encoding should ever differ between the two."
+            )
+
+
+def _unwrap_resource_field(value):
+    if isinstance(value, list):
+        return [_unwrap_resource_field(item) for item in value]
+    if isinstance(value, dict) and "Fn::Sub" in value:
+        return value["Fn::Sub"].replace(_CFN_ACCOUNT_ID_SUB, policy_data.ACCOUNT_ID_PLACEHOLDER)
+    return value
+
+
+def unwrap_cfn_statement(stmt: dict) -> dict:
+    """Inverse of _cfn_statement: strips the Fn::Sub wrapping back to the literal
+    __LAUNCHPAD_ACCOUNT_ID__ placeholder. Exposed (not underscore-prefixed) for the
+    round-trip test to reuse rather than reimplement."""
+    unwrapped = dict(stmt)
+    for key in ("Resource", "NotResource"):
+        if key in unwrapped:
+            unwrapped[key] = _unwrap_resource_field(unwrapped[key])
+    return unwrapped
 
 
 def _check_version_binding() -> None:
@@ -287,15 +498,23 @@ def _render_all() -> dict[Path, str]:
     return rendered
 
 
+def _render_cfn_templates() -> dict[Path, str]:
+    """Whole generated files, not regions — see CFN_TEMPLATE_PATHS."""
+    return {path: _cfn_template_json(compute_type) for compute_type, path in CFN_TEMPLATE_PATHS.items()}
+
+
 def run(write: bool) -> int:
     _assert_invariants()
+    _assert_cfn_invariants()
     rendered = _render_all()
+    rendered.update(_render_cfn_templates())
 
     if not write:
         _check_version_binding()
         _check_document_hashes()
         for path, updated in rendered.items():
-            if updated != path.read_text():
+            current = path.read_text() if path.exists() else None
+            if updated != current:
                 raise DriftError(
                     f"{_rel(path)} is out of date with {SOURCE_HINT}.\n"
                     f"Run: python {_rel(Path(__file__).resolve())} --write"
@@ -311,7 +530,9 @@ def run(write: bool) -> int:
     _check_version_binding()
     _check_document_hashes()
     for path, updated in rendered.items():
-        if updated != path.read_text():
+        current = path.read_text() if path.exists() else None
+        if updated != current:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(updated)
             changed.append(path)
 

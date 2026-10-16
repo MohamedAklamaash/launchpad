@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "version_hashes": {
     "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
     "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de",
@@ -8,7 +8,8 @@
     "5": "0d54c2a8f760090d272842305f05b55a10cf0d2ba54606246d26489777214c97",
     "6": "0dc4a42cf691a1587aba06f6f385ab3356c9a12f5c03454861a29d67b1b281d7",
     "7": "800b94ea3c02e9189395d6d45e647e8d3f018e3ae7e4f82e55159308ae0f816e",
-    "8": "dcd97db1831b999964a303ab4f1ccfc9aa6a1073b86e5548d510fb60b13478f1"
+    "8": "dcd97db1831b999964a303ab4f1ccfc9aa6a1073b86e5548d510fb60b13478f1",
+    "9": "fad90d78f8f12b0daf3cae1cb245af338c5fde14d9b8a244bbf5b8ee688d0917"
   },
   "document_hashes": {
     "1": {
@@ -41,6 +42,10 @@
     "8": {
       "eks": "b1cc9a7483da115e1db3bf4d2f9f9037811bbfd3abd13b3d3c55aa33e7ad48fb",
       "ecs_fargate": "4ee09329e36f291cf586cfbc5a2385aa2143193d1a6dd98eeb73cc1e009ba1b5"
+    },
+    "9": {
+      "eks": "c3cd2c15dbd86774972eca1273427d793cbe9e24bd91f87b649c89846c7b077c",
+      "ecs_fargate": "015ef8b58eb167a4ed6ed11d6ac34a2d9894fccf4a0bbb821846ca25698b4f16"
     }
   },
   "notes": [
@@ -117,7 +122,15 @@
     "  account, so no new infrastructure creates a CodeBuild project. These two actions",
     "  stay only so Nuke can find and delete a per-infra project from before that change;",
     "  create/start/build actions (codebuild:CreateProject/UpdateProject/StartBuild/",
-    "  BatchGetBuilds) are dropped since nothing in your account needs them anymore"
+    "  BatchGetBuilds) are dropped since nothing in your account needs them anymore",
+    "cloudformation:* (v9, CloudFormation onboarding): account- and stack-name-wildcarded",
+    "  (stack/*/*) by design — the CloudFormation quick-create link lets you rename the",
+    "  suggested stack before creating it, so narrowing this grant to a literal stack name",
+    "  would be unenforceable. Only used by accounts onboarded through the CloudFormation",
+    "  path (stack update for policy refresh / infra removal); script-onboarded accounts",
+    "  never exercise it. The iam:* grant above already dominates this as a trust",
+    "  boundary — defense-in-depth bookkeeping, not a hard boundary, same reasoning",
+    "  acm:AddTagsToCertificate's note above already uses"
   ],
   "statements": [
     {
@@ -210,6 +223,11 @@
       "Effect": "Allow",
       "Action": "tag:GetResources",
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "cloudformation:*",
+      "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
     }
   ],
   "compute_type_statements": {
