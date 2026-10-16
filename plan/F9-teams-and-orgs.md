@@ -1,12 +1,14 @@
 # F9 — Organizations with members and roles
 
 **Status:** design complete, decided autonomously where possible — **in progress**. Ticket 1
-(`Account` table + backfill, auth-service, #146) is merged. Ticket 2 (`Organization`/
-`Membership`/`Invitation`/`MembershipAuditEvent` tables, `org.events` exchange, internal CRUD,
-auth-service) is this PR. Both ship behind `ORGS_ENABLED` (default off), so neither changes
-request behavior yet. **Depends on:** nothing technical. **Blocked by:** two owner calls in
-Open Questions (Stripe consolidation, paid-tier limit overrides); everything else below is
-decided.
+(`Account` table + backfill, auth-service, #146), ticket 2 (`Organization`/`Membership`/
+`Invitation`/`MembershipAuditEvent` tables, `org.events` exchange, internal CRUD, auth-service,
+#149), ticket 3 (personal-org backfill + `organization_id` columns on infrastructure-service/
+application-service/payment-service, #151), and ticket 4 (`org.events` consumers mirroring
+Organization/Membership read-models in those same three services, this PR) are merged. All
+ship behind `ORGS_ENABLED` (default off), so none changes request behavior yet. **Depends
+on:** nothing technical. **Blocked by:** two owner calls in Open Questions (Stripe
+consolidation, paid-tier limit overrides); everything else below is decided.
 
 The owner is away; per instruction, every question below that has a defensible engineering
 answer is decided here, not deferred. Alternatives are noted briefly for each.
@@ -553,7 +555,8 @@ cutover ticket).
 4. **`org.events` consumers in infrastructure-service/application-service/payment-service**,
    mirroring `Organization`/`Membership` read-models with the version-rejection rule and the
    `PendingInvitedInfrastructure`-style bounded retry. Tests: out-of-order delivery (older
-   version arrives after newer — rejected), org-not-yet-materialized retry/give-up.
+   version arrives after newer — rejected), org-not-yet-materialized retry/give-up,
+   idempotent redelivery, flag off → consumer not started.
 5. **`OrgPermissions.get_role` + Redis cache + cache-eviction-on-event**, one implementation
    per Django service mirroring `InfrastructurePermissions.get_user_role`'s shape; JWT gains
    `org_id` plus the missing-`org_id`-means-personal-org and refresh-token `active_org_id`

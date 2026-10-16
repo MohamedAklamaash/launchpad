@@ -116,6 +116,7 @@ class ApiConfig(AppConfig):
             InfraUpdatedEventConsumer,
             InfraUserRemovedEventConsumer,
         )
+        from api.messaging.consumers.org_events import start_org_event_consumer
         from api.messaging.consumers.user import AuthEventConsumer
 
         def start_infra_consumer():
@@ -198,4 +199,5 @@ class ApiConfig(AppConfig):
         threading.Thread(target=start_environment_consumer, name="AppEnvConsumer", daemon=True).start()
         threading.Thread(target=start_host_readiness_consumer, name="AppHostReadinessConsumer", daemon=True).start()
         threading.Thread(target=start_infra_exited_consumer, name="AppInfraExitedConsumer", daemon=True).start()
+        start_org_event_consumer()
         logger.info("Application Service messaging threads scheduled.")

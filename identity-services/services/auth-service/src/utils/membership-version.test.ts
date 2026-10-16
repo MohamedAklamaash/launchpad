@@ -26,7 +26,8 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 // concurrent callers; this test proves the arithmetic/contract bumpMembershipVersion relies
 // on (always +1 off the stored value, never a client-computed guess) is correct.
 const { sequelize } = await import('@/db/sequalize');
-const { bumpMembershipVersion } = await import('@/utils/membership-version');
+const { bumpMembershipVersion, bumpMembershipVersionForRemoval, reviveMembershipVersion } =
+    await import('@/utils/membership-version');
 
 const makeFakeRow = (initialVersion: number) => {
     let version = initialVersion;
@@ -88,6 +89,62 @@ test('bumpMembershipVersion throws rather than silently no-op when the row does 
     try {
         await assert.rejects(
             () => bumpMembershipVersion('missing-row', 'admin', {} as never),
+            /not found/i,
+        );
+    } finally {
+        querySpy.mock.restore();
+    }
+});
+
+// ── bumpMembershipVersionForRemoval ──────────────────────────────────────────────────────
+
+test('bumpMembershipVersionForRemoval continues the same monotonic sequence a role change was already on', async () => {
+    const row = makeFakeRow(4);
+    const querySpy = mock.method(sequelize, 'query', async () => [{ version: row.apply() }]);
+
+    try {
+        const version = await bumpMembershipVersionForRemoval('membership-1', {} as never);
+        assert.equal(version, 5);
+    } finally {
+        querySpy.mock.restore();
+    }
+});
+
+test('bumpMembershipVersionForRemoval throws rather than silently no-op when the row does not exist', async () => {
+    const querySpy = mock.method(sequelize, 'query', async () => []);
+    try {
+        await assert.rejects(
+            () => bumpMembershipVersionForRemoval('missing-row', {} as never),
+            /not found/i,
+        );
+    } finally {
+        querySpy.mock.restore();
+    }
+});
+
+// ── reviveMembershipVersion ───────────────────────────────────────────────────────────────
+
+test('reviveMembershipVersion continues the version sequence a tombstone left off at, never restarting at 1', async () => {
+    // The row was tombstoned at version 6 (a removal); reviving it must bump past that,
+    // not reset — this is the whole fix for the resurrection race (plan/F9-teams-and-
+    // orgs.md): a stale event from before the removal (any version <= 6) must still be
+    // rejected by the revived row.
+    const row = makeFakeRow(6);
+    const querySpy = mock.method(sequelize, 'query', async () => [{ version: row.apply() }]);
+
+    try {
+        const version = await reviveMembershipVersion('membership-1', 'developer', {} as never);
+        assert.equal(version, 7);
+    } finally {
+        querySpy.mock.restore();
+    }
+});
+
+test('reviveMembershipVersion throws rather than silently no-op when the row does not exist', async () => {
+    const querySpy = mock.method(sequelize, 'query', async () => []);
+    try {
+        await assert.rejects(
+            () => reviveMembershipVersion('missing-row', 'developer', {} as never),
             /not found/i,
         );
     } finally {

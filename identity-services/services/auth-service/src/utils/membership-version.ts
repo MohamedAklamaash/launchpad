@@ -35,3 +35,59 @@ export const bumpMembershipVersion = async (
     }
     return row.version;
 };
+
+// Removal tombstones the row instead of deleting it (removeMember's half of the fix for
+// the resurrection race: a stale org.membership.changed redelivered after
+// org.membership.removed must have no row left to recreate). Keeps `role` as its last
+// known value — the tombstone is kept for audit/history, not read for authorization —
+// and bumps `version` the same way bumpMembershipVersion does, so a consumer's
+// version-rejection rule applies uniformly across role changes and removals.
+export const bumpMembershipVersionForRemoval = async (
+    membershipId: string,
+    transaction: Transaction,
+): Promise<number> => {
+    const rows = await sequelize.query<MembershipVersionRow>(
+        `UPDATE memberships
+            SET removed_at = NOW(), version = version + 1, updated_at = NOW()
+          WHERE id = :membershipId
+          RETURNING version`,
+        {
+            replacements: { membershipId },
+            type: QueryTypes.SELECT,
+            transaction,
+        },
+    );
+    const row = rows[0];
+    if (!row) {
+        throw new Error(`Membership ${membershipId} not found`);
+    }
+    return row.version;
+};
+
+// Revives a tombstoned row (addMember's re-add path) — clears removed_at and sets the new
+// role, bumping version off whatever it last stopped at rather than restarting at 1. This
+// is what keeps the (organization_id, account_id) version sequence monotonic across a
+// remove-then-re-add cycle, which is the whole point: a stale event from before the
+// removal can never outrank the revived row.
+export const reviveMembershipVersion = async (
+    membershipId: string,
+    newRole: OrgRole,
+    transaction: Transaction,
+): Promise<number> => {
+    const rows = await sequelize.query<MembershipVersionRow>(
+        `UPDATE memberships
+            SET role = :role, removed_at = NULL, version = version + 1, updated_at = NOW()
+          WHERE id = :membershipId
+          RETURNING version`,
+        {
+            replacements: { membershipId, role: newRole },
+            type: QueryTypes.SELECT,
+            transaction,
+        },
+    );
+    const row = rows[0];
+    if (!row) {
+        throw new Error(`Membership ${membershipId} not found`);
+    }
+    return row.version;
+};

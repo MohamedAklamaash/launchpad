@@ -24,6 +24,28 @@ def _wait_for_db(max_wait=60, interval=3):
     return False
 
 
+def _start(consumer_cls, name):
+    try:
+        logger.info(f"Starting {name}...")
+        consumer_cls().start()
+    except Exception:
+        logger.exception(f"{name} crashed")
+
+
+def _org_consumer_threads():
+    """F9 ticket 4: gated on ORGS_ENABLED (default off) — with the flag off, this returns
+    no threads and nothing here opens a socket to the broker. Split out from handle() so
+    the gate itself is directly testable without starting a real consumer thread."""
+    from django.conf import settings
+
+    if not settings.ORGS_ENABLED:
+        logger.info("ORGS_ENABLED is False — org.events consumer not started")
+        return []
+
+    from api.messaging.consumer.org_events import OrgEventConsumer
+    return [threading.Thread(target=_start, args=(OrgEventConsumer, 'OrgEventConsumer'), daemon=True)]
+
+
 class Command(BaseCommand):
     help = 'Run payment service RabbitMQ consumers'
 
@@ -35,16 +57,10 @@ class Command(BaseCommand):
             self.stderr.write('DB not ready, aborting')
             return
 
-        def _start(consumer_cls, name):
-            try:
-                logger.info(f"Starting {name}...")
-                consumer_cls().start()
-            except Exception:
-                logger.exception(f"{name} crashed")
-
         threads = [
             threading.Thread(target=_start, args=(AuthEventConsumer, 'AuthEventConsumer'), daemon=True),
             threading.Thread(target=_start, args=(InfraEventConsumer, 'InfraEventConsumer'), daemon=True),
+            *_org_consumer_threads(),
         ]
         for t in threads:
             t.start()

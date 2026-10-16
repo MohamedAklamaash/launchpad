@@ -351,6 +351,11 @@ INFRASTRUCTURE_SERVICE_URL = os.environ.get('INFRASTRUCTURE_SERVICE_URL', 'http:
 # Set False to keep every EKS app on path URLs (`host_url_status` = eks_host_mode_disabled).
 EKS_HOST_MODE_ENABLED = os.environ.get('EKS_HOST_MODE_ENABLED', 'True').lower() == 'true'
 
+# F9 ticket 4: gates the org.events consumer (Organization/Membership read-model sync).
+# Default off, same shape as EKS_ENABLED (infrastructure-service) — with the flag off,
+# nothing new connects to the broker (plan/F9-teams-and-orgs.md).
+ORGS_ENABLED = os.environ.get('ORGS_ENABLED', 'False').lower() == 'true'
+
 # H1: Application.envs is Fernet ciphertext at rest (api/fields.py,
 # migration 0037_encrypt_application_envs). Comma-separated, newest first — MultiFernet
 # encrypts under the first entry and decrypts under any of them, so rotate_envs_encryption_key

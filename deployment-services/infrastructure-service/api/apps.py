@@ -91,6 +91,7 @@ class ApiConfig(AppConfig):
             start_application_event_consumer,
         )
         from api.messaging.consumer.consumer import AuthEventConsumer
+        from api.messaging.consumer.org_consumer import start_org_event_consumer
 
         def start_auth_consumer():
             # Small delay to ensure the main thread has completed app initialization,
@@ -115,6 +116,7 @@ class ApiConfig(AppConfig):
 
         threading.Thread(target=start_auth_consumer, name="InfraAuthConsumer", daemon=True).start()
         threading.Thread(target=start_app_consumer, name="InfraAppConsumer", daemon=True).start()
+        start_org_event_consumer()
         logger.info("Infrastructure Service messaging thread scheduled.")
 
         # Automatically setup the cron job for Rightsizing Enforcement

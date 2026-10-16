@@ -15,8 +15,17 @@ import { MembershipAuditEvent } from './models/membership-audit-event.model';
 // application logic (plan/F9-teams-and-orgs.md, Decision: Data model). Declared here, not
 // in Membership's own `indexes` option, so there is one source of truth for the exact SQL —
 // both what runs on boot and what the no-Postgres unit test asserts against.
+//
+// F9 ticket 4: also excludes a tombstoned (removed_at IS NOT NULL) row — the owner can
+// never actually be removed (removeMember refuses it), but a defensive exclusion here
+// means a tombstoned owner row, if one ever existed, could never block a legitimate new
+// owner at this organization_id. Named differently from the ticket-2 index below: `CREATE
+// UNIQUE INDEX IF NOT EXISTS` is a no-op against an index that already exists under a
+// given name, even with a different WHERE clause, so redefining it under the OLD name
+// would never pick up this change on an environment where ticket 2's index already ran.
+export const MEMBERSHIPS_ONE_OWNER_PER_ORG_LEGACY_INDEX_NAME = 'memberships_one_owner_per_org';
 export const MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL =
-    "CREATE UNIQUE INDEX IF NOT EXISTS memberships_one_owner_per_org ON memberships (organization_id) WHERE role = 'owner'";
+    "CREATE UNIQUE INDEX IF NOT EXISTS memberships_one_owner_per_org_active ON memberships (organization_id) WHERE role = 'owner' AND removed_at IS NULL";
 
 // sequelize.sync() below creates missing tables but never alters existing ones (see
 // memory/auth-service-no-migrations.md — this service has no migration framework), so a
@@ -46,6 +55,15 @@ const applyPendingSchemaPatches = async () => {
     // `memberships` is itself a brand-new table so sequelize.sync() above creates its
     // plain unique index (organization_id, account_id) with no patch needed; only the
     // partial owner index needs this hand-applied step.
+    //
+    // F9 ticket 4: removeMember now tombstones instead of deleting, so the row needs a
+    // removed_at the ticket-2 schema never had.
+    await sequelize.query(
+        'ALTER TABLE memberships ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ',
+    );
+    await sequelize.query(
+        `DROP INDEX IF EXISTS ${MEMBERSHIPS_ONE_OWNER_PER_ORG_LEGACY_INDEX_NAME}`,
+    );
     await sequelize.query(MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL);
 };
 

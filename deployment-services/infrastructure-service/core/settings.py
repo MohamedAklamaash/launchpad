@@ -363,6 +363,11 @@ CFN_ONBOARDING_ENABLED = os.environ.get('CFN_ONBOARDING_ENABLED', 'False').lower
 RATE_BUDGET_CFN_ONBOARDING_LIMIT = int(os.environ.get('RATE_BUDGET_CFN_ONBOARDING_LIMIT', '10'))
 RATE_BUDGET_CFN_ONBOARDING_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_CFN_ONBOARDING_WINDOW_SECONDS', '300'))
 
+# F9 ticket 4: gates the org.events consumer (Organization/Membership read-model sync).
+# Default off, same shape as EKS_ENABLED — with the flag off, nothing new connects to the
+# broker (plan/F9-teams-and-orgs.md).
+ORGS_ENABLED = os.environ.get('ORGS_ENABLED', 'False').lower() == 'true'
+
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 

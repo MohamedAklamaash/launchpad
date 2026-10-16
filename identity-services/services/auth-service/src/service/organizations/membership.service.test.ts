@@ -34,6 +34,7 @@ const withLockingTransactionMock = () =>
 
 test('addMember creates a non-owner Membership, records one audit event, and publishes org.membership.changed', async () => {
     const txSpy = withLockingTransactionMock();
+    const findSpy = mock.method(Membership, 'findOne', async () => null);
     const createSpy = mock.method(Membership, 'create', async (attrs: object) => ({
         ...attrs,
         id: 'membership-2',
@@ -56,6 +57,7 @@ test('addMember creates a non-owner Membership, records one audit event, and pub
         assert.equal(publishSpy.mock.calls[0]!.arguments[0], 'org.membership.changed');
     } finally {
         txSpy.mock.restore();
+        findSpy.mock.restore();
         createSpy.mock.restore();
         auditSpy.mock.restore();
         publishSpy.mock.restore();
@@ -105,7 +107,7 @@ test('changeMemberRole bumps the version, writes old_role/new_role to the audit 
     }
 });
 
-test('removeMember deletes a non-owner Membership, records the removal, and publishes org.membership.removed with the last known version', async () => {
+test('removeMember tombstones (never deletes) a non-owner Membership, bumps its version, and publishes org.membership.removed with the bumped version', async () => {
     const txSpy = withLockingTransactionMock();
     const destroySpy = mock.fn(async () => {});
     const findSpy = mock.method(Membership, 'findOne', async () => ({
@@ -116,6 +118,9 @@ test('removeMember deletes a non-owner Membership, records the removal, and publ
         version: 3,
         destroy: destroySpy,
     }));
+    // removeMember delegates the tombstone + increment to bumpMembershipVersionForRemoval,
+    // a raw UPDATE ... RETURNING, same reasoning as changeMemberRole's test above.
+    const querySpy = mock.method(sequelize, 'query', async () => [{ version: 4 }]);
     const auditSpy = mock.method(MembershipAuditEvent, 'create', async (attrs: object) => attrs);
     const publishSpy = mock.method(orgEventsPublisher, 'publish', () => {});
 
@@ -126,14 +131,100 @@ test('removeMember deletes a non-owner Membership, records the removal, and publ
             actorAccountId: 'account-1',
         });
 
-        assert.equal(destroySpy.mock.callCount(), 1);
+        // The row is tombstoned (removed_at set via the raw UPDATE), never destroy()ed —
+        // a hard delete would leave nothing for a stale redelivered event to be rejected
+        // against, which is exactly the resurrection race this fix closes.
+        assert.equal(destroySpy.mock.callCount(), 0);
         assert.equal(auditSpy.mock.callCount(), 1);
         assert.equal(publishSpy.mock.callCount(), 1);
         assert.equal(publishSpy.mock.calls[0]!.arguments[0], 'org.membership.removed');
+        // publish() receives the JSON-serialized envelope as a Buffer, not the plain
+        // payload object — parse it back out to assert on the bumped version.
+        const publishedBody = publishSpy.mock.calls[0]!.arguments[1] as Buffer;
+        const publishedEvent = JSON.parse(publishedBody.toString()) as {
+            payload: { version: number };
+        };
+        assert.equal(publishedEvent.payload.version, 4);
     } finally {
         txSpy.mock.restore();
         findSpy.mock.restore();
+        querySpy.mock.restore();
         auditSpy.mock.restore();
         publishSpy.mock.restore();
+    }
+});
+
+test('addMember revives a tombstoned Membership with a bumped version instead of creating a second row', async () => {
+    const txSpy = withLockingTransactionMock();
+    const createSpy = mock.method(Membership, 'create', async () => {
+        throw new Error('Membership.create must not be called when a tombstoned row exists');
+    });
+    const findSpy = mock.method(Membership, 'findOne', async () => ({
+        id: 'membership-2',
+        organization_id: 'org-1',
+        account_id: 'account-2',
+        role: 'viewer',
+        version: 4,
+        removed_at: new Date('2026-01-01T00:00:00Z'),
+    }));
+    const querySpy = mock.method(sequelize, 'query', async () => [{ version: 5 }]);
+    const auditSpy = mock.method(MembershipAuditEvent, 'create', async (attrs: object) => attrs);
+    const publishSpy = mock.method(orgEventsPublisher, 'publish', () => {});
+
+    try {
+        const membership = await addMember({
+            organizationId: 'org-1',
+            accountId: 'account-2',
+            role: 'developer',
+            actorAccountId: 'account-1',
+        });
+
+        assert.equal(createSpy.mock.callCount(), 0);
+        assert.equal(membership.role, 'developer');
+        assert.equal(membership.version, 5);
+        assert.equal(membership.removed_at, null);
+        const auditCall = auditSpy.mock.calls[0]!.arguments[0] as { action: string };
+        assert.equal(auditCall.action, 'membership.revived');
+        assert.equal(publishSpy.mock.callCount(), 1);
+        assert.equal(publishSpy.mock.calls[0]!.arguments[0], 'org.membership.changed');
+    } finally {
+        txSpy.mock.restore();
+        createSpy.mock.restore();
+        findSpy.mock.restore();
+        querySpy.mock.restore();
+        auditSpy.mock.restore();
+        publishSpy.mock.restore();
+    }
+});
+
+test('addMember refuses to add an account that is already an active (non-tombstoned) member', async () => {
+    const txSpy = withLockingTransactionMock();
+    const createSpy = mock.method(Membership, 'create', async () => {
+        throw new Error('Membership.create must not be called for an already-active member');
+    });
+    const findSpy = mock.method(Membership, 'findOne', async () => ({
+        id: 'membership-2',
+        organization_id: 'org-1',
+        account_id: 'account-2',
+        role: 'viewer',
+        version: 1,
+        removed_at: null,
+    }));
+    try {
+        const { HttpError } = await import('@launchpad/common');
+        await assert.rejects(
+            () =>
+                addMember({
+                    organizationId: 'org-1',
+                    accountId: 'account-2',
+                    role: 'developer',
+                    actorAccountId: 'account-1',
+                }),
+            HttpError,
+        );
+        assert.equal(createSpy.mock.callCount(), 0);
+    } finally {
+        txSpy.mock.restore();
+        findSpy.mock.restore();
     }
 });
