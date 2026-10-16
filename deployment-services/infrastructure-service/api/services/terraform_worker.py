@@ -232,6 +232,20 @@ class TerraformWorker:
         return bucket, table
     
     @staticmethod
+    def _plugin_cache_dir() -> Path:
+        """Persistent provider cache (the AWS provider alone is ~200MB). Kept out of
+        world-writable /tmp: Terraform trusts what is in it (see
+        TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE below), so nobody else on the host
+        may be able to plant a provider binary there."""
+        cache = Path(os.environ.get(
+            "LAUNCHPAD_TF_PLUGIN_CACHE_DIR",
+            Path.home() / ".cache" / "launchpad" / "tf-plugin-cache",
+        ))
+        cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+        cache.chmod(0o700)
+        return cache
+
+    @staticmethod
     def _exec_tf(cmd: list, env_vars: dict, credentials: dict, infra_id: str, region: str, account_id: str,
                  compute_type: str = ComputeType.ECS_FARGATE, ensure_backend: bool = True) -> dict:
         """Execute terraform with proper logging and cleanup"""
@@ -254,9 +268,7 @@ class TerraformWorker:
         work_dir = Path(f"/dev/shm/tf-{infra_id}")
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        # Persistent provider cache avoids re-downloading ~200MB provider
-        plugin_cache_dir = Path("/tmp/tf-plugin-cache")
-        plugin_cache_dir.mkdir(parents=True, exist_ok=True)
+        plugin_cache_dir = TerraformWorker._plugin_cache_dir()
 
         logs = []
 
@@ -286,6 +298,12 @@ class TerraformWorker:
                 "TF_IN_AUTOMATION": "1",
                 "TF_INPUT": "0",
                 "TF_PLUGIN_CACHE_DIR": str(plugin_cache_dir),
+                # Work dirs are fresh and carry no .terraform.lock.hcl, so without this
+                # Terraform ignores the cache, re-downloads every provider, and rewrites
+                # the cached binary, failing with "text file busy" while another run is
+                # executing it. Safe to trust: the cache is private to this user (0700)
+                # and was filled only by Terraform's own verified downloads.
+                "TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE": "true",
             })
             
             # Terraform's plugin cache is not safe for concurrent use: two inits filling

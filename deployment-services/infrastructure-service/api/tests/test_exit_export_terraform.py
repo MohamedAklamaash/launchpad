@@ -16,12 +16,11 @@ import uuid
 from pathlib import Path
 
 import pytest
+from api.services.terraform_worker import TerraformWorker
 
 TERRAFORM_INIT_TIMEOUT_SECONDS = 90
-# Same cache directory api/services/terraform_worker.py._exec_tf uses for real applies —
-# reusing it means the first test run in a given environment pays the ~200MB provider
-# download once, and every run after (locally or in CI with a persisted /tmp) is instant.
-TF_PLUGIN_CACHE_DIR = "/tmp/tf-plugin-cache"
+# Init below uses the same provider cache as TerraformWorker._exec_tf, so the first run in
+# a given environment pays the ~200MB provider download once and every later run is instant.
 
 
 def _terraform_available() -> bool:
@@ -78,8 +77,11 @@ def test_bundled_terraform_is_syntactically_valid(tmp_path, make_infra, compute_
     if not _terraform_available():
         pytest.skip("terraform binary not available in this environment")
 
-    Path(TF_PLUGIN_CACHE_DIR).mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "TF_PLUGIN_CACHE_DIR": TF_PLUGIN_CACHE_DIR}
+    env = {
+        **os.environ,
+        "TF_PLUGIN_CACHE_DIR": str(TerraformWorker._plugin_cache_dir()),
+        "TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE": "true",
+    }
 
     def _fmt_fallback(reason: str):
         # Environmental (no/slow network to the registry) vs. a real defect: `terraform
