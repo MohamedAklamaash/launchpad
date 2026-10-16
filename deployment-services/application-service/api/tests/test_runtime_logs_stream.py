@@ -286,6 +286,27 @@ def test_heartbeat_sent_on_a_quiet_tick(factory, make_stack, settings, monkeypat
 
 
 @pytest.mark.django_db
+def test_first_tick_emits_a_frame_without_waiting_a_heartbeat_interval(
+    factory, make_stack, settings, monkeypatch,
+):
+    """No bytes (headers included) reach the client before the first frame. Real run:
+    a quiet stream sent nothing for ~15 s, so every (re)connect looked hung."""
+    settings.LOG_STREAM_TICK_SECONDS = 0
+    settings.LOG_STREAM_HEARTBEAT_SECONDS = 3600
+    stack = make_stack()
+    monkeypatch.setattr(
+        runtime_logs_view_mod.runtime_logs_service, "tail_stream",
+        lambda ctx, wm: ([], wm or {"ts": 123, "ids": []}),
+    )
+
+    resp = _open(factory, stack.owner, str(stack.app.id))
+    frame = _parse_frame(_pull(resp))
+
+    assert frame["event"] == "heartbeat"
+    resp.close()
+
+
+@pytest.mark.django_db
 def test_heartbeat_id_advances_across_quiet_ticks(factory, make_stack, settings, monkeypatch):
     """A resumed stream's lookback window (ECS_WATERMARK_LOOKBACK_MS) is anchored to
     whatever `ts` the last frame's id carried. Without this, a long quiet period would

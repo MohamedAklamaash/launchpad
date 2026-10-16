@@ -259,7 +259,11 @@ def _build_stream_generator(ctx, *, app_id, deployment_id, user_id, request_id, 
     heartbeat_seconds = settings.LOG_STREAM_HEARTBEAT_SECONDS
     max_duration = settings.LOG_STREAM_MAX_DURATION_SECONDS
     stream_started = time.monotonic()
-    last_frame_at = stream_started
+    # Backdated so the first tick always emits a frame (a heartbeat, if there are no
+    # events yet): no bytes, headers included, reach the client before the first
+    # frame, and without this every (re)connect to a quiet stream would look hung
+    # for a full heartbeat interval.
+    last_frame_at = stream_started - heartbeat_seconds
     event_count = 0
     total_bytes = 0
 
