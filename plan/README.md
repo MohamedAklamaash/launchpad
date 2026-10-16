@@ -16,7 +16,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 | [F5](F5-evidence-pack.md) | Compliance pack | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F6](F6-exit-export.md) | Exit export | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [H](H-hardening.md) | Hardening follow-ups (H1–H7) | **in progress** — H1–H7 done (mock-verified) | nothing |
-| [F7](F7-platform-builder.md) | Platform-side image builds (fixes customer accounts with CodeBuild quota 0) | **design only, not started** | owner decision on Option A vs. B (platform account CodeBuild quota unverified); see Open questions |
+| [F7](F7-platform-builder.md) | Platform-side image builds (fixes customer accounts with CodeBuild quota 0) | **done, real-AWS verified** (tickets 2–9, #129–#136), behind `PLATFORM_BUILD_ENABLED` (default off) | ticket 10: flip the default on |
 
 ## Recommended order
 
