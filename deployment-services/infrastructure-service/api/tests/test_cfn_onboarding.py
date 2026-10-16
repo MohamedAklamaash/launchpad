@@ -19,6 +19,12 @@ from shared.enums.orchestrator import OnboardingMethod
 
 
 @pytest.fixture(autouse=True)
+def _stub_rate_budget(monkeypatch):
+    """CI has no Redis; the F0 budget itself is covered by test_rate_budget.py."""
+    monkeypatch.setattr("shared.ratelimit.budget.customer_call_budget", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def _stub_infra_queue():
     """Same trick as test_onboarding_callback.py: InfraQueue opens real Redis
     connections at import time, and api.services.onboarding imports it lazily inside
