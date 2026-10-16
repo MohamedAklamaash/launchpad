@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 from pathlib import Path
 
 from api.common.env.application import app_config
@@ -158,3 +159,8 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
 ]
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
+
+# F9 ticket 4: gates the org.events consumer (Organization/Membership read-model sync).
+# Default off, same shape as infrastructure-service's EKS_ENABLED — with the flag off,
+# nothing new connects to the broker (plan/F9-teams-and-orgs.md).
+ORGS_ENABLED = os.environ.get('ORGS_ENABLED', 'False').lower() == 'true'

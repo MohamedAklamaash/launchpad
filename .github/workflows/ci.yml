@@ -159,10 +159,14 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: deployment-services/requirements.txt
+          cache-dependency-path: |
+            deployment-services/requirements.txt
+            payment-service/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r deployment-services/requirements.txt pytest==9.1.1 pytest-django==4.12.0
+        run: >-
+          pip install -r deployment-services/requirements.txt -r payment-service/requirements.txt
+          pytest==9.1.1 pytest-django==4.12.0
 
       - name: application-service tests
         run: python -m pytest -q
@@ -171,6 +175,10 @@ jobs:
       - name: infrastructure-service tests
         run: python -m pytest -q
         working-directory: deployment-services/infrastructure-service
+
+      - name: payment-service tests
+        run: python -m pytest -q
+        working-directory: payment-service
 
   check-frontend:
     name: Lint & Typecheck (frontend)
