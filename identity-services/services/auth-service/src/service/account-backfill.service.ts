@@ -81,9 +81,24 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
         display_name: group.displayName,
     }));
 
-    const createdAccounts = await Account.bulkCreate(accountRecords, {
-        ignoreDuplicates: true,
+    // Model.bulkCreate always resolves to one built instance per input record, even for
+    // rows a concurrent/`ignoreDuplicates` conflict caused Postgres to skip inserting — its
+    // return value does not report which rows were actually new. Querying existing ids
+    // first is what makes accountsCreated below an honest count on a second (or Nth) run,
+    // not just the group count every time. `ignoreDuplicates` stays on bulkCreate as the
+    // actual safety net against a genuine race (another process inserting the same id
+    // between this query and the insert) — it just stops being the count's source.
+    const candidateIds = accountRecords.map((record) => record.id);
+    const existingAccounts = await Account.findAll({
+        where: { id: { [Op.in]: candidateIds } },
+        attributes: ['id'],
     });
+    const existingIds = new Set(existingAccounts.map((account) => account.id));
+    const newAccountRecords = accountRecords.filter((record) => !existingIds.has(record.id));
+
+    if (newAccountRecords.length > 0) {
+        await Account.bulkCreate(newAccountRecords, { ignoreDuplicates: true });
+    }
 
     let usersLinked = 0;
     let invitedUsersLinked = 0;
@@ -112,7 +127,7 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
     }
 
     const result: AccountBackfillResult = {
-        accountsCreated: createdAccounts.length,
+        accountsCreated: newAccountRecords.length,
         usersLinked,
         invitedUsersLinked,
         collisionGroups,

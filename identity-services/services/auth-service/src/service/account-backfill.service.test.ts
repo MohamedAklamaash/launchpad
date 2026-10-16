@@ -64,17 +64,21 @@ const makeFakeAccounts = () => {
     const rows: { id: string; email: string; display_name: string | null }[] = [];
     return {
         rows,
+        findAll: async (opts: { where: { id: { [Op.in]: string[] } } }) => {
+            const ids = opts.where.id[Op.in];
+            return rows.filter((row) => ids.includes(row.id)).map((row) => ({ id: row.id }));
+        },
+        // The service pre-filters out already-existing ids via findAll above, so by the
+        // time bulkCreate runs here every record is genuinely new — same contract the real
+        // Sequelize/Postgres ON CONFLICT DO NOTHING insert has (skip what already exists).
         bulkCreate: async (
             records: { id: string; email: string; display_name: string | null }[],
         ) => {
-            const created = [];
             for (const record of records) {
                 if (!rows.some((r) => r.id === record.id)) {
                     rows.push({ ...record });
-                    created.push({ ...record });
                 }
             }
-            return created;
         },
     };
 };
@@ -102,6 +106,7 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
 
     const findUsersSpy = mock.method(User, 'findAll', fakeUsers.findAll);
     const findInvitedSpy = mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll);
+    const findAccountsSpy = mock.method(Account, 'findAll', fakeAccounts.findAll);
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
@@ -143,6 +148,7 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
     } finally {
         findUsersSpy.mock.restore();
         findInvitedSpy.mock.restore();
+        findAccountsSpy.mock.restore();
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
@@ -166,6 +172,7 @@ test('backfillAccounts never overwrites a row already linked to a different acco
 
     const findUsersSpy = mock.method(User, 'findAll', fakeUsers.findAll);
     const findInvitedSpy = mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll);
+    const findAccountsSpy = mock.method(Account, 'findAll', fakeAccounts.findAll);
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
@@ -178,6 +185,7 @@ test('backfillAccounts never overwrites a row already linked to a different acco
     } finally {
         findUsersSpy.mock.restore();
         findInvitedSpy.mock.restore();
+        findAccountsSpy.mock.restore();
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
@@ -199,6 +207,7 @@ test('backfillAccounts links a case-only collision within the same table to one 
 
     const findUsersSpy = mock.method(User, 'findAll', fakeUsers.findAll);
     const findInvitedSpy = mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll);
+    const findAccountsSpy = mock.method(Account, 'findAll', fakeAccounts.findAll);
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
@@ -212,6 +221,7 @@ test('backfillAccounts links a case-only collision within the same table to one 
     } finally {
         findUsersSpy.mock.restore();
         findInvitedSpy.mock.restore();
+        findAccountsSpy.mock.restore();
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
