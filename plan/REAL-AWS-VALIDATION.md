@@ -674,20 +674,18 @@ against `aws iam get-role` have never executed against the real AWS CLI/IAM back
       `_ecs_metrics`), and that `AWS/ApplicationELB` `TargetResponseTime` really accepts
       `Stat: "p50"`/`"p95"` in `GetMetricData` the way this assumes — mocked and unit
       tested only (stubbed `cloudwatch.get_metric_data`), never called against a real ALB.
-- [ ] EKS target-group discovery (`AppMetricsService._discover_eks_target_group` /
-      `_match_target_group_by_tags`): this finds the shared group ALB from `alb_dns` (the
-      same approach as `EKSDeployer._verify_eks_https_listener`), lists its target groups,
-      and matches the one whose `ingress.k8s.aws/resource` tag starts with
-      `<namespace>/<slug>` — e.g. `app-api/api-...`. The exact value the AWS Load Balancer
-      Controller writes to that tag (namespace/ingress/service/port encoding) is
-      undocumented beyond "derived from the Ingress and its backend", and the mock has no
-      controller-managed tags to test this against, so the prefix match is an assumption,
-      not a verified fact. Also unverified: that both the path Ingress (`<slug>`) and the
-      host-only Ingress (`<slug>-host`) actually get *separate* target groups rather than
-      sharing one, which is what the `-host-` tie-break in `_match_target_group_by_tags`
-      assumes. Run a real EKS app deploy, inspect the created target group(s) with `aws
-      elbv2 describe-tags`, and confirm the match picks the path Ingress's target group
-      (the one actually serving customer traffic through `/`).
+- [x] EKS target-group discovery — **verified 2026-10-16** (EKS Auto Mode). Auto Mode's
+      built-in load balancer controller does NOT write `ingress.k8s.aws/resource`; it tags
+      target groups `ingress.eks.amazonaws.com/resource` (plus `eks:eks-cluster-name` and
+      `ingress.eks.amazonaws.com/stack`). Discovery now accepts either key (#138); the
+      `<namespace>/<slug>` prefix match picked the serving target group and requests/latency/
+      healthy-host metrics populated. The orphan reaper's ownership check had the same
+      wrong-tag assumption and was fixed in #140.
+- [x] EKS container CPU/memory (#138): `amazon-cloudwatch-observability` add-on with Pod
+      Identity, metrics `pod_cpu_utilization_over_pod_limit`/`pod_memory_utilization_over_pod_limit`
+      under `ClusterName`+`Namespace`+`Service`. Verified on an existing cluster (policy
+      refreshed to v7, reprovision installed the add-on, ACTIVE v6.7.0-eksbuild.1, real
+      values) and on a brand-new cluster create (add-on ACTIVE, no hang at creation).
 - [ ] `cloudwatch:GetMetricData`'s `AccessDenied` message text/code on a policy that
       predates v5 — confirmed only against a synthetic `ClientError` in tests, never a
       real IAM denial, so the `policy_refresh_required` mapping's assumption that AWS
@@ -709,11 +707,15 @@ against `aws iam get-role` have never executed against the real AWS CLI/IAM back
       `complete=true`, no registry-auth strings.
 - [x] Scoped push credential: own repo push allowed; other repo / delete / list / S3 denied
       (spike); module-minted credential refuses foreign/malformed repo names.
-- [ ] Live tail during BUILDING returned 0 events at +15 s (stream not yet written) — check
-      the UI tail picks lines up as they arrive.
-- [ ] Non-default `build_context` / Dockerfile path (`--context-sub-path` mapping).
-- [ ] ECR token lifetime beyond the 900 s session (code clamps to the session expiry).
-- [ ] EKS app deployed through the platform builder (no EKS infra currently).
+- [x] Live tail during BUILDING: 0 events at +15 s (stream not yet written), first lines at
+      ~+33 s — Fargate task startup, not a tail bug; the tail then follows lines as they arrive.
+- [x] Non-default `build_context`: `GoogleCloudPlatform/microservices-demo` with
+      `build_context=src/frontend` built via `--context-sub-path` in ~5 min and pushed.
+- [x] ECR token lifetime: a push still succeeded 28 min after the 900 s session expired
+      (the docker auth token keeps ~12 h); the code's clamp to the session expiry is
+      conservative, not required.
+- [x] EKS app through the platform builder (`eks-builder-test` on a fresh EKS Auto Mode
+      infra): built in ~2.5 min, rolled out, served 200.
 
 ### F7 ticket 10 + retirement — flag removed (no new real-AWS run needed)
 
