@@ -1,8 +1,12 @@
 # F9 — Organizations with members and roles
 
-**Status:** design complete, decided autonomously where possible — **not started**. **Depends
-on:** nothing technical. **Blocked by:** two owner calls in Open Questions (Stripe
-consolidation, paid-tier limit overrides); everything else below is decided.
+**Status:** design complete, decided autonomously where possible — **in progress**. Ticket 1
+(`Account` table + backfill, auth-service, #146) is merged. Ticket 2 (`Organization`/
+`Membership`/`Invitation`/`MembershipAuditEvent` tables, `org.events` exchange, internal CRUD,
+auth-service) is this PR. Both ship behind `ORGS_ENABLED` (default off), so neither changes
+request behavior yet. **Depends on:** nothing technical. **Blocked by:** two owner calls in
+Open Questions (Stripe consolidation, paid-tier limit overrides); everything else below is
+decided.
 
 The owner is away; per instruction, every question below that has a defensible engineering
 answer is decided here, not deferred. Alternatives are noted briefly for each.

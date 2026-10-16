@@ -2,6 +2,7 @@ export * from './errors/http.error.js';
 
 export * from './events/auth.events.js';
 export * from './events/infra.events.js';
+export * from './events/org.events.js';
 export * from './events/event.types.js';
 
 export * from './http/request.authenticate.js';
