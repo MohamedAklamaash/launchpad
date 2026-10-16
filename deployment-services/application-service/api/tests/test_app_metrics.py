@@ -275,15 +275,16 @@ def test_mock_ecs_populates_every_series(factory, make_stack):
 
 
 @pytest.mark.django_db
-def test_mock_eks_marks_cpu_and_memory_unavailable(factory, make_stack):
+def test_mock_eks_populates_every_series(factory, make_stack):
+    """Mock mode never touches AWS, so it has no business reporting the
+    amazon-cloudwatch-observability add-on as pending — EKS gets the same synthetic
+    cpu/memory series as ECS."""
     stack = make_stack(compute_type="eks")
     resp = _get(factory, stack.owner, str(stack.app.id))
     assert resp.status_code == 200
-    assert resp.data["series"]["cpu_percent"] == []
-    assert resp.data["series"]["memory_percent"] == []
-    assert resp.data["unavailable"]["cpu_percent"] == "eks_container_metrics_not_enabled"
-    assert resp.data["unavailable"]["memory_percent"] == "eks_container_metrics_not_enabled"
-    assert len(resp.data["series"]["request_count"]) > 0
+    for key in metrics_mod.SERIES_KEYS:
+        assert len(resp.data["series"][key]) > 0
+    assert resp.data["unavailable"] == {}
 
 
 # ── 4: cache hit ─────────────────────────────────────────────────────────────
@@ -439,13 +440,19 @@ def test_throttling_maps_to_503(make_stack, monkeypatch):
 # ── 7: EKS target-group discovery via elbv2 tags ─────────────────────────────
 
 @pytest.mark.django_db
-def test_eks_discovers_target_group_by_controller_tags(make_stack, monkeypatch):
+@pytest.mark.parametrize("controller_tags", [
+    # Self-managed AWS Load Balancer Controller.
+    {"ingress.k8s.aws/resource": "app-api/api-api:80", "elbv2.k8s.aws/cluster": "infra"},
+    # EKS Auto Mode's built-in controller (real AWS, 2026-10-16).
+    {"ingress.eks.amazonaws.com/resource": "app-api/api-api:80", "eks:eks-cluster-name": "infra"},
+])
+def test_eks_discovers_target_group_by_controller_tags(make_stack, monkeypatch, controller_tags):
     stack = make_stack(compute_type="eks")
     lb_arn = f"arn:aws:elasticloadbalancing:{REGION}:{ACCOUNT_ID}:loadbalancer/app/shared-alb/xyz"
     tg_arn = f"arn:aws:elasticloadbalancing:{REGION}:{ACCOUNT_ID}:targetgroup/k8s-appapi-abcdef/123"
     fake_elbv2 = _FakeElbv2(
         lb_dns=stack.env.alb_dns, lb_arn=lb_arn, target_groups=[tg_arn],
-        tags={tg_arn: {"ingress.k8s.aws/resource": "app-api/api-api:80", "elbv2.k8s.aws/cluster": "infra"}},
+        tags={tg_arn: controller_tags},
     )
     fake_cw = _FakeCloudWatch(responses=[{"MetricDataResults": []}])
     _real_infra(stack, monkeypatch, _FakeSession({"cloudwatch": fake_cw, "elbv2": fake_elbv2}))
@@ -464,16 +471,88 @@ def test_eks_no_target_group_match_marks_alb_series_unavailable(make_stack, monk
     stack = make_stack(compute_type="eks")
     lb_arn = f"arn:aws:elasticloadbalancing:{REGION}:{ACCOUNT_ID}:loadbalancer/app/shared-alb/xyz"
     fake_elbv2 = _FakeElbv2(lb_dns=stack.env.alb_dns, lb_arn=lb_arn, target_groups=[], tags={})
-    fake_cw = _FakeCloudWatch()
+    fake_cw = _FakeCloudWatch(responses=[{"MetricDataResults": []}])
     _real_infra(stack, monkeypatch, _FakeSession({"cloudwatch": fake_cw, "elbv2": fake_elbv2}))
 
     result = AppMetricsService().get_metrics(user_id=stack.owner.id, app_id=str(stack.app.id), time_range="1h")
 
-    assert fake_cw.calls == []
+    # Still one CloudWatch call: cpu/mem (ContainerInsights) never depends on ALB
+    # target-group discovery.
+    assert len(fake_cw.calls) == 1
+    ids = {q["Id"] for q in fake_cw.calls[0]["MetricDataQueries"]}
+    assert ids == set(metrics_mod.CPU_MEM_KEYS)
     for key in metrics_mod.ALB_KEYS:
         assert result.unavailable[key] == "target_group_not_found"
     for key in metrics_mod.CPU_MEM_KEYS:
-        assert result.unavailable[key] == "eks_container_metrics_not_enabled"
+        assert result.unavailable[key] == metrics_mod.EKS_CONTAINER_INSIGHTS_PENDING
+
+
+# ── 8: EKS cpu/mem via ContainerInsights ─────────────────────────────────────
+
+@pytest.mark.django_db
+def test_eks_container_insights_query_construction_and_dimensions(make_stack, monkeypatch):
+    stack = make_stack(compute_type="eks")
+    fake_elbv2 = _FakeElbv2(lb_dns=stack.env.alb_dns, lb_arn=None)
+    fake_cw = _FakeCloudWatch(responses=[{"MetricDataResults": []}])
+    _real_infra(stack, monkeypatch, _FakeSession({"cloudwatch": fake_cw, "elbv2": fake_elbv2}))
+
+    AppMetricsService().get_metrics(user_id=stack.owner.id, app_id=str(stack.app.id), time_range="6h")
+
+    assert len(fake_cw.calls) == 1
+    queries = fake_cw.calls[0]["MetricDataQueries"]
+    by_id = {q["Id"]: q for q in queries}
+    ids = set(by_id)
+    assert ids == set(metrics_mod.CPU_MEM_KEYS)
+
+    cpu = by_id["cpu_percent"]
+    assert cpu["MetricStat"]["Metric"]["Namespace"] == "ContainerInsights"
+    assert cpu["MetricStat"]["Metric"]["MetricName"] == "pod_cpu_utilization_over_pod_limit"
+    assert cpu["MetricStat"]["Stat"] == "Average"
+    assert cpu["MetricStat"]["Period"] == 300  # 6h -> 300s
+    dims = {d["Name"]: d["Value"] for d in cpu["MetricStat"]["Metric"]["Dimensions"]}
+    cluster_name = stack.env.cluster_arn.rsplit("/", 1)[-1]
+    assert dims == {
+        "ClusterName": cluster_name, "Namespace": f"app-{stack.app.name}", "Service": stack.app.name,
+    }
+
+    mem = by_id["memory_percent"]
+    assert mem["MetricStat"]["Metric"]["MetricName"] == "pod_memory_utilization_over_pod_limit"
+
+
+@pytest.mark.django_db
+def test_eks_container_insights_pending_when_no_datapoints(make_stack, monkeypatch):
+    stack = make_stack(compute_type="eks")
+    fake_elbv2 = _FakeElbv2(lb_dns=stack.env.alb_dns, lb_arn=None)
+    fake_cw = _FakeCloudWatch(responses=[{"MetricDataResults": []}])
+    _real_infra(stack, monkeypatch, _FakeSession({"cloudwatch": fake_cw, "elbv2": fake_elbv2}))
+
+    result = AppMetricsService().get_metrics(user_id=stack.owner.id, app_id=str(stack.app.id), time_range="1h")
+
+    for key in metrics_mod.CPU_MEM_KEYS:
+        assert result.series[key] == []
+        assert result.unavailable[key] == metrics_mod.EKS_CONTAINER_INSIGHTS_PENDING
+
+
+@pytest.mark.django_db
+def test_eks_container_insights_populates_when_datapoints_present(make_stack, monkeypatch):
+    stack = make_stack(compute_type="eks")
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    response = {
+        "MetricDataResults": [
+            {"Id": "cpu_percent", "Timestamps": [now], "Values": [42.5]},
+            {"Id": "memory_percent", "Timestamps": [now], "Values": [60.0]},
+        ]
+    }
+    fake_elbv2 = _FakeElbv2(lb_dns=stack.env.alb_dns, lb_arn=None)
+    fake_cw = _FakeCloudWatch(responses=[response])
+    _real_infra(stack, monkeypatch, _FakeSession({"cloudwatch": fake_cw, "elbv2": fake_elbv2}))
+
+    result = AppMetricsService().get_metrics(user_id=stack.owner.id, app_id=str(stack.app.id), time_range="1h")
+
+    assert result.series["cpu_percent"][0]["v"] == 42.5
+    assert result.series["memory_percent"][0]["v"] == 60.0
+    assert "cpu_percent" not in result.unavailable
+    assert "memory_percent" not in result.unavailable
 
 
 def test_alb_dimension_values_match_cloudwatch_format():

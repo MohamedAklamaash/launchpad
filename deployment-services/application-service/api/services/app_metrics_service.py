@@ -1,8 +1,9 @@
-"""Per-app metrics (dashboard charts): CPU/memory (ECS only — EKS Auto Mode has no
-Container Insights), ALB request/latency/error/health series for both compute types.
-Reads on demand through the same assumed-role session api/services/runtime_logs_service.py
-uses — nothing is stored on the platform beyond a 30s Redis cache of the rendered
-response, keyed by (app_id, range).
+"""Per-app metrics (dashboard charts): CPU/memory (ECS via AWS/ECS, EKS via the
+`ContainerInsights` namespace published by the amazon-cloudwatch-observability EKS
+add-on), ALB request/latency/error/health series for both compute types. Reads on
+demand through the same assumed-role session api/services/runtime_logs_service.py uses —
+nothing is stored on the platform beyond a 30s Redis cache of the rendered response,
+keyed by (app_id, range).
 
 One `cloudwatch.get_metric_data` call per request: every series is a MetricDataQuery in
 the same GetMetricData call, never a series-per-call loop.
@@ -16,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import redis
+from aws.eks import cluster_name_from_arn
 from aws.session import create_boto3_session, gate_mismatch
 from botocore.config import Config
 from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
@@ -58,13 +60,21 @@ ALB_KEYS = (
 )
 SERIES_KEYS = CPU_MEM_KEYS + ALB_KEYS
 
-EKS_CPU_MEM_UNAVAILABLE = "eks_container_metrics_not_enabled"
+EKS_CONTAINER_INSIGHTS_PENDING = "eks_container_insights_pending"
 
 _ACCESS_DENIED_CODES = {"AccessDenied", "AccessDeniedException"}
 _RETRY_LATER_CODES = {
     "Throttling", "ThrottlingException", "RequestLimitExceeded", "TooManyRequestsException",
 }
 
+
+
+# The target group's owning Ingress, as tagged by the load balancer controller. EKS Auto
+# Mode's built-in controller uses the ingress.eks.amazonaws.com namespace (real AWS:
+# "app-<slug>/<slug>-<slug>:80"); the self-managed AWS Load Balancer Controller uses
+# ingress.k8s.aws. Checking only the latter left every EKS ALB metric
+# target_group_not_found on Auto Mode clusters.
+_INGRESS_RESOURCE_TAG_KEYS = ("ingress.eks.amazonaws.com/resource", "ingress.k8s.aws/resource")
 
 class MetricsUnavailableError(Exception):
     """CloudWatch signaled a transient condition (throttling, timeout) — 503, retry later."""
@@ -228,20 +238,39 @@ class AppMetricsService:
     # ── EKS ──────────────────────────────────────────────────────────────────
 
     def _eks_metrics(self, session, app, env, infra, time_range, period, start, end, deadline) -> MetricsResult:
-        unavailable = {k: EKS_CPU_MEM_UNAVAILABLE for k in CPU_MEM_KEYS}
         slug = require_k8s_safe_slug(app.name)
         namespace = namespace_for(slug)
+        # Dimension set published by Container Insights that aggregates every pod behind
+        # this app's Service (ClusterName+Namespace+PodName would instead key on the
+        # current ReplicaSet's name, which changes on every rollout — see
+        # Container-Insights-metrics-EKS.html's documented dimension sets).
+        ci_dims = [
+            {"Name": "ClusterName", "Value": cluster_name_from_arn(env.cluster_arn)},
+            {"Name": "Namespace", "Value": namespace},
+            {"Name": "Service", "Value": slug},
+        ]
 
+        unavailable = {}
         alb_dims = self._discover_eks_target_group(session, env, namespace, slug, deadline)
         if alb_dims is None:
             unavailable.update({k: "target_group_not_found" for k in ALB_KEYS})
-        queries = _alb_queries(alb_dims, period) if alb_dims else []
 
-        series = {}
-        if queries:
-            _check_deadline(deadline)
-            cloudwatch = session.client("cloudwatch", config=_budget_config(deadline))
-            series = self._run_queries(cloudwatch, queries, start, end, deadline)
+        queries = _eks_cpu_mem_queries(ci_dims, period)
+        if alb_dims:
+            queries += _alb_queries(alb_dims, period)
+
+        _check_deadline(deadline)
+        cloudwatch = session.client("cloudwatch", config=_budget_config(deadline))
+        series = self._run_queries(cloudwatch, queries, start, end, deadline)
+
+        # The amazon-cloudwatch-observability add-on may not be installed yet (an infra
+        # onboarded before this grant existed), or Container Insights hasn't reported
+        # for this app's pods yet — either way CloudWatch just returns no datapoints,
+        # which is the only signal available short of a DescribeAddon call this service
+        # has no reason to make.
+        for key in CPU_MEM_KEYS:
+            if not series.get(key):
+                unavailable[key] = EKS_CONTAINER_INSIGHTS_PENDING
 
         return _build_result(time_range, period, infra.compute_type, series, unavailable)
 
@@ -308,7 +337,7 @@ class AppMetricsService:
             response = elbv2.describe_tags(ResourceArns=batch)
             for description in response.get("TagDescriptions", []):
                 tags = {t["Key"]: t["Value"] for t in description.get("Tags", [])}
-                resource = tags.get("ingress.k8s.aws/resource", "")
+                resource = next((tags[k] for k in _INGRESS_RESOURCE_TAG_KEYS if k in tags), "")
                 if resource.startswith(prefix):
                     candidates.append((resource, description["ResourceArn"]))
         if not candidates:
@@ -365,22 +394,16 @@ class AppMetricsService:
         """Deterministic fake series for is_mock infras / MODE=dev — never touches AWS.
         Derived from the full app id (never a slice — CLAUDE.md), so the same app+range
         always renders the same chart without a real deploy."""
-        unavailable = {}
-        if infra.compute_type == ComputeType.EKS:
-            unavailable = {k: EKS_CPU_MEM_UNAVAILABLE for k in CPU_MEM_KEYS}
-
         timestamps = _timestamps(start, end, period)
         seed = int(hashlib.sha256(f"{app.id}:{time_range}".encode()).hexdigest()[:8], 16)
-        series = {}
-        for key in SERIES_KEYS:
-            if key in unavailable:
-                series[key] = []
-                continue
-            series[key] = [
+        series = {
+            key: [
                 {"t": ts.isoformat(), "v": _synthetic_value(key, seed, i)}
                 for i, ts in enumerate(timestamps)
             ]
-        return _build_result(time_range, period, infra.compute_type, series, unavailable)
+            for key in SERIES_KEYS
+        }
+        return _build_result(time_range, period, infra.compute_type, series, {})
 
 
 def _floor_to_period(dt: datetime, period: int) -> datetime:
@@ -428,6 +451,16 @@ def _cpu_mem_queries(dims: list, period: int) -> list:
     return [
         _metric_query("cpu_percent", "AWS/ECS", "CPUUtilization", dims, "Average", period),
         _metric_query("memory_percent", "AWS/ECS", "MemoryUtilization", dims, "Average", period),
+    ]
+
+
+def _eks_cpu_mem_queries(dims: list, period: int) -> list:
+    # Both metrics are absent entirely (no datapoints, not zero) for any pod whose
+    # containers have no resource limit set — never the case here, since
+    # api/k8s/deployer.py's _app_resources() always sets limits == requests.
+    return [
+        _metric_query("cpu_percent", "ContainerInsights", "pod_cpu_utilization_over_pod_limit", dims, "Average", period),
+        _metric_query("memory_percent", "ContainerInsights", "pod_memory_utilization_over_pod_limit", dims, "Average", period),
     ]
 
 

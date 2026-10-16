@@ -356,8 +356,20 @@ fi
 #   empty+delete, dynamodb:DeleteTable, ecr:DeleteRepository,
 #   ecs:DeleteTaskDefinitions, ...) is already covered by the service-wide grants above —
 #   this is the only action nuke needed that wasn't
+# - eks podidentityassociation (v7, only granted when LAUNCHPAD_COMPUTE_TYPE=eks):
+#   Update/Delete/TagResource on a pod identity association, scoped to associations on
+#   infra-* clusters, so the amazon-cloudwatch-observability add-on's CloudWatch Agent
+#   can assume an IAM role instead of static credentials. eks:CreatePodIdentityAssociation
+#   authorizes against the cluster resource, not the (not-yet-existing) association, so
+#   it was already covered by the cluster/infra-* resource grant above; TagResource is
+#   needed because Terraform's provider-level default_tags applies tags to a new
+#   association the same way it does every other resource.
+#   eks:DescribePodIdentityAssociation/ListPodIdentityAssociations reads were already
+#   covered by eks:Describe*/eks:List* above (unrestricted resource); CreateAddon on the
+#   add-on itself was already covered by the addon/infra-*/* and cluster/infra-*
+#   resource grants
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-POLICY_VERSION=6
+POLICY_VERSION=7
 case "$COMPUTE_TYPE" in
   ecs_fargate)
     cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
@@ -569,7 +581,8 @@ EOF
         "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:cluster/infra-*",
         "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:access-entry/infra-*/*",
         "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:addon/infra-*/*",
-        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:nodegroup/infra-*/*"
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:nodegroup/infra-*/*",
+        "arn:aws:eks:*:__LAUNCHPAD_ACCOUNT_ID__:podidentityassociation/infra-*/*"
       ]
     },
     {

@@ -32,7 +32,7 @@ const CHART_HEIGHT = 190;
 // An unrecognized future code still renders (with the raw code appended) rather than
 // silently showing nothing.
 const UNAVAILABLE_REASONS: Record<string, string> = {
-  eks_container_metrics_not_enabled: "Container CPU/memory metrics aren't enabled for EKS clusters yet.",
+  eks_container_insights_pending: "Container Insights hasn't reported data for this app yet — it can take a few minutes after deploy.",
 };
 
 function unavailableMessage(code: string): string {
