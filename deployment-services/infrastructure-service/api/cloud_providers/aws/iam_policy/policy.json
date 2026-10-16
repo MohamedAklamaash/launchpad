@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "version_hashes": {
     "1": "7c217c09b949cc2f6f81b4fc7643fdfe089971ffcd212924cc1c319b2d8eeda3",
     "2": "6587ea60a3f6d1322b0d2b20d37e489cba642285f52648d2b7ea4ba9ad5164de",
@@ -8,7 +8,8 @@
     "5": "0d54c2a8f760090d272842305f05b55a10cf0d2ba54606246d26489777214c97",
     "6": "0dc4a42cf691a1587aba06f6f385ab3356c9a12f5c03454861a29d67b1b281d7",
     "7": "800b94ea3c02e9189395d6d45e647e8d3f018e3ae7e4f82e55159308ae0f816e",
-    "8": "dcd97db1831b999964a303ab4f1ccfc9aa6a1073b86e5548d510fb60b13478f1"
+    "8": "dcd97db1831b999964a303ab4f1ccfc9aa6a1073b86e5548d510fb60b13478f1",
+    "9": "8fc95abd5098f938178695eab8d6d9a19a06e32dab16073aa612bc86ea1f98e1"
   },
   "document_hashes": {
     "1": {
@@ -41,6 +42,10 @@
     "8": {
       "eks": "b1cc9a7483da115e1db3bf4d2f9f9037811bbfd3abd13b3d3c55aa33e7ad48fb",
       "ecs_fargate": "4ee09329e36f291cf586cfbc5a2385aa2143193d1a6dd98eeb73cc1e009ba1b5"
+    },
+    "9": {
+      "ecs_fargate": "e1317fb1f43df6a1060c8b90cbc8dc760dc0181779862616adc14419b5e808f2",
+      "eks": "7a2bbb557d19a5c87d0842de8aa44b18275df4a0876a3968cb3ea42cc99ad476"
     }
   },
   "notes": [
@@ -117,7 +122,27 @@
     "  account, so no new infrastructure creates a CodeBuild project. These two actions",
     "  stay only so Nuke can find and delete a per-infra project from before that change;",
     "  create/start/build actions (codebuild:CreateProject/UpdateProject/StartBuild/",
-    "  BatchGetBuilds) are dropped since nothing in your account needs them anymore"
+    "  BatchGetBuilds) are dropped since nothing in your account needs them anymore",
+    "cloudformation:Describe*/Get*/*ChangeSet/UpdateStack (v9, CloudFormation onboarding):",
+    "  an explicit action list, not cloudformation:*, even though the iam:* grant above",
+    "  already dominates it as a trust boundary — this policy is what a customer's",
+    "  security reviewer reads, and cloudformation:* on stack/*/* reads as \"Launchpad can",
+    "  delete any CloudFormation stack in my account\", which it cannot do: DeleteStack,",
+    "  CreateStack, and ExecuteChangeSet are deliberately excluded. Launchpad never calls",
+    "  DeleteStack on its own stack (it would detach/delete its own IAM permissions",
+    "  mid-teardown; see plan/F8-cloudformation-onboarding.md's \"last-infra teardown\"",
+    "  section) and never calls CreateStack (a customer's quick-create click does) or",
+    "  ExecuteChangeSet (a customer always reviews and applies a widening change set",
+    "  themselves). Account- and stack-name-wildcarded (stack/*/*) by design — the",
+    "  quick-create link lets the customer rename the suggested stack before creating it,",
+    "  so narrowing this grant to a literal stack name would be unenforceable. Granted",
+    "  actions are exactly what the verify/refresh (ticket 3) and nuke (ticket 6) flows",
+    "  call: DescribeStacks (verify's best-effort stack read, nuke's poll-to-terminal),",
+    "  DescribeStackEvents/DescribeStackResources (diagnosing a stuck update),",
+    "  GetTemplate/GetTemplateSummary (reading the currently applied template),",
+    "  CreateChangeSet/DescribeChangeSet/ListChangeSets/DeleteChangeSet (the refresh",
+    "  flow's change-set review link), and UpdateStack (nuke's non-last-infra ExternalIds",
+    "  narrowing)"
   ],
   "statements": [
     {
@@ -210,6 +235,22 @@
       "Effect": "Allow",
       "Action": "tag:GetResources",
       "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ListChangeSets",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:UpdateStack"
+      ],
+      "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
     }
   ],
   "compute_type_statements": {

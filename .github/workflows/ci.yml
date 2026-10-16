@@ -36,6 +36,32 @@ jobs:
           python deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/generate.py
           --check
 
+  check-cfn-template:
+    name: CFN template lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install cfn-lint
+        # Pinned, same discipline as check-python's ruff==0.16.5: an unpinned install
+        # means an unrelated commit can turn CI red when cfn-lint cuts a new release.
+        run: pip install cfn-lint==1.57.2
+
+      # Structural validation over the generated templates' output, not a dependency of
+      # generate.py itself (stays stdlib-only). No AWS credentials, same offline posture
+      # as check-terraform's `validate`.
+      - name: Lint generated CFN templates
+        run: >-
+          cfn-lint
+          deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/cloudformation/launchpad-deployment-role.ecs-fargate.template.json
+          deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/cloudformation/launchpad-deployment-role.eks.template.json
+
   check-python:
     name: Lint & Syntax (python services)
     runs-on: ubuntu-latest

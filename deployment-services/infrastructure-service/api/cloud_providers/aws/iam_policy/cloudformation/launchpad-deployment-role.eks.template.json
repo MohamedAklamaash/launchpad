@@ -1,0 +1,256 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Launchpad deployment role + policy (eks, policy v9). Generated from policy.json, do not hand-edit.",
+  "Parameters": {
+    "ExternalIds": {
+      "Type": "CommaDelimitedList",
+      "Description": "ExternalId(s) this role trusts. One per infra sharing this AWS account; always a list, even for a single infra."
+    },
+    "LaunchpadPlatformAccountId": {
+      "Type": "String",
+      "AllowedPattern": "^[0-9]{12}$",
+      "Description": "Launchpad platform AWS account id named as trust policy principal."
+    },
+    "LaunchpadPlatformUser": {
+      "Type": "String",
+      "Description": "Launchpad platform IAM user name named as trust policy principal."
+    }
+  },
+  "Resources": {
+    "LaunchpadDeploymentRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "LaunchpadDeploymentRole",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:iam::",
+                      {
+                        "Ref": "LaunchpadPlatformAccountId"
+                      },
+                      ":user/",
+                      {
+                        "Ref": "LaunchpadPlatformUser"
+                      }
+                    ]
+                  ]
+                }
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "sts:ExternalId": {
+                    "Ref": "ExternalIds"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "launchpad:managed-by",
+            "Value": "cloudformation"
+          },
+          {
+            "Key": "launchpad:policy-version",
+            "Value": "9"
+          },
+          {
+            "Key": "launchpad:compute-types",
+            "Value": "ecs_fargate+eks"
+          },
+          {
+            "Key": "launchpad:cfn-stack-name",
+            "Value": {
+              "Ref": "AWS::StackName"
+            }
+          }
+        ],
+        "MaxSessionDuration": 7200
+      }
+    },
+    "LaunchpadDeploymentPolicy": {
+      "Type": "AWS::IAM::ManagedPolicy",
+      "Properties": {
+        "ManagedPolicyName": "LaunchpadDeploymentPolicy",
+        "Roles": [
+          {
+            "Ref": "LaunchpadDeploymentRole"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "ec2:*",
+                "ecs:*",
+                "elasticloadbalancing:*",
+                "ecr:*",
+                "logs:*",
+                "s3:*",
+                "dynamodb:*",
+                "codebuild:BatchGetProjects",
+                "codebuild:DeleteProject",
+                "rds:*",
+                "elasticache:*",
+                "secretsmanager:*"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": "iam:*",
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": "kms:*",
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "ce:GetCostAndUsage",
+                "ce:UpdateCostAllocationTagsStatus",
+                "ce:ListCostAllocationTags"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": "acm:RequestCertificate",
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "aws:RequestTag/ManagedBy": "launchpad"
+                }
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "acm:DescribeCertificate",
+                "acm:ListCertificates",
+                "acm:ListTagsForCertificate"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": "acm:AddTagsToCertificate",
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "aws:RequestTag/ManagedBy": "launchpad"
+                },
+                "ForAllValues:StringEquals": {
+                  "aws:TagKeys": [
+                    "ManagedBy"
+                  ]
+                }
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": "acm:DeleteCertificate",
+              "Resource": "*",
+              "Condition": {
+                "StringEquals": {
+                  "aws:ResourceTag/ManagedBy": "launchpad"
+                }
+              }
+            },
+            {
+              "Effect": "Allow",
+              "Action": "cloudwatch:GetMetricData",
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": "tag:GetResources",
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "cloudformation:DescribeStacks",
+                "cloudformation:DescribeStackEvents",
+                "cloudformation:DescribeStackResources",
+                "cloudformation:GetTemplate",
+                "cloudformation:GetTemplateSummary",
+                "cloudformation:CreateChangeSet",
+                "cloudformation:DescribeChangeSet",
+                "cloudformation:ListChangeSets",
+                "cloudformation:DeleteChangeSet",
+                "cloudformation:UpdateStack"
+              ],
+              "Resource": "arn:aws:cloudformation:*:*:stack/*/*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "eks:CreateCluster",
+                "eks:List*",
+                "eks:Describe*"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": "eks:*",
+              "Resource": [
+                {
+                  "Fn::Sub": "arn:aws:eks:*:${AWS::AccountId}:cluster/infra-*"
+                },
+                {
+                  "Fn::Sub": "arn:aws:eks:*:${AWS::AccountId}:access-entry/infra-*/*"
+                },
+                {
+                  "Fn::Sub": "arn:aws:eks:*:${AWS::AccountId}:addon/infra-*/*"
+                },
+                {
+                  "Fn::Sub": "arn:aws:eks:*:${AWS::AccountId}:nodegroup/infra-*/*"
+                },
+                {
+                  "Fn::Sub": "arn:aws:eks:*:${AWS::AccountId}:podidentityassociation/infra-*/*"
+                }
+              ]
+            },
+            {
+              "Effect": "Deny",
+              "Action": [
+                "eks:*AccessEntr*",
+                "eks:*AccessPolic*",
+                "eks:DescribeCluster"
+              ],
+              "NotResource": [
+                {
+                  "Fn::Sub": "arn:aws:eks:*:${AWS::AccountId}:cluster/infra-*"
+                },
+                {
+                  "Fn::Sub": "arn:aws:eks:*:${AWS::AccountId}:access-entry/infra-*/*"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "PolicyVersion": {
+      "Value": "9",
+      "Description": "Convenience echo of launchpad:policy-version for a human reading the console."
+    }
+  }
+}

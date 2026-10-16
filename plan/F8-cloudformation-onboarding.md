@@ -56,9 +56,12 @@ method stays on that method permanently; no import/migration path ships in this 
   below) is a separate, fixed platform constant that never reads `infra.metadata
   .aws_region` at all — chosen specifically so this design doesn't inherit the
   pre-existing mismatch rather than because it was fixed. Out of scope here.
-- Adding a `Deny`/`NotResource` backstop around the new `cloudformation:*` grant. The
-  existing `iam:*` base grant already dominates it (same "defense-in-depth, not a hard
-  boundary" reasoning `policy.json`'s notes already use for `acm:AddTagsToCertificate`).
+- Adding a `Deny`/`NotResource` backstop around the new `cloudformation:` action grant.
+  The existing `iam:*` base grant already dominates it (same "defense-in-depth, not a
+  hard boundary" reasoning `policy.json`'s notes already use for
+  `acm:AddTagsToCertificate`) — note that this grant is an explicit action list, not
+  `cloudformation:*`, for the unrelated reason given under "Template generation" below
+  (least privilege on a customer-facing policy document).
 
 ## Context & constraints
 
@@ -267,21 +270,46 @@ which legitimately renders `${AWS::AccountId}` inside every `Fn::Sub`):
   template grants the identical action/resource set `policy_data` says it should, closing
   the gap a real-AWS-only "byte-identical" claim would otherwise leave until ticket 8.
 
-**`cloudformation:*` grant, added as a *base* statement** (applies to both compute types,
-not an EKS-only extra): `Resource: "arn:aws:cloudformation:*:*:stack/*/*"` — account
-*and* stack-name wildcarded, deliberately, on both axes. Stack-name wildcarding follows
-directly from "Completing onboarding" below: the customer can rename the stack before
-creating it, so a resource pattern pinned to literal stack name `LaunchpadDeploymentRole`
-would deny `DescribeStacks`/`UpdateStack`/`CreateChangeSet` on a renamed one — narrowing
-by name is unenforceable once the name itself isn't fixed. Root `CLAUDE.md`'s "never
-widen to `*`" warning is specifically about the EKS `Deny`/`NotResource` backstop, not a
-plain `Allow`, and a double-wildcarded `Allow` here is the same shape every other
-base-statement `Resource: "*"` already uses — the `iam:*` base grant already dominates
-it regardless (same "defense-in-depth, not a hard boundary" reasoning `policy.json`'s own
-notes use for `acm:AddTagsToCertificate`). This needs `version` bumped to **7** (a
-base-statement change, so `required_version_for` rises for *both* compute types — same
-mechanical consequence every prior base bump already had per `plan/README.md`'s Standing
-release actions). **Accepted side effect, stated explicitly**: this flags every
+**Explicit `cloudformation:` action list, added as a *base* statement** (applies to
+both compute types, not an EKS-only extra): `Resource: "arn:aws:cloudformation:*:*:stack/*/*"`
+— account *and* stack-name wildcarded, deliberately, on both axes. Stack-name
+wildcarding follows directly from "Completing onboarding" below: the customer can
+rename the stack before creating it, so a resource pattern pinned to literal stack
+name `LaunchpadDeploymentRole` would deny `DescribeStacks`/`UpdateStack`/`CreateChangeSet`
+on a renamed one — narrowing by name is unenforceable once the name itself isn't
+fixed. Root `CLAUDE.md`'s "never widen to `*`" warning is specifically about the EKS
+`Deny`/`NotResource` backstop, not a plain `Allow`, and the resource pattern here is
+the same double-wildcard shape every other base-statement `Resource: "*"` already
+uses — the `iam:*` base grant already dominates this as a trust boundary regardless
+(same "defense-in-depth, not a hard boundary" reasoning `policy.json`'s own notes use
+for `acm:AddTagsToCertificate`).
+
+**The action list itself is not `cloudformation:*`, even though `iam:*` already makes
+it defense-in-depth rather than a hard boundary.** This policy is what a customer's
+security reviewer reads, and `cloudformation:*` on every stack in the account reads as
+"Launchpad can delete any CloudFormation stack here" — least privilege on a
+customer-facing document is worth the explicit list even where the real boundary is
+elsewhere. Grant exactly what the tickets below call, nothing else, and deliberately
+exclude `DeleteStack` (Launchpad never calls it on its own stack — see "Removal — the
+last-infra-in-an-account case" below for why: `AWS::IAM::ManagedPolicy` detaches
+before the role deletes, so the assumed-role session performing a self-`DeleteStack`
+would lose its own permissions mid-teardown), `CreateStack` (only the customer's
+quick-create click does this), and `ExecuteChangeSet` (a customer always reviews and
+applies a widening change set themselves, never Launchpad). Current list, grown only
+when a later ticket's design calls a new action — add it here when that happens:
+
+- `DescribeStacks` — verify's best-effort stack read (§4); nuke's poll-to-terminal (§6)
+- `DescribeStackEvents` / `DescribeStackResources` — diagnosing a stuck update
+- `GetTemplate` / `GetTemplateSummary` — reading the currently applied template
+- `CreateChangeSet` / `DescribeChangeSet` / `ListChangeSets` / `DeleteChangeSet` — the
+  refresh flow's change-set review link (§5)
+- `UpdateStack` — nuke's non-last-infra `ExternalIds` narrowing (§6)
+
+This needs `version` bumped (a base-statement change, so `required_version_for` rises
+for *both* compute types — same mechanical consequence every prior base bump already
+had per `plan/README.md`'s Standing release actions; the exact version number is
+whatever's next when this ticket lands, not necessarily the number a stale draft of
+this plan names). **Accepted side effect, stated explicitly**: this flags every
 script-only account as policy-stale for a grant it will never exercise, since
 `policy_data`/`document_hashes` model `compute_type`, not onboarding method — adding a
 third axis to that scheme to avoid flagging script-only accounts is explicitly not worth
@@ -665,10 +693,10 @@ mechanism.
   `nuke_worker.py`'s existing `audit_logger` pattern), and a dashboard-visible counter of
   CFN-vs-script onboarding adoption so method-lock behavior is observable in production,
   not just inferred from support tickets.
-- **Known, accepted side effect**: the v7 base-statement bump (the `cloudformation:*`
-  grant) flags every account, regardless of compute type *or* onboarding method, as
-  policy-stale — including script-only accounts that will never need it. Accepted; see
-  "Template generation" above.
+- **Known, accepted side effect**: the base-statement bump (the explicit
+  `cloudformation:` action grant) flags every account, regardless of compute type *or*
+  onboarding method, as policy-stale — including script-only accounts that will never
+  need it. Accepted; see "Template generation" above.
 - **Silent cross-infra downgrade**: two complete templates (not one parameterized
   template) reintroduces the script's "never narrow a shared role already serving a
   wider compute type" hazard at the template-selection layer — see "Never-downgrade on
@@ -688,8 +716,9 @@ Each ticket is independently shippable and reviewable as one PR; 1→4 are prere
 for 3/5/6; 7 only needs 1-6 merged; 8-9 are sequential validation/rollout.
 
 1. **`generate.py` + `policy.json` — CFN template renderer.** Two generated templates,
-   `cloudformation:*` base-statement addition (version → 7, resource pattern
-   `stack/*/*` — account *and* stack-name wildcarded, see "Template generation" above),
+   explicit `cloudformation:` action-list base-statement addition (resource pattern
+   `stack/*/*` — account *and* stack-name wildcarded, see "Template generation" above
+   for the exact action list and why it's not `cloudformation:*`),
    `_cfn_statement` Fn::Sub helper, four role tags baked in
    (`launchpad:managed-by`, `launchpad:policy-version`, `launchpad:compute-types` — the
    F5/`live_diff.py` parity fix — and `launchpad:cfn-stack-name`), new
