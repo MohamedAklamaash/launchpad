@@ -48,6 +48,8 @@ class InfrastructureSerializer:
             exited_at=instance.exited_at,
             platform_account_id=platform_account_id,
             platform_user=platform_user,
+            onboarding_method=instance.onboarding_method,
+            cfn_stack_name=instance.cfn_stack_name,
         )
         return response.to_dict()
 

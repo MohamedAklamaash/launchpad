@@ -39,6 +39,8 @@ class InfraResponseSerializer(serializers.Serializer):
     policy_version = serializers.IntegerField(allow_null=True, help_text="Policy version applied in the customer's account; null if never reported")
     current_policy_version = serializers.IntegerField(help_text="Policy version Launchpad currently ships")
     required_policy_version = serializers.IntegerField(help_text="Lowest policy version this infra's compute_type must be at")
+    onboarding_method = serializers.ChoiceField(choices=["script", "cloudformation"], help_text="How the AWS access role was set up (F8)")
+    cfn_stack_name = serializers.CharField(allow_null=True, help_text="CloudFormation stack owning the access role, when CFN-onboarded")
     policy_refresh_required = serializers.BooleanField(help_text="True when the customer should re-run the Refresh policy script")
     exited_at = serializers.DateTimeField(allow_null=True, help_text="Set once the owner completes the exit flow (F6); never cleared")
     platform_account_id = serializers.CharField(help_text="Launchpad platform AWS account ID; the customer's trust policy must name this as principal")

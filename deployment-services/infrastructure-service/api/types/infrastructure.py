@@ -78,6 +78,11 @@ class InfrastructureResponse:
     # MalformedPolicyDocument: Invalid principal.
     platform_account_id: str | None = None
     platform_user: str | None = None
+    # F8: how this infra's AWS access role was set up ("script" | "cloudformation"), and
+    # the stack that owns it when CFN-onboarded. The dashboard branches its refresh and
+    # verify UI on this. The stack name is the customer's own (read from its role tag).
+    onboarding_method: str = "script"
+    cfn_stack_name: str | None = None
 
     def to_dict(self):
         data = asdict(self)
