@@ -544,7 +544,8 @@ def test_deployment_role_keeps_role_and_edits_trust_when_other_infra_shares_the_
             }}}],
         }},
     }
-    with patch.object(_NukeContext, "boto_client", return_value=fake_iam):
+    with patch.object(_NukeContext, "boto_client", return_value=fake_iam), \
+         patch.object(_NukeContext, "cfn_client") as fake_cfn_client:
         result = _manage_deployment_role(ctx)
 
     assert result["action"] == "kept"
@@ -554,6 +555,10 @@ def test_deployment_role_keeps_role_and_edits_trust_when_other_infra_shares_the_
     written_doc = fake_iam.update_assume_role_policy.call_args.kwargs["PolicyDocument"]
     assert str(infra.id) not in written_doc
     assert "other-external-id" in written_doc
+    # A script-onboarded infra (onboarding_method defaults to "script") must never take
+    # the CFN branch, even though both the shared-account and last-infra decisions are
+    # otherwise identical.
+    fake_cfn_client.assert_not_called()
 
 
 def test_deployment_role_deletes_role_and_policy_when_last_infra(make_nuke_run):
@@ -607,6 +612,245 @@ def test_deployment_role_mock_mode_never_touches_boto3(make_nuke_run):
 
     boto_client.assert_not_called()
     assert result == {"mock": True}
+
+
+# ── deployment role: CFN-onboarded branch ───────────────────────────────────────
+
+def _cfn_describe_stacks_response(external_ids: list) -> dict:
+    return {
+        "Stacks": [{
+            "StackStatus": "UPDATE_COMPLETE",
+            "Parameters": [
+                {"ParameterKey": "ExternalIds", "ParameterValue": ",".join(external_ids)},
+                {"ParameterKey": "LaunchpadPlatformAccountId", "ParameterValue": "111111111111"},
+                {"ParameterKey": "LaunchpadPlatformUser", "ParameterValue": "launchpad"},
+            ],
+        }],
+    }
+
+
+def test_deployment_role_cfn_shared_account_shrinks_external_ids(make_nuke_run):
+    """Non-last CFN infra: UpdateStack against infra.cfn_stack_name, ExternalIds read
+    from DescribeStacks (never the DB) minus this infra's id, every other parameter
+    carried forward with UsePreviousValue, polled to UPDATE_COMPLETE."""
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
+
+    owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    infra.onboarding_method = "cloudformation"
+    infra.cfn_stack_name = "LaunchpadDeploymentRole"
+    infra.save()
+    from api.models.infrastructure import Infrastructure
+    Infrastructure.objects.create(
+        user=owner, name="other-infra", cloud_provider="aws", max_cpu=1, max_memory=1,
+        code=infra.code, metadata={"aws_region": "us-east-1"},
+    )
+
+    ctx = _NukeContext(infra=infra, run=run)
+    fake_cfn = MagicMock()
+    fake_cfn.describe_stacks.return_value = _cfn_describe_stacks_response(
+        [str(infra.id), "other-external-id"]
+    )
+    with patch.object(_NukeContext, "cfn_client", return_value=fake_cfn), \
+         patch("api.services.nuke_worker.time.sleep"):
+        result = _manage_deployment_role(ctx)
+
+    assert result["action"] == "kept"
+    assert "shared with 1 other" in result["reason"]
+    assert result["stack_updated"] is True
+    fake_cfn.update_stack.assert_called_once_with(
+        StackName="LaunchpadDeploymentRole",
+        UsePreviousTemplate=True,
+        Parameters=[
+            {"ParameterKey": "ExternalIds", "ParameterValue": "other-external-id"},
+            {"ParameterKey": "LaunchpadPlatformAccountId", "UsePreviousValue": True},
+            {"ParameterKey": "LaunchpadPlatformUser", "UsePreviousValue": True},
+        ],
+        Capabilities=["CAPABILITY_NAMED_IAM"],
+    )
+
+
+def test_deployment_role_cfn_update_stack_no_updates_is_success(make_nuke_run):
+    """AWS's 'No updates are to be performed' ValidationError means the stack already
+    reflects the narrowed ExternalIds — a success, not a failure."""
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
+
+    owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    infra.onboarding_method = "cloudformation"
+    infra.cfn_stack_name = "LaunchpadDeploymentRole"
+    infra.save()
+    from api.models.infrastructure import Infrastructure
+    Infrastructure.objects.create(
+        user=owner, name="other-infra", cloud_provider="aws", max_cpu=1, max_memory=1,
+        code=infra.code, metadata={"aws_region": "us-east-1"},
+    )
+
+    ctx = _NukeContext(infra=infra, run=run)
+    fake_cfn = MagicMock()
+    fake_cfn.describe_stacks.return_value = _cfn_describe_stacks_response(
+        [str(infra.id), "other-external-id"]
+    )
+    fake_cfn.update_stack.side_effect = ClientError(
+        {"Error": {"Code": "ValidationError", "Message": "No updates are to be performed on stack"}},
+        "UpdateStack",
+    )
+    with patch.object(_NukeContext, "cfn_client", return_value=fake_cfn):
+        result = _manage_deployment_role(ctx)
+
+    assert result["stack_updated"] is False
+    assert result["reason"] == "no updates to be performed"
+
+
+def test_deployment_role_cfn_update_stack_rollback_is_step_failure(make_nuke_run):
+    """A terminal UPDATE_ROLLBACK_COMPLETE means the update itself was rejected — a
+    step failure, not a transient error to silently retry."""
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
+
+    owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    infra.onboarding_method = "cloudformation"
+    infra.cfn_stack_name = "LaunchpadDeploymentRole"
+    infra.save()
+    from api.models.infrastructure import Infrastructure
+    Infrastructure.objects.create(
+        user=owner, name="other-infra", cloud_provider="aws", max_cpu=1, max_memory=1,
+        code=infra.code, metadata={"aws_region": "us-east-1"},
+    )
+
+    ctx = _NukeContext(infra=infra, run=run)
+    fake_cfn = MagicMock()
+    rolled_back = _cfn_describe_stacks_response([str(infra.id), "other-external-id"])
+    rolled_back["Stacks"][0]["StackStatus"] = "UPDATE_ROLLBACK_COMPLETE"
+    fake_cfn.describe_stacks.side_effect = [
+        _cfn_describe_stacks_response([str(infra.id), "other-external-id"]),  # parameter read
+        rolled_back,  # poll
+    ]
+    with patch.object(_NukeContext, "cfn_client", return_value=fake_cfn), \
+         patch("api.services.nuke_worker.time.sleep"), \
+         pytest.raises(RuntimeError, match="UPDATE_ROLLBACK_COMPLETE"):
+        _manage_deployment_role(ctx)
+
+
+def test_deployment_role_cfn_update_stack_polls_through_in_progress(make_nuke_run):
+    """A non-terminal poll result keeps polling (sleeping in between) until a terminal
+    status is reached."""
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
+
+    owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    infra.onboarding_method = "cloudformation"
+    infra.cfn_stack_name = "LaunchpadDeploymentRole"
+    infra.save()
+    from api.models.infrastructure import Infrastructure
+    Infrastructure.objects.create(
+        user=owner, name="other-infra", cloud_provider="aws", max_cpu=1, max_memory=1,
+        code=infra.code, metadata={"aws_region": "us-east-1"},
+    )
+
+    ctx = _NukeContext(infra=infra, run=run)
+    fake_cfn = MagicMock()
+    in_progress = _cfn_describe_stacks_response([str(infra.id), "other-external-id"])
+    in_progress["Stacks"][0]["StackStatus"] = "UPDATE_IN_PROGRESS"
+    complete = _cfn_describe_stacks_response([str(infra.id), "other-external-id"])
+    fake_cfn.describe_stacks.side_effect = [
+        _cfn_describe_stacks_response([str(infra.id), "other-external-id"]),  # parameter read
+        in_progress,  # first poll
+        complete,  # second poll
+    ]
+    with patch.object(_NukeContext, "cfn_client", return_value=fake_cfn), \
+         patch("api.services.nuke_worker.time.sleep") as sleep:
+        result = _manage_deployment_role(ctx)
+
+    assert result["stack_updated"] is True
+    sleep.assert_called_once()
+
+
+def test_deployment_role_cfn_shared_account_refuses_empty_external_ids(make_nuke_run):
+    """others (DB) is non-empty but the stack's own ExternalIds parameter has no one
+    besides this infra — never attempt UpdateStack with an empty list."""
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
+
+    owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    infra.onboarding_method = "cloudformation"
+    infra.cfn_stack_name = "LaunchpadDeploymentRole"
+    infra.save()
+    from api.models.infrastructure import Infrastructure
+    Infrastructure.objects.create(
+        user=owner, name="other-infra", cloud_provider="aws", max_cpu=1, max_memory=1,
+        code=infra.code, metadata={"aws_region": "us-east-1"},
+    )
+
+    ctx = _NukeContext(infra=infra, run=run)
+    fake_cfn = MagicMock()
+    fake_cfn.describe_stacks.return_value = _cfn_describe_stacks_response([str(infra.id)])
+    with patch.object(_NukeContext, "cfn_client", return_value=fake_cfn), \
+         pytest.raises(RuntimeError, match="empty"):
+        _manage_deployment_role(ctx)
+    fake_cfn.update_stack.assert_not_called()
+
+
+def test_deployment_role_cfn_last_infra_returns_customer_delete_required(make_nuke_run):
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    infra.onboarding_method = "cloudformation"
+    infra.cfn_stack_name = "my-renamed-stack"
+    infra.save()
+
+    ctx = _NukeContext(infra=infra, run=run)
+    with patch.object(_NukeContext, "cfn_client") as fake_cfn_client, \
+         patch.object(_NukeContext, "boto_client") as fake_boto_client:
+        result = _manage_deployment_role(ctx)
+
+    assert result["action"] == "customer_delete_required"
+    assert "my-renamed-stack" in result["console_url"]
+    # The platform never calls DeleteStack (or anything else) on its own last stack.
+    fake_cfn_client.assert_not_called()
+    fake_boto_client.assert_not_called()
+
+
+def test_deployment_role_cfn_last_infra_falls_back_to_iam_console_without_stack_name(make_nuke_run):
+    from api.services.nuke_worker import _manage_deployment_role, _NukeContext
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    infra.onboarding_method = "cloudformation"
+    infra.cfn_stack_name = None
+    infra.save()
+
+    ctx = _NukeContext(infra=infra, run=run)
+    result = _manage_deployment_role(ctx)
+
+    assert result["action"] == "customer_delete_required"
+    assert "iamv2/home#/roles/details/LaunchpadDeploymentRole" in result["console_url"]
+    assert "cloudformation" not in result["console_url"]
+
+
+def test_nuke_run_cfn_last_infra_notifies_success_with_manual_step_url(make_nuke_run, monkeypatch):
+    """End-to-end: the last-infra CFN detail's console_url is surfaced on the
+    destroy-success notification the same way `_notify_failure` surfaces a step's
+    error — read from the step's own persisted detail."""
+    import api.services.nuke_worker as nw
+    from api.models.infrastructure import Infrastructure
+    from api.services.nuke_worker import NukeWorker
+
+    _owner, infra, _env, _run = make_nuke_run(name="prod-infra")
+    infra.onboarding_method = "cloudformation"
+    infra.cfn_stack_name = "LaunchpadDeploymentRole"
+    infra.save()
+
+    calls = []
+    _patch_all_steps_success(monkeypatch, calls)
+    monkeypatch.setattr(
+        nw._NukeContext, "step_deployment_role",
+        lambda self: nw._cfn_last_infra_detail(self.infra),
+    )
+
+    with patch("api.services.nuke_worker.NotificationService") as notification, \
+         patch("api.services.platform_dns.teardown.has_live_dns_state", return_value=False):
+        NukeWorker.run(str(infra.id))
+
+    assert not Infrastructure.objects.filter(id=infra.id).exists()
+    notification.send_destroy_success.assert_called_once()
+    _args, kwargs = notification.send_destroy_success.call_args
+    assert kwargs["manual_step_url"] is not None
+    assert "LaunchpadDeploymentRole" in kwargs["manual_step_url"]
 
 
 def test_state_backend_kept_when_other_infra_shares_the_account_and_region(make_nuke_run):

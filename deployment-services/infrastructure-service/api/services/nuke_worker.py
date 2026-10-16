@@ -33,6 +33,7 @@ they have no AWS side effect to fake.
 import json
 import logging
 import re
+import time
 from typing import ClassVar
 
 import boto3
@@ -42,6 +43,7 @@ from api.models.database import Database
 from api.models.environment import Environment
 from api.models.infrastructure import Infrastructure
 from api.models.nuke_run import NukeRun
+from api.services.cfn_onboarding import CFN_STACK_REGION
 from api.services.notification import NotificationService
 from api.services.terraform_worker import TerraformWorker, _capped_error
 from botocore.exceptions import ClientError
@@ -50,6 +52,7 @@ from django.db import transaction
 from django.utils import timezone
 from shared.aws.app_security_group import app_security_group_name
 from shared.aws.cost_tags import TAG_INFRA_KEY
+from shared.enums.orchestrator import OnboardingMethod
 from shared.mode import is_dev_mode
 from shared.resilience.http_client import ResilientHttpClient
 
@@ -60,6 +63,13 @@ _ACCESS_DENIED_CODES = {"AccessDenied", "AccessDeniedException", "UnauthorizedOp
 _ROLE_NAME = "LaunchpadDeploymentRole"
 _POLICY_NAME = "LaunchpadDeploymentPolicy"
 _SNAPSHOT_NOT_FOUND_CODES = {"DBSnapshotNotFound", "DBSnapshotNotFoundFault", "DBClusterSnapshotNotFoundFault"}
+
+# CFN stack update ("no update needed" is success, not an error — see plan
+# §6/Decision §5).
+_CFN_NO_UPDATES_MESSAGE = "No updates are to be performed"
+_CFN_UPDATE_TERMINAL_STATUSES = {"UPDATE_COMPLETE", "UPDATE_FAILED", "UPDATE_ROLLBACK_COMPLETE", "UPDATE_ROLLBACK_FAILED"}
+_CFN_POLL_INTERVAL_SECONDS = 5
+_CFN_POLL_MAX_ATTEMPTS = 60
 
 
 class PolicyRefreshRequiredForNuke(RuntimeError):
@@ -206,10 +216,24 @@ class NukeWorker:
             logger.exception(f"Nuke: failed to publish infrastructure.deleted for {infra_id}")
 
         try:
-            NotificationService.send_destroy_success(str(user_id), infra_id, name)
+            NotificationService.send_destroy_success(
+                str(user_id), infra_id, name, manual_step_url=NukeWorker._manual_step_url(run),
+            )
         except Exception:
             logger.exception(f"Nuke: failed to notify success for {infra_id}")
         audit_logger.info("nuke completed", extra={"infrastructure_id": infra_id, "user_id": str(user_id)})
+
+    @staticmethod
+    def _manual_step_url(run: NukeRun) -> str | None:
+        """Surfaces the last-infra CFN detail's console_url the same way
+        `_notify_failure` surfaces a step's error — read from the step's own `detail`,
+        never recomputed, so this matches exactly what the status endpoint
+        (`nuke_service._serialize`) already shows for the `deployment_role` step."""
+        step = run.step("deployment_role") or {}
+        detail = step.get("detail") or {}
+        if isinstance(detail, dict) and detail.get("action") == "customer_delete_required":
+            return detail.get("console_url")
+        return None
 
     @staticmethod
     def _notify_failure(infra: Infrastructure, error: str) -> None:
@@ -253,6 +277,19 @@ class _NukeContext:
         creds = self.credentials()
         return boto3.client(
             service, region_name=self.region,
+            aws_access_key_id=creds.get("aws_access_key_id"),
+            aws_secret_access_key=creds.get("aws_secret_access_key"),
+            aws_session_token=creds.get("aws_session_token"),
+        )
+
+    def cfn_client(self):
+        """Separate from `boto_client`: the CFN stack this design creates always lives
+        in `CFN_STACK_REGION` (a fixed platform constant — IAM is global, so this has
+        nothing to do with `self.region`, which is where *data-plane* resources
+        provision). See plan §4/"Completing onboarding"."""
+        creds = self.credentials()
+        return boto3.client(
+            "cloudformation", region_name=CFN_STACK_REGION,
             aws_access_key_id=creds.get("aws_access_key_id"),
             aws_secret_access_key=creds.get("aws_secret_access_key"),
             aws_session_token=creds.get("aws_session_token"),
@@ -641,11 +678,118 @@ def _manage_deployment_role(ctx: _NukeContext) -> dict:
         return {"mock": True}
 
     others = _other_infras_same_account(ctx.infra)
+    if ctx.infra.onboarding_method == OnboardingMethod.CLOUDFORMATION:
+        if others:
+            result = {"action": "kept", "reason": f"shared with {len(others)} other infrastructure(s)"}
+            result.update(_update_cfn_stack_external_ids(ctx))
+            return result
+        return _cfn_last_infra_detail(ctx.infra)
+
     if others:
         result = {"action": "kept", "reason": f"shared with {len(others)} other infrastructure(s)"}
         result.update(_remove_external_id_from_trust(ctx, ctx.infra, str(ctx.infra.id)))
         return result
     return _delete_deployment_role_and_policy(ctx)
+
+
+def _cfn_console_url(infra: Infrastructure) -> str:
+    """Built from the stack name persisted at verify time — never the suggested name
+    `LaunchpadDeploymentRole`, since the customer may have renamed the stack before
+    creating it. Falls back to IAM's own (non-regional) role page if the name was never
+    discovered (onboarded before this field existed, or verify's best-effort stack
+    lookup never ran)."""
+    if infra.cfn_stack_name:
+        return (
+            f"https://{CFN_STACK_REGION}.console.aws.amazon.com/cloudformation/home"
+            f"?region={CFN_STACK_REGION}#/stacks/stackinfo?stackId={infra.cfn_stack_name}"
+        )
+    return f"https://console.aws.amazon.com/iamv2/home#/roles/details/{_ROLE_NAME}"
+
+
+def _cfn_last_infra_detail(infra: Infrastructure) -> dict:
+    """The platform never calls DeleteStack on itself: AWS::IAM::ManagedPolicy depends
+    on the Role it attaches to, so CFN detaches/deletes the policy before the role —
+    the assumed-role session performing the delete would lose its own permissions
+    mid-teardown. This is a soft success with a trailing manual step, not a failure —
+    see plan §6."""
+    return {"action": "customer_delete_required", "console_url": _cfn_console_url(infra)}
+
+
+def _current_cfn_stack_parameters(cfn, stack_name: str) -> list:
+    stacks = cfn.describe_stacks(StackName=stack_name)["Stacks"]
+    if not stacks:
+        raise RuntimeError(f"CFN stack {stack_name} not found")
+    return stacks[0].get("Parameters", [])
+
+
+def _poll_cfn_stack_to_terminal(cfn, stack_name: str) -> str:
+    for _ in range(_CFN_POLL_MAX_ATTEMPTS):
+        stacks = cfn.describe_stacks(StackName=stack_name)["Stacks"]
+        if not stacks:
+            raise RuntimeError(f"CFN stack {stack_name} disappeared while polling")
+        status = stacks[0]["StackStatus"]
+        if status in _CFN_UPDATE_TERMINAL_STATUSES:
+            return status
+        time.sleep(_CFN_POLL_INTERVAL_SECONDS)
+    raise RuntimeError(f"CFN stack {stack_name} did not reach a terminal status after {_CFN_POLL_MAX_ATTEMPTS} polls")
+
+
+def _update_cfn_stack_external_ids(ctx: _NukeContext) -> dict:
+    """Narrows the shared stack's trust (this infra's ExternalId removed) — a direct,
+    unreviewed UpdateStack, matching the script path's own unreviewed
+    `_remove_external_id_from_trust` precedent exactly: system cleanup, not a customer-
+    facing widening change a human needs to bless first. See plan §5/§6."""
+    infra = ctx.infra
+    stack_name = infra.cfn_stack_name
+    if not stack_name:
+        raise RuntimeError(f"infrastructure {infra.id} has no cfn_stack_name; cannot update the shared stack")
+
+    cfn = ctx.cfn_client()
+    current_params = _current_cfn_stack_parameters(cfn, stack_name)
+
+    external_ids = []
+    other_params = []
+    for param in current_params:
+        key = param.get("ParameterKey")
+        if key == "ExternalIds":
+            raw = param.get("ParameterValue", "")
+            external_ids = [v for v in raw.split(",") if v]
+        else:
+            other_params.append({"ParameterKey": key, "UsePreviousValue": True})
+
+    remaining = [eid for eid in external_ids if eid != str(infra.id)]
+    if not remaining:
+        # "last infra" is checked first and short-circuits to _cfn_last_infra_detail, so
+        # this would mean the stack's own ExternalIds parameter disagrees with the DB's
+        # view of who shares this account — surfaced as a failure rather than attempted,
+        # sidestepping whatever MalformedPolicyDocument an empty sts:ExternalId condition
+        # might trigger (never real-AWS-validated for the script path's own analogous
+        # case either).
+        raise RuntimeError(
+            f"removing {infra.id} from stack {stack_name} would leave ExternalIds empty"
+        )
+
+    try:
+        cfn.update_stack(
+            StackName=stack_name,
+            UsePreviousTemplate=True,
+            Parameters=[
+                {"ParameterKey": "ExternalIds", "ParameterValue": ",".join(remaining)},
+                *other_params,
+            ],
+            Capabilities=["CAPABILITY_NAMED_IAM"],
+        )
+    except ClientError as e:
+        _raise_if_access_denied(e)
+        message = e.response.get("Error", {}).get("Message", "")
+        if _CFN_NO_UPDATES_MESSAGE in message:
+            return {"stack_updated": False, "reason": "no updates to be performed"}
+        raise
+
+    status = _poll_cfn_stack_to_terminal(cfn, stack_name)
+    if status != "UPDATE_COMPLETE":
+        raise RuntimeError(f"CFN stack {stack_name} update ended in {status}")
+    return {"stack_updated": True}
 
 
 def _remove_external_id_from_trust(ctx: _NukeContext, infra: Infrastructure, external_id: str) -> dict:

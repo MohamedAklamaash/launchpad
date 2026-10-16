@@ -39,7 +39,8 @@ def _resolve_recipient(user_id: str) -> tuple[str, str] | None:
 
 
 def _enqueue(user_id: str, email: str, user_name: str, infra_id: str, infra_name: str,
-             event: str, error: str | None = None, database_name: str | None = None):
+             event: str, error: str | None = None, database_name: str | None = None,
+             manual_step_url: str | None = None):
     """Push a BullMQ-compatible job onto the notification-event queue."""
     try:
         r = _get_redis()
@@ -57,6 +58,11 @@ def _enqueue(user_id: str, email: str, user_name: str, infra_id: str, infra_name
                 "event": event,
                 "error": error,
                 "database_name": database_name,
+                # Present only for a CFN last-infra destroy success: the console page
+                # where the customer finishes the stack delete Launchpad can't safely
+                # do itself (see nuke_worker.py's deployment_role step). The notification
+                # service doesn't render this yet — see the PR description.
+                "manual_step_url": manual_step_url,
             }),
             "opts": json.dumps({"attempts": 3, "backoff": {"type": "exponential", "delay": 1000}}),
             "timestamp": timestamp,
@@ -80,14 +86,14 @@ def _enqueue(user_id: str, email: str, user_name: str, infra_id: str, infra_name
 
 
 def _notify(event: str, user_id: str, infra_id: str, infra_name: str, error: str | None = None,
-            database_name: str | None = None):
+            database_name: str | None = None, manual_step_url: str | None = None):
     """Resolve the owner and enqueue one event, or skip."""
     recipient = _resolve_recipient(user_id)
     if not recipient:
         logger.warning("No recipient found, skipping notification")
         return
     email, user_name = recipient
-    _enqueue(user_id, email, user_name, infra_id, infra_name, event, error, database_name)
+    _enqueue(user_id, email, user_name, infra_id, infra_name, event, error, database_name, manual_step_url)
 
 
 class NotificationService:
@@ -102,8 +108,8 @@ class NotificationService:
         _notify("provision_failure", user_id, infra_id, infra_name, error)
 
     @staticmethod
-    def send_destroy_success(user_id: str, infra_id: str, infra_name: str):
-        _notify("destroy_success", user_id, infra_id, infra_name)
+    def send_destroy_success(user_id: str, infra_id: str, infra_name: str, manual_step_url: str | None = None):
+        _notify("destroy_success", user_id, infra_id, infra_name, manual_step_url=manual_step_url)
 
     @staticmethod
     def send_destroy_failure(user_id: str, infra_id: str, infra_name: str, error: str):
