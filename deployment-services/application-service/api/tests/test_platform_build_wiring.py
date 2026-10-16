@@ -1,19 +1,15 @@
-"""F7 ticket 6 — wiring aws/platform_builder.py into application_deployment_service.py
-behind settings.PLATFORM_BUILD_ENABLED.
+"""F7 ticket 6/10 — aws/platform_builder.py is the only build path
+application_deployment_service.py has (F7 ticket 10 retired the customer-account
+CodeBuild fallback this used to be gated behind).
 
-Flag off must be byte-for-byte unchanged (the pre-existing CodeBuild path); flag on
-builds on platform Fargate capacity, captures a digest from BuildResult, pins the task
-definition to it, and transitions through BUILDING -> PUSHING_IMAGE -> DEPLOYING.
-Rollback must never call the builder either way.
+Every deploy builds on platform Fargate capacity, captures a digest from BuildResult,
+pins the task definition to it, and transitions through BUILDING -> PUSHING_IMAGE ->
+DEPLOYING. Rollback must never call the builder.
 """
 import uuid
-from types import SimpleNamespace
 from unittest.mock import patch
 
-import aws.github_source as github_source_mod
 import aws.platform_builder as platform_builder_mod
-import aws.platform_builder_credentials as platform_builder_credentials_mod
-import aws.session as aws_session_mod
 import pytest
 from aws.platform_builder import BuildError, BuildHandle, BuildResult
 
@@ -24,23 +20,6 @@ from api.services.application_deployment_service import ApplicationDeploymentSer
 ACCOUNT_ID = "123456789012"
 SHA = "c" * 40
 DIGEST = "sha256:" + "d" * 64
-
-
-@pytest.fixture(autouse=True)
-def _unlimited_build_budget(monkeypatch):
-    """F7 ticket 7's caps and their release-on-every-path guarantee are covered by
-    test_platform_build_limits.py — these wiring tests are about the build step itself
-    and must not depend on Redis being reachable."""
-    monkeypatch.setattr(
-        "api.services.application_deployment_service.ApplicationDeploymentService"
-        "._enforce_build_budgets",
-        lambda self, application: None,
-    )
-    monkeypatch.setattr(
-        "api.services.application_deployment_service.ApplicationDeploymentService"
-        "._release_build_concurrency_slot",
-        lambda self, key: None,
-    )
 
 
 @pytest.fixture
@@ -96,13 +75,12 @@ def _fake_result(handle):
     return BuildResult(image_tag=handle.image_tag, resolved_sha=handle.sha, image_digest=DIGEST)
 
 
-# ── flag on: happy path ───────────────────────────────────────────────────────────────
+# ── happy path ─────────────────────────────────────────────────────────────────────
 
 @pytest.mark.django_db
 def test_platform_build_happy_path_pins_digest_and_sets_pushing_image(
     new_app, mock_service, monkeypatch, settings,
 ):
-    settings.PLATFORM_BUILD_ENABLED = True
     settings.PLATFORM_BASE_DOMAIN = None
     monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
     app, _env = new_app
@@ -186,7 +164,6 @@ def test_platform_build_uses_the_webhook_sha_as_the_resolve_ref(
     just confirms) rather than falling back to the branch HEAD. resolve_commit_sha is
     still called in both cases (there's no "skip" branch) — this only exercises which
     ref it's called with."""
-    settings.PLATFORM_BUILD_ENABLED = True
     settings.PLATFORM_BASE_DOMAIN = None
     app, _env = new_app
     app.project_commit_hash = SHA
@@ -221,11 +198,10 @@ def test_platform_build_uses_the_webhook_sha_as_the_resolve_ref(
     assert seen_refs == [SHA]
 
 
-# ── flag on: failure path ─────────────────────────────────────────────────────────────
+# ── failure path ───────────────────────────────────────────────────────────────────
 
 @pytest.mark.django_db
 def test_platform_build_failure_is_sanitized_and_recorded(new_app, mock_service, monkeypatch, settings):
-    settings.PLATFORM_BUILD_ENABLED = True
     app, _env = new_app
     service, _session = mock_service
 
@@ -264,95 +240,57 @@ def test_platform_build_failure_is_sanitized_and_recorded(new_app, mock_service,
     assert deployment.tag_source == Deployment.TAG_SOURCE_RESOLVED_SHA
 
 
-# ── flag off: byte-for-byte the old path ──────────────────────────────────────────────
+# ── no other build path exists ──────────────────────────────────────────────────────
 
 @pytest.mark.django_db
-def test_flag_off_never_touches_the_platform_builder(new_app, mock_service, monkeypatch, settings):
-    settings.PLATFORM_BUILD_ENABLED = False
+def test_deploy_never_constructs_a_codebuild_client(new_app, mock_service, monkeypatch, settings):
+    """F7 ticket 10: there is no flag, no fallback, no CodeBuild client anywhere on the
+    deploy path — recorded here as a regression guard against reintroducing one, on top
+    of the fact that application_deployment_service.py no longer imports the name at
+    all (a reintroduction would be a NameError before this test could even run)."""
     settings.PLATFORM_BASE_DOMAIN = None
     monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
     app, _env = new_app
-    service, _session = mock_service
-
-    def _boom(*args, **kwargs):
-        raise AssertionError("flag off must never call the platform builder")
+    service, session = mock_service
 
     monkeypatch.setattr(
-        "api.services.application_deployment_service.platform_builder.start_build", _boom,
+        "api.services.application_deployment_service.resolve_commit_sha",
+        lambda application, ref=None: SHA,
     )
     monkeypatch.setattr(
-        "api.services.application_deployment_service.platform_builder.wait_for_build", _boom,
+        "api.services.application_deployment_service.platform_builder.start_build",
+        lambda application, infrastructure, sha: _fake_handle(application, infrastructure, sha),
     )
     monkeypatch.setattr(
-        "api.services.application_deployment_service.resolve_commit_sha", _boom,
+        "api.services.application_deployment_service.platform_builder.wait_for_build",
+        lambda handle: _fake_result(handle),
     )
 
-    url = service.deploy_application(app)
+    seen_services = []
+    original_client = session.client
 
-    assert url
-    app.refresh_from_db()
-    assert app.status == "ACTIVE"
-    # The legacy CodeBuild path's mock build id shape (see MockClient.start_build).
-    assert app.build_id and ":mock-" in app.build_id
+    def _spy_client(name, **kwargs):
+        seen_services.append(name)
+        return original_client(name, **kwargs)
 
-    # The new field is populated for the legacy path too (ticket 6 threads it through
-    # uniformly) — but nothing about *how* the deploy ran changed, which is the
-    # byte-for-byte guarantee this test is actually for.
-    deployment = Deployment.objects.get(application=app)
-    assert deployment.build_id == app.build_id
+    monkeypatch.setattr(session, "client", _spy_client)
 
-    # F7 ticket 8: no ECS task exists on the legacy CodeBuild path — build_task_id must
-    # stay None on both rows, which is what makes the build-logs endpoint's
-    # legacy-build (409) rule correct.
-    assert app.build_task_id is None
-    assert deployment.build_task_id is None
-
-
-@pytest.mark.django_db
-def test_flag_flipped_off_clears_a_stale_platform_build_task_id(new_app, mock_service, monkeypatch, settings):
-    """Regression for F7 ticket 8: an app that previously built on the platform path
-    carries a real ECS task id in build_task_id. If PLATFORM_BUILD_ENABLED is then
-    flipped off and the app deploys again on the legacy CodeBuild path, that stale task
-    id must not survive — otherwise /build-logs/current would tail the *previous*
-    build's stream while claiming to show the current (CodeBuild) one."""
-    settings.PLATFORM_BUILD_ENABLED = False
-    settings.PLATFORM_BASE_DOMAIN = None
-    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
-    app, _env = new_app
-    app.build_id = "platform-stale-build"
-    app.build_task_id = "stale-ecs-task-id"
-    app.save(update_fields=["build_id", "build_task_id"])
-    service, _session = mock_service
-
-    service.deploy_application(app)
-
-    app.refresh_from_db()
-    assert app.build_task_id is None
-    assert ":mock-" in app.build_id  # overwritten with this attempt's own (legacy) build id
-
-
-@pytest.mark.django_db
-def test_flag_off_digest_stays_none_and_ecs_pins_by_tag(new_app, mock_service, monkeypatch, settings):
-    settings.PLATFORM_BUILD_ENABLED = False
-    settings.PLATFORM_BASE_DOMAIN = None
-    monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
-    app, _env = new_app
-    service, _session = mock_service
-
-    with patch.object(service, "_create_task_definition", wraps=service._create_task_definition) as spy:
+    with patch("api.services.application_deployment_service.ECSClient") as ecs_cls:
+        ecs_cls.return_value.create_task_definition.return_value = "arn:task-def:1"
+        ecs_cls.return_value.create_service.return_value = (
+            f"arn:aws:ecs:us-east-1:{ACCOUNT_ID}:service/c/my-app-service"
+        )
         service.deploy_application(app)
 
-    assert spy.call_args.kwargs["image_digest"] is None
+    assert "codebuild" not in seen_services
 
 
-# ── rollback: never calls the builder, flag on or off ─────────────────────────────────
+# ── rollback: never calls the builder ─────────────────────────────────────────────────
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("flag", [True, False])
-def test_rollback_never_calls_the_platform_builder(new_app, mock_service, monkeypatch, settings, flag):
+def test_rollback_never_calls_the_platform_builder(new_app, mock_service, monkeypatch, settings):
     from api.services.deployment_snapshot import snapshot_env
 
-    settings.PLATFORM_BUILD_ENABLED = flag
     settings.PLATFORM_BASE_DOMAIN = None
     monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
     app, _env = new_app
@@ -372,7 +310,7 @@ def test_rollback_never_calls_the_platform_builder(new_app, mock_service, monkey
     )
 
     # Set up a prior successful deploy to roll back to — this one is allowed to use the
-    # (faked) platform builder when flag=True; only the rollback call below must not.
+    # (faked) platform builder; only the rollback call below must not.
     with patch("api.services.application_deployment_service.ECSClient") as ecs_cls:
         ecs_cls.return_value.create_task_definition.return_value = "arn:task-def:1"
         ecs_cls.return_value.create_service.return_value = (
@@ -407,29 +345,19 @@ def test_rollback_never_calls_the_platform_builder(new_app, mock_service, monkey
     assert app.status == "ACTIVE"
 
 
-# ── mock/dev mode works end to end with the flag on, no python-level mocking ──────────
+# ── mock/dev mode works end to end, no python-level mocking of the builder itself ─────
 
 @pytest.mark.django_db
-def test_mock_builder_end_to_end_with_flag_on(new_app, mock_service, monkeypatch, settings):
+def test_mock_builder_end_to_end(new_app, mock_service, monkeypatch, settings, platform_builder_mock_mode):
     """No patching of resolve_commit_sha/start_build/wait_for_build at all — only the
-    established is_mock + dev-mode app_config swap (api/tests/test_platform_builder.py)
-    so aws/github_source.py's own mock branch runs instead of hitting GitHub, proving
-    the real (not test-faked) platform builder mock path works end to end."""
-    settings.PLATFORM_BUILD_ENABLED = True
+    established is_mock + dev-mode app_config swap (conftest.py's
+    platform_builder_mock_mode fixture) so aws/github_source.py's own mock branch runs
+    instead of hitting GitHub, proving the real (not test-faked) platform builder mock
+    path works end to end."""
     settings.PLATFORM_BASE_DOMAIN = None
     monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
     app, _env = new_app
     service, _session = mock_service
-
-    dev = SimpleNamespace(mode="dev", aws_access_key_id="x", aws_secret_access_key="y")
-    monkeypatch.setattr(aws_session_mod, "app_config", dev)
-    monkeypatch.setattr(platform_builder_credentials_mod, "app_config", dev)
-    monkeypatch.setattr(platform_builder_mod, "app_config", dev)
-    monkeypatch.setattr(github_source_mod, "app_config", dev)
-    # _mock_build_handle still exercises the real fetch/upload code paths (each no-ops
-    # its own AWS call in mock mode), which still need the bucket name configured even
-    # though no S3 call is actually made.
-    monkeypatch.setenv("PLATFORM_BUILDER_SOURCE_BUCKET", "launchpad-platform-builder-sources")
 
     url = service.deploy_application(app)
 

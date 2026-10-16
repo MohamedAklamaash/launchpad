@@ -22,7 +22,7 @@ ACCOUNT_ID = "123456789012"
 
 
 @pytest.fixture
-def new_app(schema_db):
+def new_app(schema_db, platform_builder_mock_mode):
     """A genuinely first-time app: no target group, service, or task definition has ever
     been created for it — unlike test_rollback.py's ecs_app, which simulates an app
     already past its first deploy."""

@@ -76,7 +76,7 @@ def old_deployment(ecs_app):
 
 
 @pytest.fixture
-def new_app(schema_db):
+def new_app(schema_db, platform_builder_mock_mode):
     """A genuinely first-time app (same shape as
     test_first_deploy_target_group_order.py's fixture of the same name) — used to exercise
     the stuck-rollout check through deploy_application rather than rollback_application.

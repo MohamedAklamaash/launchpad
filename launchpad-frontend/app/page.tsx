@@ -60,7 +60,7 @@ const STATS: { to?: number; suffix?: string; display?: string; label: string }[]
 const STEPS = [
   { n: '01', title: 'Point us at your AWS account', desc: 'Run one script to create a scoped IAM role. Launchpad assumes it — you never hand over a key.' },
   { n: '02', title: 'Provision an environment', desc: 'One click stands up a full VPC, ECS cluster, load balancer, and registry in the region you pick.' },
-  { n: '03', title: 'Connect a repo and deploy', desc: 'Choose a GitHub repo and branch. CodeBuild builds the Docker image; ECS runs it behind your ALB.' },
+  { n: '03', title: 'Connect a repo and deploy', desc: 'Choose a GitHub repo and branch. Launchpad builds the Docker image on its own infrastructure; ECS runs it behind your ALB.' },
   { n: '04', title: 'Ship on every push', desc: 'Redeploy automatically on commit. Update env vars, resize, or sleep idle apps to stop paying for them.' },
 ];
 
@@ -68,7 +68,7 @@ const STACK = [
   ['Next.js', 'Dashboard'],
   ['Django + DRF', 'Control plane'],
   ['ECS Fargate', 'Runtime'],
-  ['AWS CodeBuild', 'Builds'],
+  ['Kaniko', 'Builds'],
   ['Terraform', 'Provisioning'],
   ['PostgreSQL', 'System of record'],
   ['Redis', 'Deploy queue'],

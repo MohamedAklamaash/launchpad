@@ -21,9 +21,6 @@ def _hex_infra_id(prefix: str, infra_id: str, salt: str = "") -> str:
     return f"{prefix}-{hashlib.md5(f'{infra_id}:{salt}'.encode()).hexdigest()[:17]}"
 
 
-_MOCK_RESOLVED_SHA = "0" * 39 + "1"
-
-
 def mock_eks_alb_dns(infra_id: str, region: str) -> str:
     """The mock's own deterministic stand-in for the shared EKS group ALB's DNS name — see
     MockClient.describe_load_balancers. Test fixtures that want EKSDeployer's B1 live check
@@ -350,49 +347,6 @@ class MockClient:
 
     def describe_target_health(self, **kwargs):
         return {"TargetHealthDescriptions": [{"TargetHealth": {"State": "healthy"}}]}
-
-    def batch_get_projects(self, **kwargs):
-        return {"projects": [{"name": name} for name in kwargs.get("names", [])]}
-
-    def create_project(self, **kwargs):
-        return {"project": {"name": kwargs.get("name", "project")}}
-
-    def update_project(self, **kwargs):
-        return {"project": {"name": kwargs.get("name", "project")}}
-
-    def start_build(self, **kwargs):
-        project = kwargs.get("projectName", "build")
-        return {"build": {"id": f"{project}:mock-{_suffix(project)}"}}
-
-    def batch_get_builds(self, **kwargs):
-        builds = []
-        for build_id in kwargs.get("ids", []):
-            builds.append(
-                {
-                    "id": build_id,
-                    "buildStatus": "SUCCEEDED",
-                    "currentPhase": "COMPLETED",
-                    "logs": {},
-                    # Real CodeBuild exports this from the buildspec. Modelled so mock
-                    # deploys exercise the immutable-tag path instead of silently taking
-                    # the -latest fallback meant for pre-existing projects.
-                    "exportedEnvironmentVariables": [
-                        {"name": "RESOLVED_SHA", "value": _MOCK_RESOLVED_SHA},
-                    ],
-                }
-            )
-        return {"builds": builds}
-
-    def get_role(self, **kwargs):
-        name = kwargs.get("RoleName", "role")
-        return {"Role": {"RoleName": name, "Arn": f"arn:aws:iam::{self._account_id}:role/{name}"}}
-
-    def create_role(self, **kwargs):
-        name = kwargs.get("RoleName", "role")
-        return {"Role": {"RoleName": name, "Arn": f"arn:aws:iam::{self._account_id}:role/{name}"}}
-
-    def attach_role_policy(self, **kwargs):
-        return {}
 
     def describe_images(self, **kwargs):
         # Mock images never expire — every tag or digest rollback might target is "found".

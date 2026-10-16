@@ -16,7 +16,7 @@ against `main` at `9c8743d`; `ROADMAP.md` is the original document and its claim
 | [F5](F5-evidence-pack.md) | Compliance pack | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [F6](F6-exit-export.md) | Exit export | **done** (mock-verified; see REAL-AWS-VALIDATION) | nothing |
 | [H](H-hardening.md) | Hardening follow-ups (H1–H7) | **in progress** — H1–H7 done (mock-verified) | nothing |
-| [F7](F7-platform-builder.md) | Platform-side image builds (fixes customer accounts with CodeBuild quota 0) | **done, real-AWS verified** (tickets 2–9, #129–#136), behind `PLATFORM_BUILD_ENABLED` (default off) | ticket 10: flip the default on |
+| [F7](F7-platform-builder.md) | Platform-side image builds (fixes customer accounts with CodeBuild quota 0) | **done, real-AWS verified** (tickets 2–9, #129–#136); ticket 10 + retirement shipped together — `PLATFORM_BUILD_ENABLED` removed, it is the only build path, legacy CodeBuild cleanup (Nuke/exit-export) kept, `policy.json` v8 narrows `codebuild:*` | nothing |
 | [F8](F8-cloudformation-onboarding.md) | One-click CloudFormation onboarding, offered alongside `create_aws_role.sh` | **design only, not started** | nothing |
 | [F9](F9-teams-and-orgs.md) | Organizations with members and roles (owner/admin/developer/viewer, replacing single-owner-plus-flat-invite) | **design complete, not started** — 12 phased tickets behind `ORGS_ENABLED` | 2 owner decisions (Stripe consolidation, per-org limit tiers); otherwise unblocked |
 

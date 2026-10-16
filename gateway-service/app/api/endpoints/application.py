@@ -210,7 +210,7 @@ async def application_rollback_preview(app_id: uuid.UUID, deployment_id: uuid.UU
 @router.post("/{app_id}/deployments/{deployment_id}/rollback", summary="Roll back to a previous deployment",
              response_model=RollbackQueuedResponse, status_code=202)
 async def application_rollback(app_id: uuid.UUID, deployment_id: uuid.UUID, request: Request):
-    """Owner only. No request body. Skips CodeBuild; pauses auto-deploy until resumed."""
+    """Owner only. No request body. Skips the build; pauses auto-deploy until resumed."""
     return await proxy_request(
         f"{settings.APPLICATION_SERVICE_URL}/api/v1/applications/{app_id}/deployments/{deployment_id}/rollback/", request,
     )

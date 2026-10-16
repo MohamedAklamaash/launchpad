@@ -300,7 +300,7 @@ fi
 # the customer's security reviewer is worse than either copy alone.
 # BEGIN GENERATED: deployment policy — source: deployment-services/infrastructure-service/api/cloud_providers/aws/iam_policy/policy.json
 # Permissions granted to Launchpad in YOUR account:
-# - ec2/ecs/elb/ecr/logs/codebuild: deploy and manage container infrastructure
+# - ec2/ecs/elb/ecr/logs: deploy and manage container infrastructure
 # - s3: terraform state bucket + application asset storage
 # - dynamodb: terraform state lock table
 # - rds/elasticache/secretsmanager: create and manage managed databases you provision
@@ -368,8 +368,14 @@ fi
 #   covered by eks:Describe*/eks:List* above (unrestricted resource); CreateAddon on the
 #   add-on itself was already covered by the addon/infra-*/* and cluster/infra-*
 #   resource grants
+# - codebuild:BatchGetProjects/DeleteProject (narrowed in v8, platform-side builds):
+#   Launchpad now builds every image on its own infrastructure, never inside your
+#   account, so no new infrastructure creates a CodeBuild project. These two actions
+#   stay only so Nuke can find and delete a per-infra project from before that change;
+#   create/start/build actions (codebuild:CreateProject/UpdateProject/StartBuild/
+#   BatchGetBuilds) are dropped since nothing in your account needs them anymore
 # Review before running. To narrow scope, edit launchpad-policy.json before this script runs.
-POLICY_VERSION=7
+POLICY_VERSION=8
 case "$COMPUTE_TYPE" in
   ecs_fargate)
     cat > "$WORK_DIR/launchpad-policy.json" <<'EOF'
@@ -386,7 +392,8 @@ case "$COMPUTE_TYPE" in
         "logs:*",
         "s3:*",
         "dynamodb:*",
-        "codebuild:*",
+        "codebuild:BatchGetProjects",
+        "codebuild:DeleteProject",
         "rds:*",
         "elasticache:*",
         "secretsmanager:*"
@@ -485,7 +492,8 @@ EOF
         "logs:*",
         "s3:*",
         "dynamodb:*",
-        "codebuild:*",
+        "codebuild:BatchGetProjects",
+        "codebuild:DeleteProject",
         "rds:*",
         "elasticache:*",
         "secretsmanager:*"

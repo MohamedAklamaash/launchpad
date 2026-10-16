@@ -27,6 +27,11 @@ DIGEST = "sha256:" + "f" * 64
 
 
 @pytest.fixture
+def unlimited_build_budget():
+    """Overrides conftest's autouse no-op so these tests run the real budget gate."""
+
+
+@pytest.fixture
 def new_app(schema_db):
     from api.models.application import Application
     from api.models.environment import Environment
@@ -66,7 +71,6 @@ def mock_service(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _platform_build_on(settings, monkeypatch):
-    settings.PLATFORM_BUILD_ENABLED = True
     settings.PLATFORM_BASE_DOMAIN = None
     monkeypatch.setenv("ALB_RULE_PROPAGATION_DELAY", "0")
     monkeypatch.setattr(

@@ -16,7 +16,6 @@ import json
 import re
 from urllib.parse import urlsplit, urlunsplit
 
-from aws.codebuild import CodeBuildClient
 from aws.container_config import generate_nginx_config, inject_routing_envs
 from django.conf import settings
 from shared.enums.orchestrator import ComputeType
@@ -213,13 +212,12 @@ def _k8s_manifest_json(application: Application, env_keys: list[str], shape: dic
     return json.dumps(documents, indent=2)
 
 
-def buildspec_text() -> str:
-    """The exact static template `CodeBuildClient` uses to build every app's image.
-    `_get_buildspec` never touches `self`, so this reuses it without a boto3 session — the
-    single source of truth for what actually runs stays `aws/codebuild.py`."""
-    return CodeBuildClient._get_buildspec(None)
-
-
+# F7 ticket 10 retired the customer-account CodeBuild build path — a new infra never
+# gets a `launchpad-build-{infra_id}` project or `launchpad-codebuild-role-{infra_id}`
+# role. These two names stay here (not deleted) only because an infra onboarded before
+# that ship may still have one sitting idle in its account, and this inventory is what
+# tells the exit-export README to report it alongside Nuke's own cleanup of the same
+# two names (infrastructure-service's nuke_worker.py).
 def codebuild_project_name(infra_id) -> str:
     return re.sub(r"[^a-zA-Z0-9\-_]", "", f"launchpad-build-{infra_id}")
 
@@ -278,9 +276,13 @@ def export_data_for_infrastructure(infra_id) -> dict:
     return {
         "infrastructure_id": str(infra_id),
         "apps": [app_export_data(app) for app in apps],
+        # Only present for infrastructures onboarded before F7 ticket 10 retired the
+        # CodeBuild path — see the comment on codebuild_project_name/codebuild_role_name
+        # above. A new infra never had one, but the names are deterministic from
+        # infra_id alone, so reporting them costs nothing and the customer's own
+        # account is the source of truth for whether either actually exists.
         "codebuild": {
             "project_name": codebuild_project_name(infra_id),
             "role_name": codebuild_role_name(infra_id),
         },
-        "buildspec": buildspec_text(),
     }

@@ -1,7 +1,10 @@
 """One-off backfill: apply launchpad:infra/launchpad:app tags to per-app AWS resources
-created before per-app tagging existed (see aws/tags.py, aws/ecs.py, aws/alb.py,
-aws/codebuild.py). Tags are not retroactive — a resource this command doesn't reach stays
-untagged until its app is redeployed.
+created before per-app tagging existed (see aws/tags.py, aws/ecs.py, aws/alb.py). Also
+retags each infra's legacy per-infra CodeBuild project/role, if one exists — F7 ticket 10
+stopped creating new ones, but already-onboarded infras may still have one sitting idle
+in their account, and Nuke/exit-export still need its name either way. Tags are not
+retroactive — a resource this command doesn't reach stays untagged until its app is
+redeployed.
 
 Idempotent: tag_resource/add_tags/tag_role set a tag value rather than append, and
 update_service without forceNewDeployment only flips enableECSManagedTags/propagateTags on
@@ -70,8 +73,14 @@ class Command(BaseCommand):
         )
 
     def _backfill_codebuild(self, infra, session, dry_run, stats):
-        # Named per-infrastructure (matches ApplicationDeploymentService._trigger_build) —
-        # one project/role builds every app on the infra, so only launchpad:infra applies.
+        # Named per-infrastructure (the project/role pattern application-service's
+        # since-deleted _trigger_build used to create, before F7 ticket 10) — one
+        # project/role built every app on the infra, so only launchpad:infra applies.
+        # policy.json v8 narrowed codebuild:* to delete-capable actions only (Nuke's
+        # needs), dropping UpdateProject — an infra that has refreshed to v8+ will log
+        # an AccessDenied here (caught below, counted in stats["errors"]) rather than
+        # retag its CodeBuild project. Acceptable: this is a one-off historical backfill
+        # for resources no new infra will ever have.
         project_name = re.sub(r'[^a-zA-Z0-9\-_]', '', f"launchpad-build-{infra.id}")
         role_name = f"launchpad-codebuild-role-{infra.id}"
         tags = infra_tags(infra.id)

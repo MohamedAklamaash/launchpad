@@ -3,7 +3,7 @@
 `Application.envs` is plaintext, so the Deployment snapshot stores the env's SHAPE (key
 names + a keyed hash of the values), never the values themselves. A rollback always
 re-reads the application's current env values — rolling back code must not roll back a
-rotated credential — and skips CodeBuild entirely by pinning to an image already in ECR.
+rotated credential — and skips the build entirely by pinning to an image already in ECR.
 """
 import uuid
 from types import SimpleNamespace
@@ -15,7 +15,7 @@ from aws.ecs import ECSClient
 from botocore.exceptions import ClientError
 from shared.enums.user_role import UserRole
 
-from api.mock.mock_session import _MOCK_RESOLVED_SHA, MockSession
+from api.mock.mock_session import MockSession
 from api.models.deployment import Deployment
 from api.services.application_deployment_service import ApplicationDeploymentService
 from api.services.application_service import DeploymentInProgressError
@@ -231,8 +231,13 @@ def test_secret_value_absent_from_preview_and_list_responses(ecs_app, old_deploy
 def test_eks_deploy_pins_to_the_resolved_sha_not_the_requested_commit(monkeypatch):
     """Before this fix, EKS pinned to the *requested* commit (chosen pre-build) while ECS
     pinned to what the build actually resolved. Both must agree so Deployment.commit_sha
-    means the same thing on either compute type."""
+    means the same thing on either compute type. The platform builder resolves the sha
+    up front via resolve_commit_sha (GitHub API in real life) — faked here, same as
+    test_platform_build_wiring.py's wiring tests, rather than relying on a build to
+    actually check anything out."""
     from types import SimpleNamespace as NS
+
+    from aws.platform_builder import BuildHandle, BuildResult
 
     from api.k8s import deployer as deployer_mod
     from api.mock import mock_k8s
@@ -267,12 +272,33 @@ def test_eks_deploy_pins_to_the_resolved_sha_not_the_requested_commit(monkeypatc
     service = ApplicationDeploymentService()
     monkeypatch.setattr(service, "_create_aws_session", lambda _infra: session)
 
+    resolved_sha = "f" * 40
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.resolve_commit_sha",
+        lambda application, ref=None: resolved_sha,
+    )
+
+    def _fake_start_build(application, infrastructure, sha):
+        return BuildHandle(
+            build_id="build-1", infrastructure=infrastructure, application_id=str(application.id),
+            repository_name="repo", image_tag=f"myapp-{sha}", sha=sha,
+            destination=f"...:myapp-{sha}", is_mock=False, task_arn="task-arn-1",
+        )
+
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.platform_builder.start_build", _fake_start_build,
+    )
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.platform_builder.wait_for_build",
+        lambda handle: BuildResult(image_tag=handle.image_tag, resolved_sha=handle.sha, image_digest=None),
+    )
+
     service.deploy_application(app)
 
     row = Deployment.objects.get(application=app)
-    assert row.commit_sha == _MOCK_RESOLVED_SHA
+    assert row.commit_sha == resolved_sha
     assert row.tag_source == Deployment.TAG_SOURCE_RESOLVED_SHA
-    assert row.image_tag == f"myapp-{_MOCK_RESOLVED_SHA}"
+    assert row.image_tag == f"myapp-{resolved_sha}"
     # The requested (pre-build) commit must NOT be what got pinned.
     assert "abcdef012345" not in row.image_tag
 
@@ -280,15 +306,23 @@ def test_eks_deploy_pins_to_the_resolved_sha_not_the_requested_commit(monkeypatc
 # ── rollback: restores the old image, re-reads current env, no build call ──────
 
 @pytest.mark.django_db
-def test_rollback_pins_old_image_restores_resources_and_never_touches_codebuild(
-    ecs_app, old_deployment, mock_service,
+def test_rollback_pins_old_image_restores_resources_and_never_touches_the_builder(
+    ecs_app, old_deployment, mock_service, monkeypatch,
 ):
     app, env = ecs_app
 
-    with patch("api.services.application_deployment_service.CodeBuildClient") as cb_cls:
-        url = mock_service.rollback_application(app, old_deployment)
+    def _boom(*args, **kwargs):
+        raise AssertionError("rollback must never call the platform builder")
 
-    cb_cls.assert_not_called()
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.platform_builder.start_build", _boom,
+    )
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.platform_builder.wait_for_build", _boom,
+    )
+
+    url = mock_service.rollback_application(app, old_deployment)
+
     app.refresh_from_db()
     assert app.status == "ACTIVE"
     assert app.alloted_cpu == old_deployment.cpu == 128
@@ -589,12 +623,10 @@ def test_rollback_on_an_expired_tag_fails_with_a_usable_message_before_touching_
 
     with patch.object(ECRClient, "image_exists", return_value=False), \
             patch("api.services.application_deployment_service.ECSClient") as ecs_cls, \
-            patch("api.services.application_deployment_service.CodeBuildClient") as cb_cls, \
             pytest.raises(ValueError, match="no longer available"):
         mock_service.rollback_application(app, old_deployment)
 
     ecs_cls.return_value.create_task_definition.assert_not_called()
-    cb_cls.assert_not_called()
     app.refresh_from_db()
     assert app.status == "FAILED"
     assert "no longer available" in app.error_message
@@ -964,10 +996,18 @@ def test_eks_rollback_patches_image_and_env_and_restores_resources(
     service = ApplicationDeploymentService()
     monkeypatch.setattr(service, "_create_aws_session", lambda _infra: session)
 
-    with patch("api.services.application_deployment_service.CodeBuildClient") as cb_cls:
-        url = service.rollback_application(app, eks_old_deployment)
+    def _boom(*args, **kwargs):
+        raise AssertionError("rollback must never call the platform builder")
 
-    cb_cls.assert_not_called()
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.platform_builder.start_build", _boom,
+    )
+    monkeypatch.setattr(
+        "api.services.application_deployment_service.platform_builder.wait_for_build", _boom,
+    )
+
+    url = service.rollback_application(app, eks_old_deployment)
+
     app.refresh_from_db()
     assert app.status == "ACTIVE"
     assert app.alloted_cpu == 0.25

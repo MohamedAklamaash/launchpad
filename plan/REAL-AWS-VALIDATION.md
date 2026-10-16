@@ -715,3 +715,13 @@ against `aws iam get-role` have never executed against the real AWS CLI/IAM back
 - [ ] ECR token lifetime beyond the 900 s session (code clamps to the session expiry).
 - [ ] EKS app deployed through the platform builder (no EKS infra currently).
 
+### F7 ticket 10 + retirement — flag removed (no new real-AWS run needed)
+
+This is a code/IAM-only change on top of the already-verified build path above — it
+removes `PLATFORM_BUILD_ENABLED` and the customer-account CodeBuild fallback it used to
+gate, so it doesn't exercise any AWS behavior the run above didn't already cover. Not
+yet re-run against real AWS: confirm a real account's Nuke run still finds and deletes a
+pre-existing `launchpad-build-{infra_id}` project/role under the narrowed v8 policy
+(`codebuild:BatchGetProjects`/`DeleteProject` only), and that `create_aws_role.sh`'s
+*Refresh policy* snippet actually lands v8 once `NEXT_PUBLIC_LAUNCHPAD_SCRIPT_REF` moves.
+

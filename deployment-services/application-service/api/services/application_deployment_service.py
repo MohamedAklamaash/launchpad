@@ -1,17 +1,15 @@
-import json
 import logging
 import re
 import time
 
 from aws import platform_builder
 from aws.alb import ALBClient
-from aws.codebuild import CodeBuildClient
 from aws.container_config import HOST_MODE_HEALTH_CHECK_PATH
 from aws.ecr import ECRClient
 from aws.ecs import ECSClient
 from aws.github_source import resolve_commit_sha
 from aws.session import create_boto3_session
-from aws.tags import app_tags, as_key_value_tags, infra_tags
+from aws.tags import app_tags
 from aws.tags import target_group_tags as _target_group_tags
 from botocore.exceptions import ClientError
 from shared.aws.app_security_group import (
@@ -90,48 +88,32 @@ class ApplicationDeploymentService:
                 if not _is_eks(application) else (False, None, "eks")
             )
 
-            # Step 3-4: Build (and, behind settings.PLATFORM_BUILD_ENABLED, push) the
-            # image. `build_id`/`resolved_sha` are bound as soon as either builder hands
-            # them back — before the matching wait call, which can itself raise on a
-            # build failure — so the except block below always has this attempt's real
-            # values (or none, if the trigger step itself never got that far), never a
-            # stale value left over from a previous deploy of this same `application`
-            # object. The platform path already knows its sha before the build even
-            # starts (that's the point of resolving it up front), so a build that fails
-            # during the wait still records a FAILED row pinned to the real commit
-            # instead of `_image_tag`'s placeholder.
+            # Step 3-4: Build and push the image on platform Fargate capacity
+            # (aws/platform_builder.py — F7). `build_id`/`resolved_sha` are bound as soon
+            # as the builder hands them back — before the matching wait call, which can
+            # itself raise on a build failure — so the except block below always has this
+            # attempt's real values (or none, if the trigger step itself never got that
+            # far), never a stale value left over from a previous deploy of this same
+            # `application` object. The platform path already knows its sha before the
+            # build even starts (that's the point of resolving it up front), so a build
+            # that fails during the wait still records a FAILED row pinned to the real
+            # commit instead of `_image_tag`'s placeholder.
             image_tag = _image_tag(application)
-            if self._platform_build_enabled():
-                # F7 ticket 7: charge the per-user rate budget and acquire a per-infra
-                # concurrency slot before anything else on this path — fails closed
-                # (ValueError) on Redis down or either cap being exceeded. The slot is
-                # released on every exit from the try below: success, a build failure,
-                # a timeout, or any other exception.
-                self._enforce_build_budgets(application)
-                concurrency_key = self._build_concurrency_key(application)
-                try:
-                    handle = self._start_platform_build(application)
-                    build_id, resolved_sha = handle.build_id, handle.sha
-                    build_task_id = application.build_task_id
-                    result = self._wait_for_platform_build(application, handle)
-                    resolved_sha, image_digest = result.resolved_sha, result.image_digest
-                finally:
-                    self._release_build_concurrency_slot(concurrency_key)
-            else:
-                build_id = self._trigger_build(session, application, environment, image_tag)
-                application.build_id = build_id
-                # Clears out a stale platform-build task id from a previous deploy on
-                # this same Application row — otherwise, if PLATFORM_BUILD_ENABLED was
-                # flipped off after an earlier platform build, build_task_id would still
-                # name that old ECS task while build_id now names this CodeBuild build,
-                # and ticket 8's /build-logs/current would tail the wrong build's stream
-                # instead of 404ing as a build with no task id should.
-                application.build_task_id = None
-                application.status = 'BUILDING'
-                application.error_message = None
-                application.save()
-                resolved_sha = self._wait_for_build(session, build_id)
-                image_digest = None
+            # F7 ticket 7: charge the per-user rate budget and acquire a per-infra
+            # concurrency slot before anything else on this path — fails closed
+            # (ValueError) on Redis down or either cap being exceeded. The slot is
+            # released on every exit from the try below: success, a build failure,
+            # a timeout, or any other exception.
+            self._enforce_build_budgets(application)
+            concurrency_key = self._build_concurrency_key(application)
+            try:
+                handle = self._start_platform_build(application)
+                build_id, resolved_sha = handle.build_id, handle.sha
+                build_task_id = application.build_task_id
+                result = self._wait_for_platform_build(application, handle)
+                resolved_sha, image_digest = result.resolved_sha, result.image_digest
+            finally:
+                self._release_build_concurrency_slot(concurrency_key)
 
             if _is_eks(application):
                 pinned_tag = self._pinned_image_tag(application, resolved_sha)
@@ -268,9 +250,9 @@ class ApplicationDeploymentService:
                        image_digest: str | None = None, build_id: str | None = None,
                        build_task_id: str | None = None):
         ecr = ECRClient(session)
-        # Pin by digest when the build already reported one (platform builder path) —
-        # same tag-is-mutable reasoning as _create_task_definition's ECS pin, see
-        # ECRClient.get_image_ref. None here (CodeBuild path) keeps today's tag-only
+        # Pin by digest when the build already reported one — same tag-is-mutable
+        # reasoning as _create_task_definition's ECS pin, see ECRClient.get_image_ref.
+        # None here (a row predating the platform builder) keeps the old tag-only
         # behavior exactly.
         image_uri = ecr.get_image_ref(environment.ecr_repository_url, image_tag, image_digest)
 
@@ -380,8 +362,8 @@ class ApplicationDeploymentService:
         return environment
 
     def _abort_if_exited(self, application: Application) -> None:
-        """H2 security review R1: a deploy/rollback can run for minutes (CodeBuild, ECS
-        service stabilization, ALB target-health polling) — long enough for a customer to
+        """H2 security review R1: a deploy/rollback can run for minutes (the platform
+        build, ECS service stabilization, ALB target-health polling) — long enough for a customer to
         complete exit after this call started. `application.infrastructure` was read once
         at the top of `deploy_application`/`rollback_application` and is never
         re-fetched, so a check against that in-memory object would miss an exit that
@@ -421,95 +403,6 @@ class ApplicationDeploymentService:
             logger.warning(f"Credential refresh failed, proceeding with cached credentials: {e}")
 
         return create_boto3_session(infrastructure)
-    
-    def _trigger_build(self, session, application: Application, environment: Environment, image_tag: str):
-        codebuild = CodeBuildClient(session)
-        iam = session.client('iam')
-        
-        project_name = re.sub(r'[^a-zA-Z0-9\-_]', '', f"launchpad-build-{application.infrastructure.id}")
-        
-        role_name = f"launchpad-codebuild-role-{application.infrastructure.id}"
-        try:
-            role_response = iam.get_role(RoleName=role_name)
-            service_role_arn = role_response['Role']['Arn']
-            logger.info(f"Using existing CodeBuild role: {service_role_arn}")
-        except iam.exceptions.NoSuchEntityException:
-            logger.info(f"Creating CodeBuild service role {role_name}")
-            assume_role_policy = {
-                "Version": "2012-10-17",
-                "Statement": [{
-                    "Effect": "Allow",
-                    "Principal": {"Service": "codebuild.amazonaws.com"},
-                    "Action": "sts:AssumeRole"
-                }]
-            }
-            role_response = iam.create_role(
-                RoleName=role_name,
-                AssumeRolePolicyDocument=json.dumps(assume_role_policy),
-                Description="Service role for CodeBuild",
-                # infra-level only: this role builds every app on the infra, so an
-                # app-level tag would misattribute other apps' build cost to whichever
-                # app happened to trigger the role's creation.
-                Tags=as_key_value_tags(infra_tags(application.infrastructure_id)),
-            )
-            service_role_arn = role_response['Role']['Arn']
-
-            iam.attach_role_policy(
-                RoleName=role_name,
-                PolicyArn='arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser'
-            )
-            iam.attach_role_policy(
-                RoleName=role_name,
-                PolicyArn='arn:aws:iam::aws:policy/CloudWatchLogsFullAccess'
-            )
-                        
-            logger.info("Waiting for IAM role to propagate...")
-            time.sleep(15)
-            logger.info(f"Created CodeBuild role: {service_role_arn}")
-        
-        codebuild.ensure_project_exists(
-            project_name, service_role_arn, session.region_name,
-            tags=infra_tags(application.infrastructure_id),
-        )
-        
-        dockerfile_path = application.dockerfile_path or "Dockerfile"
-        build_context = application.build_context or ""
-        
-        github_token = None
-        try:
-            user = application.user
-            if user.metadata and 'github' in user.metadata:
-                github_token = user.metadata['github'].get('token')
-                logger.info("Using GitHub token for private repository access")
-        except Exception as e:
-            logger.warning(f"Could not get GitHub token: {e}")
-        
-        build_id = codebuild.start_build(
-            project_name=project_name,
-            repo_url=application.project_remote_url,
-            branch=application.project_branch,
-            commit_hash=application.project_commit_hash,
-            ecr_url=environment.ecr_repository_url,
-            app_name=_slug(application.name),
-            dockerfile_path=dockerfile_path,
-            build_context=build_context,
-            github_token=github_token,
-            image_tag=image_tag,
-        )
-        
-        logger.info(f"Started CodeBuild job {build_id} for application {application.name}")
-        return build_id
-    
-    def _wait_for_build(self, session, build_id):
-        codebuild = CodeBuildClient(session)
-        logger.info(f"Waiting for build {build_id} to complete")
-        resolved_sha = codebuild.wait_for_build(build_id)
-        logger.info(f"Build {build_id} completed successfully (commit {resolved_sha or 'unknown'})")
-        return resolved_sha
-
-    def _platform_build_enabled(self) -> bool:
-        from django.conf import settings
-        return bool(getattr(settings, 'PLATFORM_BUILD_ENABLED', False))
 
     def _build_concurrency_key(self, application: Application) -> str:
         return f"builds_concurrent:{application.infrastructure_id}"
@@ -582,8 +475,7 @@ class ApplicationDeploymentService:
 
         Split from `_wait_for_platform_build` so the caller can bind `build_id` right
         after this returns — before the wait call that can itself raise on a build
-        failure — the same way the pre-existing CodeBuild path already binds its
-        build_id before calling `_wait_for_build`."""
+        failure."""
         sha = self._resolve_sha_for_build(application)
         if application.project_commit_hash != sha:
             application.project_commit_hash = sha
@@ -1175,7 +1067,7 @@ class ApplicationDeploymentService:
 
     # ── Rollback ─────────────────────────────────────────────────────────────
     #
-    # Skips CodeBuild entirely: pin to an image already in ECR and restore the CPU/memory
+    # Skips the build entirely: pin to an image already in ECR and restore the CPU/memory
     # /port/image that shipped with it. Env values are always re-read from the application's
     # current envs, never from the snapshot — rolling back code must not roll back a
     # rotated credential. No Application field is written until every AWS call below has
@@ -1373,7 +1265,7 @@ class ApplicationDeploymentService:
     #
     # Moves an already-ACTIVE ECS app into host-mode routing without waiting for its next
     # code push, once its infrastructure becomes TLS-ready after the app was last deployed.
-    # No CodeBuild: re-registers the task definition against the exact image (tag+digest)
+    # No rebuild: re-registers the task definition against the exact image (tag+digest)
     # its most recent successful Deployment row recorded — the same "pin to a known-good
     # image, no rebuild" approach rollback uses — with the host-mode nginx config baked in.
     # Idempotent: a no-op for an app that isn't eligible, or is already in host mode.
