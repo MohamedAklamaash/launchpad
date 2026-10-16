@@ -81,9 +81,11 @@ def test_exec_tf_env_excludes_platform_secrets(monkeypatch, leaked):
         assert leaked not in recorded_call.kwargs["env"]
 
 
-def test_exec_tf_env_passes_path_home_and_customer_credentials(monkeypatch):
+def test_exec_tf_env_passes_path_home_and_customer_credentials(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", "/sentinel/bin")
     monkeypatch.setenv("HOME", "/sentinel/home")
+    # the default plugin cache lives under HOME, which doesn't exist here
+    monkeypatch.setenv("LAUNCHPAD_TF_PLUGIN_CACHE_DIR", str(tmp_path / "tf-cache"))
     env = _run_exec_tf().call_args_list[0].kwargs["env"]
     assert env["PATH"] == "/sentinel/bin"
     assert env["HOME"] == "/sentinel/home"
@@ -112,7 +114,41 @@ def test_exec_tf_env_is_exactly_the_allowlist():
         "PATH", "HOME", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
         "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "AWS_SHARED_CREDENTIALS_FILE",
         "AWS_CONFIG_FILE", "TF_IN_AUTOMATION", "TF_INPUT", "TF_PLUGIN_CACHE_DIR",
+        "TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE",
     }
+
+
+def test_exec_tf_holds_plugin_cache_lock_only_during_init():
+    """Concurrent inits into the shared plugin cache fail with "Failed to install
+    provider"; init must run under an exclusive host-wide lock, released before the
+    actual terraform command so plan/apply/destroy still run in parallel."""
+    import fcntl
+    lock_path = TerraformWorker._plugin_cache_dir() / ".init.lock"
+    held = []
+
+    def fake_run(cmd, **kwargs):
+        with open(lock_path, "a") as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(probe, fcntl.LOCK_UN)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    with patch("api.services.terraform_worker.subprocess.run", side_effect=fake_run):
+        TerraformWorker._exec_tf(
+            ["terraform", "output", "-json"], TF_VARS, CREDENTIALS,
+            f"init-lock-{uuid.uuid4()}", "us-east-1", "123456789012", ensure_backend=False,
+        )
+    assert held == [True, False]
+
+
+def test_plugin_cache_is_private_and_overridable(monkeypatch, tmp_path):
+    monkeypatch.setenv("LAUNCHPAD_TF_PLUGIN_CACHE_DIR", str(tmp_path / "cache"))
+    cache = TerraformWorker._plugin_cache_dir()
+    assert cache == tmp_path / "cache"
+    assert cache.stat().st_mode & 0o777 == 0o700
 
 
 # ---- state-lock contention and network blips are transient, never a permanent failure ----
