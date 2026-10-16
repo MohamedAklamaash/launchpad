@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { ExternalLink, Loader2, ShieldAlert, ShieldCheck } from 'lucide-react';
@@ -25,40 +25,45 @@ interface ApiErrorShape {
  * (`cloudformation:CreateChangeSet`) that returns a console link — the customer reviews
  * and executes the change set themselves, same "customer always applies the widening"
  * posture as the script. See plan/F8-cloudformation-onboarding.md §5.
+ *
+ * CreateChangeSet is mutating (it leaves a named change set behind in the customer's
+ * account, and burns one of the F0 rate-budget's 10-per-300s slots), so it only fires on
+ * an explicit click — never from an effect on open — mirroring how
+ * PolicyRefreshDialog's handleGenerateKey gates issueScriptApiKey (which revokes prior
+ * keys) behind a button rather than firing it automatically.
  */
 export function CfnRefreshDialog({ open, onOpenChange, infraId, deniedActions }: Props) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<CfnRefreshResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    setResult(null);
-    setError(null);
+  const handlePrepare = async () => {
     setLoading(true);
-    infrastructureApi
-      .cfnRefresh(infraId)
-      .then(setResult)
-      .catch((e: unknown) => {
-        const err = e as ApiErrorShape;
-        const status = err.response?.status;
-        const message = err.response?.data?.error;
-        if (status === 429) {
-          const retryAfter = err.response?.headers?.['retry-after'];
-          setError(message || (retryAfter ? `Too many requests — try again in ${retryAfter}s.` : 'Too many requests — try again later.'));
-        } else if (status === 403) {
-          const retrySeconds = err.response?.data?.retry_after_seconds;
-          setError(message || (retrySeconds ? `AssumeRole failed — try again in ${retrySeconds}s.` : 'AssumeRole failed.'));
-        } else if (status === 400) {
-          setError(message || 'This infrastructure was not onboarded via CloudFormation.');
-        } else if (status === 404) {
-          setError(message || 'CloudFormation onboarding is not available on this deployment.');
-        } else {
-          setError(message || 'Failed to start the policy refresh.');
-        }
-      })
-      .finally(() => setLoading(false));
-  }, [open, infraId]);
+    setError(null);
+    try {
+      const data = await infrastructureApi.cfnRefresh(infraId);
+      setResult(data);
+    } catch (e: unknown) {
+      const err = e as ApiErrorShape;
+      const status = err.response?.status;
+      const message = err.response?.data?.error;
+      if (status === 429) {
+        const retryAfter = err.response?.headers?.['retry-after'];
+        setError(message || (retryAfter ? `Too many requests — try again in ${retryAfter}s.` : 'Too many requests — try again later.'));
+      } else if (status === 403) {
+        const retrySeconds = err.response?.data?.retry_after_seconds;
+        setError(message || (retrySeconds ? `AssumeRole failed — try again in ${retrySeconds}s.` : 'AssumeRole failed.'));
+      } else if (status === 400) {
+        setError(message || 'This infrastructure was not onboarded via CloudFormation.');
+      } else if (status === 404) {
+        setError(message || 'CloudFormation onboarding is not available on this deployment.');
+      } else {
+        setError(message || 'Failed to start the policy refresh.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const close = (o: boolean) => {
     if (!o) {
@@ -81,31 +86,32 @@ export function CfnRefreshDialog({ open, onOpenChange, infraId, deniedActions }:
             <div className="space-y-1">
               <p className="text-sm font-medium text-warning">Missing IAM permissions</p>
               <p className="text-xs text-warning/80">
-                Launchpad&apos;s role in your AWS account is missing: {deniedActions.join(', ')}. Review and execute
-                the change set below, then try again.
+                Launchpad&apos;s role in your AWS account is missing: {deniedActions.join(', ')}. Prepare a change set
+                below, review it, and execute it, then try again.
               </p>
             </div>
           </div>
         )}
 
-        {loading && (
-          <div className="flex items-center gap-2.5 py-6 justify-center text-muted-foreground">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <p className="text-xs">Preparing change set…</p>
+        {error && (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 flex items-start gap-3">
+            <ShieldAlert className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+            <p className="text-xs text-destructive">{error}</p>
           </div>
         )}
 
-        {!loading && error && (
+        {!result ? (
           <div className="space-y-3">
-            <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 flex items-start gap-3">
-              <ShieldAlert className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
-              <p className="text-xs text-destructive">{error}</p>
-            </div>
-            <Button variant="outline" onClick={() => close(false)} className="w-full">Close</Button>
+            <p className="text-xs text-muted-foreground">
+              Prepares a CloudFormation change set against your already-onboarded stack. Nothing is applied until
+              you review and execute it yourself in the AWS console.
+            </p>
+            <Button onClick={handlePrepare} disabled={loading} className="w-full gap-1.5">
+              {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+              {loading ? 'Preparing…' : 'Prepare change set'}
+            </Button>
           </div>
-        )}
-
-        {!loading && !error && result && (
+        ) : (
           <div className="space-y-3">
             <div className="rounded-xl panel-inset px-4 py-3 space-y-1.5">
               <div className="flex items-center gap-2">
