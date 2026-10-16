@@ -147,7 +147,7 @@ def test_idempotent_redelivery_of_the_same_version_is_a_no_op(consumer):
 
 
 @pytest.mark.django_db
-def test_membership_removed_deletes_the_row(consumer):
+def test_membership_removed_tombstones_the_row_without_deleting_it(consumer):
     from api.models.membership import Membership
     from api.models.organization import Organization
 
@@ -162,11 +162,17 @@ def test_membership_removed_deletes_the_row(consumer):
     })
 
     ch.basic_ack.assert_called_once_with(delivery_tag=1)
-    assert not Membership.objects.filter(organization_id=org_id, account_id=account_id).exists()
+    # The row still exists (a hard delete would leave nothing for a stale, redelivered
+    # org.membership.changed to be rejected against -- see the resurrection test below),
+    # but it is excluded from the active-membership helper ticket 7 will use.
+    membership = Membership.objects.get(organization_id=org_id, account_id=account_id)
+    assert membership.removed_at is not None
+    assert membership.version == 2
+    assert not Membership.objects.active().filter(organization_id=org_id, account_id=account_id).exists()
 
 
 @pytest.mark.django_db
-def test_membership_removed_with_stale_version_does_not_delete(consumer):
+def test_membership_removed_with_stale_version_does_not_apply(consumer):
     from api.models.membership import Membership
     from api.models.organization import Organization
 
@@ -185,6 +191,92 @@ def test_membership_removed_with_stale_version_does_not_delete(consumer):
     membership = Membership.objects.get(organization_id=org_id, account_id=account_id)
     assert membership.role == "admin"
     assert membership.version == 5
+    assert membership.removed_at is None
+
+
+@pytest.mark.django_db
+def test_stale_membership_changed_after_removal_does_not_resurrect_the_member(consumer):
+    """The exact privilege-retention bug this fix closes: a stale org.membership.changed
+    (e.g. redelivered after a broker/consumer hiccup) that was published BEFORE a
+    subsequent org.membership.removed must not hand the removed member their role back
+    just because it arrives after the removal was applied."""
+    from api.models.membership import Membership
+    from api.models.organization import Organization
+
+    org_id = str(uuid.uuid4())
+    owner_id = str(uuid.uuid4())
+    account_id = str(uuid.uuid4())
+    Organization.objects.create(id=org_id, owner_account_id=owner_id, version=1)
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": account_id, "role": "admin", "version": 1,
+    })
+    _deliver(consumer, "org.membership.removed", {
+        "organization_id": org_id, "account_id": account_id, "version": 2,
+    })
+
+    # The stale v1 "admin" grant redelivered after the v2 removal.
+    ch = _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": account_id, "role": "admin", "version": 1,
+    })
+
+    ch.basic_ack.assert_called_once_with(delivery_tag=1)
+    membership = Membership.objects.get(organization_id=org_id, account_id=account_id)
+    assert membership.removed_at is not None, "a stale event must not revive a tombstoned membership"
+    assert membership.version == 2
+    assert not Membership.objects.active().filter(organization_id=org_id, account_id=account_id).exists()
+
+
+@pytest.mark.django_db
+def test_membership_readded_with_higher_version_revives_the_tombstone(consumer):
+    from api.models.membership import Membership
+    from api.models.organization import Organization
+
+    org_id = str(uuid.uuid4())
+    owner_id = str(uuid.uuid4())
+    account_id = str(uuid.uuid4())
+    Organization.objects.create(id=org_id, owner_account_id=owner_id, version=1)
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": account_id, "role": "admin", "version": 1,
+    })
+    _deliver(consumer, "org.membership.removed", {
+        "organization_id": org_id, "account_id": account_id, "version": 2,
+    })
+
+    # A genuine re-add: a fresh org.membership.changed with a version higher than the
+    # tombstone's.
+    ch = _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": account_id, "role": "viewer", "version": 3,
+    })
+
+    ch.basic_ack.assert_called_once_with(delivery_tag=1)
+    membership = Membership.objects.get(organization_id=org_id, account_id=account_id)
+    assert membership.removed_at is None
+    assert membership.role == "viewer"
+    assert membership.version == 3
+    assert Membership.objects.active().filter(organization_id=org_id, account_id=account_id).exists()
+
+
+@pytest.mark.django_db
+def test_active_queryset_excludes_tombstoned_memberships(consumer):
+    from api.models.membership import Membership
+    from api.models.organization import Organization
+
+    org_id = str(uuid.uuid4())
+    owner_id = str(uuid.uuid4())
+    account_id = str(uuid.uuid4())
+    Organization.objects.create(id=org_id, owner_account_id=owner_id, version=1)
+    Membership.objects.create(organization_id=org_id, account_id=account_id, role="developer", version=1)
+
+    assert Membership.objects.active().filter(organization_id=org_id).count() == 1
+
+    _deliver(consumer, "org.membership.removed", {
+        "organization_id": org_id, "account_id": account_id, "version": 2,
+    })
+
+    assert Membership.objects.filter(organization_id=org_id).count() == 1
+    assert Membership.objects.active().filter(organization_id=org_id).count() == 0
 
 
 @pytest.mark.django_db

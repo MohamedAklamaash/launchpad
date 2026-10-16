@@ -13,13 +13,20 @@ export interface MembershipAttributes {
     // proved: every org.events payload carries it, and a consumer rejects any payload
     // whose version isn't strictly greater than what it has stored.
     version: number;
+    // Null for an active membership. Set by removeMember (a tombstone, never a hard
+    // delete) so the (organization_id, account_id) version sequence survives a removal —
+    // a stale event from before the removal then has a row to be rejected against instead
+    // of recreating one. addMember's revive path clears this back to null. Every "is a
+    // member" read must filter removed_at IS NULL (see MembershipQuerySet.active()
+    // in the Django read-model mirrors, and filter this explicitly here).
+    removed_at: Date | null;
     created_at: Date;
     updated_at: Date;
 }
 
 export type MembershipCreationAttributes = Optional<
     MembershipAttributes,
-    'id' | 'version' | 'created_at' | 'updated_at'
+    'id' | 'version' | 'removed_at' | 'created_at' | 'updated_at'
 >;
 
 export class Membership extends Model<MembershipAttributes, MembershipCreationAttributes> {
@@ -28,6 +35,7 @@ export class Membership extends Model<MembershipAttributes, MembershipCreationAt
     declare account_id: string;
     declare role: OrgRole;
     declare version: number;
+    declare removed_at: Date | null;
     declare created_at: Date;
     declare updated_at: Date;
 }
@@ -56,6 +64,11 @@ Membership.init(
             type: DataTypes.INTEGER,
             allowNull: false,
             defaultValue: 1,
+        },
+        removed_at: {
+            type: DataTypes.DATE,
+            allowNull: true,
+            defaultValue: null,
         },
         created_at: {
             type: DataTypes.DATE,

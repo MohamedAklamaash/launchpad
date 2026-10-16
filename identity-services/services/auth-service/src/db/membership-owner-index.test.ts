@@ -31,14 +31,37 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 //   2. src/service/organizations/membership-owner-guard.test.ts — the service-level guard
 //      that stops application code from ever attempting it in the first place.
 const { sequelize } = await import('@/db/sequalize');
-const { initModels, MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL } = await import('@/db');
+const {
+    initModels,
+    MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL,
+    MEMBERSHIPS_ONE_OWNER_PER_ORG_LEGACY_INDEX_NAME,
+} = await import('@/db');
 
-test('the memberships owner partial unique index is scoped to role = owner, per organization_id, and idempotent', () => {
+test('the memberships owner partial unique index is scoped to role = owner, excludes tombstoned rows, per organization_id, and idempotent', () => {
     const sql = MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL;
 
     assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS/i);
     assert.match(sql, /ON memberships \(organization_id\)/i);
     assert.match(sql, /WHERE role = 'owner'/i);
+    // F9 ticket 4: a tombstoned owner row (defensive — removeMember already refuses to
+    // remove an owner, so this should never occur in practice) must not be able to block
+    // a legitimate new owner at this organization_id.
+    assert.match(sql, /removed_at IS NULL/i);
+});
+
+test('the legacy ticket-2 owner index (no removed_at exclusion) is dropped, not redefined under its old name', () => {
+    // CREATE UNIQUE INDEX IF NOT EXISTS is a no-op against an index that already exists
+    // under a given name, even with a different WHERE clause — redefining the ticket-2
+    // index under its OLD name would silently never apply this change on an environment
+    // where that index already exists. The new index must have a different name.
+    assert.notEqual(
+        MEMBERSHIPS_ONE_OWNER_PER_ORG_LEGACY_INDEX_NAME,
+        'memberships_one_owner_per_org_active',
+    );
+    assert.doesNotMatch(
+        MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL,
+        new RegExp(`\\b${MEMBERSHIPS_ONE_OWNER_PER_ORG_LEGACY_INDEX_NAME}\\b`),
+    );
 });
 
 test('initModels actually issues the owner-index SQL on boot, not just defines the constant', async () => {
@@ -54,6 +77,19 @@ test('initModels actually issues the owner-index SQL on boot, not just defines t
         assert.ok(
             queries.includes(MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL),
             'applyPendingSchemaPatches must run the owner-index SQL during initModels',
+        );
+        assert.ok(
+            queries.some((q) => /ADD COLUMN IF NOT EXISTS removed_at/i.test(q)),
+            'applyPendingSchemaPatches must add the removed_at column',
+        );
+        assert.ok(
+            queries.some((q) =>
+                new RegExp(
+                    `DROP INDEX IF EXISTS ${MEMBERSHIPS_ONE_OWNER_PER_ORG_LEGACY_INDEX_NAME}`,
+                    'i',
+                ).test(q),
+            ),
+            'applyPendingSchemaPatches must drop the legacy owner index by its old name',
         );
     } finally {
         syncSpy.mock.restore();
