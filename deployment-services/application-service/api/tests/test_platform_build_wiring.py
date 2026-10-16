@@ -109,10 +109,15 @@ def test_platform_build_happy_path_pins_digest_and_sets_pushing_image(
     service, _session = mock_service
 
     statuses = []
+    errors_at_building = []
     original_save = app.save
+    # Real AWS (ticket 9): a new deploy kept showing the previous attempt's error.
+    app.error_message = "stale failure from the previous attempt"
 
     def _save_spy(*args, **kwargs):
         statuses.append(app.status)
+        if app.status == "BUILDING":
+            errors_at_building.append(app.error_message)
         return original_save(*args, **kwargs)
 
     monkeypatch.setattr(app, "save", _save_spy)
@@ -168,9 +173,11 @@ def test_platform_build_happy_path_pins_digest_and_sets_pushing_image(
     expected_task_id = platform_builder_mod.task_id_from_arn(handle_holder["handle"].task_arn)
     assert app.build_task_id == expected_task_id
     assert deployment.build_task_id == expected_task_id
+    assert errors_at_building and all(e is None for e in errors_at_building)
 
 
 @pytest.mark.django_db
+
 def test_platform_build_uses_the_webhook_sha_as_the_resolve_ref(
     new_app, mock_service, monkeypatch, settings,
 ):

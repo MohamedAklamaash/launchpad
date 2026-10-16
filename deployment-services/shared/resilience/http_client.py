@@ -47,7 +47,13 @@ class ResilientHttpClient:
 
         def make_request():
             res = self.session.request(method, full_url, **kwargs)
-            res.raise_for_status()
+            # Only a 5xx is the remote being unhealthy. A 4xx is the caller's request (a
+            # wrong branch, a missing record) and is returned as a response below; raising
+            # it in here made the shared breaker count it as a failure, so a few bad
+            # requests from one tenant opened the breaker for every caller (real AWS:
+            # one app's wrong branch blocked GitHub source fetches platform-wide).
+            if res.status_code >= 500:
+                res.raise_for_status()
             return res
 
         start_time = time.time()

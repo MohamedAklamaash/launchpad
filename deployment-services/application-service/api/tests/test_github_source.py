@@ -209,6 +209,16 @@ def test_resolve_commit_sha_404_is_clear_access_error(app_row, monkeypatch):
         resolve_commit_sha(app_row)
 
 
+def test_resolve_commit_sha_unknown_branch_names_the_branch(app_row, monkeypatch):
+    """Real AWS (F7 ticket 9): GitHub answers 422 for a ref that doesn't exist; the
+    deploy error said only "returned status 422"."""
+    fake = _FakeGithubClient(_FakeResponse(422))
+    monkeypatch.setattr(github_source, "_github_client", lambda: fake)
+
+    with pytest.raises(SourceFetchError, match=r"Branch or commit '.+' not found in "):
+        resolve_commit_sha(app_row)
+
+
 def test_resolve_commit_sha_non_200_non_404_raises(app_row, monkeypatch):
     """A fake client that returns (rather than raises) a 5xx-shaped response — exercises
     the generic status-code branch. See test_real_http_client_5xx_reports_status_not_
