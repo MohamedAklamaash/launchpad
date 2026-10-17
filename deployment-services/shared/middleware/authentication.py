@@ -79,8 +79,15 @@ class JWTAuthMiddleware:
                     # A pre-F9 token (minted before org_id existed) carries no claim at
                     # all — resolves to the caller's own personal org, computed with no
                     # DB lookup from the signature-covered subject, never to a wider
-                    # scope.
-                    request.user.org_id = str(personal_org_id(request.user.id))
+                    # scope. Set on both the attribute (OrgPermissions.get_role's
+                    # `getattr`) and the underlying payload dict (JWTUser.get/
+                    # .to_dict()/["org_id"]) — JWTUser.__init__ keeps both in sync from
+                    # the raw claims, so a fallback value injected here must update both
+                    # or callers using the dict-style accessors would see no org_id at
+                    # all for a pre-F9 token.
+                    resolved_org_id = str(personal_org_id(request.user.id))
+                    request.user.org_id = resolved_org_id
+                    request.user.payload["org_id"] = resolved_org_id
 
         except HttpError as e:
             return JsonResponse(

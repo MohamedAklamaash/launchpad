@@ -49,7 +49,13 @@ def test_flag_on_token_with_no_org_id_claim_resolves_to_the_personal_org():
     response = middleware(_authed_request(token))
 
     assert response == "downstream-called"
-    assert captured["user"].org_id == str(personal_org_id(LEGACY_USER_ID))
+    expected = str(personal_org_id(LEGACY_USER_ID))
+    assert captured["user"].org_id == expected
+    # The fallback must land in the underlying payload dict too — JWTUser's
+    # dict-style accessors (.get/.to_dict()/["org_id"]) read from `self.payload`,
+    # a separate copy of the claims from the plain attribute set above.
+    assert captured["user"].get("org_id") == expected
+    assert captured["user"].to_dict()["org_id"] == expected
 
 
 @override_settings(JWT_SECRET=SECRET, ORGS_ENABLED=True)
