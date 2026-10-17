@@ -28,6 +28,14 @@ export interface InvitedUserAttributes {
     // by src/scripts/backfill-accounts.ts; no code reads it yet (ORGS_ENABLED gates every
     // behavior change that will, starting with later F9 tickets).
     account_id: string | null;
+    // Security review R1: distinct from `is_authenticated`, which `register()` resets to
+    // `false` every time this row is invited to ANOTHER infra — that's correct for "has
+    // this specific infra invite been accepted" but wrong as a login/account-linking
+    // gate, since it would lock an already-verified person out of password login (and
+    // Account linking) on every subsequent invite. Set exactly once, the first time this
+    // row's email is proven via OTP (authenticateWithOTP), and never cleared again —
+    // `is_authenticated`'s per-infra resets no longer affect it.
+    email_verified_at: Date | null;
 }
 
 export type InvitedUserCreationAttributes = Optional<
@@ -42,6 +50,7 @@ export type InvitedUserCreationAttributes = Optional<
     | 'failed_otp_attempts'
     | 'otp_attempts_window_start'
     | 'account_id'
+    | 'email_verified_at'
 >;
 
 export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreationAttributes> {
@@ -61,6 +70,7 @@ export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreatio
     declare failed_otp_attempts: number;
     declare otp_attempts_window_start: Date | null;
     declare account_id: string | null;
+    declare email_verified_at: Date | null;
 }
 
 InvitedUser.init(
@@ -135,6 +145,10 @@ InvitedUser.init(
         },
         account_id: {
             type: DataTypes.UUID,
+            allowNull: true,
+        },
+        email_verified_at: {
+            type: DataTypes.DATE,
             allowNull: true,
         },
     },

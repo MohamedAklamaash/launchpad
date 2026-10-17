@@ -38,6 +38,23 @@ export interface AccessTokenPayload {
     // a proof-of-recent-login check even if presented as one — an absent auth_time reads
     // as stale, not exempt, everywhere that checks it.
     auth_time?: number;
+    // F9 ticket 5: the active organization scope. Present only when ORGS_ENABLED was on
+    // at mint time — a pre-F9 (or flag-off) token has no org_id at all, and every
+    // verifier treats that as "this caller's personal org"
+    // (utils/org-id.ts's personalOrgId / shared/utils/org_id.py's personal_org_id),
+    // never as a wildcard scope. This is a scope SELECTOR, never a role — role is
+    // resolved per-request against the mirrored Membership row
+    // (plan/F9-teams-and-orgs.md, Options considered → JWT role authority), so a caller
+    // cannot widen their own access by presenting a stale or hand-crafted claim: the
+    // signature covers this field the same as every other one, and every consuming
+    // service re-derives the role from Membership, never from this claim's mere
+    // presence.
+    org_id?: string;
+    // The Membership row a role is resolved against is keyed by Account.id, not this
+    // token's `sub` — present only when ORGS_ENABLED and the caller's credential row has
+    // been linked to an Account (F9 ticket 1 backfill). Absent (not null) when the link
+    // doesn't exist yet, so a consumer can tell "no claim" apart from "empty claim".
+    account_id?: string;
 }
 
 export const signAccessToken = (payload: AccessTokenPayload, expiresIn?: string): string => {
@@ -79,5 +96,9 @@ export const signRefreshToken = (payload: RefreshTokenPayload): string => {
 };
 
 export const verifyRefreshToken = (payload: string): RefreshTokenPayload => {
-    return jwt.verify(payload, REFRESH_TOKEN, { algorithms: ['HS256'] }) as RefreshTokenPayload;
+    try {
+        return jwt.verify(payload, REFRESH_TOKEN, { algorithms: ['HS256'] }) as RefreshTokenPayload;
+    } catch {
+        throw new HttpError(401, 'Invalid refresh token');
+    }
 };

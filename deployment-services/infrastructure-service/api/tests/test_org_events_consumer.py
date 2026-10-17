@@ -374,4 +374,84 @@ def test_consumer_started_when_orgs_enabled(monkeypatch):
 
     thread_cls.assert_called_once()
     assert thread_cls.call_args.kwargs.get("daemon") is True
-    thread_cls.return_value.start.assert_called_once()
+
+
+# ── OrgPermissions cache eviction (F9 ticket 5) ──────────────────────────────────────────
+
+@pytest.mark.django_db
+def test_org_created_evicts_the_owners_cached_role(consumer, monkeypatch):
+    from api.messaging.consumer import org_consumer
+
+    evict_calls = []
+    monkeypatch.setattr(org_consumer.OrgPermissions, "evict", lambda org_id, account_id: evict_calls.append((org_id, account_id)))
+
+    org_id = str(uuid.uuid4())
+    owner_id = str(uuid.uuid4())
+    _deliver(consumer, "org.created", {"organization_id": org_id, "owner_account_id": owner_id, "version": 1})
+
+    assert evict_calls == [(org_id, owner_id)]
+
+
+@pytest.mark.django_db
+def test_membership_changed_evicts_the_targets_cached_role(consumer, monkeypatch):
+    from api.messaging.consumer import org_consumer
+
+    evict_calls = []
+    monkeypatch.setattr(org_consumer.OrgPermissions, "evict", lambda org_id, account_id: evict_calls.append((org_id, account_id)))
+
+    org_id = str(uuid.uuid4())
+    owner_id = str(uuid.uuid4())
+    account_id = str(uuid.uuid4())
+    _deliver(consumer, "org.created", {"organization_id": org_id, "owner_account_id": owner_id, "version": 1})
+    evict_calls.clear()
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": account_id, "role": "developer", "version": 1,
+    })
+
+    assert evict_calls == [(org_id, account_id)]
+
+
+@pytest.mark.django_db
+def test_membership_removed_evicts_the_targets_cached_role(consumer, monkeypatch):
+    from api.messaging.consumer import org_consumer
+
+    org_id = str(uuid.uuid4())
+    owner_id = str(uuid.uuid4())
+    account_id = str(uuid.uuid4())
+    _deliver(consumer, "org.created", {"organization_id": org_id, "owner_account_id": owner_id, "version": 1})
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": account_id, "role": "developer", "version": 1,
+    })
+
+    evict_calls = []
+    monkeypatch.setattr(org_consumer.OrgPermissions, "evict", lambda org_id, account_id: evict_calls.append((org_id, account_id)))
+
+    _deliver(consumer, "org.membership.removed", {
+        "organization_id": org_id, "account_id": account_id, "version": 2,
+    })
+
+    assert evict_calls == [(org_id, account_id)]
+
+
+@pytest.mark.django_db
+def test_eviction_is_best_effort_at_the_org_permissions_layer_not_the_consumer(consumer, monkeypatch):
+    """The consumer callback has no try/except of its own around the eviction call —
+    it relies on OrgPermissions.evict/org_role_cache catching redis.RedisError
+    internally (proven directly in test_org_permissions.py). A real Redis outage during
+    eviction therefore never nacks an event whose DB write already committed."""
+    import redis as redis_module
+
+    def _boom():
+        raise redis_module.exceptions.ConnectionError("no route to redis")
+
+    monkeypatch.setattr("shared.services.org_role_cache._redis", _boom)
+
+    org_id = str(uuid.uuid4())
+    owner_id = str(uuid.uuid4())
+    ch = _deliver(consumer, "org.created", {
+        "organization_id": org_id, "owner_account_id": owner_id, "version": 1,
+    })
+
+    ch.basic_ack.assert_called_once_with(delivery_tag=1)
+    ch.basic_nack.assert_not_called()

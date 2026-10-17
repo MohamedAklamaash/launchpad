@@ -28,7 +28,7 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 // The concurrency test near the bottom mocks sequelize.query directly instead of
 // otpAttempts, to exercise the real atomic-claim logic under Promise.all.
 const { sequelize } = await import('@/db/sequalize');
-const { InvitedUser, UserOTP, RefreshToken } = await import('@/db');
+const { UserOTP, RefreshToken } = await import('@/db');
 const { otpAttempts, MAX_OTP_ATTEMPTS, NIL_INVITED_USER_ID } = await import('@/utils/otp-attempts');
 const { InvitedUserAuthService } =
     await import('@/service/invited-users/invited-user.auth.service');
@@ -45,6 +45,11 @@ const fakeClaim = {
     infra_id: ['infra-1'],
     created_at: new Date(),
     attempts: 1,
+    // Already linked — these tests aren't about F9's verify-time Account-linking (see
+    // account-backfill.service.test.ts and the H1(c) regression test there), so this
+    // sidesteps authenticateWithOTP's `Account.findOrCreate` branch, which only runs
+    // when accountId is falsy.
+    accountId: 'existing-account-1',
 };
 
 const withTransactionMock = () =>
@@ -188,13 +193,19 @@ test('authenticateWithOTP: a wrong guess is rejected and only matches the regist
     }
 });
 
-test('authenticateWithOTP: a correct guess clears the attempt counter and authenticates the user', async () => {
+test('authenticateWithOTP: a correct guess clears the attempt counter, sets email_verified_at, and authenticates the user', async () => {
     const txSpy = withTransactionMock();
     const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => ({ ...fakeClaim }));
     const resetSpy = mock.method(otpAttempts, 'resetAttempts', async () => undefined);
     const otpRecord = { async destroy() {} };
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => otpRecord);
-    const updateSpy = mock.method(InvitedUser, 'update', async () => [1]);
+    // R1: is_authenticated=true and email_verified_at=COALESCE(email_verified_at, NOW())
+    // are set together via one raw UPDATE ... RETURNING (so a second verification call
+    // never resets the timestamp) — see InvitedUserAuthService.authenticateWithOTP.
+    const verifiedAt = new Date();
+    const querySpy = mock.method(sequelize, 'query', async () => [
+        { email_verified_at: verifiedAt },
+    ]);
     const refreshSpy = mock.method(
         RefreshToken,
         'create',
@@ -209,13 +220,20 @@ test('authenticateWithOTP: a correct guess clears the attempt counter and authen
         assert.ok(result.accessToken);
         assert.equal(resetSpy.mock.callCount(), 1);
         assert.equal(resetSpy.mock.calls[0].arguments[0], 'user-1');
-        assert.deepEqual(updateSpy.mock.calls[0].arguments[0], { is_authenticated: true });
+        assert.match(
+            querySpy.mock.calls[0]!.arguments[0] as string,
+            /SET\s+is_authenticated = true/,
+        );
+        assert.match(
+            querySpy.mock.calls[0]!.arguments[0] as string,
+            /COALESCE\(email_verified_at, NOW\(\)\)/,
+        );
     } finally {
         txSpy.mock.restore();
         claimSpy.mock.restore();
         resetSpy.mock.restore();
         findOtpSpy.mock.restore();
-        updateSpy.mock.restore();
+        querySpy.mock.restore();
         refreshSpy.mock.restore();
     }
 });

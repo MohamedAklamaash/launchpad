@@ -76,7 +76,6 @@ test('register: createOTP dedupes any prior register-purpose OTP before minting 
         assert.deepEqual(destroyArgs.where, {
             invited_user_id: 'user-1',
             purpose: 'register',
-            infra_id: 'infra-1',
         });
         const createArgs = createOtpSpy.mock.calls[0]?.arguments[0] as { purpose: string };
         assert.equal(createArgs.purpose, 'register');
@@ -96,13 +95,14 @@ test('register: createOTP dedupes any prior register-purpose OTP before minting 
     }
 });
 
-test('register: inviting an already-invited-but-unverified user to a second infra scopes the dedup to that infra', async () => {
-    // H7 (multi-infra invites): a user invited to infra-1, then invited to infra-2
-    // before ever verifying infra-1's code, must not have infra-1's still-live code
-    // silently invalidated by infra-2's createOTP call — each infra's invite is its own
-    // flow. The dedup delete must be scoped to (user, purpose, infra_id), not just
-    // (user, purpose), or it would delete infra-1's row as a side effect of inviting to
-    // infra-2.
+test("register: inviting an already-invited-but-unverified user to a second infra invalidates the first infra's still-live code (security review R2)", async () => {
+    // R2: this used to be scoped to (user, purpose, infra_id) specifically so infra-1's
+    // still-live code would survive an infra-2 invite — but the OTP verify lookup
+    // (authenticateWithOTP) matches ANY live REGISTER code for the user, not one scoped
+    // to a specific infra, so K simultaneous invites handed an attacker K codes to guess
+    // against the same account at once. Deduped by (user, purpose) alone now: inviting
+    // to infra-2 replaces whichever REGISTER code (infra-1's) was still outstanding, so
+    // there is never more than one live code per user.
     const txSpy = withTransactionMock();
     const existingUser = {
         id: 'user-1',
@@ -147,7 +147,6 @@ test('register: inviting an already-invited-but-unverified user to a second infr
         assert.deepEqual(destroyArgs.where, {
             invited_user_id: 'user-1',
             purpose: 'register',
-            infra_id: 'infra-2',
         });
     } finally {
         console.error = originalConsoleError;

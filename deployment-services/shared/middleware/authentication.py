@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 import jwt
 from django.conf import settings
@@ -6,6 +7,7 @@ from django.http import JsonResponse
 
 from shared.errors.exception import HttpError
 from shared.utils.jwt import decode_jwt
+from shared.utils.org_id import personal_org_id
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,48 @@ class JWTAuthMiddleware:
 
             token = auth_header.split(" ", 1)[1]
             request.user = decode_jwt(token, settings.JWT_SECRET)
+
+            # F9 ticket 5 (plan/F9-teams-and-orgs.md, Decision: JWT and authorization).
+            # Entirely gated on ORGS_ENABLED — with the flag off, request.user never
+            # gains an org_id attribute at all, so request behavior is byte-for-byte
+            # what it was before this ticket (scope item 4).
+            if settings.ORGS_ENABLED:
+                org_id = getattr(request.user, "org_id", None)
+                if org_id:
+                    # Security review L1: canonicalized (lowercase, format-validated),
+                    # never just format-checked and left as-is — OrgPermissions.get_role
+                    # compares this against a canonicalized argument, and two
+                    # differently-cased but equal UUIDs must never be treated as
+                    # different scopes.
+                    try:
+                        resolved_org_id = str(uuid.UUID(str(org_id)))
+                    except (ValueError, AttributeError, TypeError):
+                        raise HttpError("Invalid organization scope", status_code=401)
+                else:
+                    # A pre-F9 token (minted before org_id existed) carries no claim at
+                    # all — resolves to the caller's own personal org, computed with no
+                    # DB lookup from the signature-covered subject, never to a wider
+                    # scope.
+                    #
+                    # Security review L3: `request.user.id` is the signature-covered
+                    # `sub` claim, but nothing upstream guarantees it's a well-formed
+                    # UUID (a hand-crafted or ancient-format token could carry anything)
+                    # — personal_org_id raises ValueError/TypeError on a malformed
+                    # input, which must 401 as a bad request, never fall through to the
+                    # generic `except Exception` 500 below.
+                    try:
+                        resolved_org_id = str(personal_org_id(request.user.id))
+                    except (ValueError, AttributeError, TypeError):
+                        raise HttpError("Invalid organization scope", status_code=401)
+
+                # Set on both the attribute (OrgPermissions.get_role's `getattr`) and
+                # the underlying payload dict (JWTUser.get/.to_dict()/["org_id"]) —
+                # JWTUser.__init__ keeps both in sync from the raw claims, so a
+                # canonicalized/fallback value written here must update both or
+                # callers using the dict-style accessors would see a stale or absent
+                # org_id.
+                request.user.org_id = resolved_org_id
+                request.user.payload["org_id"] = resolved_org_id
 
         except HttpError as e:
             return JsonResponse(

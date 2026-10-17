@@ -160,7 +160,17 @@ INTERNAL_AUTH_EXEMPT_PATHS = [
 INTERNAL_AUTH_HEADER_NAME = "X-INTERNAL-TOKEN"
 INTERNAL_AUTH_TOKEN = app_config.internal_api_token
 
+# F9 ticket 5: backs OrgPermissions's role cache (shared.services.org_role_cache).
+REDIS_HOST = app_config.redis_host
+REDIS_PORT = app_config.redis_port
+REDIS_PASSWORD = app_config.redis_password
+REDIS_DB = app_config.redis_db
+
 # F9 ticket 4: gates the org.events consumer (Organization/Membership read-model sync).
 # Default off, same shape as infrastructure-service's EKS_ENABLED — with the flag off,
 # nothing new connects to the broker (plan/F9-teams-and-orgs.md).
 ORGS_ENABLED = os.environ.get('ORGS_ENABLED', 'False').lower() == 'true'
+# Security review H2: prefixes the org_role Redis cache key so infrastructure-service,
+# application-service, and payment-service — three independently-lagging Membership
+# mirrors sharing one Redis instance — never read or write each other's cache entries.
+SERVICE_NAME = 'payment-service'

@@ -58,6 +58,13 @@ export const refreshSchema = z.object({
     }),
 });
 
+export const switchOrgSchema = z.object({
+    body: z.object({
+        organization_id: z.uuid(),
+        refresh_token: z.string(),
+    }),
+});
+
 export const revokeSchema = z.object({
     body: z.object({
         // The caller's own userId is derived from the verified Authorization access

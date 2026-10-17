@@ -23,6 +23,7 @@ process.env.REDIS_HOST = 'localhost';
 process.env.REDIS_PASSWORD = 'test';
 process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 
+const jwt = await import('jsonwebtoken');
 const { signAccessToken, verifyAccessToken, signRefreshToken, verifyRefreshToken } =
     await import('@/utils/handle-token');
 
@@ -65,4 +66,30 @@ test('re-signing an access token at refresh time with the original auth_time nev
 
     assert.equal(newPayload.auth_time, originalLogin);
     assert.notEqual(newPayload.auth_time, Math.floor(Date.now() / 1000));
+});
+
+// F9 ticket 5, security self-review item: "a forged or modified org_id claim is useless
+// because the signature covers it." Proven directly, not just asserted in prose — a
+// token whose org_id is edited after signing fails verification outright, same as any
+// other tampered claim.
+test('a token with its org_id claim rewritten after signing fails signature verification', () => {
+    const token = signAccessToken({ ...BASE_CLAIMS, org_id: 'org-caller-actually-belongs-to' });
+
+    const [headerB64, payloadB64, signatureB64] = token.split('.');
+    const payload = JSON.parse(Buffer.from(payloadB64!, 'base64url').toString('utf8'));
+    payload.org_id = 'org-caller-wants-to-impersonate';
+    const forgedPayloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const forgedToken = `${headerB64}.${forgedPayloadB64}.${signatureB64}`;
+
+    assert.throws(() => verifyAccessToken(forgedToken));
+});
+
+test('a token re-signed with a different secret (algorithm/key confusion) is rejected', () => {
+    const forgedToken = jwt.default.sign(
+        { ...BASE_CLAIMS, org_id: 'org-attacker-chose' },
+        'attacker-controlled-secret-attacker-controlled-secret',
+        { algorithm: 'HS256' },
+    );
+
+    assert.throws(() => verifyAccessToken(forgedToken));
 });

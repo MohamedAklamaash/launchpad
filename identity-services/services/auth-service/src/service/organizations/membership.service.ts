@@ -1,5 +1,6 @@
 import { HttpError } from '@launchpad/common';
-import { Membership } from '@/db';
+import { Op, type Transaction } from 'sequelize';
+import { InvitedUser, Membership, RefreshToken, User } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { ORG_ROLE, type OrgRole } from '@/types/org-role';
 import {
@@ -13,6 +14,27 @@ import {
     publishMembershipChanged,
     publishMembershipRemoved,
 } from '@/messaging/producer/org-events.message';
+
+// Security review H3(b): RefreshToken.user_id is the legacy credential id (User.id or
+// InvitedUser.id), never an Account id — Membership only ever knows the account_id, so
+// removal has to map backwards through both credential tables to find every refresh
+// token this account could use to keep acting in the org it was just removed from. Best
+// effort within the removal's own transaction: if this account is linked to no
+// credential row yet (shouldn't happen for a real Membership, but not impossible), this
+// is a no-op rather than a failure that would roll back the removal itself.
+const revokeRefreshTokensForAccount = async (
+    accountId: string,
+    transaction: Transaction,
+): Promise<void> => {
+    const [users, invitedUsers] = await Promise.all([
+        User.findAll({ where: { account_id: accountId }, attributes: ['id'], transaction }),
+        InvitedUser.findAll({ where: { account_id: accountId }, attributes: ['id'], transaction }),
+    ]);
+    const userIds = [...users.map((u) => u.id), ...invitedUsers.map((u) => u.id)];
+    if (userIds.length === 0) return;
+
+    await RefreshToken.destroy({ where: { user_id: { [Op.in]: userIds } }, transaction });
+};
 
 export interface AddMemberInput {
     organizationId: string;
@@ -190,6 +212,11 @@ export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
             old_role: role,
             new_role: null,
         });
+        // Security review H3(b): forces a re-login rather than relying on cache
+        // eviction / the refresh-token re-validation in InvitedUserAuthService.refresh
+        // alone — the highest-consequence transition (actual removal) doesn't wait for
+        // the removed member's next refresh to notice.
+        await revokeRefreshTokensForAccount(account_id, transaction);
         return { organization_id, account_id, version: newVersion };
     });
 
