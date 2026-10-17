@@ -11,14 +11,17 @@ export const ORG_NAMESPACE = '4c900569-d11e-46e2-b34c-cd677a57ca73';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Mirrors org_id.py's `str(uuid.UUID(str(legacy_user_id)))` canonicalization — lowercase,
-// hyphenated — so the same id always hashes to the same result regardless of casing.
-// Throws rather than silently hashing a malformed id into a well-formed-looking but wrong
-// org id.
-const canonicalize = (legacyUserId: string): string => {
-    const normalized = legacyUserId.trim().toLowerCase();
+// Mirrors `str(uuid.UUID(str(x)))`'s canonicalization on the Python side — lowercase,
+// hyphenated — so the same id always compares/hashes equal regardless of casing or
+// surrounding whitespace. Used both to canonicalize before hashing (personalOrgId) and to
+// canonicalize a UUID a caller supplies before it's trusted as a lookup/scope key
+// (switch-org's `organization_id`) — a security-review fix (F9 ticket 5 follow-up): two
+// differently-cased but equal UUIDs must never be treated as different scopes. Throws
+// rather than silently accepting a malformed id.
+export const canonicalizeUuid = (value: string): string => {
+    const normalized = value.trim().toLowerCase();
     if (!UUID_PATTERN.test(normalized)) {
-        throw new Error(`personalOrgId: not a well-formed UUID: ${legacyUserId}`);
+        throw new Error(`canonicalizeUuid: not a well-formed UUID: ${value}`);
     }
     return normalized;
 };
@@ -29,4 +32,4 @@ const canonicalize = (legacyUserId: string): string => {
 // on the newer Account id — see shared/utils/org_id.py's personal_org_id for the full
 // rationale (computable with no dependency on any other service's backfill having run).
 export const personalOrgId = (legacyUserId: string): string =>
-    uuidv5(canonicalize(legacyUserId), ORG_NAMESPACE);
+    uuidv5(canonicalizeUuid(legacyUserId), ORG_NAMESPACE);

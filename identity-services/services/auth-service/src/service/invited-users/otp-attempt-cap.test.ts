@@ -45,6 +45,11 @@ const fakeClaim = {
     infra_id: ['infra-1'],
     created_at: new Date(),
     attempts: 1,
+    // Already linked — these tests aren't about F9's verify-time Account-linking (see
+    // account-backfill.service.test.ts and the H1(c) regression test there), so this
+    // sidesteps authenticateWithOTP's `Account.findOrCreate` branch, which only runs
+    // when accountId is falsy.
+    accountId: 'existing-account-1',
 };
 
 const withTransactionMock = () =>

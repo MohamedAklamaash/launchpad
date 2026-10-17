@@ -72,6 +72,37 @@ def test_flag_on_token_with_an_org_id_claim_keeps_the_claimed_value_unchanged():
 
 
 @override_settings(JWT_SECRET=SECRET, ORGS_ENABLED=True)
+def test_flag_on_a_differently_cased_org_id_claim_is_canonicalized():
+    """Security review L1: two differently-cased but equal UUIDs must never be treated
+    as different scopes — OrgPermissions.get_role compares against a canonicalized
+    value, so the middleware must hand it one."""
+    switched_org_id = "11111111-1111-1111-1111-111111111111"
+    token = jwt.encode(
+        {"sub": LEGACY_USER_ID, "org_id": switched_org_id.upper()}, SECRET, algorithm="HS256",
+    )
+    middleware, captured = _middleware()
+    middleware(_authed_request(token))
+
+    assert captured["user"].org_id == switched_org_id
+    assert captured["user"].get("org_id") == switched_org_id
+
+
+@override_settings(JWT_SECRET=SECRET, ORGS_ENABLED=True)
+def test_flag_on_a_non_uuid_sub_is_rejected_401_not_500():
+    """Security review L3: a hand-crafted or ancient-format token's `sub` isn't
+    guaranteed to be a well-formed UUID — personal_org_id's ValueError on it must 401,
+    never fall through to the generic 500 handler."""
+    token = jwt.encode({"sub": "not-a-uuid-legacy-id"}, SECRET, algorithm="HS256")
+    middleware, _captured = _middleware()
+    response = middleware(_authed_request(token))
+
+    assert response.status_code == 401
+    assert json.loads(response.content) == {
+        "message": "Invalid organization scope", "details": None,
+    }
+
+
+@override_settings(JWT_SECRET=SECRET, ORGS_ENABLED=True)
 def test_flag_on_a_malformed_org_id_claim_is_rejected_401_not_silently_accepted():
     token = jwt.encode({"sub": LEGACY_USER_ID, "org_id": "not-a-uuid"}, SECRET, algorithm="HS256")
     middleware, _captured = _middleware()

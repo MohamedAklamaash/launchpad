@@ -44,6 +44,10 @@ test('credentials sign-in: an outstanding password-reset OTP does not block a no
         infra_id: ['infra-1'],
         password_hash: passwordHash,
         created_at: new Date(),
+        // A normal password sign-in is from an account that already completed OTP
+        // verification at some point — the H1 security-review fix below requires this
+        // explicitly; this fixture models the legitimate (not the attack) case.
+        is_authenticated: true,
     }));
     let otpQuery: Record<string, unknown> | undefined;
     const findOtpSpy = mock.method(UserOTP, 'findOne', async (opts: { where: object }) => {
@@ -75,6 +79,7 @@ test('credentials sign-in: an outstanding registration OTP still blocks sign-in'
         id: 'user-1',
         email: 'a@example.com',
         password_hash: passwordHash,
+        is_authenticated: false,
     }));
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => ({ id: 'otp-1' }));
 
@@ -87,5 +92,39 @@ test('credentials sign-in: an outstanding registration OTP still blocks sign-in'
         txSpy.mock.restore();
         findUserSpy.mock.restore();
         findOtpSpy.mock.restore();
+    }
+});
+
+// Security review H1(a): the ONLY thing that used to block this login was the pending,
+// non-expired register-purpose OTP row. Once that row's 10-minute TTL passes (or it's
+// otherwise gone), `UserOTP.findOne` with `expires_at: {[Op.gt]: now}` finds nothing —
+// so before this fix, login would have proceeded for an account that never completed
+// verification. is_authenticated: false must block regardless of OTP state.
+test('H1(a): login is blocked for an unverified account even once its registration OTP has expired/is gone', async () => {
+    const txSpy = withTransactionMock();
+    const passwordHash = await hashPassword('secret123');
+    const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({
+        id: 'attacker-invited-row',
+        email: 'victim@example.com',
+        user_name: 'attacker-chosen-name',
+        password_hash: passwordHash,
+        is_authenticated: false,
+    }));
+    // No pending OTP at all — simulates the 10-minute TTL having already passed.
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => null);
+    const refreshSpy = mock.method(RefreshToken, 'create', async () => {
+        throw new Error('must never mint a token for an unverified account');
+    });
+
+    try {
+        await assert.rejects(
+            () => service.login({ email: 'victim@example.com', password: 'secret123' }),
+            (error: unknown) => error instanceof HttpError && error.statusCode === 401,
+        );
+    } finally {
+        txSpy.mock.restore();
+        findUserSpy.mock.restore();
+        findOtpSpy.mock.restore();
+        refreshSpy.mock.restore();
     }
 });

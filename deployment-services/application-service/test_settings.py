@@ -98,6 +98,7 @@ MAX_SNI_CERTIFICATES_PER_LISTENER = 24
 INFRASTRUCTURE_SERVICE_URL = "http://localhost:8002"
 
 ORGS_ENABLED = os.environ.get("ORGS_ENABLED", "False").lower() == "true"
+SERVICE_NAME = "application-service"
 
 # F7 ticket 7
 PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA = int(os.environ.get('PLATFORM_BUILD_MAX_CONCURRENT_PER_INFRA', '2'))

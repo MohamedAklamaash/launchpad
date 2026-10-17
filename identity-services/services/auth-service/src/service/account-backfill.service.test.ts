@@ -33,6 +33,7 @@ interface FakeRow {
     email: string;
     user_name: string;
     account_id: string | null;
+    is_authenticated?: boolean;
 }
 
 // A tiny in-memory stand-in for the three tables the backfill touches, driving the real
@@ -218,6 +219,78 @@ test('backfillAccounts links a case-only collision within the same table to one 
         assert.equal(result.accountsCreated, 1);
         assert.equal(result.collisionGroups, 1);
         assert.equal(fakeUsers.rows[0].account_id, fakeUsers.rows[1].account_id);
+    } finally {
+        findUsersSpy.mock.restore();
+        findInvitedSpy.mock.restore();
+        findAccountsSpy.mock.restore();
+        bulkCreateSpy.mock.restore();
+        updateUsersSpy.mock.restore();
+        updateInvitedSpy.mock.restore();
+    }
+});
+
+// Security review H1(c): an unverified InvitedUser must never be linked to an Account —
+// especially not one a real, already-verified identity (GitHub User or a verified
+// InvitedUser) owns via a shared email. Linking it would hand the unverified row
+// (created by an inviter with an email and password of their own choosing) the victim's
+// account_id, and from there any org that account_id belongs to via switch-org.
+test("backfillAccounts never links an unverified InvitedUser, even one sharing a verified identity's email", async () => {
+    const fakeUsers = makeFakeTable();
+    const fakeInvitedUsers = makeFakeTable();
+    const fakeAccounts = makeFakeAccounts();
+
+    fakeUsers.rows.push({
+        id: 'victim-user',
+        email: 'victim@example.com',
+        user_name: 'victim',
+        account_id: null,
+    });
+    fakeInvitedUsers.rows.push(
+        {
+            id: 'attacker-invited-row',
+            email: 'victim@example.com',
+            user_name: 'attacker-chosen-name',
+            account_id: null,
+            is_authenticated: false,
+        },
+        {
+            id: 'verified-invited-row',
+            email: 'genuinely-verified@example.com',
+            user_name: 'verified',
+            account_id: null,
+            is_authenticated: true,
+        },
+    );
+
+    const findUsersSpy = mock.method(User, 'findAll', fakeUsers.findAll);
+    const findInvitedSpy = mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll);
+    const findAccountsSpy = mock.method(Account, 'findAll', fakeAccounts.findAll);
+    const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
+    const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
+    const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+
+    try {
+        const result = await backfillAccounts();
+
+        // The victim's own User row still links normally.
+        assert.equal(fakeUsers.rows[0].account_id, accountIdForEmail('victim@example.com'));
+        // The attacker's unverified row is left completely unlinked — it never shares
+        // the victim's account_id.
+        assert.equal(fakeInvitedUsers.rows[0].account_id, null);
+        assert.notEqual(fakeInvitedUsers.rows[0].account_id, fakeUsers.rows[0].account_id);
+        // A genuinely verified, non-colliding row still links normally.
+        assert.equal(
+            fakeInvitedUsers.rows[1].account_id,
+            accountIdForEmail('genuinely-verified@example.com'),
+        );
+
+        assert.equal(result.usersLinked, 1);
+        assert.equal(result.invitedUsersLinked, 1); // only the verified row
+        assert.equal(result.unverifiedRowsSkipped, 1);
+        // The collision (victim's User row vs. the attacker's unverified InvitedUser
+        // row sharing an email) is still detected and reported for manual review, even
+        // though nothing was merged.
+        assert.equal(result.collisionGroups, 1);
     } finally {
         findUsersSpy.mock.restore();
         findInvitedSpy.mock.restore();

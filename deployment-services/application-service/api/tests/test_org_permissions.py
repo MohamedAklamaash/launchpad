@@ -178,10 +178,16 @@ def test_jwt_role_and_roles_claims_are_never_trusted(settings, fake_redis, org_a
     assert OrgPermissions.get_role(user, org_id) is None
 
 
-# ── pre-F9 / no-account_id personal-org fallback ─────────────────────────────────
+# ── no account_id claim: always None (security review M1) ───────────────────────
+#
+# Earlier revisions resolved a claim-less token's role for its own personal org via
+# the Organization mirror's owner_account_id. Removed: it broke under ticket 8's
+# ownership transfer (a stale/claim-less token would keep resolving the OLD owner's
+# role through this path). A token with no account_id claim now always resolves to
+# None, personal org or not — the caller must re-login/refresh to get one re-minted.
 
 @pytest.mark.django_db
-def test_missing_account_id_resolves_via_organization_owner_for_the_personal_org(
+def test_missing_account_id_resolves_to_none_even_for_the_callers_own_personal_org(
     settings, fake_redis,
 ):
     from shared.utils.org_id import personal_org_id
@@ -198,14 +204,11 @@ def test_missing_account_id_resolves_via_organization_owner_for_the_personal_org
 
     user = _user(org_id=str(org_id), account_id=None, sub=str(legacy_user_id))
 
-    assert OrgPermissions.get_role(user, org_id) == "owner"
+    assert OrgPermissions.get_role(user, org_id) is None
 
 
 @pytest.mark.django_db
-def test_missing_account_id_cannot_borrow_a_different_orgs_owner_identity(settings, fake_redis):
-    """Without the personal-org equality check, a claim-less token could resolve a role
-    in ANY org by walking its owner_account_id — this proves the fallback only ever
-    fires for the caller's own personal org."""
+def test_missing_account_id_resolves_to_none_for_any_other_org_too(settings, fake_redis):
     from api.models.organization import Organization
     from api.services.org_permissions import OrgPermissions
 
@@ -218,6 +221,42 @@ def test_missing_account_id_cannot_borrow_a_different_orgs_owner_identity(settin
     user = _user(org_id=str(someone_elses_org), account_id=None, sub=str(uuid.uuid4()))
 
     assert OrgPermissions.get_role(user, someone_elses_org) is None
+
+
+# ── UUID canonicalization (security review L1) ──────────────────────────────────
+
+@pytest.mark.django_db
+def test_get_role_canonicalizes_a_differently_cased_org_id_argument(settings, fake_redis, org_and_owner):
+    from api.services.org_permissions import OrgPermissions
+
+    settings.ORGS_ENABLED = True
+    org_id, owner_account_id = org_and_owner
+    _membership(org_id, owner_account_id, "owner")
+    user = _user(org_id=str(org_id), account_id=str(owner_account_id))
+
+    assert OrgPermissions.get_role(user, str(org_id).upper()) == "owner"
+
+
+@pytest.mark.django_db
+def test_get_role_canonicalizes_a_differently_cased_token_org_id_claim(settings, fake_redis, org_and_owner):
+    from api.services.org_permissions import OrgPermissions
+
+    settings.ORGS_ENABLED = True
+    org_id, owner_account_id = org_and_owner
+    _membership(org_id, owner_account_id, "owner")
+    user = _user(org_id=str(org_id).upper(), account_id=str(owner_account_id))
+
+    assert OrgPermissions.get_role(user, org_id) == "owner"
+
+
+@pytest.mark.django_db
+def test_get_role_returns_none_for_a_malformed_org_id_argument(settings, fake_redis):
+    from api.services.org_permissions import OrgPermissions
+
+    settings.ORGS_ENABLED = True
+    user = _user(org_id="not-a-uuid", account_id=str(uuid.uuid4()))
+
+    assert OrgPermissions.get_role(user, "not-a-uuid") is None
 
 
 # ── cache hit / miss / eviction ───────────────────────────────────────────────────

@@ -1,5 +1,6 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { Op } from 'sequelize';
 
 process.env.NODE_ENV = 'test';
 process.env.INTERNAL_API_TOKEN = 'x'.repeat(32);
@@ -22,10 +23,20 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 process.env.ORGS_ENABLED = 'true';
 
 const { sequelize } = await import('@/db/sequalize');
-const { Membership, MembershipAuditEvent } = await import('@/db');
+const { InvitedUser, Membership, MembershipAuditEvent, RefreshToken, User } = await import('@/db');
 const { addMember, changeMemberRole, removeMember } =
     await import('@/service/organizations/membership.service');
 const { orgEventsPublisher } = await import('@/messaging/producer/org-events.message');
+
+// removeMember now also revokes the removed account's refresh tokens (security review
+// H3(b)) — every removeMember test needs these mocked so it never falls through to a
+// real (nonexistent) Postgres connection.
+const stubNoLinkedCredentials = () => {
+    const userFindAllSpy = mock.method(User, 'findAll', async () => []);
+    const invitedFindAllSpy = mock.method(InvitedUser, 'findAll', async () => []);
+    const refreshDestroySpy = mock.method(RefreshToken, 'destroy', async () => 0);
+    return { userFindAllSpy, invitedFindAllSpy, refreshDestroySpy };
+};
 
 const withLockingTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
@@ -123,6 +134,12 @@ test('removeMember tombstones (never deletes) a non-owner Membership, bumps its 
     const querySpy = mock.method(sequelize, 'query', async () => [{ version: 4 }]);
     const auditSpy = mock.method(MembershipAuditEvent, 'create', async (attrs: object) => attrs);
     const publishSpy = mock.method(orgEventsPublisher, 'publish', () => {});
+    const linkedInvitedUserId = 'invited-user-1';
+    const { userFindAllSpy, invitedFindAllSpy, refreshDestroySpy } = stubNoLinkedCredentials();
+    invitedFindAllSpy.mock.restore();
+    const realInvitedFindAllSpy = mock.method(InvitedUser, 'findAll', async () => [
+        { id: linkedInvitedUserId },
+    ]);
 
     try {
         await removeMember({
@@ -145,12 +162,102 @@ test('removeMember tombstones (never deletes) a non-owner Membership, bumps its 
             payload: { version: number };
         };
         assert.equal(publishedEvent.payload.version, 4);
+
+        // Security review H3(b): the removed account's refresh tokens are revoked,
+        // mapped from account_id through to the credential row(s) it's linked to.
+        assert.equal(refreshDestroySpy.mock.callCount(), 1);
+        const [{ where }] = refreshDestroySpy.mock.calls[0]!.arguments as [
+            { where: { user_id: { [Op.in]: string[] } } },
+        ];
+        assert.deepEqual(where.user_id[Op.in], [linkedInvitedUserId]);
     } finally {
         txSpy.mock.restore();
         findSpy.mock.restore();
         querySpy.mock.restore();
         auditSpy.mock.restore();
         publishSpy.mock.restore();
+        userFindAllSpy.mock.restore();
+        realInvitedFindAllSpy.mock.restore();
+        refreshDestroySpy.mock.restore();
+    }
+});
+
+// Security review H3(b): the removed account could be a GitHub OAuth owner (`User`),
+// not just a password account — the mapping must check both credential tables.
+test('removeMember revokes refresh tokens through the User table too, and is a no-op when nothing is linked', async () => {
+    const txSpy = withLockingTransactionMock();
+    const findSpy = mock.method(Membership, 'findOne', async () => ({
+        id: 'membership-3',
+        organization_id: 'org-1',
+        account_id: 'account-3',
+        role: 'developer',
+        version: 1,
+        destroy: async () => {},
+    }));
+    const querySpy = mock.method(sequelize, 'query', async () => [{ version: 2 }]);
+    const auditSpy = mock.method(MembershipAuditEvent, 'create', async (attrs: object) => attrs);
+    const publishSpy = mock.method(orgEventsPublisher, 'publish', () => {});
+    const linkedUserId = 'github-user-1';
+    const userFindAllSpy = mock.method(User, 'findAll', async () => [{ id: linkedUserId }]);
+    const invitedFindAllSpy = mock.method(InvitedUser, 'findAll', async () => []);
+    const refreshDestroySpy = mock.method(RefreshToken, 'destroy', async () => 1);
+
+    try {
+        await removeMember({
+            organizationId: 'org-1',
+            accountId: 'account-3',
+            actorAccountId: 'account-1',
+        });
+
+        assert.equal(refreshDestroySpy.mock.callCount(), 1);
+        const [{ where }] = refreshDestroySpy.mock.calls[0]!.arguments as [
+            { where: { user_id: { [Op.in]: string[] } } },
+        ];
+        assert.deepEqual(where.user_id[Op.in], [linkedUserId]);
+    } finally {
+        txSpy.mock.restore();
+        findSpy.mock.restore();
+        querySpy.mock.restore();
+        auditSpy.mock.restore();
+        publishSpy.mock.restore();
+        userFindAllSpy.mock.restore();
+        invitedFindAllSpy.mock.restore();
+        refreshDestroySpy.mock.restore();
+    }
+});
+
+test('removeMember never calls RefreshToken.destroy when the account is linked to no credential row', async () => {
+    const txSpy = withLockingTransactionMock();
+    const findSpy = mock.method(Membership, 'findOne', async () => ({
+        id: 'membership-4',
+        organization_id: 'org-1',
+        account_id: 'account-4',
+        role: 'developer',
+        version: 1,
+        destroy: async () => {},
+    }));
+    const querySpy = mock.method(sequelize, 'query', async () => [{ version: 2 }]);
+    const auditSpy = mock.method(MembershipAuditEvent, 'create', async (attrs: object) => attrs);
+    const publishSpy = mock.method(orgEventsPublisher, 'publish', () => {});
+    const { userFindAllSpy, invitedFindAllSpy, refreshDestroySpy } = stubNoLinkedCredentials();
+
+    try {
+        await removeMember({
+            organizationId: 'org-1',
+            accountId: 'account-4',
+            actorAccountId: 'account-1',
+        });
+
+        assert.equal(refreshDestroySpy.mock.callCount(), 0);
+    } finally {
+        txSpy.mock.restore();
+        findSpy.mock.restore();
+        querySpy.mock.restore();
+        auditSpy.mock.restore();
+        publishSpy.mock.restore();
+        userFindAllSpy.mock.restore();
+        invitedFindAllSpy.mock.restore();
+        refreshDestroySpy.mock.restore();
     }
 });
 

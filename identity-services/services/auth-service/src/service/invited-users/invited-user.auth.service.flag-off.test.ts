@@ -29,8 +29,13 @@ const { InvitedUserAuthService } =
     await import('@/service/invited-users/invited-user.auth.service');
 const { verifyAccessToken, signRefreshToken } = await import('@/utils/handle-token');
 
+// refresh() locks the RefreshToken row for the transaction's lifetime (security review
+// M2, unconditional on ORGS_ENABLED) — the mocked transaction object needs a
+// LOCK.UPDATE token.
 const withTransactionMock = () =>
-    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+        cb({ LOCK: { UPDATE: 'UPDATE' } }),
+    );
 
 const service = new InvitedUserAuthService();
 

@@ -170,3 +170,7 @@ REDIS_DB = app_config.redis_db
 # Default off, same shape as infrastructure-service's EKS_ENABLED — with the flag off,
 # nothing new connects to the broker (plan/F9-teams-and-orgs.md).
 ORGS_ENABLED = os.environ.get('ORGS_ENABLED', 'False').lower() == 'true'
+# Security review H2: prefixes the org_role Redis cache key so infrastructure-service,
+# application-service, and payment-service — three independently-lagging Membership
+# mirrors sharing one Redis instance — never read or write each other's cache entries.
+SERVICE_NAME = 'payment-service'

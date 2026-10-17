@@ -4,6 +4,8 @@ import socket
 import redis
 from django.conf import settings
 
+from shared.enums.org_role import OrgRole
+
 logger = logging.getLogger(__name__)
 
 # F9 ticket 5 (plan/F9-teams-and-orgs.md, Decision: JWT and authorization): role
@@ -19,9 +21,11 @@ CACHE_TTL_SECONDS = 60
 # value, since no OrgRole choice is ever this string.
 _NONE_SENTINEL = "__none__"
 
-# Mirrors shared.ratelimit.budget's pool settings — short timeouts plus
-# retry_on_timeout so a slow Redis degrades into the DB-fallback path below instead of
-# hanging the request.
+# Security review L5: short, no-retry timeouts. This cache sits in front of a DB read
+# that's fast and always correct — unlike shared.ratelimit.budget (which retries a
+# slow Redis because losing that race means falling back to raising 503), a blackholed
+# Redis here should degrade to the DB fallback in well under a request timeout, not
+# spend a retry-and-backoff budget hoping Redis comes back first.
 _pool = redis.ConnectionPool(
     host=settings.REDIS_HOST,
     port=settings.REDIS_PORT,
@@ -29,15 +33,15 @@ _pool = redis.ConnectionPool(
     db=settings.REDIS_DB,
     decode_responses=True,
     max_connections=20,
-    socket_timeout=5,
-    socket_connect_timeout=5,
+    socket_timeout=0.5,
+    socket_connect_timeout=0.5,
     socket_keepalive=True,
     socket_keepalive_options={
         socket.TCP_KEEPIDLE: 60,
         socket.TCP_KEEPINTVL: 10,
         socket.TCP_KEEPCNT: 5,
     },
-    retry_on_timeout=True,
+    retry_on_timeout=False,
     health_check_interval=30,
 )
 
@@ -47,7 +51,17 @@ def _redis():
 
 
 def _cache_key(org_id, account_id) -> str:
-    return f"org_role:{org_id}:{account_id}"
+    # Security review H2: prefixed per-service. infrastructure-service,
+    # application-service, and payment-service each maintain their own Membership
+    # mirror, consumed from the same org.events stream but never guaranteed to be at
+    # the same version at the same instant (see plan/F9-teams-and-orgs.md's
+    # version-rejection rule) — without this prefix, three services sharing one Redis
+    # instance would also share one cache entry per (org, account), and whichever
+    # service's mirror lagged furthest behind could write its stale answer into a key
+    # the other two read from. SERVICE_NAME is a plain per-service Django setting, not
+    # derived from anything request-supplied.
+    service_name = getattr(settings, "SERVICE_NAME", "unknown-service")
+    return f"org_role:{service_name}:{org_id}:{account_id}"
 
 
 def get_cached_role(org_id, account_id):
@@ -62,6 +76,12 @@ def get_cached_role(org_id, account_id):
     unmetered), role resolution's fail-closed posture is "never fall back to allow" —
     achieved here by falling back to the authoritative DB read, not by blocking the
     request.
+
+    Security review L4: a cached value that isn't the sentinel AND isn't a value
+    `OrgRole` actually defines is treated as a miss, not trusted as a role. This is a
+    defensive floor against a corrupted/hand-edited Redis key (or a future bug writing
+    something unexpected) ever being handed back as if it were a real role — it can
+    only ever widen to "go check the DB", never to "grant an unrecognized role".
     """
     try:
         value = _redis().get(_cache_key(org_id, account_id))
@@ -70,7 +90,12 @@ def get_cached_role(org_id, account_id):
         return False, None
     if value is None:
         return False, None
-    return True, None if value == _NONE_SENTINEL else value
+    if value == _NONE_SENTINEL:
+        return True, None
+    if value not in OrgRole.values:
+        logger.warning("org_role cache returned an unrecognized value — treating as a miss")
+        return False, None
+    return True, value
 
 
 def set_cached_role(org_id, account_id, role) -> None:

@@ -3,6 +3,7 @@ import { HttpError } from '@launchpad/common';
 import { InvitedUser, Membership, RefreshToken, User } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { verifyRefreshToken } from '@/utils/handle-token';
+import { canonicalizeUuid } from '@/utils/org-id';
 import { assertOrgsEnabled } from './org-guard';
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
 
@@ -16,6 +17,11 @@ interface CredentialRow {
     created_at: Date;
     profile_url?: string;
     account_id: string | null;
+    // Security review H1(b): a GitHub `User` row has no such column (OAuth itself is
+    // the verification), so it's always true. An `InvitedUser` row carries its own real
+    // value — an inviter can create one with any email, and it is not this person's
+    // identity until OTP verification proves it.
+    is_authenticated: boolean;
 }
 
 // The caller may be either a GitHub OAuth owner (`User`) or a password account
@@ -38,6 +44,7 @@ const findCredentialRow = async (
             created_at: user.created_at,
             profile_url: user.profile_url,
             account_id: user.account_id,
+            is_authenticated: true,
         };
     }
 
@@ -52,6 +59,7 @@ const findCredentialRow = async (
             infra_id: invitedUser.infra_id || [],
             created_at: invitedUser.created_at,
             account_id: invitedUser.account_id,
+            is_authenticated: invitedUser.is_authenticated,
         };
     }
 
@@ -81,6 +89,18 @@ export class SwitchOrgService extends BaseService {
     public async switchOrg(input: SwitchOrgInput) {
         assertOrgsEnabled();
 
+        // Security review L1: canonicalized (lowercase, format-validated) before it's
+        // used as a Membership lookup key or stamped into a minted token — two
+        // differently-cased but equal UUIDs must never be treated as different scopes.
+        // Thrown as a plain HttpError, not left to bubble as an uncaught Error: an
+        // org_id that fails UUID validation is a bad request, not a server fault.
+        let organizationId: string;
+        try {
+            organizationId = canonicalizeUuid(input.organizationId);
+        } catch {
+            throw new HttpError(400, 'organization_id must be a well-formed UUID');
+        }
+
         const payload = verifyRefreshToken(input.refreshToken);
         if (payload.sub !== input.callerId) {
             // Never a distinguishing error — "wrong caller" and "stale/invalid token"
@@ -89,26 +109,38 @@ export class SwitchOrgService extends BaseService {
         }
 
         return sequelize.transaction(async (transaction) => {
+            // Security review M2: locked for the transaction's lifetime — see
+            // InvitedUserAuthService.refresh's identical fix for the full rationale. Two
+            // concurrent switch-org calls on the same refresh token now serialize; the
+            // loser's findOne sees nothing once the winner's transaction commits and
+            // 401s, instead of both rotating the same token into two live chains.
             const tokenRecord = await RefreshToken.findOne({
                 where: { token_id: payload.tokenId, user_id: payload.sub },
                 transaction,
+                lock: transaction.LOCK.UPDATE,
             });
             if (!tokenRecord) throw new HttpError(401, 'Invalid refresh token');
 
             const user = await findCredentialRow(payload.sub, transaction);
             if (!user) throw new HttpError(404, 'User not found');
 
+            // Security review H1(b): an unverified InvitedUser can never be authorized
+            // into ANY Membership, even one that (via a backfill-era email collision)
+            // nominally points at their account_id — treated identically to having no
+            // account_id at all, which is the same 404 a genuine non-member gets.
+            const accountId = user.is_authenticated ? user.account_id : null;
+
             // No linked Account at all means no Membership can ever be found for this
             // caller in any org other than one nothing points back to them from — same
             // 404 as a genuine non-member, never a distinguishing error (H3's
             // no-distinguishing-403 rule, owner_only.py's LookupError convention).
-            const membership = user.account_id
+            const membership = accountId
                 ? await Membership.findOne({
                       // removed_at: null excludes a tombstoned row — a removed member is
                       // never treated as active just because the row still exists.
                       where: {
-                          organization_id: input.organizationId,
-                          account_id: user.account_id,
+                          organization_id: organizationId,
+                          account_id: accountId,
                           removed_at: null,
                       },
                       transaction,
@@ -122,12 +154,12 @@ export class SwitchOrgService extends BaseService {
             const newTokenRecord = await this.createRefreshToken(
                 user.id,
                 transaction,
-                input.organizationId,
+                organizationId,
             );
 
             return this.buildAuthResponse(user, newTokenRecord.token_id, payload.auth_time, {
-                accountId: user.account_id,
-                orgId: input.organizationId,
+                accountId,
+                orgId: organizationId,
             });
         });
     }

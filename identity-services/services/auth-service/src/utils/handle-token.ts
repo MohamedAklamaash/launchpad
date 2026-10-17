@@ -96,5 +96,9 @@ export const signRefreshToken = (payload: RefreshTokenPayload): string => {
 };
 
 export const verifyRefreshToken = (payload: string): RefreshTokenPayload => {
-    return jwt.verify(payload, REFRESH_TOKEN, { algorithms: ['HS256'] }) as RefreshTokenPayload;
+    try {
+        return jwt.verify(payload, REFRESH_TOKEN, { algorithms: ['HS256'] }) as RefreshTokenPayload;
+    } catch {
+        throw new HttpError(401, 'Invalid refresh token');
+    }
 };

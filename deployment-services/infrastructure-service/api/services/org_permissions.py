@@ -1,16 +1,25 @@
 import logging
+import uuid
 
 from api.models.membership import Membership
-from api.models.organization import Organization
 from django.conf import settings
 from shared.services.org_role_cache import (
     evict_cached_role,
     get_cached_role,
     set_cached_role,
 )
-from shared.utils.org_id import personal_org_id
 
 logger = logging.getLogger(__name__)
+
+
+def _canonical_uuid(value):
+    """`str(uuid.UUID(str(value)))` — lowercase, hyphenated, format-validated. Returns
+    `None` for a malformed value rather than raising: every caller here treats "not a
+    real UUID" the same as "doesn't match", never as a crash."""
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 class OrgPermissions:
@@ -24,6 +33,16 @@ class OrgPermissions:
     confirming the token's own `org_id` claim names the same org: the claim is a scope
     selector a signature already backs, not a role, and not a lookup key a caller can
     repoint to a different org than their own token was scoped to.
+
+    Security-review follow-up (M1): earlier revisions of this method resolved a role
+    for a claim-less token (no `account_id`) by walking the Organization mirror's
+    `owner_account_id` for the caller's own personal org. Removed: a demoted/transferred
+    owner (ticket 8's ownership transfer) stops being this cheap formula's target the
+    moment ownership moves, and a stale cached/claim-less token would have kept
+    resolving the OLD owner's role through this path until it expired. A token with no
+    `account_id` claim at all now always resolves to `None` — the caller must re-login
+    or refresh (which re-mints `account_id` from the row's current link) before any role
+    resolves for them.
     """
 
     @staticmethod
@@ -31,9 +50,12 @@ class OrgPermissions:
         if not settings.ORGS_ENABLED or not org_id:
             return None
 
-        org_id = str(org_id)
-        token_org_id = getattr(user, "org_id", None)
-        if not token_org_id or str(token_org_id) != org_id:
+        org_id = _canonical_uuid(org_id)
+        if org_id is None:
+            return None
+
+        token_org_id = _canonical_uuid(getattr(user, "org_id", None))
+        if not token_org_id or token_org_id != org_id:
             # The org_id claim is a scope selector, not a hint: a request may only ever
             # resolve a role for the org its own signed token names. Without this check,
             # a caller could pass an arbitrary org_id into a view and have this function
@@ -43,31 +65,11 @@ class OrgPermissions:
 
         account_id = getattr(user, "account_id", None)
         if not account_id:
-            account_id = OrgPermissions._personal_org_owner_account_id(user, org_id)
-            if not account_id:
-                return None
+            # Security review M1 — see class docstring. No fallback: re-login/refresh
+            # re-mints account_id, which is the only path back to a resolved role.
+            return None
 
         return OrgPermissions._resolve_role(org_id, str(account_id))
-
-    @staticmethod
-    def _personal_org_owner_account_id(user, org_id):
-        """A token with no `account_id` claim at all — pre-F9 (minted before this
-        ticket), or a credential row never linked to an Account — can still resolve a
-        role, but ONLY for the caller's own personal org, computed independently of the
-        claim (`org_id` is a pure function of the signature-covered legacy id). Resolved
-        via the Organization mirror's `owner_account_id`, which was set to this exact
-        account at personal-org creation (ticket 3) — never via any other org, which
-        would let a claim-less token borrow a different org's owner identity."""
-        sub = getattr(user, "id", None)
-        if not sub:
-            return None
-        try:
-            if org_id != str(personal_org_id(sub)):
-                return None
-        except (ValueError, TypeError):
-            return None
-        org = Organization.objects.filter(id=org_id).first()
-        return org.owner_account_id if org else None
 
     @staticmethod
     def _resolve_role(org_id, account_id):

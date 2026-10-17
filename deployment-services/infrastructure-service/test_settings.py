@@ -78,6 +78,7 @@ RATE_BUDGET_CFN_ONBOARDING_LIMIT = 10
 RATE_BUDGET_CFN_ONBOARDING_WINDOW_SECONDS = 300
 
 ORGS_ENABLED = os.environ.get("ORGS_ENABLED", "False").lower() == "true"
+SERVICE_NAME = "infrastructure-service"
 
 LOGGING_CONFIG = None
 

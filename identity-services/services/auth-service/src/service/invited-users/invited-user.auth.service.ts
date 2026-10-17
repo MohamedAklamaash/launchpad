@@ -1,9 +1,10 @@
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
-import { InvitedUser, UserOTP, RefreshToken } from '@/db';
+import { Account, InvitedUser, Membership, UserOTP, RefreshToken } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { comparePassword } from '@/utils/handle-password';
 import { verifyRefreshToken } from '@/utils/handle-token';
 import { personalOrgId } from '@/utils/org-id';
+import { accountIdForEmail, normalizeEmail } from '@/utils/account-id';
 import { env } from '@/config/env';
 import { MAX_OTP_ATTEMPTS, NIL_INVITED_USER_ID, otpAttempts } from '@/utils/otp-attempts';
 import { Op } from 'sequelize';
@@ -21,10 +22,29 @@ export class InvitedUserAuthService extends BaseService {
             const isValid = await comparePassword(password, user.password_hash);
             if (!isValid) throw new HttpError(401, 'Invalid password');
 
+            // Security review H1: an inviter can create this row with any email and a
+            // password of their own choosing — it is not proven to belong to that email
+            // until OTP verification completes. The pendingOtp check below only catches
+            // this while the 10-minute OTP window is still open; once it expires,
+            // is_authenticated stays false forever until the account actually verifies,
+            // so this check (unconditional on OTP expiry) is the one that actually closes
+            // the account-takeover window. Checked after the password, not before — an
+            // unauthenticated caller must not be able to probe verification status
+            // without first proving they know the password.
+            if (!user.is_authenticated) {
+                throw new HttpError(
+                    401,
+                    'Account not verified — check your email for the verification code',
+                );
+            }
+
             // Block login if there's a pending first-time OTP for any infra. Scoped to
             // the registration purpose specifically — an outstanding password-reset
             // code (a different flow, requested from an already-working account) must
-            // not lock the owner out of their normal password login too.
+            // not lock the owner out of their normal password login too. Mostly
+            // redundant with the is_authenticated check above (register() resets
+            // is_authenticated to false for a new infra invite, which already blocks
+            // login), kept as defense in depth for the exact in-flight-OTP window.
             const pendingOtp = await UserOTP.findOne({
                 where: {
                     invited_user_id: user.id,
@@ -97,6 +117,33 @@ export class InvitedUserAuthService extends BaseService {
             await otpRecord.destroy({ transaction });
             await otpAttempts.resetAttempts(claim.userId);
 
+            // Security review H1(c): this IS the verify hook — the exact moment this
+            // credential row is first proven to own `claim.email`. Link it to an Account
+            // now (same uuid5(ACCOUNT_NAMESPACE, normalized email) formula the backfill
+            // script uses) rather than waiting for a later batch backfill to notice, so
+            // a newly-verified user gets org features immediately. Guarded by
+            // `account_id: null` so an already-linked row (a second verification call,
+            // or one the backfill already reached) is never overwritten. find-or-create
+            // the Account row itself first — a brand-new account's email may not have one
+            // yet.
+            let accountId = claim.accountId;
+            if (!accountId) {
+                accountId = accountIdForEmail(claim.email);
+                await Account.findOrCreate({
+                    where: { id: accountId },
+                    defaults: {
+                        id: accountId,
+                        email: normalizeEmail(claim.email),
+                        display_name: claim.user_name,
+                    },
+                    transaction,
+                });
+                await InvitedUser.update(
+                    { account_id: accountId },
+                    { where: { id: claim.userId, account_id: null }, transaction },
+                );
+            }
+
             const refreshToken = await this.createRefreshToken(claim.userId, transaction);
             return this.buildAuthResponse(
                 {
@@ -107,10 +154,13 @@ export class InvitedUserAuthService extends BaseService {
                     roles: claim.roles,
                     infra_id: claim.infra_id,
                     created_at: claim.created_at,
+                    // Just verified above, in this same transaction — never anything
+                    // but true here.
+                    is_authenticated: true,
                 },
                 refreshToken.token_id,
                 undefined,
-                { accountId: claim.accountId, orgId: refreshToken.active_org_id },
+                { accountId, orgId: refreshToken.active_org_id },
             );
         });
     }
@@ -118,9 +168,16 @@ export class InvitedUserAuthService extends BaseService {
     public async refresh(token: string) {
         const payload = verifyRefreshToken(token);
         return sequelize.transaction(async (transaction) => {
+            // Security review M2: locked for the lifetime of this transaction. Two
+            // concurrent refreshes racing the same token_id now serialize on this row —
+            // the first to commit destroys it; the second's findOne (blocked until the
+            // first transaction releases the lock) then sees nothing and 401s, instead
+            // of both successfully rotating the same already-redeemed token into two
+            // live chains.
             const tokenRecord = await RefreshToken.findOne({
                 where: { token_id: payload.tokenId, user_id: payload.sub },
                 transaction,
+                lock: transaction.LOCK.UPDATE,
             });
             if (!tokenRecord) throw new HttpError(401, 'Invalid token');
 
@@ -134,9 +191,34 @@ export class InvitedUserAuthService extends BaseService {
             // that carries the real value forward instead of silently undoing an org
             // switch on every rotation. Computed only when ORGS_ENABLED — see
             // createRefreshToken for why this must not run against a flag-off deployment.
-            const activeOrgId = env.ORGS_ENABLED
+            let activeOrgId = env.ORGS_ENABLED
                 ? (tokenRecord.active_org_id ?? personalOrgId(user.id))
                 : undefined;
+
+            // Security review H3(a): a token scoped to a non-personal org must be
+            // re-validated against the CANONICAL Membership table on every refresh, not
+            // just trusted because it was valid when minted — otherwise a member removed
+            // from an org keeps refreshing a token scoped to it for up to the refresh
+            // token's own lifetime (30 days), far past the org_role cache's TTL. Skipped
+            // for the personal org itself: that org's Membership row is guaranteed by
+            // construction (ticket 2's createOrganization), and checking it here would
+            // only add a query, not a security property.
+            if (env.ORGS_ENABLED && activeOrgId) {
+                const personalOrg = personalOrgId(user.id);
+                if (activeOrgId !== personalOrg) {
+                    const membership = user.account_id
+                        ? await Membership.findOne({
+                              where: {
+                                  organization_id: activeOrgId,
+                                  account_id: user.account_id,
+                                  removed_at: null,
+                              },
+                              transaction,
+                          })
+                        : null;
+                    if (!membership) activeOrgId = personalOrg;
+                }
+            }
 
             await tokenRecord.destroy({ transaction });
             const newTokenRecord = await this.createRefreshToken(user.id, transaction, activeOrgId);

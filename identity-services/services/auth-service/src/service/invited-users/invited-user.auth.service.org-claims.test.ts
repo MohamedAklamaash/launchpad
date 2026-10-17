@@ -22,19 +22,25 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 process.env.ORGS_ENABLED = 'true';
 
 const { sequelize } = await import('@/db/sequalize');
-const { InvitedUser, UserOTP, RefreshToken } = await import('@/db');
+const { Account, InvitedUser, Membership, UserOTP, RefreshToken } = await import('@/db');
 const { InvitedUserAuthService } =
     await import('@/service/invited-users/invited-user.auth.service');
 const { verifyAccessToken } = await import('@/utils/handle-token');
 const { personalOrgId } = await import('@/utils/org-id');
+const { accountIdForEmail } = await import('@/utils/account-id');
 const { hashPassword } = await import('@/utils/handle-password');
+const { otpAttempts } = await import('@/utils/otp-attempts');
 
 const USER_ID = '019f2c2b-9b19-71a9-8f3e-cd81d13effb9';
 const ACCOUNT_ID = '9762168d-fbdc-5ee1-aa27-39ad30b6223f';
 const PERSONAL_ORG_ID = personalOrgId(USER_ID);
 
+// refresh() locks the RefreshToken row for the transaction's lifetime (security review
+// M2) — the mocked transaction object needs a LOCK.UPDATE token.
 const withTransactionMock = () =>
-    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+        cb({ LOCK: { UPDATE: 'UPDATE' } }),
+    );
 
 const service = new InvitedUserAuthService();
 
@@ -51,6 +57,7 @@ test('login (ORGS_ENABLED=true): the minted access token carries org_id (the per
         account_id: ACCOUNT_ID,
         password_hash: passwordHash,
         created_at: new Date(),
+        is_authenticated: true,
     }));
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => null);
     const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
@@ -84,6 +91,7 @@ test('login (ORGS_ENABLED=true): account_id is omitted (not sent as null) when t
         account_id: null,
         password_hash: passwordHash,
         created_at: new Date(),
+        is_authenticated: true,
     }));
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => null);
     const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
@@ -104,7 +112,71 @@ test('login (ORGS_ENABLED=true): account_id is omitted (not sent as null) when t
     }
 });
 
-test('refresh preserves an existing active_org_id instead of resetting to the personal org', async () => {
+// Security review H1(c): the verify hook itself links the newly-verified InvitedUser
+// row to an Account, so the very first token it ever mints with org_id/account_id is
+// already correct — no separate batch backfill required.
+test('H1(c): authenticateWithOTP links account_id at verify time when the claim has none', async () => {
+    const txSpy = withTransactionMock();
+    const claim = {
+        userId: USER_ID,
+        email: 'newly-verified@example.com',
+        user_name: 'newly-verified',
+        role: 'user',
+        roles: {},
+        infra_id: [],
+        created_at: new Date(),
+        attempts: 1,
+        accountId: null,
+    };
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => claim);
+    const resetSpy = mock.method(otpAttempts, 'resetAttempts', async () => undefined);
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => ({
+        destroy: async () => undefined,
+    }));
+    const updateSpy = mock.method(InvitedUser, 'update', async () => [1]);
+    const findOrCreateSpy = mock.method(Account, 'findOrCreate', async () => [{}, true]);
+    const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
+        ...attrs,
+        token_id: 'tok-1',
+    }));
+
+    try {
+        const result = await service.authenticateWithOTP({
+            email: claim.email,
+            otp: '123456',
+        });
+
+        const expectedAccountId = accountIdForEmail(claim.email);
+        const payload = verifyAccessToken(result.accessToken);
+        assert.equal(payload.account_id, expectedAccountId);
+        assert.equal(payload.org_id, PERSONAL_ORG_ID);
+
+        // Account.findOrCreate used the deterministic formula, and InvitedUser.update
+        // linked it guarded by account_id: null (never overwriting an existing link).
+        const findOrCreateArgs = findOrCreateSpy.mock.calls[0]!.arguments[0] as {
+            where: { id: string };
+        };
+        assert.equal(findOrCreateArgs.where.id, expectedAccountId);
+        const linkCall = updateSpy.mock.calls.find(
+            (call) => 'account_id' in (call.arguments[0] as object),
+        );
+        assert.deepEqual(linkCall!.arguments[0], { account_id: expectedAccountId });
+        assert.deepEqual((linkCall!.arguments[1] as { where: object }).where, {
+            id: USER_ID,
+            account_id: null,
+        });
+    } finally {
+        txSpy.mock.restore();
+        claimSpy.mock.restore();
+        resetSpy.mock.restore();
+        findOtpSpy.mock.restore();
+        updateSpy.mock.restore();
+        findOrCreateSpy.mock.restore();
+        refreshSpy.mock.restore();
+    }
+});
+
+test('refresh preserves an existing active_org_id instead of resetting to the personal org, when an active Membership backs it', async () => {
     const txSpy = withTransactionMock();
     const SWITCHED_ORG_ID = '11111111-1111-1111-1111-111111111111';
     const destroySpy = mock.fn(async () => undefined);
@@ -121,6 +193,15 @@ test('refresh preserves an existing active_org_id instead of resetting to the pe
         infra_id: [],
         account_id: ACCOUNT_ID,
         created_at: new Date(),
+    }));
+    // Security review H3(a): a non-personal active_org_id must be re-validated against
+    // the canonical Membership table on every refresh — an active row here is what
+    // allows it to survive.
+    const findMembershipSpy = mock.method(Membership, 'findOne', async () => ({
+        organization_id: SWITCHED_ORG_ID,
+        account_id: ACCOUNT_ID,
+        role: 'developer',
+        removed_at: null,
     }));
     let createdAttrs: Record<string, unknown> = {};
     const createSpy = mock.method(
@@ -140,6 +221,108 @@ test('refresh preserves an existing active_org_id instead of resetting to the pe
         assert.equal(createdAttrs.active_org_id, SWITCHED_ORG_ID);
         const payload = verifyAccessToken(result.accessToken);
         assert.equal(payload.org_id, SWITCHED_ORG_ID);
+        assert.equal(destroySpy.mock.callCount(), 1);
+    } finally {
+        txSpy.mock.restore();
+        findTokenSpy.mock.restore();
+        findUserSpy.mock.restore();
+        findMembershipSpy.mock.restore();
+        createSpy.mock.restore();
+    }
+});
+
+// Security review H3(a): the actual attack this closes. A member is removed from an
+// org (tombstoned) while they're still holding a refresh token scoped to it — without
+// re-validation, they could keep refreshing a token minting access to that org for up
+// to the refresh token's own 30-day lifetime, far past the org_role cache's 60s TTL.
+test('H3(a): refresh resets active_org_id to the personal org once the backing Membership is gone (removed member)', async () => {
+    const txSpy = withTransactionMock();
+    const REMOVED_ORG_ID = '11111111-1111-1111-1111-111111111111';
+    const destroySpy = mock.fn(async () => undefined);
+    const findTokenSpy = mock.method(RefreshToken, 'findOne', async () => ({
+        active_org_id: REMOVED_ORG_ID,
+        destroy: destroySpy,
+    }));
+    const findUserSpy = mock.method(InvitedUser, 'findByPk', async () => ({
+        id: USER_ID,
+        email: 'a@example.com',
+        user_name: 'a',
+        role: 'user',
+        roles: {},
+        infra_id: [],
+        account_id: ACCOUNT_ID,
+        created_at: new Date(),
+    }));
+    // The query filters removed_at: null, so a tombstoned membership is never returned —
+    // this simulates exactly that.
+    const findMembershipSpy = mock.method(Membership, 'findOne', async () => null);
+    let createdAttrs: Record<string, unknown> = {};
+    const createSpy = mock.method(
+        RefreshToken,
+        'create',
+        async (attrs: Record<string, unknown>) => {
+            createdAttrs = attrs;
+            return { ...attrs, token_id: 'tok-2' };
+        },
+    );
+
+    try {
+        const { signRefreshToken } = await import('@/utils/handle-token');
+        const refreshTokenValue = signRefreshToken({ sub: USER_ID, tokenId: 'tok-1' });
+        const result = await service.refresh(refreshTokenValue);
+
+        assert.equal(createdAttrs.active_org_id, PERSONAL_ORG_ID);
+        const payload = verifyAccessToken(result.accessToken);
+        assert.equal(payload.org_id, PERSONAL_ORG_ID);
+        assert.notEqual(payload.org_id, REMOVED_ORG_ID);
+    } finally {
+        txSpy.mock.restore();
+        findTokenSpy.mock.restore();
+        findUserSpy.mock.restore();
+        findMembershipSpy.mock.restore();
+        createSpy.mock.restore();
+    }
+});
+
+// Security review M2: the refresh-token analog of switch-org.service.test.ts's
+// concurrency test — see that file's comment for what a mocked suite can and can't
+// prove about real Postgres row locking.
+test('M2: a second refresh against an already-rotated token 401s instead of minting a second chain', async () => {
+    const txSpy = withTransactionMock();
+    let tokenStillLive = true;
+    const destroySpy = mock.fn(async () => {
+        tokenStillLive = false;
+    });
+    const findTokenSpy = mock.method(RefreshToken, 'findOne', async () =>
+        tokenStillLive ? { active_org_id: null, destroy: destroySpy } : null,
+    );
+    const findUserSpy = mock.method(InvitedUser, 'findByPk', async () => ({
+        id: USER_ID,
+        email: 'a@example.com',
+        user_name: 'a',
+        role: 'user',
+        roles: {},
+        infra_id: [],
+        account_id: ACCOUNT_ID,
+        created_at: new Date(),
+    }));
+    const createSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
+        ...attrs,
+        token_id: 'tok-2',
+    }));
+
+    try {
+        const { signRefreshToken } = await import('@/utils/handle-token');
+        const { HttpError } = await import('@launchpad/common');
+        const refreshTokenValue = signRefreshToken({ sub: USER_ID, tokenId: 'tok-1' });
+
+        const first = await service.refresh(refreshTokenValue);
+        assert.ok(first.accessToken);
+
+        await assert.rejects(
+            () => service.refresh(refreshTokenValue),
+            (error: unknown) => error instanceof HttpError && error.statusCode === 401,
+        );
         assert.equal(destroySpy.mock.callCount(), 1);
     } finally {
         txSpy.mock.restore();

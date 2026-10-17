@@ -57,6 +57,15 @@ export abstract class BaseService {
             infra_id: string[];
             created_at?: Date;
             profile_url?: string;
+            // Security-review fix (H1): an InvitedUser row an inviter created with an
+            // attacker-controlled email isn't this person until they prove it by
+            // completing OTP verification. Omitted (GitHub `User` rows have no such
+            // column — OAuth itself is the proof) reads as verified; explicitly `false`
+            // never gets an org_id/account_id claim, no matter what the caller passes in
+            // orgContext below. This is a backstop at the one choke point every
+            // login/refresh/switch-org mint goes through — callers must also gate
+            // upstream (see InvitedUserAuthService.login).
+            is_authenticated?: boolean;
         },
         refreshTokenId: string,
         // The session's original interactive-login time, unix seconds. Omitted (or
@@ -76,10 +85,13 @@ export abstract class BaseService {
             roles: user.roles,
             auth_time,
         };
+        const verified = user.is_authenticated !== false;
         // Flag-gated here, at the one choke point every login/refresh/switch-org call
         // goes through — with ORGS_ENABLED off, the claims below are never added, so a
         // minted token is byte-for-byte what it was before this ticket (scope item 4).
-        if (env.ORGS_ENABLED && orgContext?.orgId) {
+        // `verified` is the H1 backstop: an unverified InvitedUser never gets org_id or
+        // account_id, regardless of what orgContext carries.
+        if (env.ORGS_ENABLED && verified && orgContext?.orgId) {
             tokenClaims.org_id = orgContext.orgId;
             // Omitted entirely (not sent as null/empty) when the caller's credential row
             // has no linked Account yet — a consumer must be able to tell "no claim" apart

@@ -367,6 +367,10 @@ RATE_BUDGET_CFN_ONBOARDING_WINDOW_SECONDS = int(os.environ.get('RATE_BUDGET_CFN_
 # Default off, same shape as EKS_ENABLED — with the flag off, nothing new connects to the
 # broker (plan/F9-teams-and-orgs.md).
 ORGS_ENABLED = os.environ.get('ORGS_ENABLED', 'False').lower() == 'true'
+# Security review H2: prefixes the org_role Redis cache key so infrastructure-service,
+# application-service, and payment-service — three independently-lagging Membership
+# mirrors sharing one Redis instance — never read or write each other's cache entries.
+SERVICE_NAME = 'infrastructure-service'
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/

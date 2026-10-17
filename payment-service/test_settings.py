@@ -67,3 +67,4 @@ REDIS_PASSWORD = ""
 REDIS_DB = 0
 
 ORGS_ENABLED = os.environ.get("ORGS_ENABLED", "False").lower() == "true"
+SERVICE_NAME = "payment-service"
