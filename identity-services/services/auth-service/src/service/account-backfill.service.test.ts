@@ -33,7 +33,7 @@ interface FakeRow {
     email: string;
     user_name: string;
     account_id: string | null;
-    is_authenticated?: boolean;
+    email_verified_at?: Date | null;
 }
 
 // A tiny in-memory stand-in for the three tables the backfill touches, driving the real
@@ -44,16 +44,29 @@ const makeFakeTable = () => {
     return {
         rows,
         findAll: async () => rows.map((row) => ({ get: () => ({ ...row }) })),
+        // Handles both shapes backfillAccounts issues against this table: the
+        // group-linking call (where.id IN [...], account_id: null) and, on
+        // InvitedUser specifically, the "unlink stale pre-fix links" call (where:
+        // { email_verified_at: null, account_id: { [Op.ne]: null } }, no `id` key).
         update: async (
-            values: { account_id: string },
-            opts: { where: { id: { [Op.in]: string[] }; account_id: null } },
+            values: Record<string, unknown>,
+            opts: { where: Record<string, unknown> },
         ) => {
-            const ids = opts.where.id[Op.in];
             let affected = 0;
-            for (const row of rows) {
-                if (ids.includes(row.id) && row.account_id === null) {
-                    row.account_id = values.account_id;
-                    affected += 1;
+            if ('id' in opts.where) {
+                const ids = (opts.where.id as { [Op.in]: string[] })[Op.in];
+                for (const row of rows) {
+                    if (ids.includes(row.id) && row.account_id === null) {
+                        row.account_id = values.account_id as string;
+                        affected += 1;
+                    }
+                }
+            } else {
+                for (const row of rows) {
+                    if ((row.email_verified_at ?? null) === null && row.account_id !== null) {
+                        row.account_id = null;
+                        affected += 1;
+                    }
                 }
             }
             return [affected];
@@ -95,14 +108,24 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
     );
     fakeInvitedUsers.rows.push(
         // Cross-table collision: same normalized email as user-1, deliberately not fixed
-        // (F9 Non-goals) — both rows must end up sharing one account_id.
+        // (F9 Non-goals) — both rows must end up sharing one account_id. Both already
+        // verified (a real InvitedUser row's email_verified_at is SQL NULL or a real
+        // timestamp, never "unset" the way an optional JS field can be — set explicitly
+        // here to match).
         {
             id: 'invited-1',
             email: '  owner@example.com  ',
             user_name: 'owner-invited',
             account_id: null,
+            email_verified_at: new Date(),
         },
-        { id: 'invited-2', email: 'third@example.com', user_name: 'third', account_id: null },
+        {
+            id: 'invited-2',
+            email: 'third@example.com',
+            user_name: 'third',
+            account_id: null,
+            email_verified_at: new Date(),
+        },
     );
 
     const findUsersSpy = mock.method(User, 'findAll', fakeUsers.findAll);
@@ -137,13 +160,20 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
         assert.equal(second.usersLinked, 0);
         assert.equal(second.invitedUsersLinked, 0);
         assert.equal(second.collisionGroups, 1);
+        assert.equal(second.staleLinksUnlinked, 0);
 
+        // Round-tripped through JSON on both sides — snapshotAfterFirst already was,
+        // and these rows now carry real Date objects (email_verified_at), which
+        // deepEqual would otherwise compare against JSON's string serialization as
+        // unequal even when the underlying values match.
         assert.deepEqual(
-            {
-                users: fakeUsers.rows,
-                invitedUsers: fakeInvitedUsers.rows,
-                accounts: fakeAccounts.rows,
-            },
+            JSON.parse(
+                JSON.stringify({
+                    users: fakeUsers.rows,
+                    invitedUsers: fakeInvitedUsers.rows,
+                    accounts: fakeAccounts.rows,
+                }),
+            ),
             snapshotAfterFirst,
         );
     } finally {
@@ -251,14 +281,14 @@ test("backfillAccounts never links an unverified InvitedUser, even one sharing a
             email: 'victim@example.com',
             user_name: 'attacker-chosen-name',
             account_id: null,
-            is_authenticated: false,
+            email_verified_at: null,
         },
         {
             id: 'verified-invited-row',
             email: 'genuinely-verified@example.com',
             user_name: 'verified',
             account_id: null,
-            is_authenticated: true,
+            email_verified_at: new Date(),
         },
     );
 
@@ -291,6 +321,90 @@ test("backfillAccounts never links an unverified InvitedUser, even one sharing a
         // row sharing an email) is still detected and reported for manual review, even
         // though nothing was merged.
         assert.equal(result.collisionGroups, 1);
+    } finally {
+        findUsersSpy.mock.restore();
+        findInvitedSpy.mock.restore();
+        findAccountsSpy.mock.restore();
+        bulkCreateSpy.mock.restore();
+        updateUsersSpy.mock.restore();
+        updateInvitedSpy.mock.restore();
+    }
+});
+
+// Security review R1 follow-up ("unlink pre-fix links"): a row linked under the OLD
+// is_authenticated-based rule, then reset to is_authenticated=false by a later infra
+// invite before the email_verified_at column/backfill ever reached it, is left holding
+// an account_id the new, stricter criterion can't vouch for. It must be unlinked so it
+// goes through authenticateWithOTP's verify hook again to get correctly relinked.
+test('backfillAccounts unlinks a stale pre-fix account_id on an unverified row', async () => {
+    const fakeUsers = makeFakeTable();
+    const fakeInvitedUsers = makeFakeTable();
+    const fakeAccounts = makeFakeAccounts();
+
+    const staleAccountId = 'stale-pre-fix-account-id';
+    fakeInvitedUsers.rows.push({
+        id: 'reinvited-row',
+        email: 'reinvited@example.com',
+        user_name: 'reinvited',
+        // Linked by an earlier pass, back when the only signal was is_authenticated.
+        account_id: staleAccountId,
+        // Reset to false by a later infra invite before this column/backfill ever
+        // caught up with it.
+        email_verified_at: null,
+    });
+
+    const findUsersSpy = mock.method(User, 'findAll', fakeUsers.findAll);
+    const findInvitedSpy = mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll);
+    const findAccountsSpy = mock.method(Account, 'findAll', fakeAccounts.findAll);
+    const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
+    const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
+    const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+
+    try {
+        const result = await backfillAccounts();
+
+        assert.equal(fakeInvitedUsers.rows[0].account_id, null);
+        assert.equal(result.staleLinksUnlinked, 1);
+        // Never re-linked in the same pass — it's still unverified, same as any other
+        // unverified row.
+        assert.equal(result.invitedUsersLinked, 0);
+        assert.equal(result.unverifiedRowsSkipped, 1);
+    } finally {
+        findUsersSpy.mock.restore();
+        findInvitedSpy.mock.restore();
+        findAccountsSpy.mock.restore();
+        bulkCreateSpy.mock.restore();
+        updateUsersSpy.mock.restore();
+        updateInvitedSpy.mock.restore();
+    }
+});
+
+test('backfillAccounts leaves a verified rows account_id untouched (no stale unlink false-positive)', async () => {
+    const fakeUsers = makeFakeTable();
+    const fakeInvitedUsers = makeFakeTable();
+    const fakeAccounts = makeFakeAccounts();
+
+    const linkedId = accountIdForEmail('verified@example.com');
+    fakeInvitedUsers.rows.push({
+        id: 'verified-row',
+        email: 'verified@example.com',
+        user_name: 'verified',
+        account_id: linkedId,
+        email_verified_at: new Date(),
+    });
+
+    const findUsersSpy = mock.method(User, 'findAll', fakeUsers.findAll);
+    const findInvitedSpy = mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll);
+    const findAccountsSpy = mock.method(Account, 'findAll', fakeAccounts.findAll);
+    const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
+    const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
+    const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+
+    try {
+        const result = await backfillAccounts();
+
+        assert.equal(fakeInvitedUsers.rows[0].account_id, linkedId);
+        assert.equal(result.staleLinksUnlinked, 0);
     } finally {
         findUsersSpy.mock.restore();
         findInvitedSpy.mock.restore();

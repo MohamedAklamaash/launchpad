@@ -46,7 +46,11 @@ const withTransactionMock = () =>
 
 const service = new SwitchOrgService();
 
-const stubUserLookup = (overrides: { is_authenticated?: boolean } = {}) => {
+const stubUserLookup = (overrides: { emailVerifiedAt?: Date | null } = {}) => {
+    // `??` would treat an explicitly-passed `null` the same as "not provided" — use
+    // `in` so a test asserting the unverified case (emailVerifiedAt: null) actually
+    // gets null, not silently falls back to verified.
+    const emailVerifiedAt = 'emailVerifiedAt' in overrides ? overrides.emailVerifiedAt : new Date();
     const userFindSpy = mock.method(User, 'findByPk', async () => null);
     const invitedFindSpy = mock.method(InvitedUser, 'findByPk', async () => ({
         id: CALLER_ID,
@@ -57,7 +61,7 @@ const stubUserLookup = (overrides: { is_authenticated?: boolean } = {}) => {
         infra_id: [],
         account_id: ACCOUNT_ID,
         created_at: new Date(),
-        is_authenticated: overrides.is_authenticated ?? true,
+        email_verified_at: emailVerifiedAt,
     }));
     return { userFindSpy, invitedFindSpy };
 };
@@ -237,7 +241,7 @@ test('switch-org rejects a removed (tombstoned) member the same way as a non-mem
 // unverified identity must never be authorized into it.
 test('H1(b): switch-org never authorizes an unverified InvitedUser into a Membership, even one its account_id points at', async () => {
     const txSpy = withTransactionMock();
-    const { userFindSpy, invitedFindSpy } = stubUserLookup({ is_authenticated: false });
+    const { userFindSpy, invitedFindSpy } = stubUserLookup({ emailVerifiedAt: null });
     const findTokenSpy = mock.method(RefreshToken, 'findOne', async () => ({
         destroy: mock.fn(async () => undefined),
     }));

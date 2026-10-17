@@ -17,11 +17,13 @@ interface CredentialRow {
     created_at: Date;
     profile_url?: string;
     account_id: string | null;
-    // Security review H1(b): a GitHub `User` row has no such column (OAuth itself is
-    // the verification), so it's always true. An `InvitedUser` row carries its own real
-    // value — an inviter can create one with any email, and it is not this person's
-    // identity until OTP verification proves it.
-    is_authenticated: boolean;
+    // Security review H1(b), revised under R1: a GitHub `User` row has no such column
+    // (OAuth itself is the verification), so it's omitted — buildAuthResponse's
+    // `!== null` check reads `undefined` as verified. An `InvitedUser` row carries its
+    // own real `email_verified_at` (never `is_authenticated`, which register() resets
+    // on every subsequent infra invite) — an inviter can create one with any email, and
+    // it is not this person's identity until OTP verification proves it once, ever.
+    email_verified_at?: Date | null;
 }
 
 // The caller may be either a GitHub OAuth owner (`User`) or a password account
@@ -44,7 +46,6 @@ const findCredentialRow = async (
             created_at: user.created_at,
             profile_url: user.profile_url,
             account_id: user.account_id,
-            is_authenticated: true,
         };
     }
 
@@ -59,7 +60,7 @@ const findCredentialRow = async (
             infra_id: invitedUser.infra_id || [],
             created_at: invitedUser.created_at,
             account_id: invitedUser.account_id,
-            is_authenticated: invitedUser.is_authenticated,
+            email_verified_at: invitedUser.email_verified_at,
         };
     }
 
@@ -128,7 +129,7 @@ export class SwitchOrgService extends BaseService {
             // into ANY Membership, even one that (via a backfill-era email collision)
             // nominally points at their account_id — treated identically to having no
             // account_id at all, which is the same 404 a genuine non-member gets.
-            const accountId = user.is_authenticated ? user.account_id : null;
+            const accountId = user.email_verified_at !== null ? user.account_id : null;
 
             // No linked Account at all means no Membership can ever be found for this
             // caller in any org other than one nothing points back to them from — same

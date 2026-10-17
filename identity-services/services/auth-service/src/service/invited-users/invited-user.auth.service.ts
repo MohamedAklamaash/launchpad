@@ -1,16 +1,16 @@
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
-import { Account, InvitedUser, Membership, UserOTP, RefreshToken } from '@/db';
+import { InvitedUser, Membership, UserOTP, RefreshToken } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { comparePassword } from '@/utils/handle-password';
 import { verifyRefreshToken } from '@/utils/handle-token';
 import { personalOrgId } from '@/utils/org-id';
-import { accountIdForEmail, normalizeEmail } from '@/utils/account-id';
 import { env } from '@/config/env';
 import { MAX_OTP_ATTEMPTS, NIL_INVITED_USER_ID, otpAttempts } from '@/utils/otp-attempts';
-import { Op } from 'sequelize';
+import { Op, QueryTypes } from 'sequelize';
 import { HttpError } from '@launchpad/common';
 import { InvitedUserLoginInput, AuthenticateUserInput } from '@/types/auth.invited_user.types';
 import { OTP_PURPOSE } from '@/types/otp-purpose';
+import { linkAccountForVerifiedIdentity } from '@/service/account-link.service';
 
 export class InvitedUserAuthService extends BaseService {
     public async login(input: Omit<InvitedUserLoginInput, 'infra_id'>) {
@@ -22,42 +22,33 @@ export class InvitedUserAuthService extends BaseService {
             const isValid = await comparePassword(password, user.password_hash);
             if (!isValid) throw new HttpError(401, 'Invalid password');
 
-            // Security review H1: an inviter can create this row with any email and a
-            // password of their own choosing — it is not proven to belong to that email
-            // until OTP verification completes. The pendingOtp check below only catches
-            // this while the 10-minute OTP window is still open; once it expires,
-            // is_authenticated stays false forever until the account actually verifies,
-            // so this check (unconditional on OTP expiry) is the one that actually closes
-            // the account-takeover window. Checked after the password, not before — an
-            // unauthenticated caller must not be able to probe verification status
-            // without first proving they know the password.
-            if (!user.is_authenticated) {
+            // Security review H1, revised under R1: an inviter can create this row with
+            // any email and a password of their own choosing — it is not proven to
+            // belong to that email until OTP verification completes once, ever.
+            // Deliberately gated on `email_verified_at`, NOT `is_authenticated` — the
+            // latter is reset to `false` by register() on every subsequent infra
+            // invite (see InvitedUserService.register), which an earlier revision of
+            // this fix used as the gate and which locked an already-verified person
+            // out of password login the moment they were invited anywhere else (R1:
+            // "a production regression with the flag OFF" — this check runs
+            // unconditionally, not behind ORGS_ENABLED, since it's a security fix, not
+            // an org feature). `email_verified_at` is set once, the first time this
+            // row's email is proven, and is never cleared again by a later invite.
+            //
+            // The old pending-OTP check that used to sit here (block login while a
+            // REGISTER-purpose OTP is still outstanding) is gone: it was the SAME bug
+            // from the other direction — register() mints a fresh REGISTER OTP on
+            // every new infra invite, so an already-verified person with no
+            // OTP-resend route and a second pending invite would have stayed locked
+            // out forever once that OTP expired. email_verified_at is now the sole,
+            // durable signal; a live REGISTER OTP for a new infra no longer blocks
+            // login for an email that's already proven.
+            if (!user.email_verified_at) {
                 throw new HttpError(
                     401,
                     'Account not verified — check your email for the verification code',
                 );
             }
-
-            // Block login if there's a pending first-time OTP for any infra. Scoped to
-            // the registration purpose specifically — an outstanding password-reset
-            // code (a different flow, requested from an already-working account) must
-            // not lock the owner out of their normal password login too. Mostly
-            // redundant with the is_authenticated check above (register() resets
-            // is_authenticated to false for a new infra invite, which already blocks
-            // login), kept as defense in depth for the exact in-flight-OTP window.
-            const pendingOtp = await UserOTP.findOne({
-                where: {
-                    invited_user_id: user.id,
-                    purpose: OTP_PURPOSE.REGISTER,
-                    expires_at: { [Op.gt]: new Date() },
-                },
-                transaction,
-            });
-            if (pendingOtp)
-                throw new HttpError(
-                    401,
-                    'OTP pending — check your email to verify your account first',
-                );
 
             const refreshToken = await this.createRefreshToken(user.id, transaction);
             return this.buildAuthResponse(user, refreshToken.token_id, undefined, {
@@ -110,39 +101,40 @@ export class InvitedUserAuthService extends BaseService {
                 throw new HttpError(400, 'Invalid or expired OTP');
             }
 
-            await InvitedUser.update(
-                { is_authenticated: true },
-                { where: { id: claim.userId }, transaction },
+            // is_authenticated still flips true here (per-infra acceptance, unchanged
+            // semantics) alongside email_verified_at, set ONCE via COALESCE so a second
+            // verification call (or a row the migration backfill already reached)
+            // never overwrites the original timestamp — see R1: email_verified_at is
+            // the durable "this email was proven at least once" signal that
+            // is_authenticated's per-infra resets must never affect once set.
+            const [{ email_verified_at: emailVerifiedAt }] = await sequelize.query<{
+                email_verified_at: Date;
+            }>(
+                `UPDATE invited_users
+                    SET is_authenticated = true,
+                        email_verified_at = COALESCE(email_verified_at, NOW())
+                  WHERE id = :userId
+              RETURNING email_verified_at`,
+                { replacements: { userId: claim.userId }, type: QueryTypes.SELECT, transaction },
             );
             await otpRecord.destroy({ transaction });
             await otpAttempts.resetAttempts(claim.userId);
 
-            // Security review H1(c): this IS the verify hook — the exact moment this
-            // credential row is first proven to own `claim.email`. Link it to an Account
-            // now (same uuid5(ACCOUNT_NAMESPACE, normalized email) formula the backfill
-            // script uses) rather than waiting for a later batch backfill to notice, so
-            // a newly-verified user gets org features immediately. Guarded by
-            // `account_id: null` so an already-linked row (a second verification call,
-            // or one the backfill already reached) is never overwritten. find-or-create
-            // the Account row itself first — a brand-new account's email may not have one
-            // yet.
-            let accountId = claim.accountId;
-            if (!accountId) {
-                accountId = accountIdForEmail(claim.email);
-                await Account.findOrCreate({
-                    where: { id: accountId },
-                    defaults: {
-                        id: accountId,
-                        email: normalizeEmail(claim.email),
-                        display_name: claim.user_name,
-                    },
+            // Security review H1(c), tightened under R2: this IS the verify hook — the
+            // exact moment this credential row is first proven to own `claim.email`.
+            // Links it to an Account now rather than waiting for a later batch backfill
+            // — but never merges into an Account a DIFFERENT credential row already
+            // holds; see linkAccountForVerifiedIdentity for why that merge is a human
+            // decision (the backfill's collision log), not a live-request one.
+            const accountId =
+                claim.accountId ??
+                (await linkAccountForVerifiedIdentity({
+                    email: claim.email,
+                    displayName: claim.user_name,
+                    table: 'invited_users',
+                    rowId: claim.userId,
                     transaction,
-                });
-                await InvitedUser.update(
-                    { account_id: accountId },
-                    { where: { id: claim.userId, account_id: null }, transaction },
-                );
-            }
+                }));
 
             const refreshToken = await this.createRefreshToken(claim.userId, transaction);
             return this.buildAuthResponse(
@@ -154,9 +146,7 @@ export class InvitedUserAuthService extends BaseService {
                     roles: claim.roles,
                     infra_id: claim.infra_id,
                     created_at: claim.created_at,
-                    // Just verified above, in this same transaction — never anything
-                    // but true here.
-                    is_authenticated: true,
+                    email_verified_at: emailVerifiedAt,
                 },
                 refreshToken.token_id,
                 undefined,

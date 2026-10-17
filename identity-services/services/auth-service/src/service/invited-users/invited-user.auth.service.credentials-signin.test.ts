@@ -30,9 +30,14 @@ const { HttpError } = await import('@launchpad/common');
 const withTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
 
+// This whole file runs with ORGS_ENABLED unset (default off) — login()'s
+// email_verified_at gate is NOT behind that flag (it's a security fix, not an org
+// feature; see R1), so every test here also demonstrates "flag off: behavior matches
+// main for a verified account, and the deliberate never-verified-after-OTP-expiry
+// closure still applies."
 const service = new InvitedUserAuthService();
 
-test('credentials sign-in: an outstanding password-reset OTP does not block a normal password sign-in', async () => {
+test('credentials sign-in: a verified account can log in (UserOTP is never consulted)', async () => {
     const txSpy = withTransactionMock();
     const passwordHash = await hashPassword('secret123');
     const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({
@@ -44,15 +49,13 @@ test('credentials sign-in: an outstanding password-reset OTP does not block a no
         infra_id: ['infra-1'],
         password_hash: passwordHash,
         created_at: new Date(),
-        // A normal password sign-in is from an account that already completed OTP
-        // verification at some point — the H1 security-review fix below requires this
-        // explicitly; this fixture models the legitimate (not the attack) case.
-        is_authenticated: true,
+        email_verified_at: new Date(),
     }));
-    let otpQuery: Record<string, unknown> | undefined;
-    const findOtpSpy = mock.method(UserOTP, 'findOne', async (opts: { where: object }) => {
-        otpQuery = opts.where as Record<string, unknown>;
-        return null; // simulates: only a password-reset-purpose row is live, filtered out
+    // R1: login() no longer queries UserOTP at all — the old pending-OTP check is gone
+    // (it was the SAME lockout bug from the other direction, see below). Throwing from
+    // this mock proves login() never touches it.
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => {
+        throw new Error('login() must never query UserOTP');
     });
     const refreshSpy = mock.method(
         RefreshToken,
@@ -63,7 +66,6 @@ test('credentials sign-in: an outstanding password-reset OTP does not block a no
     try {
         const result = await service.login({ email: 'a@example.com', password: 'secret123' });
         assert.ok(result.accessToken);
-        assert.equal(otpQuery?.purpose, 'register');
     } finally {
         txSpy.mock.restore();
         findUserSpy.mock.restore();
@@ -72,26 +74,47 @@ test('credentials sign-in: an outstanding password-reset OTP does not block a no
     }
 });
 
-test('credentials sign-in: an outstanding registration OTP still blocks sign-in', async () => {
+// Security review R1: register() resets is_authenticated to false on every subsequent
+// infra invite (unchanged semantics) — but email_verified_at, set once at the first
+// OTP verification, is never cleared again. A verified person invited to a second
+// infra (with no OTP-resend route if that new invite's code is ever lost/expired) must
+// still be able to log in with their existing password.
+test('R1: a verified user invited to a second infra (is_authenticated reset to false) can still log in', async () => {
     const txSpy = withTransactionMock();
     const passwordHash = await hashPassword('secret123');
     const findUserSpy = mock.method(InvitedUser, 'findOne', async () => ({
         id: 'user-1',
         email: 'a@example.com',
+        user_name: 'a',
+        role: 'user',
+        roles: {},
+        infra_id: ['infra-1', 'infra-2'],
         password_hash: passwordHash,
+        created_at: new Date(),
+        // Reset by register() for the infra-2 invite — unchanged, pre-existing
+        // behavior this fix must not disturb.
         is_authenticated: false,
+        // Set once, the first time this email was proven (verifying infra-1's invite)
+        // — never cleared by the infra-2 invite above.
+        email_verified_at: new Date('2024-01-01T00:00:00Z'),
     }));
-    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => ({ id: 'otp-1' }));
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => {
+        throw new Error('login() must never query UserOTP');
+    });
+    const refreshSpy = mock.method(
+        RefreshToken,
+        'create',
+        async () => ({ token_id: 'tok-1' }) as unknown,
+    );
 
     try {
-        await assert.rejects(
-            () => service.login({ email: 'a@example.com', password: 'secret123' }),
-            (error: unknown) => error instanceof HttpError && error.statusCode === 401,
-        );
+        const result = await service.login({ email: 'a@example.com', password: 'secret123' });
+        assert.ok(result.accessToken);
     } finally {
         txSpy.mock.restore();
         findUserSpy.mock.restore();
         findOtpSpy.mock.restore();
+        refreshSpy.mock.restore();
     }
 });
 

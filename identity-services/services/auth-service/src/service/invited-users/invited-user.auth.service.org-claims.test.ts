@@ -22,7 +22,7 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@localhost:5672/';
 process.env.ORGS_ENABLED = 'true';
 
 const { sequelize } = await import('@/db/sequalize');
-const { Account, InvitedUser, Membership, UserOTP, RefreshToken } = await import('@/db');
+const { Account, InvitedUser, Membership, User, UserOTP, RefreshToken } = await import('@/db');
 const { InvitedUserAuthService } =
     await import('@/service/invited-users/invited-user.auth.service');
 const { verifyAccessToken } = await import('@/utils/handle-token');
@@ -57,7 +57,7 @@ test('login (ORGS_ENABLED=true): the minted access token carries org_id (the per
         account_id: ACCOUNT_ID,
         password_hash: passwordHash,
         created_at: new Date(),
-        is_authenticated: true,
+        email_verified_at: new Date(),
     }));
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => null);
     const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
@@ -91,7 +91,7 @@ test('login (ORGS_ENABLED=true): account_id is omitted (not sent as null) when t
         account_id: null,
         password_hash: passwordHash,
         created_at: new Date(),
-        is_authenticated: true,
+        email_verified_at: new Date(),
     }));
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => null);
     const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
@@ -133,8 +133,16 @@ test('H1(c): authenticateWithOTP links account_id at verify time when the claim 
     const findOtpSpy = mock.method(UserOTP, 'findOne', async () => ({
         destroy: async () => undefined,
     }));
-    const updateSpy = mock.method(InvitedUser, 'update', async () => [1]);
+    const verifiedAt = new Date();
+    const querySpy = mock.method(sequelize, 'query', async () => [
+        { email_verified_at: verifiedAt },
+    ]);
+    // linkAccountForVerifiedIdentity's collision check — no other row holds this
+    // account id yet.
+    const userFindOneSpy = mock.method(User, 'findOne', async () => null);
+    const invitedFindOneSpy = mock.method(InvitedUser, 'findOne', async () => null);
     const findOrCreateSpy = mock.method(Account, 'findOrCreate', async () => [{}, true]);
+    const updateSpy = mock.method(InvitedUser, 'update', async () => [1]);
     const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
         ...attrs,
         token_id: 'tok-1',
@@ -157,11 +165,8 @@ test('H1(c): authenticateWithOTP links account_id at verify time when the claim 
             where: { id: string };
         };
         assert.equal(findOrCreateArgs.where.id, expectedAccountId);
-        const linkCall = updateSpy.mock.calls.find(
-            (call) => 'account_id' in (call.arguments[0] as object),
-        );
-        assert.deepEqual(linkCall!.arguments[0], { account_id: expectedAccountId });
-        assert.deepEqual((linkCall!.arguments[1] as { where: object }).where, {
+        assert.deepEqual(updateSpy.mock.calls[0]!.arguments[0], { account_id: expectedAccountId });
+        assert.deepEqual((updateSpy.mock.calls[0]!.arguments[1] as { where: object }).where, {
             id: USER_ID,
             account_id: null,
         });
@@ -170,8 +175,77 @@ test('H1(c): authenticateWithOTP links account_id at verify time when the claim 
         claimSpy.mock.restore();
         resetSpy.mock.restore();
         findOtpSpy.mock.restore();
-        updateSpy.mock.restore();
+        querySpy.mock.restore();
+        userFindOneSpy.mock.restore();
+        invitedFindOneSpy.mock.restore();
         findOrCreateSpy.mock.restore();
+        updateSpy.mock.restore();
+        refreshSpy.mock.restore();
+    }
+});
+
+// Security review R2 (third bullet): the verify hook must NOT merge into an Account a
+// different credential row already holds — that merge is the backfill's own reviewed
+// decision, not a live-request one.
+test('R2: authenticateWithOTP declines to link when the Account is already held by a different row', async () => {
+    const txSpy = withTransactionMock();
+    const claim = {
+        userId: USER_ID,
+        email: 'collides-with-someone@example.com',
+        user_name: 'newly-verified',
+        role: 'user',
+        roles: {},
+        infra_id: [],
+        created_at: new Date(),
+        attempts: 1,
+        accountId: null,
+    };
+    const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => claim);
+    const resetSpy = mock.method(otpAttempts, 'resetAttempts', async () => undefined);
+    const findOtpSpy = mock.method(UserOTP, 'findOne', async () => ({
+        destroy: async () => undefined,
+    }));
+    const verifiedAt = new Date();
+    const querySpy = mock.method(sequelize, 'query', async () => [
+        { email_verified_at: verifiedAt },
+    ]);
+    // A different InvitedUser row already holds this account id.
+    const userFindOneSpy = mock.method(User, 'findOne', async () => null);
+    const invitedFindOneSpy = mock.method(
+        InvitedUser,
+        'findOne',
+        async () => ({ id: 'some-other-row' }) as unknown,
+    );
+    const findOrCreateSpy = mock.method(Account, 'findOrCreate', async () => {
+        throw new Error('must not create/touch the Account when declining to link');
+    });
+    const updateSpy = mock.method(InvitedUser, 'update', async () => {
+        throw new Error('must not link account_id when declining');
+    });
+    const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
+        ...attrs,
+        token_id: 'tok-1',
+    }));
+
+    try {
+        const result = await service.authenticateWithOTP({
+            email: claim.email,
+            otp: '123456',
+        });
+
+        const payload = verifyAccessToken(result.accessToken);
+        assert.equal('account_id' in payload, false);
+        assert.equal(payload.org_id, PERSONAL_ORG_ID);
+    } finally {
+        txSpy.mock.restore();
+        claimSpy.mock.restore();
+        resetSpy.mock.restore();
+        findOtpSpy.mock.restore();
+        querySpy.mock.restore();
+        userFindOneSpy.mock.restore();
+        invitedFindOneSpy.mock.restore();
+        findOrCreateSpy.mock.restore();
+        updateSpy.mock.restore();
         refreshSpy.mock.restore();
     }
 });

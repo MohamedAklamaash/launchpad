@@ -11,6 +11,7 @@ import {
 } from '@/types/auth.user.types';
 import { PublishUserRegistered } from '@/messaging/producer/user-created.message';
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
+import { linkAccountForVerifiedIdentity } from '@/service/account-link.service';
 import { USER_ROLE } from '@/types/auth.invited_user.types';
 import { verifySessionToken } from '@/utils/handle-token';
 
@@ -160,10 +161,27 @@ export class UserFacadeService extends BaseService {
                 invited_by: user.id,
             });
 
+            // Security review follow-up ("organic GitHub signups after the backfill
+            // have no Account-linking hook"): GitHub OAuth is itself the proof of
+            // email ownership, so every User row is verified by construction — link it
+            // to its deterministic Account the first time we see it with no link yet,
+            // on signup AND on every subsequent login, rather than only during a batch
+            // backfill run. Same collision guard as the OTP verify hook: never merges
+            // into an Account a different credential row already holds.
+            const accountId =
+                user.account_id ??
+                (await linkAccountForVerifiedIdentity({
+                    email: user.email,
+                    displayName: user.user_name,
+                    table: 'users',
+                    rowId: user.id,
+                    transaction,
+                }));
+
             const refreshTokenRecord = await this.createRefreshToken(user.id, transaction);
 
             return this.buildAuthResponse(user, refreshTokenRecord.token_id, undefined, {
-                accountId: user.account_id,
+                accountId,
                 orgId: refreshTokenRecord.active_org_id,
             });
         });

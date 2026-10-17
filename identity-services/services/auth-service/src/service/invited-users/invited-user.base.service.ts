@@ -6,7 +6,7 @@ import { generateOTP } from '@/utils/generate-otp';
 import { personalOrgId } from '@/utils/org-id';
 import { env } from '@/config/env';
 import { AuthResponse, USER_ROLE, UserData } from '@/types/auth.invited_user.types';
-import { OTP_PURPOSE, OtpPurpose } from '@/types/otp-purpose';
+import { OtpPurpose } from '@/types/otp-purpose';
 
 // F9 ticket 5: the org context buildAuthResponse stamps onto a minted access token.
 // Both fields are only ever read when ORGS_ENABLED — see buildAuthResponse — but kept as
@@ -57,15 +57,18 @@ export abstract class BaseService {
             infra_id: string[];
             created_at?: Date;
             profile_url?: string;
-            // Security-review fix (H1): an InvitedUser row an inviter created with an
-            // attacker-controlled email isn't this person until they prove it by
-            // completing OTP verification. Omitted (GitHub `User` rows have no such
-            // column — OAuth itself is the proof) reads as verified; explicitly `false`
-            // never gets an org_id/account_id claim, no matter what the caller passes in
-            // orgContext below. This is a backstop at the one choke point every
-            // login/refresh/switch-org mint goes through — callers must also gate
-            // upstream (see InvitedUserAuthService.login).
-            is_authenticated?: boolean;
+            // Security-review fix (H1, revised under R1): an InvitedUser row an inviter
+            // created with an attacker-controlled email isn't this person until they
+            // prove it by completing OTP verification once. Deliberately NOT
+            // `is_authenticated` — that flag is reset to `false` by register() on every
+            // subsequent infra invite, which would strip org_id/account_id from an
+            // already-verified person's token the moment they're invited anywhere else.
+            // Omitted (GitHub `User` rows have no such column — OAuth itself is the
+            // proof) reads as verified; explicitly `null` never gets an org_id/
+            // account_id claim, no matter what orgContext carries. This is a backstop
+            // at the one choke point every login/refresh/switch-org mint goes through —
+            // callers must also gate upstream (see InvitedUserAuthService.login).
+            email_verified_at?: Date | null;
         },
         refreshTokenId: string,
         // The session's original interactive-login time, unix seconds. Omitted (or
@@ -85,7 +88,7 @@ export abstract class BaseService {
             roles: user.roles,
             auth_time,
         };
-        const verified = user.is_authenticated !== false;
+        const verified = user.email_verified_at !== null;
         // Flag-gated here, at the one choke point every login/refresh/switch-org call
         // goes through — with ORGS_ENABLED off, the claims below are never added, so a
         // minted token is byte-for-byte what it was before this ticket (scope item 4).
@@ -120,33 +123,30 @@ export abstract class BaseService {
         };
     }
 
-    // Deletes any OTP already outstanding for this user+purpose (register: also scoped
-    // to this infra) before minting a new one. Without this, repeated calls (a resend,
-    // a retried request) stockpile multiple simultaneously-valid codes, which both
-    // widens the guessable surface and defeats the point of a single attempt-capped
-    // code. A user can still have one register-purpose and one password-reset-purpose
-    // code outstanding at the same time; only same-purpose codes are deduped.
+    // Deletes any OTP already outstanding for this user+purpose before minting a new
+    // one. Without this, repeated calls (a resend, a retried request) stockpile
+    // multiple simultaneously-valid codes, which both widens the guessable surface and
+    // defeats the point of a single attempt-capped code. A user can still have one
+    // register-purpose and one password-reset-purpose code outstanding at the same
+    // time; only same-purpose codes are deduped.
     //
-    // Register codes are additionally scoped to `infra_id`: a user invited to infra A,
-    // then invited to infra B before verifying A's still-valid invite, must not have
-    // A's code silently invalidated by B's — each infra's invite is its own flow with
-    // its own code. Password-reset stays deduped by (user, purpose) alone — resetting
-    // is a single per-account flow, not a per-infra one, and requestPasswordReset picks
-    // one infra to stamp the reset token's context with regardless of how many the
-    // account belongs to. The attempt-cap budget stays shared across every live code
-    // for the account (see otp-attempts.ts) either way, so this widens which code can
-    // be *outstanding*, never how many guesses an attacker gets against the account.
+    // Security review R2: REGISTER codes used to be additionally scoped to `infra_id`
+    // (a user invited to infra A, then invited to infra B before verifying A, kept
+    // A's still-valid code instead of having it silently invalidated by B's). That
+    // let K simultaneous invites hand an attacker K live codes to guess against at
+    // once — the OTP verify lookup (authenticateWithOTP) matches ANY live REGISTER
+    // code for the user, not one scoped to a specific infra, so K codes meant a K/
+    // 1,000,000 success chance per guess instead of 1/1,000,000. Deduped by
+    // (user, purpose) alone now, same as password-reset: at most one live REGISTER
+    // code per user, full stop. A new invite to any infra replaces whichever REGISTER
+    // code was outstanding, rather than letting both stay valid.
     protected async createOTP(
         userId: string,
         infraId: string,
         purpose: OtpPurpose,
         transaction: Transaction,
     ) {
-        const dedupWhere =
-            purpose === OTP_PURPOSE.REGISTER
-                ? { invited_user_id: userId, purpose, infra_id: infraId }
-                : { invited_user_id: userId, purpose };
-        await UserOTP.destroy({ where: dedupWhere, transaction });
+        await UserOTP.destroy({ where: { invited_user_id: userId, purpose }, transaction });
 
         const expiresAt = new Date();
         expiresAt.setMinutes(expiresAt.getMinutes() + 10); // 10 min expiry window

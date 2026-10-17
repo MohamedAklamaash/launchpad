@@ -17,19 +17,30 @@ export interface AccountBackfillResult {
     // collides with an already-linked (verified) identity is visible for manual review
     // rather than silently merged.
     unverifiedRowsSkipped: number;
+    // Security review R1 follow-up: rows that picked up an account_id under the OLD
+    // is_authenticated-based linking rule, then had is_authenticated reset to false by
+    // a later infra invite BEFORE this pass ever ran (so they were never backfilled an
+    // email_verified_at either) — see "unlink stale pre-fix links" below. Nulled so the
+    // row goes through authenticateWithOTP's verify hook again to get correctly
+    // relinked with email_verified_at set.
+    staleLinksUnlinked: number;
 }
 
 interface CredentialRow {
     id: string;
     email: string;
     user_name: string;
-    // Security review H1(c): absent (User rows — GitHub OAuth is itself the proof of
-    // email ownership, so every User row is implicitly verified) or the InvitedUser
-    // row's real value. An inviter can create an InvitedUser row with any email and a
-    // password of their own choosing; that row must never be linked to an Account (and
-    // therefore never able to inherit another identity's org memberships via a shared
-    // email) until it proves ownership by completing OTP verification.
-    is_authenticated?: boolean;
+    // Security review H1(c), revised under R1: absent (User rows — GitHub OAuth is
+    // itself the proof of email ownership, so every User row is implicitly verified)
+    // or the InvitedUser row's real `email_verified_at`. Deliberately not
+    // `is_authenticated`, which register() resets to `false` on every subsequent
+    // infra invite — that would make an already-verified row look unlinkable again
+    // the moment it's invited anywhere else. An inviter can create an InvitedUser row
+    // with any email and a password of their own choosing; that row must never be
+    // linked to an Account (and therefore never able to inherit another identity's org
+    // memberships via a shared email) until it proves ownership by completing OTP
+    // verification once, ever.
+    email_verified_at?: Date | null;
 }
 
 interface EmailGroup {
@@ -39,7 +50,7 @@ interface EmailGroup {
     invitedUserIds: string[];
 }
 
-const isLinkable = (row: CredentialRow): boolean => row.is_authenticated !== false;
+const isLinkable = (row: CredentialRow): boolean => row.email_verified_at !== null;
 
 const groupByNormalizedEmail = (
     users: CredentialRow[],
@@ -99,7 +110,7 @@ const logCollisionsForReview = (
                     rows: rows.map((r) => ({
                         id: r.id,
                         table: r.table,
-                        is_authenticated: r.is_authenticated ?? true,
+                        verified: r.email_verified_at !== null,
                     })),
                 },
             },
@@ -124,9 +135,21 @@ const logCollisionsForReview = (
 // the moment of verification — see that function) or a later backfill pass runs after
 // it was verified through some other path.
 export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
+    // Security review R1 follow-up: a row linked under the old is_authenticated-based
+    // rule, then reset to is_authenticated=false by a later infra invite before the
+    // email_verified_at migration/backfill (db/index.ts) ever reached it, is left
+    // holding an account_id this pass can no longer vouch for under the new, stricter
+    // criterion. Run first, unconditionally, so such a row never gets counted as
+    // "already linked" by the grouping logic below — it goes through
+    // authenticateWithOTP's verify hook again to get correctly relinked.
+    const [staleLinksUnlinked] = await InvitedUser.update(
+        { account_id: null },
+        { where: { email_verified_at: null, account_id: { [Op.ne]: null } } },
+    );
+
     const [users, invitedUsers] = await Promise.all([
         User.findAll({ attributes: ['id', 'email', 'user_name'] }),
-        InvitedUser.findAll({ attributes: ['id', 'email', 'user_name', 'is_authenticated'] }),
+        InvitedUser.findAll({ attributes: ['id', 'email', 'user_name', 'email_verified_at'] }),
     ]);
 
     const userRows = users.map((u) => u.get({ plain: true }) as CredentialRow);
@@ -147,6 +170,7 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
             invitedUsersLinked: 0,
             collisionGroups,
             unverifiedRowsSkipped,
+            staleLinksUnlinked,
         };
     }
 
@@ -202,6 +226,7 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
         invitedUsersLinked,
         collisionGroups,
         unverifiedRowsSkipped,
+        staleLinksUnlinked,
     };
 
     logger.info({ accountBackfill: result }, 'Account backfill pass complete');

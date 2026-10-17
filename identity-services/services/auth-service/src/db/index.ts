@@ -69,6 +69,23 @@ const applyPendingSchemaPatches = async () => {
     // access token carries the org the caller last switched to, not blindly back to their
     // personal org (plan/F9-teams-and-orgs.md, Decision: JWT and authorization).
     await sequelize.query('ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS active_org_id UUID');
+    // Security review R1: distinct from is_authenticated, which register() resets to
+    // false on every subsequent infra invite — see InvitedUserAttributes.email_verified_at.
+    await sequelize.query(
+        'ALTER TABLE invited_users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ',
+    );
+    // One-time backfill from the best signal available at the moment this column is
+    // added: a row currently is_authenticated=true has, by definition, completed OTP
+    // verification at least once. WHERE email_verified_at IS NULL makes this an
+    // idempotent no-op on every boot after the first. A row that happens to be
+    // is_authenticated=false right at this exact moment (e.g. a pending second-infra
+    // invite reset it) is NOT backfilled here even if it was verified in the past —
+    // the "unlink stale pre-fix links" step in backfillAccounts (account-backfill
+    // .service.ts) is what reconciles any account_id such a row was left holding from
+    // before this column existed.
+    await sequelize.query(
+        'UPDATE invited_users SET email_verified_at = NOW() WHERE is_authenticated = true AND email_verified_at IS NULL',
+    );
 };
 
 export const initModels = async () => {
