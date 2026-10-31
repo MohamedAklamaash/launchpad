@@ -8,6 +8,9 @@ import { enqueueOrgCreated } from './org-event-outbox.service';
 export interface CreateOrganizationInput {
     ownerAccountId: string;
     name: string;
+    // The account that asked for the org; null for server-side creation (personal-org
+    // backfill and login).
+    actorAccountId?: string | null;
     // Personal-org backfill (ticket 3+) and the deterministic uuid5(ORG_NAMESPACE,
     // legacy_user_id) id scheme pass this; an organic org created later omits it and gets
     // Organization's own uuidv7 default.
@@ -45,7 +48,7 @@ export const createOrganization = async (
         );
         await recordAuditEvent(transaction, {
             organization_id: organization.id,
-            actor_account_id: null,
+            actor_account_id: input.actorAccountId ?? null,
             action: 'organization.created',
             target_account_id: input.ownerAccountId,
             old_role: null,

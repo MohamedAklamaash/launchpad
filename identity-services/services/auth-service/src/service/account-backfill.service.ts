@@ -1,3 +1,4 @@
+import { sanitizeDisplayName } from '@launchpad/common';
 import { Op, type Transaction } from 'sequelize';
 import { Account, InvitedUser, User } from '@/db';
 import { sequelize } from '@/db/sequalize';
@@ -281,7 +282,7 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
     const accountRecords = Array.from(groups.entries()).map(([email, group]) => ({
         id: group.accountId,
         email,
-        display_name: group.displayName,
+        display_name: sanitizeDisplayName(group.displayName) || null,
     }));
 
     // Model.bulkCreate always resolves to one built instance per input record, even for

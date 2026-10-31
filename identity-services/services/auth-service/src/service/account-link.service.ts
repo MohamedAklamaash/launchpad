@@ -1,3 +1,4 @@
+import { sanitizeDisplayName } from '@launchpad/common';
 import { Transaction } from 'sequelize';
 import { Account, InvitedUser, User } from '@/db';
 import { sequelize } from '@/db/sequalize';
@@ -81,7 +82,7 @@ export const linkAccountForVerifiedIdentity = async (
         defaults: {
             id: accountId,
             email: normalizeEmail(input.email),
-            display_name: input.displayName,
+            display_name: sanitizeDisplayName(input.displayName) || null,
         },
         transaction: input.transaction,
     });

@@ -10,6 +10,16 @@ import {
     revokeOrgInvitation,
 } from '@/service/organizations/invitation-admin.service';
 import { transferOwnership } from '@/service/organizations/ownership-transfer.service';
+import {
+    createTeamOrganization,
+    listMyOrganizations,
+    renameOrganization,
+} from '@/service/organizations/organization-admin.service';
+import {
+    changeOrgMemberRole,
+    listMembers,
+    removeOrLeaveOrganization,
+} from '@/service/organizations/member-admin.service';
 import { acceptInvitation } from '@/service/organizations/invitation-accept.service';
 
 const toHttpError = (error: unknown): HttpError =>
@@ -81,6 +91,77 @@ export const TransferOwnership = async (req: Request, res: Response) => {
             newOwnerAccountId: canonicalizeUuid(new_owner_account_id),
         });
         return res.status(200).json(result);
+    } catch (error: unknown) {
+        throw toHttpError(error);
+    }
+};
+
+export const ListMyOrganizations = async (req: Request, res: Response) => {
+    try {
+        return res.status(200).json(await listMyOrganizations(sessionFrom(req)));
+    } catch (error: unknown) {
+        throw toHttpError(error);
+    }
+};
+
+export const CreateOrganization = async (req: Request, res: Response) => {
+    try {
+        const { name } = req.body as { name: string };
+        return res.status(201).json(await createTeamOrganization(sessionFrom(req), name));
+    } catch (error: unknown) {
+        throw toHttpError(error);
+    }
+};
+
+export const RenameOrganization = async (req: Request, res: Response) => {
+    try {
+        const { name } = req.body as { name: string };
+        const result = await renameOrganization(
+            sessionFrom(req),
+            canonicalizeUuid(req.params.id as string),
+            name,
+        );
+        return res.status(200).json(result);
+    } catch (error: unknown) {
+        throw toHttpError(error);
+    }
+};
+
+export const ListMembers = async (req: Request, res: Response) => {
+    try {
+        const members = await listMembers(
+            sessionFrom(req),
+            canonicalizeUuid(req.params.id as string),
+        );
+        return res.status(200).json(members);
+    } catch (error: unknown) {
+        throw toHttpError(error);
+    }
+};
+
+export const ChangeMemberRole = async (req: Request, res: Response) => {
+    try {
+        const { role } = req.body as { role: OrgRole };
+        const result = await changeOrgMemberRole(
+            sessionFrom(req),
+            canonicalizeUuid(req.params.id as string),
+            canonicalizeUuid(req.params.accountId as string),
+            role,
+        );
+        return res.status(200).json(result);
+    } catch (error: unknown) {
+        throw toHttpError(error);
+    }
+};
+
+export const RemoveMember = async (req: Request, res: Response) => {
+    try {
+        await removeOrLeaveOrganization(
+            sessionFrom(req),
+            canonicalizeUuid(req.params.id as string),
+            canonicalizeUuid(req.params.accountId as string),
+        );
+        return res.status(204).send();
     } catch (error: unknown) {
         throw toHttpError(error);
     }

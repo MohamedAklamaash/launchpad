@@ -9,6 +9,7 @@ import { logger } from '@/utils/logger';
 import { otpAttempts } from '@/utils/otp-attempts';
 import { issueInvitation, revokeInvitation } from './invitation.service';
 import { requireOrgManager } from './org-access.service';
+import { enforceSlot } from './org-rate-limit';
 
 const INVITABLE_ROLES: readonly OrgRole[] = [ORG_ROLE.ADMIN, ORG_ROLE.DEVELOPER, ORG_ROLE.VIEWER];
 
@@ -30,18 +31,10 @@ const toSummary = (invitation: Invitation): InvitationSummary => ({
     created_at: invitation.created_at,
 });
 
-// Fail closed: an unreachable Redis is not a reason to lift an abuse limit, so a counter
-// error refuses the invite (503) instead of letting it through.
-const enforce = async (consume: () => Promise<boolean>, tooMany: string): Promise<void> => {
-    let allowed: boolean;
-    try {
-        allowed = await consume();
-    } catch (error) {
-        logger.error({ err: error }, 'invite rate limit check failed, refusing invite');
-        throw new HttpError(503, 'Invites are temporarily unavailable - try again shortly');
-    }
-    if (!allowed) throw new HttpError(429, tooMany);
-};
+const INVITES_UNAVAILABLE = 'Invites are temporarily unavailable - try again shortly';
+
+const enforce = (consume: () => Promise<boolean>, tooMany: string): Promise<void> =>
+    enforceSlot(consume, { tooMany, unavailable: INVITES_UNAVAILABLE });
 
 export interface CreateInvitationInput {
     caller: AccessTokenPayload;

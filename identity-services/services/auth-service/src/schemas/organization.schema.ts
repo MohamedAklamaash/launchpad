@@ -10,6 +10,23 @@ export const orgInvitationParamsSchema = z.object({
     invitationId: z.uuid(),
 });
 
+export const orgMemberParamsSchema = z.object({
+    id: z.uuid(),
+    accountId: z.uuid(),
+});
+
+// Strict on purpose: a body carrying an `id` (or any other key) is refused outright rather
+// than silently stripped, so a client can never try to choose an organization id.
+const ORG_NAME_INPUT_MAX = 200;
+export const organizationNameSchema = z.strictObject({
+    name: z.string().min(1).max(ORG_NAME_INPUT_MAX),
+});
+
+// `owner` is not a member of this enum: ownership moves only through transfer-ownership.
+export const changeMemberRoleSchema = z.strictObject({
+    role: z.enum([ORG_ROLE.ADMIN, ORG_ROLE.DEVELOPER, ORG_ROLE.VIEWER]),
+});
+
 export const transferOwnershipSchema = z.object({
     new_owner_account_id: z.uuid(),
 });

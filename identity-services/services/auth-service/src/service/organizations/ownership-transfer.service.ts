@@ -1,17 +1,17 @@
 import { HttpError } from '@launchpad/common';
 import type { Transaction } from 'sequelize';
-import { InvitedUser, Membership, Organization, User } from '@/db';
+import { Membership, Organization } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { ORG_ROLE } from '@/types/org-role';
 import type { AccessTokenPayload } from '@/utils/handle-token';
 import { bumpMembershipVersion } from '@/utils/membership-version';
-import { personalOrgId } from '@/utils/org-id';
 import { assertRecentAuth } from '@/utils/reauth';
 import { recordAuditEvent } from './audit-log.service';
 import { revokeRefreshTokens } from './membership.service';
 import { enqueueMembershipChanged } from './org-event-outbox.service';
 import { requireOrgOwner } from './org-access.service';
 import { assertOrgsEnabled } from './org-guard';
+import { hasVerifiedCredential, isPersonalOrganization } from './org-identity';
 
 export interface TransferOwnershipInput {
     caller: AccessTokenPayload;
@@ -39,45 +39,6 @@ const lockActiveMembership = (
         transaction,
         lock: transaction.LOCK.UPDATE,
     });
-
-// An email-verified credential is the only proof the Account belongs to a real person who
-// controls that address. A GitHub `User` row has no email_verified_at column (OAuth is the
-// verification), an `InvitedUser` row must carry one. An Account held by more than one
-// credential row is refused: any holder could act as the new owner, and an inviter may have
-// chosen one holder's password (the same rule that keeps shared Accounts out of personal orgs).
-const hasVerifiedCredential = async (
-    accountId: string,
-    transaction: Transaction,
-): Promise<boolean> => {
-    const [users, invitedUsers] = await Promise.all([
-        User.findAll({ where: { account_id: accountId }, attributes: ['id'], transaction }),
-        InvitedUser.findAll({
-            where: { account_id: accountId },
-            attributes: ['id', 'email_verified_at'],
-            transaction,
-        }),
-    ]);
-    const holders = [...users, ...invitedUsers];
-    if (holders.length !== 1) return false;
-    return users.length === 1 || invitedUsers[0]!.email_verified_at != null;
-};
-
-// A personal org (id = uuid5(users.id)) is the legacy owner's home: Django stamps their
-// pre-org infrastructures into it, the id is derivable from the user id alone, and every
-// GitHub login re-runs ensurePersonalOrganization, which reports `conflict` forever once
-// the owner differs. It is therefore never transferable.
-const isPersonalOrganization = async (
-    organizationId: string,
-    ownerAccountId: string,
-    transaction: Transaction,
-): Promise<boolean> => {
-    const users = await User.findAll({
-        where: { account_id: ownerAccountId },
-        attributes: ['id'],
-        transaction,
-    });
-    return users.some((user) => personalOrgId(user.id) === organizationId);
-};
 
 const lockAndValidate = async (
     input: TransferOwnershipInput,

@@ -8,6 +8,7 @@ export * from './events/event.types.js';
 export * from './http/request.authenticate.js';
 export * from './http/request.validate.js';
 
+export * from './utils/display-name.js';
 export * from './utils/env.js';
 export * from './utils/logger.js';
 

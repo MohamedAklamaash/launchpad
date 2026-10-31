@@ -30,6 +30,11 @@ export const MAX_ORG_INVITES_PER_WINDOW = 20;
 // global per-email ceiling is a much higher anti-spam backstop across all orgs.
 export const MAX_ORG_EMAIL_INVITES_PER_WINDOW = 3;
 export const MAX_GLOBAL_EMAIL_INVITES_PER_WINDOW = 10;
+// Team organization creation, per Account: 5/hour. A real user makes a handful of orgs in a
+// lifetime; the cap stops a script minting rows (and org.created events) without bound.
+export const MAX_ORG_CREATES_PER_WINDOW = 5;
+// Rename, role change and member removal, per (organization, acting account): 60/hour.
+export const MAX_ORG_ACTIONS_PER_WINDOW = 60;
 const INVITE_WINDOW_SECONDS = 60 * 60;
 // Matches invited-user.base.service.ts's createOTP expiry — the attempt counter can
 // never meaningfully outlive the OTP it's guarding.
@@ -176,6 +181,23 @@ export const otpAttempts = {
             INVITE_WINDOW_SECONDS,
         );
         return count <= MAX_ORG_EMAIL_INVITES_PER_WINDOW;
+    },
+
+    // Fail-closed like the invite slots: throws on a Redis error so the caller answers 503.
+    async consumeOrgCreateSlot(accountId: string): Promise<boolean> {
+        const count = await incrementWithWindow(
+            `budget:org-create:account:${accountId}`,
+            INVITE_WINDOW_SECONDS,
+        );
+        return count <= MAX_ORG_CREATES_PER_WINDOW;
+    },
+
+    async consumeOrgActionSlot(organizationId: string, actorAccountId: string): Promise<boolean> {
+        const count = await incrementWithWindow(
+            `budget:org-action:${organizationId}:${actorAccountId}`,
+            INVITE_WINDOW_SECONDS,
+        );
+        return count <= MAX_ORG_ACTIONS_PER_WINDOW;
     },
 
     async consumeGlobalEmailInviteSlot(email: string): Promise<boolean> {
