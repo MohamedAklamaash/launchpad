@@ -4,10 +4,9 @@ import importlib
 import uuid
 
 import pytest
+from api.tests.org_authz_support import make_db_user, make_infra
 from django.apps import apps
 from shared.utils.org_id import personal_org_id
-
-from api.tests.org_authz_support import make_db_user, make_infra
 
 MIGRATION = importlib.import_module("api.migrations.0041_organization_id_rebackfill")
 
