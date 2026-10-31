@@ -121,8 +121,8 @@ class BuildStreamContext:
 
 
 class BuildLogsService:
-    def get_logs(self, *, user_id, app_id, deployment_id, cursor, limit) -> BuildLogsResult:
-        app = get_owner_authorized_app(user_id, app_id)
+    def get_logs(self, *, user_id, app_id, deployment_id, cursor, limit, actor=None) -> BuildLogsResult:
+        app = get_owner_authorized_app(user_id, app_id, actor)
         build_id, task_id, finished = self._resolve_build(app, deployment_id)
 
         tokens: dict = {}
@@ -243,8 +243,8 @@ class BuildLogsService:
 
     # ── SSE tail loop ────────────────────────────────────────────────────────
 
-    def open_stream(self, *, user_id, app_id, deployment_id) -> BuildStreamContext:
-        app = get_owner_authorized_app(user_id, app_id)
+    def open_stream(self, *, user_id, app_id, deployment_id, actor=None) -> BuildStreamContext:
+        app = get_owner_authorized_app(user_id, app_id, actor)
         build_id, task_id, finished = self._resolve_build(app, deployment_id)
         mock = task_id.startswith(platform_builder.MOCK_TASK_ID_PREFIX)
 

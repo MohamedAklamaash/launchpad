@@ -16,16 +16,21 @@ from shared.enums.user_role import UserRole
 from api.models.application import Application
 from api.models.environment import Environment
 from api.services.infrastructure_permissions import InfrastructurePermissions
+from api.services.org_authz import Capability, get_app_with_capability, orgs_enabled
 
 
 class NotDeployedError(Exception):
     """The application has no active deployment to read from."""
 
 
-def get_owner_authorized_app(user_id, app_id) -> Application:
+def get_owner_authorized_app(user_id, app_id, actor=None) -> Application:
     """LookupError for anything a non-member must not be able to distinguish from a
     nonexistent app (bad id, missing row, no membership at all); PermissionError only
-    once membership is confirmed but the role isn't owner-level."""
+    once membership is confirmed but the role isn't owner-level. With ORGS_ENABLED the
+    gate is the logs/metrics row of the org permission matrix instead (owner, admin,
+    developer), resolved from the caller's org role."""
+    if orgs_enabled():
+        return get_app_with_capability(actor, app_id, Capability.LOGS_METRICS)
     try:
         uuid.UUID(str(app_id))
     except ValueError:

@@ -83,6 +83,9 @@ class ApiConfig(AppConfig):
             logger.info("infrastructure-service booting as dns_writer — starting no consumer threads")
             return
 
+        from api.services.org_flag_guard import enforce_flag_off_safety
+        enforce_flag_off_safety()
+
         if os.environ.get("RUN_MAIN") != "true" and "runserver" in sys.argv:
             return
 

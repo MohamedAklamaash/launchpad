@@ -21,6 +21,7 @@ from api.common.envs.application import app_config
 from api.models import Application, CostReport
 from api.models.infrastructure import Infrastructure
 from api.repositories.infrastructure import InfrastructureRepository
+from api.services.org_authz import Capability, get_infra_with_capability, orgs_enabled
 from api.services.policy_errors import PolicyRefreshRequiredError
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -359,8 +360,8 @@ class CostService:
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
 
-    def get_costs(self, user_id, infra_id, months: int) -> dict:
-        infra = self._get_owned_infra(user_id, infra_id)
+    def get_costs(self, user_id, infra_id, months: int, actor=None) -> dict:
+        infra = self._get_owned_infra(user_id, infra_id, actor)
 
         if not isinstance(months, int) or not (1 <= months <= settings.COST_QUERY_MAX_MONTHS):
             raise ValueError(f"months must be an integer between 1 and {settings.COST_QUERY_MAX_MONTHS}")
@@ -369,7 +370,9 @@ class CostService:
         window_start = window_end - timedelta(days=30 * months)
         return get_infrastructure_costs(infra, window_start, window_end)
 
-    def _get_owned_infra(self, user_id, infra_id):
+    def _get_owned_infra(self, user_id, infra_id, actor=None):
+        if orgs_enabled():
+            return get_infra_with_capability(actor, infra_id, Capability.COSTS)
         # A malformed id reaching filter(id=...) on a UUIDField raises
         # django.core.exceptions.ValidationError — not a ValueError — and would escape as a 500.
         try:

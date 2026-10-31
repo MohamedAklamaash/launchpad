@@ -146,7 +146,7 @@ def _handle(request: HttpRequest, app_id, deployment_id):
     try:
         result = build_logs_service.get_logs(
             user_id=request.user.id, app_id=app_id, deployment_id=deployment_id,
-            cursor=cursor, limit=params.get("limit"),
+            cursor=cursor, limit=params.get("limit"), actor=request.user,
         )
     except LegacyBuildError as e:
         return _respond(status.HTTP_409_CONFLICT, {"error": str(e), "code": e.code}, cursor_present=bool(cursor))
@@ -402,7 +402,9 @@ def _handle_stream(request: HttpRequest, app_id, deployment_id):
         )
 
     try:
-        ctx = build_logs_service.open_stream(user_id=user_id, app_id=app_id, deployment_id=deployment_id)
+        ctx = build_logs_service.open_stream(
+            user_id=user_id, app_id=app_id, deployment_id=deployment_id, actor=request.user,
+        )
     except LegacyBuildError as e:
         release_concurrency_slot(slot_key)
         return _error(status.HTTP_409_CONFLICT, {"error": str(e), "code": e.code})

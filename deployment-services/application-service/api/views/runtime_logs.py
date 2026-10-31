@@ -181,6 +181,7 @@ def runtime_logs(request: HttpRequest, app_id):
         result = runtime_logs_service.get_logs(
             user_id=request.user.id, app_id=app_id, container=container,
             minutes=params.get("minutes"), cursor=cursor, previous=params.get("previous", False),
+            actor=request.user,
         )
     except LookupError:
         return _respond(status.HTTP_404_NOT_FOUND, {"error": "Application not found"},
@@ -386,7 +387,9 @@ def runtime_logs_stream(request: HttpRequest, app_id):
         )
 
     try:
-        ctx = runtime_logs_service.open_stream(user_id=user_id, app_id=app_id, container=container)
+        ctx = runtime_logs_service.open_stream(
+            user_id=user_id, app_id=app_id, container=container, actor=request.user,
+        )
     except LookupError:
         release_concurrency_slot(slot_key)
         return _error(status.HTTP_404_NOT_FOUND, {"error": "Application not found"}, container=container)

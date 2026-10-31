@@ -109,6 +109,7 @@ class InfraEventConsumer:
                         "is_cloud_authenticated": payload.get("is_cloud_authenticated", False),
                         "is_mock": payload.get("is_mock", False),
                         "metadata": payload.get("metadata"),
+                        "organization_id": payload.get("organization_id"),
                     }
                 )
 

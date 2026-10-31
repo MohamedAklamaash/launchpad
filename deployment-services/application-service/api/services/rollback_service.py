@@ -12,6 +12,7 @@ from api.services.deployment_queue import DeploymentQueue
 from api.services.deployment_snapshot import snapshot_env
 from api.services.exit_enforcement import require_not_exited
 from api.services.infrastructure_permissions import InfrastructurePermissions
+from api.services.org_authz import Capability, get_app_with_capability, orgs_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,9 @@ class RollbackService:
         self.app_repo = ApplicationRepository()
         self.infra_repo = InfrastructureRepository()
 
-    def _get_owned_application(self, user_id, app_id):
+    def _get_owned_application(self, user_id, app_id, actor=None):
+        if orgs_enabled():
+            return get_app_with_capability(actor, app_id, Capability.ROLLBACK)
         # A malformed id reaching a UUIDField filter raises django's ValidationError, not
         # ValueError/DoesNotExist — catch it here so it can't escape as an unhandled 500.
         try:
@@ -61,12 +64,12 @@ class RollbackService:
         except Deployment.DoesNotExist:
             raise LookupError("Deployment not found")
 
-    def list_deployments(self, user_id, app_id):
-        app = self._get_owned_application(user_id, app_id)
+    def list_deployments(self, user_id, app_id, actor=None):
+        app = self._get_owned_application(user_id, app_id, actor)
         return Deployment.objects.filter(application=app, status=Deployment.STATUS_SUCCEEDED)
 
-    def get_rollback_preview(self, user_id, app_id, deployment_id) -> dict:
-        app = self._get_owned_application(user_id, app_id)
+    def get_rollback_preview(self, user_id, app_id, deployment_id, actor=None) -> dict:
+        app = self._get_owned_application(user_id, app_id, actor)
         target = self._get_target(app, deployment_id)
 
         current_keys, current_hash = snapshot_env(app.id, app.envs or {})
@@ -88,8 +91,8 @@ class RollbackService:
             "values_changed": current_hash != target.env_values_hash,
         }
 
-    def trigger_rollback(self, user_id, app_id, deployment_id) -> Deployment:
-        app = self._get_owned_application(user_id, app_id)
+    def trigger_rollback(self, user_id, app_id, deployment_id, actor=None) -> Deployment:
+        app = self._get_owned_application(user_id, app_id, actor)
         require_not_exited(app.infrastructure)
         target = self._get_target(app, deployment_id)
 
@@ -108,8 +111,8 @@ class RollbackService:
         app.save(update_fields=['auto_deploy_paused'])
         return target
 
-    def resume_auto_deploy(self, user_id, app_id):
-        app = self._get_owned_application(user_id, app_id)
+    def resume_auto_deploy(self, user_id, app_id, actor=None):
+        app = self._get_owned_application(user_id, app_id, actor)
         require_not_exited(app.infrastructure)
         app.auto_deploy_paused = False
         app.save(update_fields=['auto_deploy_paused'])

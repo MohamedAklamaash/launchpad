@@ -133,7 +133,7 @@ def _error_response(e: Exception):
 def custom_domain_list_create(request, infra_id):
     if request.method == 'GET':
         try:
-            infra, domains = custom_domain_service.list_domains(request.user.id, infra_id)
+            infra, domains = custom_domain_service.list_domains(request.user.id, infra_id, actor=request.user)
             return Response([_serialize(domain, infra) for domain in domains])
         except Exception as e:
             return _error_response(e)
@@ -146,6 +146,7 @@ def custom_domain_list_create(request, infra_id):
         domain, token, validation_record = custom_domain_service.claim_domain(
             request.user.id, infra_id, body.validated_data["application_id"],
             body.validated_data["hostname"], authorization_header=request.headers.get("Authorization"),
+            actor=request.user,
         )
         return Response(
             _serialize(domain, domain.infrastructure, ownership_token=token, validation_record=validation_record),
@@ -175,7 +176,7 @@ def custom_domain_list_create(request, infra_id):
               window=settings.RATE_BUDGET_CUSTOM_DOMAINS_WINDOW_SECONDS)
 def custom_domain_detail(request, infra_id, domain_id):
     try:
-        domain = custom_domain_service.delete_domain(request.user.id, infra_id, domain_id)
+        domain = custom_domain_service.delete_domain(request.user.id, infra_id, domain_id, actor=request.user)
         return Response(_serialize(domain, domain.infrastructure))
     except Exception as e:
         return _error_response(e)
@@ -204,7 +205,7 @@ def custom_domain_detail(request, infra_id, domain_id):
               window=settings.RATE_BUDGET_CUSTOM_DOMAINS_WINDOW_SECONDS)
 def custom_domain_verify(request, infra_id, domain_id):
     try:
-        domain = custom_domain_service.verify_domain(request.user.id, infra_id, domain_id)
+        domain = custom_domain_service.verify_domain(request.user.id, infra_id, domain_id, actor=request.user)
         return Response(_serialize(domain, domain.infrastructure))
     except Exception as e:
         return _error_response(e)

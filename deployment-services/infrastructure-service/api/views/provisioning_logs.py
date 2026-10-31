@@ -53,7 +53,9 @@ def _error_response(e: Exception):
 @api_view(['GET'])
 def provisioning_logs(request: HttpRequest, infra_id):
     try:
-        payload = provisioning_logs_service.get_logs(user_id=request.user.id, infra_id=infra_id)
+        payload = provisioning_logs_service.get_logs(
+            user_id=request.user.id, infra_id=infra_id, actor=request.user,
+        )
     except Exception as e:
         return _error_response(e)
     logger.info(

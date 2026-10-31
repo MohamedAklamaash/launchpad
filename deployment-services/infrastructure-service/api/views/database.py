@@ -92,12 +92,16 @@ def _error_response(e: Exception):
 def database_list_create(request: HttpRequest, infra_id):
     if request.method == 'GET':
         try:
-            dbs = database_service.list_databases(user_id=request.user.id, infra_id=infra_id)
+            dbs = database_service.list_databases(
+                user_id=request.user.id, infra_id=infra_id, actor=request.user,
+            )
             return Response(DatabaseSerializer.serialize_list(list(dbs)))
         except Exception as e:
             return _error_response(e)
     try:
-        db = database_service.create_database(user_id=request.user.id, infra_id=infra_id, data=request.data)
+        db = database_service.create_database(
+            user_id=request.user.id, infra_id=infra_id, data=request.data, actor=request.user,
+        )
         return Response(DatabaseSerializer.serialize_instance(db), status=status.HTTP_202_ACCEPTED)
     except Exception as e:
         return _error_response(e)
@@ -135,14 +139,16 @@ def database_list_create(request: HttpRequest, infra_id):
 def database_detail(request: HttpRequest, infra_id, database_id):
     if request.method == 'GET':
         try:
-            db = database_service.get_database(user_id=request.user.id, infra_id=infra_id, database_id=database_id)
+            db = database_service.get_database(
+                user_id=request.user.id, infra_id=infra_id, database_id=database_id, actor=request.user,
+            )
             return Response(DatabaseSerializer.serialize_instance(db))
         except Exception as e:
             return _error_response(e)
     try:
         db = database_service.delete_database(
             user_id=request.user.id, infra_id=infra_id, database_id=database_id,
-            confirm_name=request.data.get('confirm_name', ''),
+            confirm_name=request.data.get('confirm_name', ''), actor=request.user,
         )
         return Response(DatabaseSerializer.serialize_instance(db), status=status.HTTP_202_ACCEPTED)
     except Exception as e:

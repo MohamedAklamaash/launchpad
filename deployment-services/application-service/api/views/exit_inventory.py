@@ -18,6 +18,7 @@ from shared.enums.user_role import UserRole
 from api.models.infrastructure import Infrastructure
 from api.services.exit_inventory import export_data_for_infrastructure
 from api.services.infrastructure_permissions import InfrastructurePermissions
+from api.services.org_authz import Capability, orgs_enabled, require_org_capability
 
 
 @extend_schema(
@@ -40,10 +41,18 @@ def export_inventory(request, infra_id):
     except (Infrastructure.DoesNotExist, ValueError, ValidationError):
         return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    role = InfrastructurePermissions.get_user_role(infra, request.user.id)
-    if role is None:
-        return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
-    if role != UserRole.SUPER_ADMIN:
-        return Response({"error": "Only the infrastructure owner can export"}, status=status.HTTP_403_FORBIDDEN)
+    if orgs_enabled():
+        try:
+            require_org_capability(request.user, infra, Capability.EXIT)
+        except LookupError:
+            return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
+        except PermissionError:
+            return Response({"error": "Only the infrastructure owner can export"}, status=status.HTTP_403_FORBIDDEN)
+    else:
+        role = InfrastructurePermissions.get_user_role(infra, request.user.id)
+        if role is None:
+            return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
+        if role != UserRole.SUPER_ADMIN:
+            return Response({"error": "Only the infrastructure owner can export"}, status=status.HTTP_403_FORBIDDEN)
 
     return Response(export_data_for_infrastructure(infra_id))

@@ -488,7 +488,7 @@ def ensure_infra_created_published(infra):
             cloud_provider=infra.cloud_provider, compute_type=infra.compute_type,
             max_cpu=infra.max_cpu, max_memory=infra.max_memory,
             code=infra.code, is_cloud_authenticated=infra.is_cloud_authenticated, is_mock=infra.is_mock,
-            metadata=infra.metadata or {},
+            metadata=infra.metadata or {}, organization_id=infra.organization_id,
         )
     except Exception:
         logger.exception(f"Failed to (re)publish infra.created for {infra.id}")

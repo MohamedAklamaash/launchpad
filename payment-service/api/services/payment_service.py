@@ -31,7 +31,7 @@ class PaymentService:
             if not infra:
                 raise ValueError(f"Infrastructure {infrastructure_id} not found in payments database")
 
-            billing = self._create_pending_billing(user, amount, infrastructure_id)
+            billing = self._create_pending_billing(user, amount, infrastructure_id, infra.organization_id)
             now = timezone.now()
             session = stripe_cb.execute(
                 stripe.checkout.Session.create,
@@ -68,7 +68,7 @@ class PaymentService:
             if not infra:
                 return {"success": False, "error": f"Infrastructure {infrastructure_id} not found in payments database"}
 
-            billing = self._create_pending_billing(user, amount, infrastructure_id)
+            billing = self._create_pending_billing(user, amount, infrastructure_id, infra.organization_id)
 
             intent = stripe_cb.execute(
                 stripe.PaymentIntent.create,
@@ -144,13 +144,14 @@ class PaymentService:
             logger.error(f"Error verifying Stripe session {session_id}: {e}")
             raise
 
-    def _create_pending_billing(self, user, amount, infrastructure_id):
+    def _create_pending_billing(self, user, amount, infrastructure_id, organization_id=None):
         """
         Helper to create a pending billing record.
         """
         now = timezone.now()
         billing_data = {
             "user_id": user.id,
+            "organization_id": organization_id,
             "amount": amount / 100.0,
             "month": now.month,
             "year": now.year,

@@ -28,6 +28,7 @@ from api.models.custom_domain import (
 from api.models.infrastructure import Infrastructure
 from api.repositories.infrastructure import InfrastructureRepository
 from api.services import custom_domain_cert, custom_domain_dns
+from api.services.org_authz import Capability, get_infra_with_capability, orgs_enabled
 from botocore.exceptions import ClientError
 from django.conf import settings
 from django.db import transaction
@@ -80,7 +81,9 @@ class CustomDomainService:
 
     # ── shared lookups ──────────────────────────────────────────────────────────
 
-    def _get_infra_or_raise(self, user_id, infra_id):
+    def _get_infra_or_raise(self, user_id, infra_id, actor=None, capability=Capability.VIEW):
+        if orgs_enabled():
+            return get_infra_with_capability(actor, infra_id, capability)
         _require_valid_uuid(infra_id, "Infrastructure not found")
         infra = self.infra_repo.get_by_id(user_id, infra_id)
         if not infra:
@@ -88,6 +91,8 @@ class CustomDomainService:
         return infra
 
     def _require_owner(self, user_id, infra):
+        if orgs_enabled():
+            return
         if str(infra.user_id) != str(user_id):
             raise PermissionError("Only the infrastructure owner can manage custom domains")
 
@@ -213,8 +218,8 @@ class CustomDomainService:
 
     # ── list ────────────────────────────────────────────────────────────────────
 
-    def list_domains(self, user_id, infra_id):
-        infra = self._get_infra_or_raise(user_id, infra_id)
+    def list_domains(self, user_id, infra_id, actor=None):
+        infra = self._get_infra_or_raise(user_id, infra_id, actor)
         domains = CustomDomain.objects.filter(infrastructure=infra).select_related('infrastructure').order_by('-created_at')
         return infra, list(domains)
 
@@ -236,8 +241,8 @@ class CustomDomainService:
 
     # ── claim ───────────────────────────────────────────────────────────────────
 
-    def claim_domain(self, user_id, infra_id, application_id, hostname, authorization_header=None):
-        infra = self._get_infra_or_raise(user_id, infra_id)
+    def claim_domain(self, user_id, infra_id, application_id, hostname, authorization_header=None, actor=None):
+        infra = self._get_infra_or_raise(user_id, infra_id, actor, Capability.CUSTOM_DOMAINS)
         self._require_owner(user_id, infra)
         # Fast pre-check on the unlocked read — avoids wasting the application-service
         # round trip below on a claim that's doomed anyway. The authoritative check runs
@@ -285,8 +290,8 @@ class CustomDomainService:
 
     # ── verify ──────────────────────────────────────────────────────────────────
 
-    def verify_domain(self, user_id, infra_id, domain_id):
-        infra = self._get_infra_or_raise(user_id, infra_id)
+    def verify_domain(self, user_id, infra_id, domain_id, actor=None):
+        infra = self._get_infra_or_raise(user_id, infra_id, actor, Capability.CUSTOM_DOMAINS)
         self._require_owner(user_id, infra)
         domain = self._get_domain_or_raise(infra, domain_id)
 
@@ -365,8 +370,8 @@ class CustomDomainService:
 
     # ── delete / disable ────────────────────────────────────────────────────────
 
-    def delete_domain(self, user_id, infra_id, domain_id):
-        infra = self._get_infra_or_raise(user_id, infra_id)
+    def delete_domain(self, user_id, infra_id, domain_id, actor=None):
+        infra = self._get_infra_or_raise(user_id, infra_id, actor, Capability.CUSTOM_DOMAINS)
         self._require_owner(user_id, infra)
         domain = self._get_domain_or_raise(infra, domain_id)
         self._teardown(infra, domain)

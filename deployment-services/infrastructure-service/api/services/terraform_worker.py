@@ -1215,6 +1215,7 @@ output "ecr_repository_url" {{ value = module.ecr.repository_url }}
                     is_mock=infra.is_mock,
                     metadata=infra.metadata,
                     dns_label=infra.dns_label,
+                    organization_id=infra.organization_id,
                     correlation_id=None
                 ))
 

@@ -156,6 +156,7 @@ def finish_onboarding(infra, *, policy_version=None, cfn_stack_name=None, siblin
             is_cloud_authenticated=True,
             is_mock=infra.is_mock,
             metadata=infra.metadata or {},
+            organization_id=infra.organization_id,
         )
     except Exception:
         logger.exception(f"Onboarding completion failed to publish infra.created for {infra.id}")

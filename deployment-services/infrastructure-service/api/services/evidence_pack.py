@@ -20,6 +20,7 @@ from api.cloud_providers.aws import iam_policy
 from api.cloud_providers.aws.authenticate import authenticate_infrastructure
 from api.cloud_providers.aws.iam_policy.live_diff import diff_live_policy
 from api.repositories.infrastructure import InfrastructureRepository
+from api.services.org_authz import Capability, get_infra_with_capability, orgs_enabled
 from api.services.terraform_worker import TF_MODULES_DIR, TerraformWorker
 from botocore.config import Config
 from django.conf import settings
@@ -439,13 +440,20 @@ class EvidencePackService:
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
 
-    def get_pack(self, user_id, infra_id) -> tuple[bytes, "object"]:
+    def get_pack(self, user_id, infra_id, actor=None) -> tuple[bytes, "object"]:
         """Returns (zip_bytes, infra) so the view can log/name the download without a
         second lookup."""
-        infra = self._get_owned_infra(user_id, infra_id)
+        infra = self._get_owned_infra(user_id, infra_id, actor)
         return build_evidence_pack(infra), infra
 
-    def _get_owned_infra(self, user_id, infra_id):
+    def _get_owned_infra(self, user_id, infra_id, actor=None):
+        if orgs_enabled():
+            try:
+                return get_infra_with_capability(actor, infra_id, Capability.MANAGE_INFRASTRUCTURE)
+            except LookupError:
+                raise EvidencePackNotFound("Infrastructure not found") from None
+            except PermissionError:
+                raise EvidencePackForbidden("Only the infrastructure owner can download the evidence pack") from None
         # A malformed id reaching filter(id=...) on a UUIDField raises
         # django.core.exceptions.ValidationError — not a ValueError — and would escape
         # the view's error mapping as a 500.

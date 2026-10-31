@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from api.models.infrastructure import Infrastructure
 from api.services.infrastructure_permissions import InfrastructurePermissions
 from api.services.infrastructure_validation import InfrastructureValidation
+from api.services.org_authz import Capability, has_org_capability, orgs_enabled
 
 
 class ValidationResponseSerializer(serializers.Serializer):
@@ -29,7 +30,10 @@ def infrastructure_validation(request, infra_id):
         return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
     # A non-member must not learn another tenant's app count or deletability. 404 (not 403)
     # so the endpoint never confirms an infra id the caller has no relationship to.
-    if InfrastructurePermissions.get_user_role(infra, request.user.id) is None:
+    if orgs_enabled():
+        if not has_org_capability(request.user, infra, Capability.VIEW):
+            return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
+    elif InfrastructurePermissions.get_user_role(infra, request.user.id) is None:
         return Response({"error": "Infrastructure not found"}, status=status.HTTP_404_NOT_FOUND)
     can_delete, error_message = InfrastructureValidation.can_delete_infrastructure(infra_id)
     app_count = InfrastructureValidation.get_infrastructure_apps_count(infra_id)

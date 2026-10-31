@@ -31,6 +31,7 @@ from api.cloud_providers.aws.iam_policy import generate as cfn_generate
 from api.cloud_providers.aws.iam_policy.live_diff import ROLE_NAME
 from api.repositories.infrastructure import InfrastructureRepository
 from api.services.infrastructure import InfrastructureService
+from api.services.org_authz import Capability, get_infra_with_capability, orgs_enabled
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from shared.enums.orchestrator import ComputeType, OnboardingMethod
@@ -134,8 +135,16 @@ class CfnOnboardingService:
         self.repo = InfrastructureRepository()
         self.infra_service = InfrastructureService()
 
-    def _get_owned_infra(self, user_id, infra_id):
+    def _get_owned_infra(self, user_id, infra_id, actor=None):
         import uuid
+
+        if orgs_enabled():
+            try:
+                return get_infra_with_capability(actor, infra_id, Capability.MANAGE_INFRASTRUCTURE)
+            except LookupError:
+                raise CfnOnboardingNotFound() from None
+            except PermissionError:
+                raise CfnOnboardingForbidden() from None
 
         try:
             uuid.UUID(str(infra_id))
@@ -164,10 +173,10 @@ class CfnOnboardingService:
             ).exclude(id=infra.id).values_list("id", flat=True)
         )
 
-    def verify(self, *, user_id, infra_id) -> dict:
+    def verify(self, *, user_id, infra_id, actor=None) -> dict:
         from api.models.infrastructure import Infrastructure as InfraModel
 
-        infra = self._get_owned_infra(user_id, infra_id)
+        infra = self._get_owned_infra(user_id, infra_id, actor)
 
         if infra.is_mock:
             raise CfnOnboardingMockUnsupported()
@@ -220,11 +229,11 @@ class CfnOnboardingService:
         result["cfn_stack_name"] = stack_name
         return result
 
-    def refresh(self, *, user_id, infra_id) -> dict:
+    def refresh(self, *, user_id, infra_id, actor=None) -> dict:
         from api.cloud_providers.aws.authenticate import assume_role_credentials_only
         from api.models.infrastructure import Infrastructure as InfraModel
 
-        infra = self._get_owned_infra(user_id, infra_id)
+        infra = self._get_owned_infra(user_id, infra_id, actor)
 
         if infra.is_mock:
             raise CfnOnboardingMockUnsupported()

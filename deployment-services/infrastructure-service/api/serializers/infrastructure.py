@@ -4,13 +4,16 @@ from api.cloud_providers.aws import iam_policy
 from api.cloud_providers.aws.platform_principal import platform_account_and_user
 from api.models.infrastructure import Infrastructure
 from api.types.infrastructure import InfrastructureResponse
+from django.conf import settings
 
 
 class InfrastructureSerializer:
     @staticmethod
     def serialize_instance(instance: Infrastructure) -> dict[str, Any]:
         platform_account_id, platform_user = platform_account_and_user()
-        invited_users_details = [
+        # Under org roles the legacy invite list is not access and not membership; its
+        # emails and roles must not reach org members who never saw those people.
+        invited_users_details = [] if settings.ORGS_ENABLED else [
             {
                 'id': str(u.id),
                 'email': u.email,

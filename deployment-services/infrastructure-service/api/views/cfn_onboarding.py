@@ -83,7 +83,9 @@ def _error_response(e: Exception):
 )
 def _cfn_verify(request: HttpRequest, infra_id):
     try:
-        result = cfn_onboarding_service.verify(user_id=request.user.id, infra_id=infra_id)
+        result = cfn_onboarding_service.verify(
+            user_id=request.user.id, infra_id=infra_id, actor=request.user,
+        )
     except Exception as e:
         return _error_response(e)
     status_code = status.HTTP_200_OK if result['status'] == 'already_queued' else status.HTTP_202_ACCEPTED
@@ -120,7 +122,9 @@ def infrastructure_cfn_verify(request: HttpRequest, infra_id):
 )
 def _cfn_refresh(request: HttpRequest, infra_id):
     try:
-        result = cfn_onboarding_service.refresh(user_id=request.user.id, infra_id=infra_id)
+        result = cfn_onboarding_service.refresh(
+            user_id=request.user.id, infra_id=infra_id, actor=request.user,
+        )
     except Exception as e:
         return _error_response(e)
     return Response(result, status=status.HTTP_200_OK)

@@ -74,7 +74,9 @@ class ErrorSerializer(serializers.Serializer):
 def infrastructure_nuke(request: HttpRequest, infra_id):
     try:
         if request.method == 'GET':
-            result = nuke_service.get_status(user_id=request.user.id, infra_id=infra_id)
+            result = nuke_service.get_status(
+                user_id=request.user.id, infra_id=infra_id, actor=request.user,
+            )
             if result is None:
                 return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
             return Response(result, status=status.HTTP_200_OK)
@@ -84,6 +86,7 @@ def infrastructure_nuke(request: HttpRequest, infra_id):
             return Response({'error': 'Invalid request', 'details': body.errors}, status=status.HTTP_400_BAD_REQUEST)
         result = nuke_service.start_nuke(
             user_id=request.user.id, infra_id=infra_id, confirm_name=body.validated_data['confirm_name'],
+            actor=request.user,
         )
         if result is None:
             return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)

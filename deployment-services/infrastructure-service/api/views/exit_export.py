@@ -141,7 +141,7 @@ def exit_export(request: HttpRequest, infra_id):
                       {"error": "Please log in again to continue", "code": REAUTH_ERROR_CODE})
 
     try:
-        infra = exit_export_service.get_owned_infra(request.user.id, infra_id)
+        infra = exit_export_service.get_owned_infra(request.user.id, infra_id, actor=request.user)
     except ExitExportNotFound:
         return _deny(status.HTTP_404_NOT_FOUND, {"error": "Infrastructure not found"})
     except ExitExportForbidden:
@@ -248,7 +248,7 @@ def infrastructure_complete_exit(request: HttpRequest, infra_id):
                       {"error": "Please log in again to continue", "code": REAUTH_ERROR_CODE})
 
     try:
-        infra = exit_export_service.get_owned_infra(request.user.id, infra_id)
+        infra = exit_export_service.get_owned_infra(request.user.id, infra_id, actor=request.user)
     except ExitExportNotFound:
         return _deny(status.HTTP_404_NOT_FOUND, {"error": "Infrastructure not found"})
     except ExitExportForbidden:

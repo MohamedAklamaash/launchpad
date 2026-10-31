@@ -13,10 +13,16 @@ Database rows, and the status endpoint must still answer after that.
 import logging
 
 from api.models.environment import Environment
+from api.models.infrastructure import Infrastructure
 from api.models.nuke_run import NukeRun, initial_steps
 from api.services.infra_queue import InfraQueue
 from api.services.infrastructure import InfrastructureService
 from api.services.infrastructure_permissions import InfrastructurePermissions
+from api.services.org_authz import (
+    Capability,
+    find_infra_with_capability,
+    orgs_enabled,
+)
 from django.db import transaction
 
 logger = logging.getLogger(__name__)
@@ -41,17 +47,22 @@ class NukeService:
         self.infra_service = InfrastructureService()
         self.repo = self.infra_service.repo
 
-    def start_nuke(self, user_id, infra_id, confirm_name: str) -> dict | None:
+    def start_nuke(self, user_id, infra_id, confirm_name: str, actor=None) -> dict | None:
         """Owner-only. Typed-name confirmation against the infra's current name. 409
         (ValueError) if a run is already PENDING/RUNNING, or if the environment has a
         terraform operation in flight. Resumes (reuses the same NukeRun row, keeping
         already-succeeded step statuses) if the most recent run for this infra FAILED —
         every step is idempotent, so a resumed run skips what already succeeded."""
-        infra = self.repo.get_by_id(user_id, infra_id)
-        if not infra:
-            return None
-        if not InfrastructurePermissions.can_delete_infrastructure(infra, user_id):
-            raise PermissionError("Only the infrastructure owner can nuke it")
+        if orgs_enabled():
+            infra = find_infra_with_capability(actor, infra_id, Capability.DELETE_INFRASTRUCTURE)
+            if not infra:
+                return None
+        else:
+            infra = self.repo.get_by_id(user_id, infra_id)
+            if not infra:
+                return None
+            if not InfrastructurePermissions.can_delete_infrastructure(infra, user_id):
+                raise PermissionError("Only the infrastructure owner can nuke it")
         # Mirrors reprovision's F6 gate: an exited infrastructure has told its owner
         # Launchpad is done touching its account. Nuking it would contradict that.
         if infra.exited_at is not None:
@@ -96,17 +107,30 @@ class NukeService:
         })
         return _serialize(run)
 
-    def get_status(self, user_id, infra_id) -> dict | None:
+    def get_status(self, user_id, infra_id, actor=None) -> dict | None:
         """Owner-only. Falls back to the NukeRun's own stamped `user_id` for the
         ownership check once the Infrastructure row is gone (a completed nuke deletes
         it) — that field was set from an already-verified owner at start_nuke time."""
-        infra = self.repo.get_by_id(user_id, infra_id)
         run = NukeRun.objects.filter(infrastructure_id=infra_id).order_by('-created_at').first()
+        if orgs_enabled():
+            return self._get_status_org_scoped(run, user_id, infra_id, actor)
+        infra = self.repo.get_by_id(user_id, infra_id)
         if not run:
             return None
         if infra:
             if not InfrastructurePermissions.can_delete_infrastructure(infra, user_id):
                 raise PermissionError("Only the infrastructure owner can view its nuke status")
+        elif str(run.user_id) != str(user_id):
+            return None
+        return _serialize(run)
+
+    @staticmethod
+    def _get_status_org_scoped(run, user_id, infra_id, actor) -> dict | None:
+        if not run:
+            return None
+        if Infrastructure.objects.filter(id=infra_id).exists():
+            if find_infra_with_capability(actor, infra_id, Capability.DELETE_INFRASTRUCTURE) is None:
+                return None
         elif str(run.user_id) != str(user_id):
             return None
         return _serialize(run)
