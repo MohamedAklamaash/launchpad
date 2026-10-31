@@ -21,6 +21,9 @@ class PolicyRefreshEvent(models.Model):
         blank=True,
         related_name='policy_refresh_events',
     )
+    # Set only when the callback was refused (403): the infra id the key tried to name. The
+    # audit trail keeps the attempt without linking it to an infrastructure it had no right to.
+    refused_infrastructure_id = models.UUIDField(null=True, blank=True)
     account_id = models.CharField(max_length=32)
     caller_arn = models.TextField(blank=True, default="")
     script = models.CharField(max_length=64, default="create_aws_role.sh")

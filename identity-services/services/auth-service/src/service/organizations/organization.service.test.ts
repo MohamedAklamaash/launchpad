@@ -27,6 +27,8 @@ const { sequelize } = await import('@/db/sequalize');
 const { Organization, Membership, MembershipAuditEvent } = await import('@/db');
 const { createOrganization } = await import('@/service/organizations/organization.service');
 const { orgEventsPublisher } = await import('@/messaging/producer/org-events.message');
+const { stubOutbox } = await import('@/test-support/outbox-stub');
+await stubOutbox();
 
 const withTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));

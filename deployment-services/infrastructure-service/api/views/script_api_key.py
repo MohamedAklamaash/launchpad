@@ -27,6 +27,26 @@ def _signed_account_id(request: HttpRequest):
         return None
 
 
+def _record_event(request: HttpRequest, key, infra, refused_infrastructure_id=None):
+    from api.models.infrastructure import Infrastructure
+    from api.models.policy_refresh_event import PolicyRefreshEvent
+    from api.models.script_api_key import ScriptApiKey
+
+    event = PolicyRefreshEvent.objects.create(
+        user=key.user,
+        infrastructure=infra,
+        refused_infrastructure_id=refused_infrastructure_id,
+        account_id=str(request.data.get('account_id'))[:32],
+        caller_arn=str(request.data.get('caller_arn') or ''),
+        script=str(request.data.get('script') or 'create_aws_role.sh')[:64],
+        role_name=str(request.data.get('role_name') or '')[:128],
+        policy_arn=str(request.data.get('policy_arn') or ''),
+        policy_version=Infrastructure.parse_reported_policy_version(request.data.get('policy_version')),
+    )
+    ScriptApiKey.objects.filter(pk=key.pk).update(last_used_at=timezone.now())
+    return event
+
+
 def _is_current_org_owner(key, infra) -> bool:
     """True only if the key's recorded Account holds the ACTIVE owner Membership in the
     infrastructure's org right now. Read straight from the mirror, never the role cache: a
@@ -112,7 +132,6 @@ def script_api_key_issue(request: HttpRequest):
 @permission_classes([AllowAny])
 def infrastructure_policy_refresh_callback(request: HttpRequest):
     from api.models.infrastructure import Infrastructure
-    from api.models.policy_refresh_event import PolicyRefreshEvent
     from api.models.script_api_key import ScriptApiKey
 
     key = ScriptApiKey.authenticate(request.headers.get('X-API-Key'))
@@ -143,22 +162,16 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
             if settings.ORGS_ENABLED:
                 infra = Infrastructure.objects.filter(id=infra_id).first()
                 if infra is None or not _is_current_org_owner(key, infra):
+                    # Refused, but not silently: the attempt is audited unlinked, with the
+                    # infra id it named. policy_version is never advanced from a refusal.
+                    _record_event(request, key, None, refused_infrastructure_id=infra_id)
                     return Response({'error': 'Not the owner of this infrastructure'},
                                     status=status.HTTP_403_FORBIDDEN)
             else:
                 infra = Infrastructure.objects.filter(id=infra_id, user=key.user).first()
 
     reported_version = Infrastructure.parse_reported_policy_version(request.data.get('policy_version'))
-    event = PolicyRefreshEvent.objects.create(
-        user=key.user,
-        infrastructure=infra,
-        account_id=str(account_id)[:32],
-        caller_arn=str(request.data.get('caller_arn') or ''),
-        script=str(request.data.get('script') or 'create_aws_role.sh')[:64],
-        role_name=str(request.data.get('role_name') or '')[:128],
-        policy_arn=str(request.data.get('policy_arn') or ''),
-        policy_version=reported_version,
-    )
+    event = _record_event(request, key, infra)
     # Only advance, never rewind: an old pinned copy of the script re-run against an
     # already-current account must not reopen the refresh prompt.
     if infra is not None and reported_version is not None:
@@ -172,7 +185,6 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
         # some unrelated trigger re-provisions.
         from api.services.cert_bootstrap import maybe_reenqueue_after_policy_refresh
         maybe_reenqueue_after_policy_refresh(infra.id)
-    ScriptApiKey.objects.filter(pk=key.pk).update(last_used_at=timezone.now())
     logger.info(
         f"policy refresh recorded: user={key.user_id} account={account_id} "
         f"infra={infra_id} caller={event.caller_arn}"

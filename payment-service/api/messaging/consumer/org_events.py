@@ -104,6 +104,14 @@ class OrgEventConsumer:
                 return
         elif routing_key in (ORG_MEMBERSHIP_CHANGED_ROUTING_KEY, ORG_INVITATION_ACCEPTED_ROUTING_KEY):
             role = payload.get("role")
+            previous_owner_version = payload.get("previous_owner_version")
+            if previous_owner_version is not None and not isinstance(previous_owner_version, int):
+                log.warning(
+                    "org membership event carries a non-integer previous_owner_version — discarding",
+                    extra={"correlation_id": correlation_id, "organization_id": organization_id},
+                )
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                return
             if not account_id or role not in OrgRole.values:
                 log.warning(
                     "org membership event missing account_id or carries an unrecognized role — discarding",
@@ -129,11 +137,18 @@ class OrgEventConsumer:
 
         try:
             connection.close()
+            demoted = []
             with transaction.atomic():
                 if routing_key == ORG_CREATED_ROUTING_KEY:
-                    self.org_repo.apply_org_created(organization_id, payload.get("owner_account_id"), version)
+                    demoted = self.org_repo.apply_org_created(
+                        organization_id, payload.get("owner_account_id"), version,
+                    )
                 elif routing_key in (ORG_MEMBERSHIP_CHANGED_ROUTING_KEY, ORG_INVITATION_ACCEPTED_ROUTING_KEY):
-                    self.org_repo.upsert_membership(organization_id, account_id, payload.get("role"), version)
+                    demoted = self.org_repo.upsert_membership(
+                        organization_id, account_id, payload.get("role"), version,
+                        previous_owner_account_id=payload.get("previous_owner_account_id"),
+                        previous_owner_version=payload.get("previous_owner_version"),
+                    )
                 else:
                     self.org_repo.remove_membership(organization_id, account_id, version)
 
@@ -147,6 +162,8 @@ class OrgEventConsumer:
                 OrgPermissions.evict(organization_id, payload.get("owner_account_id"))
             else:
                 OrgPermissions.evict(organization_id, account_id)
+            for displaced_account_id in demoted or []:
+                OrgPermissions.evict(organization_id, displaced_account_id)
 
             self._retry_counts.pop(retry_key, None)
             ch.basic_ack(delivery_tag=method.delivery_tag)

@@ -32,6 +32,8 @@ mock.method(Invitation, 'update', async () => [0]);
 const { addMember, changeMemberRole, removeMember } =
     await import('@/service/organizations/membership.service');
 const { orgEventsPublisher } = await import('@/messaging/producer/org-events.message');
+const { stubOutbox } = await import('@/test-support/outbox-stub');
+await stubOutbox();
 
 // removeMember now also revokes the removed account's refresh tokens (security review
 // H3(b)) — every removeMember test needs these mocked so it never falls through to a

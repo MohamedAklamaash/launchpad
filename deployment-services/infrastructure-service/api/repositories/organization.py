@@ -26,15 +26,35 @@ class OrganizationRepository:
         """org.created materializes both the Organization row and its owner Membership —
         auth-service publishes only org.created for the owner, never a separate
         org.membership.changed (organization.service.ts's createOrganization)."""
+        before = self._owner_of(organization_id)
         self._upsert_organization(organization_id, owner_account_id, version)
-        self._upsert_membership(organization_id, owner_account_id, OrgRole.OWNER, version)
+        applied = self._upsert_membership(organization_id, owner_account_id, OrgRole.OWNER, version)
+        demoted = self._demote_displaced_owners(organization_id, owner_account_id) if applied else []
         self._sync_owner_account(organization_id)
+        self._flag_infrastructures_if_owner_moved(organization_id, before)
+        return demoted
 
-    def upsert_membership(self, organization_id, account_id, role: str, version: int):
+    def upsert_membership(
+        self, organization_id, account_id, role: str, version: int,
+        previous_owner_account_id=None, previous_owner_version=None,
+    ):
+        """Returns the other accounts whose role this call changed, so the caller can evict
+        their cached roles. Applying an OWNER role demotes the previous owner named by the
+        event (stamping the version the demote event carries, which makes that event a
+        no-op) and, defensively, every other active owner, so the loss of the separate
+        demote event can never leave two owners."""
         if not Organization.objects.filter(id=organization_id).exists():
             raise PendingOrganization(organization_id)
-        self._upsert_membership(organization_id, account_id, role, version)
+        before = self._owner_of(organization_id)
+        applied = self._upsert_membership(organization_id, account_id, role, version)
+        demoted = []
+        if applied and role == OrgRole.OWNER:
+            demoted = self._demote_displaced_owners(
+                organization_id, account_id, previous_owner_account_id, previous_owner_version,
+            )
         self._sync_owner_account(organization_id)
+        self._flag_infrastructures_if_owner_moved(organization_id, before)
+        return demoted
 
     def remove_membership(self, organization_id, account_id, version: int):
         if not Organization.objects.filter(id=organization_id).exists():
@@ -50,6 +70,57 @@ class OrganizationRepository:
             organization_id=organization_id, account_id=account_id, version__lt=version,
         ).update(removed_at=timezone.now(), version=version)
         self._sync_owner_account(organization_id)
+
+    @staticmethod
+    def _owner_of(organization_id):
+        return Organization.objects.filter(id=organization_id).values_list(
+            "owner_account_id", flat=True,
+        ).first()
+
+    def _flag_infrastructures_if_owner_moved(self, organization_id, before):
+        """After an ownership transfer, `Infrastructure.user` (the creator) is no longer the
+        org owner. With the flag turned back off the legacy checks would treat the creator
+        as owner, so mark the org's infrastructures for api/services/org_flag_guard.py,
+        which refuses to start flag-off while any row is marked."""
+        after = self._owner_of(organization_id)
+        if before is None or before == after:
+            return
+        from api.models.infrastructure import Infrastructure
+
+        Infrastructure.objects.filter(organization_id=organization_id).update(
+            created_by_non_owner_under_orgs=True,
+        )
+
+    @staticmethod
+    def _demote_displaced_owners(
+        organization_id, new_owner_account_id, previous_owner_account_id=None,
+        previous_owner_version=None,
+    ):
+        demoted = []
+        if (
+            previous_owner_account_id
+            and previous_owner_version is not None
+            and str(previous_owner_account_id) != str(new_owner_account_id)
+        ):
+            changed = Membership.objects.filter(
+                organization_id=organization_id, account_id=previous_owner_account_id,
+                version__lt=previous_owner_version,
+            ).update(role=OrgRole.ADMIN, version=previous_owner_version)
+            if changed:
+                demoted.append(str(previous_owner_account_id))
+        # Role only, version untouched: a real event for these rows still applies later.
+        others = list(
+            Membership.objects.active()
+            .filter(organization_id=organization_id, role=OrgRole.OWNER)
+            .exclude(account_id=new_owner_account_id)
+            .values_list("account_id", flat=True)
+        )
+        if others:
+            Membership.objects.active().filter(
+                organization_id=organization_id, account_id__in=others,
+            ).update(role=OrgRole.ADMIN)
+            demoted.extend(str(a) for a in others)
+        return demoted
 
     @staticmethod
     def _sync_owner_account(organization_id):
@@ -92,14 +163,15 @@ class OrganizationRepository:
             organization_id=organization_id, account_id=account_id,
             defaults={"role": role, "version": version},
         )
-        if not created:
-            # version__lt in the filter, not a precomputed boolean: a lost race between two
-            # concurrent writers resolves itself here (SQL evaluates version__lt against the
-            # row as committed, not a stale in-memory read), no select_for_update needed.
-            # removed_at=None unconditionally: this is also the revive path for a
-            # tombstoned row (a re-add is just another org.membership.changed/
-            # org.invitation.accepted with a higher version), and it's already None on an
-            # active row, so clearing it here is never wrong.
-            Membership.objects.filter(pk=membership.pk, version__lt=version).update(
-                role=role, version=version, removed_at=None,
-            )
+        if created:
+            return True
+        # version__lt in the filter, not a precomputed boolean: a lost race between two
+        # concurrent writers resolves itself here (SQL evaluates version__lt against the
+        # row as committed, not a stale in-memory read), no select_for_update needed.
+        # removed_at=None unconditionally: this is also the revive path for a
+        # tombstoned row (a re-add is just another org.membership.changed/
+        # org.invitation.accepted with a higher version), and it's already None on an
+        # active row, so clearing it here is never wrong.
+        return Membership.objects.filter(pk=membership.pk, version__lt=version).update(
+            role=role, version=version, removed_at=None,
+        ) > 0

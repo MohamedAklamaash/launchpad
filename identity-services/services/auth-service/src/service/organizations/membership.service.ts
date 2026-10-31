@@ -11,10 +11,7 @@ import {
 } from '@/utils/membership-version';
 import { assertOrgsEnabled } from './org-guard';
 import { recordAuditEvent } from './audit-log.service';
-import {
-    publishMembershipChanged,
-    publishMembershipRemoved,
-} from '@/messaging/producer/org-events.message';
+import { enqueueMembershipChanged, enqueueMembershipRemoved } from './org-event-outbox.service';
 
 // Security review H3(b): RefreshToken.user_id is the legacy credential id (User.id or
 // InvitedUser.id), never an Account id — Membership only ever knows the account_id, so
@@ -144,18 +141,16 @@ export const addMember = async (input: AddMemberInput): Promise<Membership> => {
         throw new HttpError(409, 'Cannot add a member as owner; use ownership transfer');
     }
 
-    const membership = await sequelize.transaction((transaction) =>
-        addMemberInTransaction(input, transaction),
-    );
-
-    publishMembershipChanged({
-        organization_id: membership.organization_id,
-        account_id: membership.account_id,
-        role: membership.role,
-        version: membership.version,
+    return sequelize.transaction(async (transaction) => {
+        const membership = await addMemberInTransaction(input, transaction);
+        await enqueueMembershipChanged(transaction, {
+            organization_id: membership.organization_id,
+            account_id: membership.account_id,
+            role: membership.role,
+            version: membership.version,
+        });
+        return membership;
     });
-
-    return membership;
 };
 
 export interface ChangeMemberRoleInput {
@@ -204,14 +199,13 @@ export const changeMemberRole = async (input: ChangeMemberRoleInput): Promise<Me
 
         existing.role = input.newRole;
         existing.version = newVersion;
+        await enqueueMembershipChanged(transaction, {
+            organization_id: existing.organization_id,
+            account_id: existing.account_id,
+            role: existing.role,
+            version: existing.version,
+        });
         return existing;
-    });
-
-    publishMembershipChanged({
-        organization_id: membership.organization_id,
-        account_id: membership.account_id,
-        role: membership.role,
-        version: membership.version,
     });
 
     return membership;
@@ -231,7 +225,7 @@ export interface RemoveMemberInput {
 export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
     assertOrgsEnabled();
 
-    const removed = await sequelize.transaction(async (transaction) => {
+    await sequelize.transaction(async (transaction) => {
         const existing = await Membership.findOne({
             where: {
                 organization_id: input.organizationId,
@@ -265,12 +259,10 @@ export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
         // alone — the highest-consequence transition (actual removal) doesn't wait for
         // the removed member's next refresh to notice.
         await revokeAccessForRemovedAccount(organization_id, account_id, transaction);
-        return { organization_id, account_id, version: newVersion };
-    });
-
-    publishMembershipRemoved({
-        organization_id: removed.organization_id,
-        account_id: removed.account_id,
-        version: removed.version,
+        await enqueueMembershipRemoved(transaction, {
+            organization_id,
+            account_id,
+            version: newVersion,
+        });
     });
 };

@@ -36,7 +36,8 @@ const { createApp } = await import('@/app');
 const { signAccessToken } = await import('@/utils/handle-token');
 const { accountIdForEmail } = await import('@/utils/account-id');
 const queueModule = await import('@/messaging/producer/user-created.message');
-const { orgEventsPublisher } = await import('@/messaging/producer/org-events.message');
+const { orgEventsPublisher, publishOutboxEvent } =
+    await import('@/messaging/producer/org-events.message');
 
 export const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN;
 
@@ -70,8 +71,10 @@ export const createHarness = async () => {
         redisDown: false,
         membershipCreateError: null as Error | null,
         refreshRevokedFor: [] as string[],
+        outbox: [] as { routing_key: string; payload: Row }[],
         queryLog: [] as { role: unknown; membershipId: unknown }[],
         auditFailOnCall: null as number | null,
+        outboxFailOnCall: null as number | null,
     };
 
     // Restores every row and append-only log to its pre-transaction value if the callback
@@ -80,9 +83,17 @@ export const createHarness = async () => {
         const tables = [state.memberships, state.orgs, state.invitations];
         const rowCopies = tables.map((rows) => rows.map((row) => ({ row, copy: { ...row } })));
         const logLengths = [state.audit.length, state.refreshRevokedFor.length];
+        const outboxStart = state.outbox.length;
         try {
-            return await cb();
+            const result = await cb();
+            // Stands in for the dispatcher: outbox rows reach the publisher only once the
+            // transaction that wrote them has committed, in insertion order.
+            state.outbox
+                .slice(outboxStart)
+                .forEach((row) => publishOutboxEvent(row.routing_key, row.payload, new Date()));
+            return result;
         } catch (error) {
+            state.outbox.length = outboxStart;
             tables.forEach((rows, i) => {
                 rows.length = rowCopies[i]!.length;
                 rowCopies[i]!.forEach(({ row, copy }, j) => {
@@ -201,6 +212,13 @@ export const createHarness = async () => {
             const ids = (o.where.user_id as Record<symbol, string[]>)[Op.in] ?? [];
             state.refreshRevokedFor.push(...ids);
             return ids.length;
+        }),
+        mock.method(db.OrgEventOutbox, 'create', async (attrs: Row) => {
+            state.outbox.push(attrs as { routing_key: string; payload: Row });
+            if (state.outboxFailOnCall === state.outbox.length) {
+                throw new Error('outbox insert failed');
+            }
+            return attrs;
         }),
         mock.method(db.Organization, 'update', async (values: Row, o: { where: Row }) => {
             const hits = state.orgs.filter((org) => matches(org, o.where));

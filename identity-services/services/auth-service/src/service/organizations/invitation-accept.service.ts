@@ -2,7 +2,6 @@ import { HttpError } from '@launchpad/common';
 import { UniqueConstraintError, type Transaction } from 'sequelize';
 import { Invitation, Membership, Organization } from '@/db';
 import { sequelize } from '@/db/sequalize';
-import { publishInvitationAccepted } from '@/messaging/producer/org-events.message';
 import { ORG_ROLE } from '@/types/org-role';
 import { accountIdForEmail, normalizeEmail } from '@/utils/account-id';
 import { logger } from '@/utils/logger';
@@ -10,6 +9,7 @@ import { linkAccountForVerifiedIdentity } from '@/service/account-link.service';
 import { recordAuditEvent } from './audit-log.service';
 import { verifyInvitationToken } from './invitation.service';
 import { addMemberInTransaction } from './membership.service';
+import { enqueueInvitationAccepted } from './org-event-outbox.service';
 import { assertOrgsEnabled } from './org-guard';
 import { findCredentialRow, type CredentialRow } from './switch-org.service';
 
@@ -165,15 +165,15 @@ export const acceptInvitation = async (
             new_role: invitation.role,
         });
 
-        return { invitation, membership, accountId };
-    });
+        await enqueueInvitationAccepted(transaction, {
+            organization_id: membership.organization_id,
+            account_id: accountId,
+            email: invitation.email,
+            role: membership.role,
+            version: membership.version,
+        });
 
-    publishInvitationAccepted({
-        organization_id: accepted.membership.organization_id,
-        account_id: accepted.accountId,
-        email: accepted.invitation.email,
-        role: accepted.membership.role,
-        version: accepted.membership.version,
+        return { invitation, membership, accountId };
     });
 
     return {

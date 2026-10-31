@@ -721,9 +721,10 @@ Operational steps for shipping the auth-service side of F9. Order matters.
       (`account_id = NULL`, and have that person verify again) after checking the personal org
       and its mirrors were not already created for it.
 
-      The script runs on a confirm channel and exits `3` if the broker did not confirm every
-      publish, if any publish happened while disconnected, or if messages are still buffered.
-      Re-run with `--republish-existing` in that case.
+      `org.created` goes through the `org_event_outbox` table (see note 7). The script drains
+      the outbox itself on a confirm channel and exits `3` if any row is still pending
+      afterwards (the running service's dispatcher also delivers pending rows, and a re-run
+      with `--republish-existing` enqueues them again).
    4. Verify every mirror received the events (queries below). If any are missing, re-run with
       `-- --republish-existing`: it re-emits `org.created` for correctly owned existing orgs
       and writes nothing. Consumers ignore a redelivery whose `version` is not newer.
@@ -819,7 +820,9 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      when that Account holds the ACTIVE owner Membership in the infra's org, read from the
      mirror at request time (no cache). The creator no longer counts; an owner who did not
      create the infra is accepted. Anything else, including an unknown infra id, is a
-     uniform 403. Keys issued before `0043`, or with the flag off, carry no Account and are
+     uniform 403 that is still audited: a `PolicyRefreshEvent` is written with no infra link and
+     `refused_infrastructure_id` set, the key's `last_used_at` is updated, and
+     `policy_version` is never advanced. Keys issued before `0043`, or with the flag off, carry no Account and are
      refused under the flag: the owner re-runs the dashboard's *Refresh policy* snippet,
      which mints a new key. Flag off is unchanged (creator match).
    - **Role staleness bounds.** A removed member loses access within about 60s (cache TTL)
@@ -842,11 +845,26 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      demote the owner to admin, then promote the target (the partial unique owner index is
      checked per statement); update `Organization.owner_account_id`; two audit rows; revoke
      the old owner's refresh tokens. The old owner must sign in again.
-   - Events go out after commit, demote first. Each mirror applies per-membership versions
-     independently, so the gap between the two events is "no owner" (owner-only actions fail
-     closed), never "two owners". The Django mirrors derive `Organization.owner_account_id`
-     from the one active owner row (a second transfer cannot be ordered by
-     `Organization.version`, which is the first owner's membership version).
+   - Events go through a transactional outbox (`org_event_outbox`, created by `sync()`;
+     the pending-row index is applied in `applyPendingSchemaPatches`). Every publish site
+     (create org, add/revive/change/remove member, invitation accept, transfer) inserts its
+     row in the SAME transaction as the state change, so a rollback writes no event and a
+     crash after commit loses none. A dispatcher loop in the service takes a Postgres
+     advisory lock (one dispatcher cluster-wide), publishes pending rows in `seq` order on a
+     confirm channel, and marks them sent only after the broker confirmed the batch and no
+     channel loss or disconnected publish happened during it; otherwise rows stay pending
+     and it retries with exponential backoff (500ms up to 30s). Delivery is at-least-once;
+     the mirrors drop a repeated or older version. Sent rows are kept (no pruning yet).
+   - The transfer writes the demote row first, then the promote row. The promote also
+     carries `previous_owner_account_id` and `previous_owner_version`. Mirrors apply an OWNER
+     role atomically with demoting the named previous owner (stamping that version, so the
+     separate demote event is a no-op) and, defensively, demoting every other active owner by
+     role only. So a lost or delayed demote event cannot leave two owners; the worst
+     transient state is a briefly missing owner (owner-only actions fail closed). The
+     mirrors also derive `Organization.owner_account_id` from the one active owner row.
+     Caveat: an owner event for an old owner with a higher version than their row (only
+     possible from a forged or wrongly republished event) flips ownership back; the last
+     applied owner wins.
    - A personal organization (id = `uuid5(ORG_NAMESPACE, users.id)` for a user linked to
      the owner's Account) is never transferable: 409. Its id is derivable, Django stamps
      the legacy owner's infrastructures into it, and every GitHub login re-runs
@@ -859,10 +877,13 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      consumer lag plus at most the 60s role-cache TTL (eviction runs on the event). The
      token itself stays valid up to `JWT_EXPIRES_IN` (7d in `env.example`); only the role
      changes. Revoking refresh tokens stops new tokens from being minted.
-   - Not covered: `ResilientAmqpPublisher` drops the oldest buffered message when its
-     buffer is full and has no confirms in this path, so a lost demote event leaves the
-     mirror with two owners until the next event for that membership. Check each mirror for
-     orgs with other than one active owner:
+   - Rolling `ORGS_ENABLED` back off after a transfer is unsupported: the creator would
+     regain legacy owner powers and the new owner would have none. infrastructure-service
+     marks every infra in a transferred org (`created_by_non_owner_under_orgs`) when its
+     org.events consumer sees the owner move, and the existing startup guard then refuses to
+     boot with the flag off. The creator-to-Account mapping is not available in Django, so
+     the mark is per org, not per creator. Check each mirror for orgs with other than one
+     active owner:
 
      ```sql
      SELECT organization_id, count(*) FROM api_membership

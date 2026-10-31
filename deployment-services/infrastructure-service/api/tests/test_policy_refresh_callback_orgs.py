@@ -64,10 +64,14 @@ def _callback(factory, api_key, **payload):
     return infrastructure_policy_refresh_callback(request)
 
 
-def _events():
+def _assert_refusal_audited(infra, *, policy_version=None):
+    from api.models.infrastructure import Infrastructure
     from api.models.policy_refresh_event import PolicyRefreshEvent
 
-    return PolicyRefreshEvent.objects.count()
+    event = PolicyRefreshEvent.objects.get()
+    assert event.infrastructure_id is None
+    assert event.refused_infrastructure_id == infra.id
+    assert Infrastructure.objects.get(id=infra.id).policy_version == policy_version
 
 
 def test_issue_records_the_signed_account_claim_when_the_flag_is_on(orgs_on, factory, make_user):
@@ -125,7 +129,7 @@ def test_the_creator_is_refused_once_ownership_moved_to_someone_else(orgs_on, fa
     response = _callback(factory, plaintext, infra_id=str(infra.id))
 
     assert response.status_code == 403
-    assert _events() == 0
+    _assert_refusal_audited(infra)
 
 
 def test_a_creator_removed_from_the_org_is_refused(orgs_on, factory, make_user):
@@ -136,7 +140,7 @@ def test_a_creator_removed_from_the_org_is_refused(orgs_on, factory, make_user):
     response = _callback(factory, _issue_key(factory, creator, account), infra_id=str(infra.id))
 
     assert response.status_code == 403
-    assert _events() == 0
+    _assert_refusal_audited(infra)
 
 
 def test_an_admin_who_created_the_infra_is_refused(orgs_on, factory, make_user):
@@ -213,3 +217,29 @@ def test_flag_off_the_creator_is_still_matched_without_any_membership(settings, 
 
     assert response.status_code == 201
     assert PolicyRefreshEvent.objects.get(id=response.data["event_id"]).infrastructure_id == infra.id
+
+
+def test_a_refusal_is_audited_with_the_key_and_never_advances_the_policy_version(
+    orgs_on, factory, make_user,
+):
+    from api.models.infrastructure import Infrastructure
+    from api.models.policy_refresh_event import PolicyRefreshEvent
+    from api.models.script_api_key import ScriptApiKey
+
+    org, account, creator = make_org(), uuid.uuid4(), make_user()
+    _member(org, account, "admin")
+    infra = make_infra(owner=creator, organization=org)
+    plaintext = _issue_key(factory, creator, account)
+
+    response = _callback(
+        factory, plaintext, infra_id=str(infra.id), policy_version=9,
+        caller_arn="arn:aws:iam::123456789012:user/someone",
+    )
+
+    assert response.status_code == 403
+    event = PolicyRefreshEvent.objects.get()
+    assert (event.user_id, event.infrastructure_id) == (creator.id, None)
+    assert event.refused_infrastructure_id == infra.id
+    assert event.caller_arn == "arn:aws:iam::123456789012:user/someone"
+    assert ScriptApiKey.authenticate(plaintext).last_used_at is not None
+    assert Infrastructure.objects.get(id=infra.id).policy_version is None

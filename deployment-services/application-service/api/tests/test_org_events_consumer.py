@@ -507,8 +507,7 @@ def test_transfer_events_applied_in_the_other_order_converge_to_the_same_single_
     _deliver(consumer, "org.membership.changed", {
         "organization_id": org_id, "account_id": new_owner, "role": "owner", "version": 2,
     })
-    assert _active_owners(org_id) == {old_owner, new_owner}
-    assert _owner_column(org_id) == old_owner
+    assert _active_owners(org_id) == {new_owner}
 
     _deliver(consumer, "org.membership.changed", {
         "organization_id": org_id, "account_id": old_owner, "role": "admin", "version": 2,
@@ -574,3 +573,105 @@ def test_transfer_evicts_both_cached_roles(consumer, monkeypatch):
     })
 
     assert evicted == [(org_id, old_owner), (org_id, new_owner)]
+
+
+def _promote_payload(org_id, old_owner, new_owner, version=2, previous_version=2):
+    return {
+        "organization_id": org_id, "account_id": new_owner, "role": "owner", "version": version,
+        "previous_owner_account_id": old_owner, "previous_owner_version": previous_version,
+    }
+
+
+def _membership(org_id, account_id):
+    from api.models.membership import Membership
+    return Membership.objects.get(organization_id=org_id, account_id=account_id)
+
+
+@pytest.mark.django_db
+def test_promote_without_the_demote_event_still_leaves_exactly_one_owner(consumer):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+
+    _deliver(consumer, "org.membership.changed", _promote_payload(org_id, old_owner, new_owner))
+
+    assert _active_owners(org_id) == {new_owner}
+    assert _owner_column(org_id) == new_owner
+    previous = _membership(org_id, old_owner)
+    assert (previous.role, previous.version) == ("admin", 2)
+
+
+@pytest.mark.django_db
+def test_promote_then_demote_and_demote_then_promote_both_end_with_one_owner(consumer):
+    demote = lambda org_id, old_owner: {
+        "organization_id": org_id, "account_id": old_owner, "role": "admin", "version": 2,
+    }
+
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+    _deliver(consumer, "org.membership.changed", _promote_payload(org_id, old_owner, new_owner))
+    _deliver(consumer, "org.membership.changed", demote(org_id, old_owner))
+    assert _active_owners(org_id) == {new_owner}
+    assert _membership(org_id, old_owner).role == "admin"
+
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+    _deliver(consumer, "org.membership.changed", demote(org_id, old_owner))
+    _deliver(consumer, "org.membership.changed", _promote_payload(org_id, old_owner, new_owner))
+    assert _active_owners(org_id) == {new_owner}
+    assert _owner_column(org_id) == new_owner
+
+
+@pytest.mark.django_db
+def test_a_stale_promote_changes_nobody(consumer):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+    _deliver(consumer, "org.membership.changed", _promote_payload(org_id, old_owner, new_owner, version=3))
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "admin", "version": 4,
+    })
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": old_owner, "role": "owner", "version": 5,
+    })
+
+    _deliver(consumer, "org.membership.changed", _promote_payload(org_id, old_owner, new_owner, version=3))
+
+    assert _active_owners(org_id) == {old_owner}
+    assert _membership(org_id, new_owner).role == "admin"
+
+
+@pytest.mark.django_db
+def test_applying_an_owner_demotes_any_other_active_owner_by_role_only(consumer):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "owner", "version": 2,
+    })
+
+    assert _active_owners(org_id) == {new_owner}
+    displaced = _membership(org_id, old_owner)
+    assert (displaced.role, displaced.version) == ("admin", 1)
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": old_owner, "role": "viewer", "version": 2,
+    })
+    assert _membership(org_id, old_owner).role == "viewer"
+
+
+@pytest.mark.django_db
+def test_promote_evicts_the_displaced_owners_cached_role(consumer, monkeypatch):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+    evicted = []
+    consumer_module = __import__(type(consumer).__module__, fromlist=["OrgPermissions"])
+    monkeypatch.setattr(consumer_module.OrgPermissions, "evict", lambda o, a: evicted.append((o, a)))
+
+    _deliver(consumer, "org.membership.changed", _promote_payload(org_id, old_owner, new_owner))
+
+    assert evicted == [(org_id, new_owner), (org_id, old_owner)]
+
+
+@pytest.mark.django_db
+def test_a_non_integer_previous_owner_version_is_discarded(consumer):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+    payload = _promote_payload(org_id, old_owner, new_owner)
+    payload["previous_owner_version"] = "2"
+
+    ch = _deliver(consumer, "org.membership.changed", payload)
+
+    ch.basic_nack.assert_called_once_with(delivery_tag=1, requeue=False)
+    assert _active_owners(org_id) == {old_owner}

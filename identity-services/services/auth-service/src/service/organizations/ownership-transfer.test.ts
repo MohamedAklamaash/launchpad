@@ -125,6 +125,8 @@ test('events publish after commit, demote first, each carrying that membership b
                     account_id: target.account_id,
                     role: 'owner',
                     version: 2,
+                    previous_owner_account_id: owner.account_id,
+                    previous_owner_version: 2,
                 },
             },
         ]);
@@ -160,6 +162,56 @@ test('a failure mid-transaction leaves both roles, the org owner, tokens and eve
         assert.equal(h.state.audit.length, 0);
         assert.equal(h.state.refreshRevokedFor.length, 0);
         assert.equal(h.state.published.length, 0);
+    } finally {
+        await h.close();
+    }
+});
+
+test('a state change that rolls back leaves no outbox row, so nothing is ever published for it', async () => {
+    const { h, orgId, ownerRow, target, targetRow, fresh } = await setup();
+    try {
+        h.state.outboxFailOnCall = 2;
+        const res = await transfer(h, orgId, fresh(), { new_owner_account_id: target.account_id });
+
+        assert.equal(res.status, 500);
+        assert.equal(h.state.outbox.length, 0);
+        assert.equal(h.state.published.length, 0);
+        assert.equal(ownerRow.role, 'owner');
+        assert.equal(targetRow.role, 'developer');
+    } finally {
+        await h.close();
+    }
+});
+
+test('the promote and demote reach the outbox in that transaction, demote first', async () => {
+    const { h, orgId, owner, target, fresh } = await setup();
+    try {
+        await transfer(h, orgId, fresh(), { new_owner_account_id: target.account_id });
+
+        assert.deepEqual(
+            h.state.outbox.map((row) => [row.payload.account_id, row.payload.role]),
+            [
+                [owner.account_id, 'admin'],
+                [target.account_id, 'owner'],
+            ],
+        );
+        assert.equal(h.state.outbox[0]!.payload.previous_owner_account_id, undefined);
+        assert.equal(h.state.outbox[1]!.payload.previous_owner_account_id, owner.account_id);
+        assert.equal(h.state.outbox[1]!.payload.previous_owner_version, 2);
+    } finally {
+        await h.close();
+    }
+});
+
+test('a target Account shared by two credential rows is refused', async () => {
+    const { h, orgId, ownerRow, target, fresh } = await setup();
+    try {
+        h.addCredential('users', { account_id: target.account_id });
+        const res = await transfer(h, orgId, fresh(), { new_owner_account_id: target.account_id });
+
+        assert.equal(res.status, 409);
+        assert.equal(ownerRow.role, 'owner');
+        assert.equal(h.state.outbox.length, 0);
     } finally {
         await h.close();
     }

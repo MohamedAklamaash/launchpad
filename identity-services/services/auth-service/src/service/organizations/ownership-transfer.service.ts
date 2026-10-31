@@ -1,8 +1,7 @@
-import { HttpError, type OrgMembershipChangedPayload } from '@launchpad/common';
+import { HttpError } from '@launchpad/common';
 import type { Transaction } from 'sequelize';
 import { InvitedUser, Membership, Organization, User } from '@/db';
 import { sequelize } from '@/db/sequalize';
-import { publishMembershipChanged } from '@/messaging/producer/org-events.message';
 import { ORG_ROLE } from '@/types/org-role';
 import type { AccessTokenPayload } from '@/utils/handle-token';
 import { bumpMembershipVersion } from '@/utils/membership-version';
@@ -10,6 +9,7 @@ import { personalOrgId } from '@/utils/org-id';
 import { assertRecentAuth } from '@/utils/reauth';
 import { recordAuditEvent } from './audit-log.service';
 import { revokeRefreshTokens } from './membership.service';
+import { enqueueMembershipChanged } from './org-event-outbox.service';
 import { requireOrgOwner } from './org-access.service';
 import { assertOrgsEnabled } from './org-guard';
 
@@ -24,11 +24,6 @@ export interface TransferOwnershipResult {
     owner_account_id: string;
     previous_owner_account_id: string;
     previous_owner_role: typeof ORG_ROLE.ADMIN;
-}
-
-interface TransferOutcome {
-    demoted: OrgMembershipChangedPayload;
-    promoted: OrgMembershipChangedPayload;
 }
 
 const TARGET_REJECTED =
@@ -47,7 +42,9 @@ const lockActiveMembership = (
 
 // An email-verified credential is the only proof the Account belongs to a real person who
 // controls that address. A GitHub `User` row has no email_verified_at column (OAuth is the
-// verification), an `InvitedUser` row must carry one.
+// verification), an `InvitedUser` row must carry one. An Account held by more than one
+// credential row is refused: any holder could act as the new owner, and an inviter may have
+// chosen one holder's password (the same rule that keeps shared Accounts out of personal orgs).
 const hasVerifiedCredential = async (
     accountId: string,
     transaction: Transaction,
@@ -60,7 +57,9 @@ const hasVerifiedCredential = async (
             transaction,
         }),
     ]);
-    return users.length > 0 || invitedUsers.some((row) => row.email_verified_at != null);
+    const holders = [...users, ...invitedUsers];
+    if (holders.length !== 1) return false;
+    return users.length === 1 || invitedUsers[0]!.email_verified_at != null;
 };
 
 // A personal org (id = uuid5(users.id)) is the legacy owner's home: Django stamps their
@@ -123,7 +122,7 @@ const swapOwner = async (
     input: TransferOwnershipInput,
     ownerAccountId: string,
     transaction: Transaction,
-): Promise<TransferOutcome> => {
+): Promise<void> => {
     const { currentOwner, target } = await lockAndValidate(input, ownerAccountId, transaction);
     const targetOldRole = target.role;
 
@@ -156,20 +155,22 @@ const swapOwner = async (
     });
     await revokeRefreshTokens(ownerAccountId, transaction);
 
-    return {
-        demoted: {
-            organization_id: input.organizationId,
-            account_id: ownerAccountId,
-            role: ORG_ROLE.ADMIN,
-            version: demotedVersion,
-        },
-        promoted: {
-            organization_id: input.organizationId,
-            account_id: input.newOwnerAccountId,
-            role: ORG_ROLE.OWNER,
-            version: promotedVersion,
-        },
-    };
+    // Demote first in the outbox (seq order). The promote also names the account it
+    // displaces, so a mirror that never receives the demote still ends with one owner.
+    await enqueueMembershipChanged(transaction, {
+        organization_id: input.organizationId,
+        account_id: ownerAccountId,
+        role: ORG_ROLE.ADMIN,
+        version: demotedVersion,
+    });
+    await enqueueMembershipChanged(transaction, {
+        organization_id: input.organizationId,
+        account_id: input.newOwnerAccountId,
+        role: ORG_ROLE.OWNER,
+        version: promotedVersion,
+        previous_owner_account_id: ownerAccountId,
+        previous_owner_version: demotedVersion,
+    });
 };
 
 // Order of checks: authorize (404 non-member / 403 non-owner), then reauth, then one
@@ -185,16 +186,7 @@ export const transferOwnership = async (
         throw new HttpError(409, 'You already own this organization');
     }
 
-    const outcome = await sequelize.transaction((transaction) =>
-        swapOwner(input, owner.accountId, transaction),
-    );
-
-    // After commit, demote first. A mirror applies each membership version independently, so
-    // the window between the two events is "no owner" (owner-only actions fail closed), never
-    // "two owners" (both could delete, nuke or exit). Publishing is a FIFO buffer on one
-    // channel, so the order is the order a consumer queue sees.
-    publishMembershipChanged(outcome.demoted);
-    publishMembershipChanged(outcome.promoted);
+    await sequelize.transaction((transaction) => swapOwner(input, owner.accountId, transaction));
 
     return {
         organization_id: input.organizationId,

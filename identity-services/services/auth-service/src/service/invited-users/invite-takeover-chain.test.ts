@@ -34,6 +34,8 @@ const { HttpError } = await import('@launchpad/common');
 const { sequelize } = await import('@/db/sequalize');
 const { Account, InvitedUser, RefreshToken, User, UserOTP } = await import('@/db');
 const messageModule = await import('@/messaging/producer/user-created.message');
+const { stubOutbox } = await import('@/test-support/outbox-stub');
+await stubOutbox();
 const { InvitedUserService } = await import('@/service/invited-users/inviter-user.crud.service');
 const { InvitedUserAuthService } =
     await import('@/service/invited-users/invited-user.auth.service');

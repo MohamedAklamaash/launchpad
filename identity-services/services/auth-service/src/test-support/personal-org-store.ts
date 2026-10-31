@@ -25,8 +25,9 @@ export interface PublishedEvent {
 }
 
 export const installPersonalOrgStore = async () => {
-    const { Organization, Membership, MembershipAuditEvent } = await import('@/db');
-    const { orgEventsPublisher } = await import('@/messaging/producer/org-events.message');
+    const { Organization, Membership, MembershipAuditEvent, OrgEventOutbox } = await import('@/db');
+    const { orgEventsPublisher, publishOutboxEvent } =
+        await import('@/messaging/producer/org-events.message');
 
     const orgs = new Map<string, StoredOrg>();
     const memberships: StoredMembership[] = [];
@@ -61,6 +62,14 @@ export const installPersonalOrgStore = async () => {
             ) ?? null,
     );
     mock.method(MembershipAuditEvent, 'create', async (attrs: object) => attrs);
+    mock.method(
+        OrgEventOutbox,
+        'create',
+        async (attrs: { routing_key: string; payload: Record<string, unknown> }) => {
+            publishOutboxEvent(attrs.routing_key, attrs.payload, new Date());
+            return attrs;
+        },
+    );
     mock.method(orgEventsPublisher, 'publish', (routingKey: string, content: Buffer) => {
         const event = JSON.parse(content.toString()) as PublishedEvent;
         published.push({ routingKey, payload: event.payload });
