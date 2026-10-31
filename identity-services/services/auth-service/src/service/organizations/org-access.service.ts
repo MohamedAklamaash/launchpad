@@ -7,33 +7,29 @@ import { findCredentialRow } from './switch-org.service';
 
 const MANAGER_ROLES: readonly OrgRole[] = [ORG_ROLE.OWNER, ORG_ROLE.ADMIN];
 
-export interface OrgManager {
+export interface VerifiedCaller {
     accountId: string;
-    role: OrgRole;
     userName: string;
 }
+
+export interface ActiveMember extends VerifiedCaller {
+    role: OrgRole;
+}
+
+export type OrgManager = ActiveMember;
 
 const orgNotFound = () => new HttpError(404, 'Organization not found');
 
-interface ActiveMember {
-    accountId: string;
-    role: OrgRole;
-    userName: string;
-}
-
-// Resolves "who is asking" for owner/admin-only org routes. The token's `account_id` claim
-// is a lookup key, never the authorization itself: the credential row must still be
-// verified and still linked to that exact account, and an ACTIVE (non-tombstoned)
-// Membership must exist in the path's org. A caller who is not a member gets the same 404
-// as an org that does not exist, so org ids cannot be probed.
-const requireActiveMember = async (
+// The token's `account_id` claim is a lookup key, never the authorization itself: the
+// credential row must still be verified and still linked to that exact account. Null means
+// "not a verified caller"; each route decides how to word that.
+export const resolveVerifiedCaller = async (
     payload: AccessTokenPayload,
-    organizationId: string,
-): Promise<ActiveMember> => {
+): Promise<VerifiedCaller | null> => {
     assertOrgsEnabled();
 
     const claimedAccountId = payload.account_id;
-    if (!claimedAccountId) throw orgNotFound();
+    if (!claimedAccountId) return null;
 
     const credential = await findCredentialRow(payload.sub);
     if (
@@ -41,15 +37,41 @@ const requireActiveMember = async (
         credential.email_verified_at === null ||
         credential.account_id !== claimedAccountId
     ) {
-        throw orgNotFound();
+        return null;
     }
+    return { accountId: claimedAccountId, userName: credential.user_name };
+};
+
+export const requireVerifiedCaller = async (
+    payload: AccessTokenPayload,
+): Promise<VerifiedCaller> => {
+    const caller = await resolveVerifiedCaller(payload);
+    if (!caller) throw new HttpError(403, 'A verified account is required');
+    return caller;
+};
+
+// Resolves "who is asking" for org routes. On top of a verified caller, an ACTIVE
+// (non-tombstoned) Membership must exist in the path's org. A caller who is not a member
+// gets the same 404 as an org that does not exist, so org ids cannot be probed.
+export const requireActiveMember = async (
+    payload: AccessTokenPayload,
+    organizationId: string,
+): Promise<ActiveMember> => {
+    const caller = await resolveVerifiedCaller(payload);
+    if (!caller) throw orgNotFound();
 
     const membership = await Membership.findOne({
-        where: { organization_id: organizationId, account_id: claimedAccountId, removed_at: null },
+        where: { organization_id: organizationId, account_id: caller.accountId, removed_at: null },
     });
     if (!membership) throw orgNotFound();
 
-    return { accountId: claimedAccountId, role: membership.role, userName: credential.user_name };
+    return { ...caller, role: membership.role };
+};
+
+export const assertManager = (member: ActiveMember): void => {
+    if (!MANAGER_ROLES.includes(member.role)) {
+        throw new HttpError(403, 'Only an owner or admin can do this');
+    }
 };
 
 export const requireOrgManager = async (
@@ -57,9 +79,7 @@ export const requireOrgManager = async (
     organizationId: string,
 ): Promise<OrgManager> => {
     const member = await requireActiveMember(payload, organizationId);
-    if (!MANAGER_ROLES.includes(member.role)) {
-        throw new HttpError(403, 'Only an owner or admin can manage invitations');
-    }
+    assertManager(member);
     return member;
 };
 

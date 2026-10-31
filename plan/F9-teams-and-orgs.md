@@ -5,7 +5,8 @@
 `Invitation`/`MembershipAuditEvent` tables, `org.events` exchange, internal CRUD, auth-service,
 #149), ticket 3 (personal-org backfill + `organization_id` columns on infrastructure-service/
 application-service/payment-service, #151), and ticket 4 (`org.events` consumers mirroring
-Organization/Membership read-models in those same three services, #154) are merged. All
+Organization/Membership read-models in those same three services, #154) are merged, as are
+tickets 5-8; ticket 13 (org and member management HTTP surface) is in review. All
 ship behind `ORGS_ENABLED` (default off), so none changes request behavior yet. **Depends
 on:** nothing technical. **Blocked by:** nothing. The owner has since decided both Open
 Questions below: Stripe consolidation is deferred, and there is one global limit with no
@@ -618,6 +619,17 @@ cutover ticket).
     `roles{}` retirement is explicitly its own later ticket, not part of this plan — same
     "old path stays in the codebase pending its own separate retirement ticket" decision F7
     made for its CodeBuild path.
+13. **Org and member management HTTP surface** (shipped after ticket 8; numbered last so the
+    references to tickets 9-12 stay stable). auth-service plus gateway routes, all behind
+    `ORGS_ENABLED` (404 when off): `GET /organizations`, `POST /organizations {name}` (team org),
+    `PATCH /organizations/{id} {name}`, `GET /organizations/{id}/members`,
+    `PATCH /organizations/{id}/members/{accountId} {role}`,
+    `DELETE /organizations/{id}/members/{accountId}`. Tests: every change-role and remove cell
+    for all four roles, self-leave, personal-org rules, team-org create (server id, owner,
+    outbox event, sanitized name, per-account limit, fail-closed), viewer email visibility,
+    cross-org 404, tombstoned members, flag off, gateway routes. Decisions: Rollout note 8.
+    **Security review required before merge** (new owner/admin write surface and a new
+    org-creation path).
 
 ### Security pre-review
 
@@ -890,6 +902,67 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      WHERE role = 'owner' AND removed_at IS NULL
      GROUP BY organization_id HAVING count(*) <> 1;
      ```
+
+8. **Org and member management (ticket 13).** Routes are in `organization.routes.ts`
+   (auth-service) and `endpoints/organization.py` (gateway, UUID path params, `extra="forbid"`
+   bodies). Authorization is the ticket 6 ladder: verified credential, claim equals the row's
+   account, ACTIVE Membership in the path org; a non-member gets the missing-org 404.
+   - **`GET /organizations`** returns `{id, name, role, is_personal}` for the caller's ACTIVE
+     memberships only. `is_personal` describes the org (its id is `uuid5` of one of its owner's
+     `users.id`), not the caller, so a member invited into someone else's personal org sees
+     `true`. A caller without a verified credential gets 403.
+   - **`POST /organizations {name}`** creates a team org. The id comes from `Organization`'s
+     model default (a fresh `uuidv7`) and is never read from the request: the body schema is
+     strict, so any key but `name` is a 422. A uuidv7 can never equal a `uuid5` personal-org
+     id (the version nibble differs), and the full id is used, never a prefix. Needs a verified
+     credential whose Account is held by exactly one credential row (403 otherwise, nothing
+     spent). Limited to 5 per Account per hour (`budget:org-create:account:{id}`), 503 if Redis
+     is down. The name goes through `sanitizeDisplayName` (NFKC, letters/digits/space and
+     `'&(),_-`, 64 characters), now in `@launchpad/common` and shared with the invitation
+     email so the stored name is the rendered name; a name empty after sanitizing is a 422.
+     The caller is owner via `createOrganization`; `org.created` goes through the outbox.
+   - **Team orgs may own infrastructure.** Nothing in Django is specific to personal orgs:
+     infra create stamps the token's `org_id` after `require_token_org_capability`
+     (owner or admin of that org), `org_authz` then matches the row's `organization_id`
+     against the token and the mirrored Membership, and the policy-refresh callback accepts
+     the org's active owner. A user switches into the team org (`switch-org`) and creates the
+     infra there. Under the flag the global `super_admin` gate is off for create, so a
+     verified password account that owns or administers a team org can create infra; the
+     older "an invited user never owns an infra" statement (note 5) no longer holds. After
+     `POST /organizations` the Django mirror needs the `org.created` event before the new org
+     resolves a role; until the consumer applies it (lag, then the 60s cache TTL at worst) a
+     request in the new org is a 404. Not exercised in this PR's test run (no Django
+     environment); the existing `test_org_authz_matrix.py` create cases already use a random
+     non-personal org.
+   - **`GET /organizations/{id}/members`**: any active member. Returns `account_id`,
+     `display_name` (the Account's `user_name`, falling back to "Member"), `role`, `joined_at`
+     (the row's `created_at`; a revived member keeps the original date). Owner, admin and
+     developer also get `email`. A viewer does not: the viewer role is a stakeholder who needs
+     "is it up", not a contact list. `account_id` is `uuid5(email)`, so a viewer holding a
+     guessed email can still test whether it is a member; accepted.
+   - **`PATCH .../members/{accountId} {role}`**: owner or admin, via `changeMemberRole`. The
+     schema allows `admin`, `developer`, `viewer`; `owner` is a 422, an owner's own row is a
+     409 (even for the owner), so there is no path to or from owner except transfer. An admin
+     may change another admin and may change their own role downward.
+   - **`DELETE .../members/{accountId}`**: owner or admin removes any non-owner via
+     `removeMember`. Any active member may remove themselves (leave); "self" is the verified
+     credential's account compared to the path id. The owner gets 409 whether removed by an
+     admin or leaving ("transfer ownership first"). Removal revokes the member's refresh
+     tokens (every org, since tokens are per credential: leaving a team forces a re-login) and
+     pending invitations to their addresses, and publishes `org.membership.removed`.
+   - **Rename** (`PATCH /organizations/{id}`): owner or admin. Personal orgs may be renamed:
+     the name is cosmetic, the id never derives from it, and login never rewrites an existing
+     org. One `organization.renamed` audit row; no event, because the Django mirror stores no
+     name.
+   - **Delete is not implemented.** auth-service cannot see Django's infrastructure rows, so it
+     cannot prove the org owns none, and a deleted org would orphan infras stamped with its
+     id. Future work: a Django-side "org has no infra" check the delete route must call.
+   - **Personal orgs.** The owner cannot leave, be removed or be demoted (the owner-row rules
+     above), cannot transfer (ticket 8), and cannot delete (no delete route). Other members
+     can be invited (#162 allows any org), managed and can leave: team-like use of a personal
+     org is fine and expected, since legacy invitees are re-invited there (note 6).
+   - Rolling back the flag after team orgs hold infra is unsupported for the same reason as
+     transfer: members lose all access and the legacy `user` link covers only the creator.
 
 ## Open questions
 

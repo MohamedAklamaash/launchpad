@@ -1,4 +1,7 @@
+import { sanitizeDisplayName } from '@launchpad/common';
 import { renderEmail } from './layout';
+
+export { sanitizeDisplayName };
 
 // The organization name and the inviter's display name are customer-supplied and land
 // directly in this HTML email. renderEmail interpolates its inputs verbatim, so every
@@ -16,20 +19,6 @@ const ROLE_LABELS: Record<string, string> = {
     developer: 'Developer',
     viewer: 'Viewer',
 };
-
-const MAX_DISPLAY_NAME_LENGTH = 64;
-
-// Org and inviter names are attacker-controlled text inside a Launchpad-branded email.
-// Keep letters, digits, spaces and a few harmless marks, and drop anything that lets a mail
-// client auto-link text (":", "/", ".", "@"), so a name can't smuggle in a clickable URL.
-export const sanitizeDisplayName = (value: string): string =>
-    value
-        .normalize('NFKC')
-        .replace(/[^\p{L}\p{N} '&(),_-]/gu, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, MAX_DISPLAY_NAME_LENGTH)
-        .trim();
 
 export const getInvitationSubject = (organizationName: string): string => {
     const name = sanitizeDisplayName(organizationName) || 'a team';

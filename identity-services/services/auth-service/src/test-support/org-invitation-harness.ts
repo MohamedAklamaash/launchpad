@@ -43,10 +43,14 @@ export const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN;
 
 type Row = Record<string, unknown>;
 
+const matchesValue = (actual: unknown, expected: unknown): boolean => {
+    if (expected === null || typeof expected !== 'object') return actual === expected;
+    const list = Array.isArray(expected) ? expected : (expected as Record<symbol, unknown>)[Op.in];
+    return Array.isArray(list) ? list.includes(actual) : true;
+};
+
 const matches = (row: Row, where: Row): boolean =>
-    Object.entries(where).every(([key, value]) =>
-        value !== null && typeof value === 'object' ? true : row[key] === value,
-    );
+    Object.entries(where).every(([key, value]) => matchesValue(row[key], value));
 
 export interface Credential {
     id: string;
@@ -61,6 +65,7 @@ export const createHarness = async () => {
         users: [] as Row[],
         invitedUsers: [] as Row[],
         orgs: [] as Row[],
+        orgCreateAttrs: [] as Row[],
         memberships: [] as Row[],
         invitations: [] as Row[],
         accounts: [] as Row[],
@@ -202,6 +207,21 @@ export const createHarness = async () => {
             'findOne',
             async (o: { where: Row }) => state.memberships.find((m) => matches(m, o.where)) ?? null,
         ),
+        mock.method(db.Organization, 'create', async (attrs: Row) => {
+            state.orgCreateAttrs.push({ ...attrs });
+            const row = { ...attrs, id: attrs.id ?? randomUUID(), name: attrs.name };
+            state.orgs.push(row);
+            return row;
+        }),
+        mock.method(db.Organization, 'findAll', async (o: { where: Row }) =>
+            state.orgs.filter((org) => matches(org, o.where)),
+        ),
+        mock.method(db.Membership, 'findAll', async (o: { where: Row }) =>
+            state.memberships.filter((m) => matches(m, o.where)),
+        ),
+        mock.method(db.Account, 'findAll', async (o: { where: Row }) =>
+            state.accounts.filter((a) => matches(a, o.where)),
+        ),
         mock.method(db.User, 'findAll', async (o: { where: Row }) =>
             state.users.filter((u) => matches(u, o.where)),
         ),
@@ -237,7 +257,13 @@ export const createHarness = async () => {
         }),
         mock.method(db.Membership, 'create', async (attrs: Row) => {
             if (state.membershipCreateError) throw state.membershipCreateError;
-            const row = { id: randomUUID(), version: 1, removed_at: null, ...attrs };
+            const row = {
+                id: randomUUID(),
+                version: 1,
+                removed_at: null,
+                created_at: new Date(),
+                ...attrs,
+            };
             state.memberships.push(row);
             return row;
         }),
@@ -320,13 +346,31 @@ export const createHarness = async () => {
         return row;
     };
 
+    const addAccount = (credential: Credential) => {
+        const row = {
+            id: credential.account_id,
+            email: credential.email,
+            display_name: credential.user_name,
+        };
+        state.accounts.push(row);
+        return row;
+    };
+
     const addMembership = (
         organization_id: string,
         account_id: string,
         role: string,
         removed_at: Date | null = null,
     ) => {
-        const row = { id: randomUUID(), organization_id, account_id, role, version: 1, removed_at };
+        const row = {
+            id: randomUUID(),
+            organization_id,
+            account_id,
+            role,
+            version: 1,
+            removed_at,
+            created_at: new Date(),
+        };
         state.memberships.push(row);
         return row;
     };
@@ -363,6 +407,7 @@ export const createHarness = async () => {
         addOrg,
         addCredential,
         addMembership,
+        addAccount,
         tokenFor,
         call,
         newUniqueError: () => new UniqueConstraintError({ message: 'duplicate' }),
