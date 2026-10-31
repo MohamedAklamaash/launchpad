@@ -27,6 +27,9 @@ def _no_infra_queue(monkeypatch):
     monkeypatch.setattr("api.services.nuke_service.InfraQueue", fake)
     monkeypatch.setattr("api.services.infrastructure.InfraQueue", fake)
     monkeypatch.setattr("api.services.database_service.InfraQueue", fake)
+    # infrastructure_reprovision imports InfraQueue inside the view body, so it resolves
+    # the module attribute at call time; CI has no Redis to enqueue into.
+    monkeypatch.setattr("api.services.infra_queue.InfraQueue", fake)
 
 
 def legacy_token(user, **extra):
