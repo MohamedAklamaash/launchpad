@@ -1189,6 +1189,29 @@ def test_verify_ignores_deleted_vpc_resources_the_tagging_api_still_lists(make_n
     ec2.describe_subnets.assert_called_once_with(SubnetIds=["subnet-gone"])
 
 
+def test_verify_ignores_inactive_ecs_services_and_stopped_tasks(make_nuke_run):
+    """Real AWS: after a clean teardown the tagging API still listed the app's ECS service
+    (INACTIVE) and its last task (STOPPED); verify failed the nuke on them."""
+    from api.services.nuke_worker import _is_deleted_tombstone, _NukeContext
+
+    _owner, infra, _env, run = make_nuke_run(name="prod-infra")
+    ctx = _NukeContext(infra=infra, run=run)
+    ecs = MagicMock()
+    ecs.describe_services.side_effect = lambda cluster, services: {
+        "services": [{"status": "INACTIVE" if services[0].endswith("/gone") else "ACTIVE"}]
+    }
+    ecs.describe_tasks.side_effect = lambda cluster, tasks: {
+        "tasks": [{"lastStatus": "STOPPED" if tasks[0].endswith("/t-old") else "RUNNING"}]
+    }
+    base = "arn:aws:ecs:us-east-1:123456789012"
+    with patch.object(_NukeContext, "boto_client", lambda self, service: ecs):
+        assert _is_deleted_tombstone(ctx, f"{base}:service/c/gone")
+        assert not _is_deleted_tombstone(ctx, f"{base}:service/c/live")
+        assert _is_deleted_tombstone(ctx, f"{base}:task/c/t-old")
+        assert not _is_deleted_tombstone(ctx, f"{base}:task/c/t-live")
+    ecs.describe_services.assert_any_call(cluster="c", services=[f"{base}:service/c/gone"])
+
+
 def test_verify_ignores_inactive_ecs_cluster_and_deleting_task_definitions(make_nuke_run):
     from api.services.nuke_worker import _is_deleted_tombstone, _NukeContext
 
