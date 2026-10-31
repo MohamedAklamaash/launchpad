@@ -1,4 +1,5 @@
 import { randomBytes, createHash } from 'node:crypto';
+import type { Transaction } from 'sequelize';
 import { HttpError } from '@launchpad/common';
 import { Invitation } from '@/db';
 import { sequelize } from '@/db/sequalize';
@@ -13,7 +14,7 @@ import { recordAuditEvent } from './audit-log.service';
 const INVITATION_TOKEN_BYTES = 32;
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-const hashToken = (plaintext: string): string =>
+export const hashToken = (plaintext: string): string =>
     createHash('sha256').update(plaintext).digest('hex');
 
 export interface IssueInvitationInput {
@@ -76,27 +77,44 @@ export const issueInvitation = async (
     return { invitation, token };
 };
 
+export const isRedeemable = (invitation: Invitation): boolean =>
+    invitation.accepted_at === null &&
+    invitation.revoked_at === null &&
+    invitation.expires_at.getTime() > Date.now();
+
 // Single-use check mirrors issue_onboarding_token's callback-side verification: unused
-// (never accepted or revoked) and not past its TTL. Accepting the invitation (creating the
-// Account/Membership rows, publishing org.invitation.accepted) is the HTTP accept flow —
-// ticket 6, not this ticket — so this stops at "is this token currently redeemable".
-export const verifyInvitationToken = async (token: string): Promise<Invitation | null> => {
-    const invitation = await Invitation.findOne({ where: { token_hash: hashToken(token) } });
-    if (!invitation) return null;
-    if (invitation.accepted_at !== null || invitation.revoked_at !== null) return null;
-    if (invitation.expires_at.getTime() <= Date.now()) return null;
+// (never accepted or revoked) and not past its TTL. The accept flow passes its own
+// transaction so the row lock is held until the Membership write commits; without one
+// this is a plain read ("is this token currently redeemable").
+export const verifyInvitationToken = async (
+    token: string,
+    transaction?: Transaction,
+): Promise<Invitation | null> => {
+    const invitation = await Invitation.findOne({
+        where: { token_hash: hashToken(token) },
+        ...(transaction ? { transaction, lock: transaction.LOCK.UPDATE } : {}),
+    });
+    if (!invitation || !isRedeemable(invitation)) return null;
     return invitation;
 };
 
+// organizationId is required, not optional: an invitation id alone must never be enough to
+// revoke, or an admin of one org could revoke another org's invitation by id.
 export const revokeInvitation = async (
     invitationId: string,
+    organizationId: string,
     actorAccountId: string | null,
 ): Promise<void> => {
     assertOrgsEnabled();
 
     await sequelize.transaction(async (transaction) => {
         const invitation = await Invitation.findOne({
-            where: { id: invitationId, accepted_at: null, revoked_at: null },
+            where: {
+                id: invitationId,
+                organization_id: organizationId,
+                accepted_at: null,
+                revoked_at: null,
+            },
             transaction,
             lock: transaction.LOCK.UPDATE,
         });

@@ -51,54 +51,66 @@ export interface AddMemberInput {
 // existing version) rather than creating a second one — the unique (organization_id,
 // account_id) index already means there is at most one row per pair regardless of
 // removed_at, so "re-add" and "revive" are the same operation.
+export const addMemberInTransaction = async (
+    input: AddMemberInput,
+    transaction: Transaction,
+): Promise<Membership> => {
+    assertOrgsEnabled();
+    if (input.role === ORG_ROLE.OWNER) {
+        throw new HttpError(409, 'Cannot add a member as owner; use ownership transfer');
+    }
+
+    const existing = await Membership.findOne({
+        where: { organization_id: input.organizationId, account_id: input.accountId },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+    });
+
+    if (existing && existing.removed_at === null) {
+        throw new HttpError(409, 'Account is already a member of this organization');
+    }
+
+    let result: Membership;
+    let action: string;
+    if (existing) {
+        const newVersion = await reviveMembershipVersion(existing.id, input.role, transaction);
+        existing.role = input.role;
+        existing.removed_at = null;
+        existing.version = newVersion;
+        result = existing;
+        action = 'membership.revived';
+    } else {
+        result = await Membership.create(
+            {
+                organization_id: input.organizationId,
+                account_id: input.accountId,
+                role: input.role,
+            },
+            { transaction },
+        );
+        action = 'membership.added';
+    }
+
+    await recordAuditEvent(transaction, {
+        organization_id: input.organizationId,
+        actor_account_id: input.actorAccountId,
+        action,
+        target_account_id: input.accountId,
+        old_role: null,
+        new_role: input.role,
+    });
+    return result;
+};
+
 export const addMember = async (input: AddMemberInput): Promise<Membership> => {
     assertOrgsEnabled();
     if (input.role === ORG_ROLE.OWNER) {
         throw new HttpError(409, 'Cannot add a member as owner; use ownership transfer');
     }
 
-    const membership = await sequelize.transaction(async (transaction) => {
-        const existing = await Membership.findOne({
-            where: { organization_id: input.organizationId, account_id: input.accountId },
-            transaction,
-            lock: transaction.LOCK.UPDATE,
-        });
-
-        if (existing && existing.removed_at === null) {
-            throw new HttpError(409, 'Account is already a member of this organization');
-        }
-
-        let result: Membership;
-        let action: string;
-        if (existing) {
-            const newVersion = await reviveMembershipVersion(existing.id, input.role, transaction);
-            existing.role = input.role;
-            existing.removed_at = null;
-            existing.version = newVersion;
-            result = existing;
-            action = 'membership.revived';
-        } else {
-            result = await Membership.create(
-                {
-                    organization_id: input.organizationId,
-                    account_id: input.accountId,
-                    role: input.role,
-                },
-                { transaction },
-            );
-            action = 'membership.added';
-        }
-
-        await recordAuditEvent(transaction, {
-            organization_id: input.organizationId,
-            actor_account_id: input.actorAccountId,
-            action,
-            target_account_id: input.accountId,
-            old_role: null,
-            new_role: input.role,
-        });
-        return result;
-    });
+    const membership = await sequelize.transaction((transaction) =>
+        addMemberInTransaction(input, transaction),
+    );
 
     publishMembershipChanged({
         organization_id: membership.organization_id,

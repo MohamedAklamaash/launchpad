@@ -21,6 +21,10 @@ const incrementWithWindow = async (key: string, windowSeconds: number): Promise<
 // script through them against a single still-valid code.
 export const MAX_OTP_ATTEMPTS = 5;
 export const MAX_INVITES_PER_WINDOW = 3;
+// Per-organization `invites` bucket (plan/F9-teams-and-orgs.md, Decision: Invitations).
+// 20/hour is a deliberate pick: a real team onboards a handful of people at a time, and
+// the per-target-email cap above already bounds spam against any one address.
+export const MAX_ORG_INVITES_PER_WINDOW = 20;
 const INVITE_WINDOW_SECONDS = 60 * 60;
 // Matches invited-user.base.service.ts's createOTP expiry — the attempt counter can
 // never meaningfully outlive the OTP it's guarding.
@@ -149,5 +153,15 @@ export const otpAttempts = {
             INVITE_WINDOW_SECONDS,
         );
         return count <= MAX_INVITES_PER_WINDOW;
+    },
+
+    // Same fail-closed contract as consumeInviteSlot: throws on a Redis error. Key shape
+    // follows the plan's `budget:{bucket}:org:{org_id}`.
+    async consumeOrgInviteSlot(organizationId: string): Promise<boolean> {
+        const count = await incrementWithWindow(
+            `budget:invites:org:${organizationId}`,
+            INVITE_WINDOW_SECONDS,
+        );
+        return count <= MAX_ORG_INVITES_PER_WINDOW;
     },
 };

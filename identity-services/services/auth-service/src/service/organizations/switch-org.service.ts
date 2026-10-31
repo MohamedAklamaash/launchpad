@@ -7,7 +7,8 @@ import { canonicalizeUuid } from '@/utils/org-id';
 import { assertOrgsEnabled } from './org-guard';
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
 
-interface CredentialRow {
+export interface CredentialRow {
+    table: 'users' | 'invited_users';
     id: string;
     email: string;
     user_name: string;
@@ -31,13 +32,14 @@ interface CredentialRow {
 // /auth/refresh, which today only ever looks up InvitedUser (a pre-existing gap, not
 // something this ticket fixes). Tried in the same order superAdminMiddleware/upsertUser
 // treat as canonical: User first, InvitedUser second.
-const findCredentialRow = async (
+export const findCredentialRow = async (
     userId: string,
-    transaction: Transaction,
+    transaction?: Transaction,
 ): Promise<CredentialRow | null> => {
     const user = await User.findByPk(userId, { transaction });
     if (user) {
         return {
+            table: 'users',
             id: user.id,
             email: user.email,
             user_name: user.user_name,
@@ -52,6 +54,7 @@ const findCredentialRow = async (
     const invitedUser = await InvitedUser.findByPk(userId, { transaction });
     if (invitedUser) {
         return {
+            table: 'invited_users',
             id: invitedUser.id,
             email: invitedUser.email,
             user_name: invitedUser.user_name,

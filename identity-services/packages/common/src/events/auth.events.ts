@@ -6,6 +6,16 @@ export const NOTIFICATION_EVENT_QUEUE = 'notification-event';
 export const AUTHENTICATE_INVITED_USER_EVENT = 'authenticate-invited-user';
 export const FORGOT_PASSWORD_EVENT = 'forgot-password-event';
 export const INFRA_NOTIFICATION_EVENT = 'infra-notification-event';
+export const ORG_INVITATION_EMAIL_EVENT = 'org-invitation-email-event';
+
+export interface OrgInvitationEmailJob {
+    email: string;
+    token: string;
+    organization_name: string;
+    inviter_name: string;
+    role: string;
+    expires_at: string;
+}
 
 export interface AuthUserRegisteredPayload extends EventPayload {
     id: string;

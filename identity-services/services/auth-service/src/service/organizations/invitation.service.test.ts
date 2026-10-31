@@ -196,7 +196,7 @@ test('revokeInvitation marks the row revoked and records one audit event in the 
     const auditSpy = mock.method(MembershipAuditEvent, 'create', async (attrs: object) => attrs);
 
     try {
-        await revokeInvitation('invitation-1', 'account-1');
+        await revokeInvitation('invitation-1', 'org-1', 'account-1');
 
         assert.ok(fake.rows[0].revoked_at);
         assert.equal(auditSpy.mock.callCount(), 1);
@@ -221,7 +221,7 @@ test('revokeInvitation 404s on an unknown or already-used invitation, writing no
     const auditSpy = mock.method(MembershipAuditEvent, 'create', async (attrs: object) => attrs);
 
     try {
-        await assert.rejects(() => revokeInvitation('missing', 'account-1'), HttpError);
+        await assert.rejects(() => revokeInvitation('missing', 'org-1', 'account-1'), HttpError);
         assert.equal(auditSpy.mock.callCount(), 0);
     } finally {
         txSpy.mock.restore();
