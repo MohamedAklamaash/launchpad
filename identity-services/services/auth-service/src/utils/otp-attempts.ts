@@ -2,6 +2,7 @@ import Redis from 'ioredis';
 import { QueryTypes } from 'sequelize';
 import { redisConfig } from '@/client/redis';
 import { sequelize } from '@/db/sequalize';
+import { normalizeEmail } from '@/utils/account-id';
 
 const redis = new Redis(redisConfig);
 
@@ -19,6 +20,8 @@ const incrementWithWindow = async (key: string, windowSeconds: number): Promise<
 // A 6-digit OTP has only 1,000,000 possible values — without a cap, an attacker can
 // script through them against a single still-valid code.
 export const MAX_OTP_ATTEMPTS = 5;
+export const MAX_INVITES_PER_WINDOW = 3;
+const INVITE_WINDOW_SECONDS = 60 * 60;
 // Matches invited-user.base.service.ts's createOTP expiry — the attempt counter can
 // never meaningfully outlive the OTP it's guarding.
 const ATTEMPT_WINDOW_MINUTES = 10;
@@ -134,5 +137,17 @@ export const otpAttempts = {
             incrementWithWindow(`forgot-password-throttle:1h:${normalized}`, 60 * 60),
         ]);
         return perMinute > 1 || perHour > 5;
+    },
+
+    // Per-target-email cap on invites (register). Re-inviting replaces the single live
+    // REGISTER code and emails the target each time, so without a cap one inviter can
+    // spam a victim and keep invalidating their code. Throws on a Redis error: the
+    // caller fails closed, since an outage is not a reason to lift an abuse limit.
+    async consumeInviteSlot(email: string): Promise<boolean> {
+        const count = await incrementWithWindow(
+            `invite-throttle:${normalizeEmail(email)}`,
+            INVITE_WINDOW_SECONDS,
+        );
+        return count <= MAX_INVITES_PER_WINDOW;
     },
 };

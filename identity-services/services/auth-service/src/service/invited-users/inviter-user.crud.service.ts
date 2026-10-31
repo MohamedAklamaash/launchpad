@@ -11,6 +11,7 @@ import {
 } from '@/messaging/producer/user-created.message';
 import { AUTHENTICATE_INVITED_USER_EVENT } from '@launchpad/common';
 import { OTP_PURPOSE } from '@/types/otp-purpose';
+import { otpAttempts } from '@/utils/otp-attempts';
 
 export class InvitedUserService extends BaseService {
     public async listInvitedBy(inviterId: string) {
@@ -61,9 +62,21 @@ export class InvitedUserService extends BaseService {
         });
     }
 
+    private async enforceInviteLimit(email: string): Promise<void> {
+        let allowed: boolean;
+        try {
+            allowed = await otpAttempts.consumeInviteSlot(email);
+        } catch (error) {
+            console.error('invite rate limit check failed, refusing invite', error);
+            throw new HttpError(503, 'Invites are temporarily unavailable - try again shortly');
+        }
+        if (!allowed) throw new HttpError(429, 'Too many invites for this email - try again later');
+    }
+
     public async register(input: InvitedUserRegisterInput, super_user: string) {
         const { email, password, user_name, infra_id, role } = input;
         const invitedRole = clampInvitedRole(role);
+        await this.enforceInviteLimit(email);
         const committed = await sequelize.transaction(async (transaction) => {
             const existingUser = await InvitedUser.findOne({ where: { email }, transaction });
             const existingUserName = await InvitedUser.findOne({

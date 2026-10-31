@@ -1,3 +1,4 @@
+import { Transaction } from 'sequelize';
 import { githubHttpClient } from '@/utils/http-client';
 import { User } from '@/db';
 import { sequelize } from '@/db/sequalize';
@@ -14,6 +15,14 @@ import { BaseService } from '@/service/invited-users/invited-user.base.service';
 import { linkAccountForVerifiedIdentity } from '@/service/account-link.service';
 import { USER_ROLE } from '@/types/auth.invited_user.types';
 import { verifySessionToken } from '@/utils/handle-token';
+import { HttpError } from '@launchpad/common';
+import { logger } from '@/utils/logger';
+import { normalizeEmail } from '@/utils/account-id';
+
+const storedGithubId = (user: User): string | null => {
+    const github = (user.metadata as { github?: { id?: unknown } } | null)?.github;
+    return github?.id === undefined || github.id === null ? null : String(github.id);
+};
 
 export class UserFacadeService extends BaseService {
     private clientId = env.GITHUB_CLIENT_ID;
@@ -99,6 +108,39 @@ export class UserFacadeService extends BaseService {
         return { token, username, github_id: githubIdStr, avatar_url, email: resolvedEmail };
     }
 
+    // Only a row with no GitHub id on record (created before the id was stored) may be
+    // claimed by email. A row that already belongs to a different GitHub id is never
+    // handed to a new GitHub account that happens to hold the same verified email now;
+    // users.email is unique, so that case cannot get its own row and is refused.
+    private async bindLegacyUserByEmail(
+        githubData: GithubUserUpsertInput,
+        email: string,
+        transaction: Transaction,
+    ): Promise<User | null> {
+        const byEmail = await User.findOne({
+            where: { email },
+            transaction,
+            lock: Transaction.LOCK.UPDATE,
+        });
+        if (!byEmail) return null;
+        if (storedGithubId(byEmail) === null) return byEmail;
+
+        logger.warn(
+            {
+                githubEmailConflict: {
+                    email: normalizeEmail(email),
+                    existingUserId: byEmail.id,
+                    incomingGithubId: githubData.github_id,
+                },
+            },
+            'Refused GitHub login: email belongs to a User bound to a different GitHub id - needs manual review',
+        );
+        throw new HttpError(
+            409,
+            'This email is already linked to a different GitHub account. Contact support.',
+        );
+    }
+
     public async upsertUser(githubData: GithubUserUpsertInput) {
         return sequelize.transaction(async (transaction) => {
             let user = await User.findOne({
@@ -110,7 +152,7 @@ export class UserFacadeService extends BaseService {
             });
 
             if (!user && githubData.email) {
-                user = await User.findOne({ where: { email: githubData.email }, transaction });
+                user = await this.bindLegacyUserByEmail(githubData, githubData.email, transaction);
             }
 
             const githubMetadata = {

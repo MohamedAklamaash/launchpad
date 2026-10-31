@@ -5,10 +5,11 @@
 `Invitation`/`MembershipAuditEvent` tables, `org.events` exchange, internal CRUD, auth-service,
 #149), ticket 3 (personal-org backfill + `organization_id` columns on infrastructure-service/
 application-service/payment-service, #151), and ticket 4 (`org.events` consumers mirroring
-Organization/Membership read-models in those same three services, this PR) are merged. All
+Organization/Membership read-models in those same three services, #154) are merged. All
 ship behind `ORGS_ENABLED` (default off), so none changes request behavior yet. **Depends
-on:** nothing technical. **Blocked by:** two owner calls in Open Questions (Stripe
-consolidation, paid-tier limit overrides); everything else below is decided.
+on:** nothing technical. **Blocked by:** nothing. The owner has since decided both Open
+Questions below: Stripe consolidation is deferred, and there is one global limit with no
+per-org tiers.
 
 The owner is away; per instruction, every question below that has a defensible engineering
 answer is decided here, not deferred. Alternatives are noted briefly for each.
@@ -602,6 +603,50 @@ cutover ticket).
 three previously owner-only, AssumeRole-backed, customer-billed surfaces and introduces a new
 unauthenticated accept endpoint. Matches the project's own stated rule ("run a security
 pre-review on each slice before implementing it... it returned BLOCK twice on F2 alone").
+
+## Rollout notes
+
+Operational steps for shipping the auth-service side of F9. Order matters.
+
+1. **Boot the new auth-service before running `backfillAccounts`.** The `account_id` and
+   `email_verified_at` columns are added by `applyPendingSchemaPatches()` on boot
+   (`sequelize.sync()` never alters existing tables). The backfill
+   (`pnpm --filter auth-service backfill:accounts`) reads and writes those columns, so
+   running it against a database the new code has not yet booted against fails or links
+   nothing. Deploy, wait for the service to come up healthy, then run the backfill, then
+   review its collision log before enabling `ORGS_ENABLED`.
+2. **Re-invite previously-verified users whose code expired before this deploy.** The boot
+   patch sets `email_verified_at` only for rows that are `is_authenticated = true` at that
+   moment. A user who had verified, was then invited to another infra (which resets
+   `is_authenticated` to false), and let that code expire before the deploy has no
+   `email_verified_at`. They cannot sign in with a password and `backfillAccounts` will not
+   link them. They have to be re-invited so they can verify again.
+
+   Runbook:
+
+   1. List candidates (no live REGISTER code, never verified):
+
+      ```sql
+      SELECT iu.id, iu.email, iu.infra_id, iu.invited_by
+      FROM invited_users iu
+      WHERE iu.email_verified_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM invited_user_otp o
+          WHERE o.invited_user_id = iu.id AND o.purpose = 'register' AND o.expires_at > NOW()
+        );
+      ```
+
+   2. Ask the inviter (`invited_by`) to invite the same email to the same infra again from
+      the dashboard. This issues a fresh REGISTER code to the user's inbox.
+   3. The user enters the code. That sets `email_verified_at` and links the Account.
+   4. Re-run `backfillAccounts` (idempotent) if you want the link before they next sign in.
+
+   Invites are limited to 3 per target email per hour and fail with 503 if Redis is down, so
+   spread out re-invites for the same address and check Redis first if they all fail.
+3. **Run deployed environments with `NODE_ENV=production`.** The invite controller echoes
+   the OTP in the response body when `NODE_ENV` is `development` or `test`. That is a dev
+   convenience and must never be on in a deployed environment, staging included. Verify
+   the variable before enabling invites.
 
 ## Open questions
 
