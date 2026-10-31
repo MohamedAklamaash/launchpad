@@ -2,6 +2,11 @@ import { env } from '@/config/env';
 import nodemailer from 'nodemailer';
 import { logger } from '@/utils/logger';
 
+// nodemailer's debug mode writes the full SMTP conversation, message body included, to the
+// log. Invitation and OTP emails carry bearer secrets in their links, so the trace is
+// limited to local development.
+const SMTP_TRACE = env.NODE_ENV === 'development';
+
 const transporter = nodemailer.createTransport({
     host: env.MAIL_HOST,
     port: 465, // Force SSL
@@ -10,8 +15,8 @@ const transporter = nodemailer.createTransport({
         user: env.MAIL_USER,
         pass: env.MAIL_APP_PASSWORD.trim(),
     },
-    logger: true,
-    debug: true,
+    logger: SMTP_TRACE,
+    debug: SMTP_TRACE,
 });
 
 transporter.verify((error, _success) => {

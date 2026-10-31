@@ -4,10 +4,17 @@ import {
     NOTIFICATION_EVENT_QUEUE,
     FORGOT_PASSWORD_EVENT,
     INFRA_NOTIFICATION_EVENT,
+    ORG_INVITATION_EMAIL_EVENT,
+    type OrgInvitationEmailJob,
 } from '@launchpad/common';
 import { getAuthEmailTemplate } from '@/templates/auth-email.template';
 import { getForgotPasswordTemplate } from '@/templates/forgot-password.template';
 import { getInfraEmailTemplate, getInfraEmailSubject } from '@/templates/infra-email.template';
+import {
+    buildInvitationAcceptUrl,
+    getInvitationSubject,
+    getInvitationTemplate,
+} from '@/templates/invitation.template';
 import { sendMail } from '@/service/mail.service';
 import { notificationService } from '@/service/notification.service';
 import { env } from '@/config/env';
@@ -108,6 +115,38 @@ export const userEventsWorker = new Worker(
                     infra_id,
                     source: event,
                 });
+                break;
+            }
+
+            case ORG_INVITATION_EMAIL_EVENT: {
+                // The job carries a bearer token. Log the job id only: never the payload,
+                // the token, the link, or the recipient.
+                const invitation = job.data as Partial<OrgInvitationEmailJob>;
+                const acceptUrl =
+                    invitation.token && env.DASHBOARD_URL
+                        ? buildInvitationAcceptUrl(env.DASHBOARD_URL, invitation.token)
+                        : undefined;
+                const expiresAt = new Date(invitation.expires_at ?? '');
+
+                if (!invitation.email || !acceptUrl || Number.isNaN(expiresAt.getTime())) {
+                    throw new UnrecoverableError(
+                        `Job ${job.id} (${job.name}): missing recipient, token, expiry or a usable DASHBOARD_URL`,
+                    );
+                }
+
+                const html = getInvitationTemplate({
+                    organizationName: invitation.organization_name ?? '',
+                    inviterName: invitation.inviter_name ?? '',
+                    role: invitation.role ?? '',
+                    expiresAt,
+                    acceptUrl,
+                });
+                logger.info({ job_id: job.id }, 'Sending organization invitation email');
+                await sendMail(
+                    invitation.email,
+                    getInvitationSubject(invitation.organization_name ?? ''),
+                    html,
+                );
                 break;
             }
 

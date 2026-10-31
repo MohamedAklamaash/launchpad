@@ -587,6 +587,12 @@ cutover ticket).
 10. **Frontend**: org switcher, members page, invite/accept UI, role-gated UI via
     `useOrgRole()`, settings billing tab. Tests: role-gated controls hidden/disabled per role
     (component tests), E2E invite-to-accept-to-member-visible flow.
+    **Accept page requirements (from the ticket 6 security review):** the invitation token
+    arrives in the URL fragment (`#token=...`). The page must scrub it with
+    `history.replaceState` before any analytics or session-replay script loads, must never
+    move it into a query string or a `?next=` value when bouncing through login (keep it in
+    memory or sessionStorage across the login redirect), and must send it with
+    `POST /api/invitations/accept` carrying only the bearer header and the JSON body.
 11. **Audit log HTTP surface** (added to the same `endpoints/organization.py` gateway router
     from ticket 6) **+ observability** (structured log line, role-change-rate metric,
     owner-role-change-attempt alert). Tests: every mutation produces exactly one audit row in
@@ -647,6 +653,23 @@ Operational steps for shipping the auth-service side of F9. Order matters.
    the OTP in the response body when `NODE_ENV` is `development` or `test`. That is a dev
    convenience and must never be on in a deployed environment, staging included. Verify
    the variable before enabling invites.
+
+4. **Invitations (ticket 6) deviate from the Decision text in three ways, on purpose.**
+   - Accept is `POST /api/invitations/accept {token}`, not `GET /invitations/{token}/accept`.
+     The token stays out of URLs, gateway access logs and `Referer`. The email link is
+     `{DASHBOARD_URL origin}/invitations/accept#token=...` (fragment, never sent to a server);
+     the dashboard page that reads the fragment and POSTs it is a frontend ticket and does
+     not exist yet, so leave `ORGS_ENABLED` off until it ships.
+   - Accept requires a session JWT as well as the token. `linkAccountForVerifiedIdentity`
+     needs a credential row, and "the email's owner is the one accepting" is proven by that
+     row being email-verified (`InvitedUser.email_verified_at`, or a GitHub `User`, whose
+     email is the primary verified one) with a normalized email equal to the invitation's.
+     An invitee with no credential row has to sign in with GitHub first; there is no
+     password-signup path for them yet.
+   - The per-org `invites` bucket is a Redis counter in auth-service (`budget:invites:org:{id}`,
+     20 per hour), because `customer_call_budget` is Python-only. It fails closed (503).
+   - `DASHBOARD_URL` must be set on notification-service, or invitation email jobs fail
+     permanently (the link cannot be built).
 
 ## Open questions
 
