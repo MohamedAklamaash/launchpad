@@ -74,6 +74,9 @@ const applyPendingSchemaPatches = async () => {
     await sequelize.query(
         'ALTER TABLE invited_users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ',
     );
+    await sequelize.query(
+        'ALTER TABLE invited_users ADD COLUMN IF NOT EXISTS password_reset_required_at TIMESTAMPTZ',
+    );
     // One-time backfill from the best signal available at the moment this column is
     // added: a row currently is_authenticated=true has, by definition, completed OTP
     // verification at least once. WHERE email_verified_at IS NULL makes this an

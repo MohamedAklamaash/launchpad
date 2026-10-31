@@ -26,7 +26,13 @@ process.env.ORGS_ENABLED = 'true';
 const { orgEventsPublisher, verifyOrgEventsDelivered } =
     await import('@/messaging/producer/org-events.message');
 
-const stubPublisher = (state: { pending: number; buffered: number; confirmError?: Error }) => [
+const stubPublisher = (state: {
+    pending: number;
+    buffered: number;
+    losses?: number;
+    confirmError?: Error;
+}) => [
+    mock.method(orgEventsPublisher, 'confirmChannelLossCount', () => state.losses ?? 0),
     mock.method(orgEventsPublisher, 'pendingCount', () => state.pending),
     mock.method(orgEventsPublisher, 'bufferedWhileDisconnectedCount', () => state.buffered),
     mock.method(orgEventsPublisher, 'waitForConfirms', async () => {
@@ -72,6 +78,17 @@ test('not delivered when the broker nacks or the confirm wait fails', async () =
         const report = await verifyOrgEventsDelivered();
         assert.equal(report.delivered, false);
         assert.equal(report.error, 'nacked');
+    } finally {
+        restoreAll(spies);
+    }
+});
+
+test('not delivered when the connection dropped and reconnected during the run, even if the new channel confirms', async () => {
+    const spies = stubPublisher({ pending: 0, buffered: 0, losses: 1 });
+    try {
+        const report = await verifyOrgEventsDelivered();
+        assert.equal(report.delivered, false);
+        assert.equal(report.connectionLosses, 1);
     } finally {
         restoreAll(spies);
     }

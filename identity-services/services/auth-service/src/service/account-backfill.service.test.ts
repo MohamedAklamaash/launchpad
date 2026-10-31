@@ -29,6 +29,20 @@ const { Account, InvitedUser, User } = await import('@/db');
 const { backfillAccounts } = await import('@/service/account-backfill.service');
 const { accountIdForEmail } = await import('@/utils/account-id');
 const { Op } = await import('sequelize');
+const { sequelize } = await import('@/db/sequalize');
+
+// Ordered log of lock / holder re-check / link calls, plus a hook that runs right after the
+// lock is taken so a test can model another writer claiming the Account before the re-check.
+const events: string[] = [];
+let afterLock: (() => void) | null = null;
+
+mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+mock.method(sequelize, 'query', async (sql: string, opts: { replacements: { key: string } }) => {
+    assert.match(sql, /pg_advisory_xact_lock\(hashtext\(:key\)\)/);
+    events.push(`lock:${opts.replacements.key}`);
+    afterLock?.();
+    return [];
+});
 
 interface FakeRow {
     id: string;
@@ -50,12 +64,17 @@ const makeFakeTable = () => {
         // group-linking call (where.id IN [...], account_id: null) and, on
         // InvitedUser specifically, the "unlink stale pre-fix links" call (where:
         // { email_verified_at: null, account_id: { [Op.ne]: null } }, no `id` key).
+        findOne: async (opts: { where: { account_id: string } }) => {
+            events.push('recheck');
+            return rows.find((row) => row.account_id === opts.where.account_id) ?? null;
+        },
         update: async (
             values: Record<string, unknown>,
             opts: { where: Record<string, unknown> },
         ) => {
             let affected = 0;
             if ('id' in opts.where) {
+                events.push('link');
                 const ids = (opts.where.id as { [Op.in]: string[] })[Op.in];
                 for (const row of rows) {
                     if (ids.includes(row.id) && row.account_id === null) {
@@ -133,6 +152,8 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+    const findOneUsersSpy = mock.method(User, 'findOne', fakeUsers.findOne);
+    const findOneInvitedSpy = mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne);
 
     try {
         const first = await backfillAccounts();
@@ -183,6 +204,8 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
+        findOneUsersSpy.mock.restore();
+        findOneInvitedSpy.mock.restore();
     }
 });
 
@@ -207,6 +230,8 @@ test('backfillAccounts never overwrites a row already linked to a different acco
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+    const findOneUsersSpy = mock.method(User, 'findOne', fakeUsers.findOne);
+    const findOneInvitedSpy = mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne);
 
     try {
         const result = await backfillAccounts();
@@ -220,6 +245,8 @@ test('backfillAccounts never overwrites a row already linked to a different acco
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
+        findOneUsersSpy.mock.restore();
+        findOneInvitedSpy.mock.restore();
     }
 });
 
@@ -242,6 +269,8 @@ test('backfillAccounts links neither row of a case-only collision within the sam
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+    const findOneUsersSpy = mock.method(User, 'findOne', fakeUsers.findOne);
+    const findOneInvitedSpy = mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne);
 
     try {
         const result = await backfillAccounts();
@@ -258,6 +287,8 @@ test('backfillAccounts links neither row of a case-only collision within the sam
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
+        findOneUsersSpy.mock.restore();
+        findOneInvitedSpy.mock.restore();
     }
 });
 
@@ -300,6 +331,8 @@ test("backfillAccounts never links an unverified InvitedUser, even one sharing a
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+    const findOneUsersSpy = mock.method(User, 'findOne', fakeUsers.findOne);
+    const findOneInvitedSpy = mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne);
 
     try {
         const result = await backfillAccounts();
@@ -330,6 +363,8 @@ test("backfillAccounts never links an unverified InvitedUser, even one sharing a
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
+        findOneUsersSpy.mock.restore();
+        findOneInvitedSpy.mock.restore();
     }
 });
 
@@ -361,6 +396,8 @@ test('backfillAccounts unlinks a stale pre-fix account_id on an unverified row',
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+    const findOneUsersSpy = mock.method(User, 'findOne', fakeUsers.findOne);
+    const findOneInvitedSpy = mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne);
 
     try {
         const result = await backfillAccounts();
@@ -378,6 +415,8 @@ test('backfillAccounts unlinks a stale pre-fix account_id on an unverified row',
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
+        findOneUsersSpy.mock.restore();
+        findOneInvitedSpy.mock.restore();
     }
 });
 
@@ -401,6 +440,8 @@ test('backfillAccounts leaves a verified rows account_id untouched (no stale unl
     const bulkCreateSpy = mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate);
     const updateUsersSpy = mock.method(User, 'update', fakeUsers.update);
     const updateInvitedSpy = mock.method(InvitedUser, 'update', fakeInvitedUsers.update);
+    const findOneUsersSpy = mock.method(User, 'findOne', fakeUsers.findOne);
+    const findOneInvitedSpy = mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne);
 
     try {
         const result = await backfillAccounts();
@@ -414,6 +455,8 @@ test('backfillAccounts leaves a verified rows account_id untouched (no stale unl
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
+        findOneUsersSpy.mock.restore();
+        findOneInvitedSpy.mock.restore();
     }
 });
 
@@ -444,6 +487,8 @@ test('backfillAccounts never links a verified row into an Account another row al
         mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate),
         mock.method(User, 'update', fakeUsers.update),
         mock.method(InvitedUser, 'update', fakeInvitedUsers.update),
+        mock.method(User, 'findOne', fakeUsers.findOne),
+        mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne),
     ];
 
     try {
@@ -455,6 +500,83 @@ test('backfillAccounts never links a verified row into an Account another row al
             assert.equal(fakeUsers.rows[0].account_id, heldId, `run ${run}`);
         }
     } finally {
+        spies.forEach((spy) => spy.mock.restore());
+    }
+});
+
+test('each link runs under the account-link advisory lock and re-checks holders inside it', async () => {
+    const fakeUsers = makeFakeTable();
+    const fakeInvitedUsers = makeFakeTable();
+    const fakeAccounts = makeFakeAccounts();
+    fakeUsers.rows.push({ id: 'u1', email: 'one@example.com', user_name: 'one', account_id: null });
+    events.length = 0;
+
+    const spies = [
+        mock.method(User, 'findAll', fakeUsers.findAll),
+        mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll),
+        mock.method(Account, 'findAll', fakeAccounts.findAll),
+        mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate),
+        mock.method(User, 'update', fakeUsers.update),
+        mock.method(InvitedUser, 'update', fakeInvitedUsers.update),
+        mock.method(User, 'findOne', fakeUsers.findOne),
+        mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne),
+    ];
+
+    try {
+        const result = await backfillAccounts();
+
+        assert.equal(result.usersLinked, 1);
+        assert.deepEqual(events, [
+            `lock:account-link:${accountIdForEmail('one@example.com')}`,
+            'recheck',
+            'recheck',
+            'link',
+        ]);
+    } finally {
+        spies.forEach((spy) => spy.mock.restore());
+    }
+});
+
+test('a row that claims the Account after the plan was made but before the lock is not merged into', async () => {
+    const fakeUsers = makeFakeTable();
+    const fakeInvitedUsers = makeFakeTable();
+    const fakeAccounts = makeFakeAccounts();
+    const accountId = accountIdForEmail('race@example.com');
+    fakeUsers.rows.push({
+        id: 'u1',
+        email: 'race@example.com',
+        user_name: 'one',
+        account_id: null,
+    });
+    afterLock = () => {
+        fakeInvitedUsers.rows.push({
+            id: 'live-linked',
+            email: 'race@example.com',
+            user_name: 'two',
+            account_id: accountId,
+            email_verified_at: new Date(),
+        });
+    };
+
+    const spies = [
+        mock.method(User, 'findAll', fakeUsers.findAll),
+        mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll),
+        mock.method(Account, 'findAll', fakeAccounts.findAll),
+        mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate),
+        mock.method(User, 'update', fakeUsers.update),
+        mock.method(InvitedUser, 'update', fakeInvitedUsers.update),
+        mock.method(User, 'findOne', fakeUsers.findOne),
+        mock.method(InvitedUser, 'findOne', fakeInvitedUsers.findOne),
+    ];
+
+    try {
+        const result = await backfillAccounts();
+
+        assert.equal(result.usersLinked, 0);
+        assert.equal(result.sharedAccountRowsSkipped, 1);
+        assert.equal(fakeUsers.rows[0]!.account_id, null);
+    } finally {
+        afterLock = null;
         spies.forEach((spy) => spy.mock.restore());
     }
 });

@@ -1,5 +1,6 @@
-import { Op } from 'sequelize';
+import { Op, type Transaction } from 'sequelize';
 import { Account, InvitedUser, User } from '@/db';
+import { sequelize } from '@/db/sequalize';
 import { accountIdForEmail, normalizeEmail } from '@/utils/account-id';
 import { logger } from '@/utils/logger';
 
@@ -131,6 +132,56 @@ const planLinks = (groups: Map<string, EmailGroup>) => {
     return { linkable, sharedAccountRowsSkipped };
 };
 
+interface GroupLinkOutcome {
+    usersLinked: number;
+    invitedUsersLinked: number;
+    skipped: number;
+}
+
+const holdsAccount = async (accountId: string, transaction: Transaction): Promise<boolean> => {
+    const [user, invitedUser] = await Promise.all([
+        User.findOne({ where: { account_id: accountId }, transaction }),
+        InvitedUser.findOne({ where: { account_id: accountId }, transaction }),
+    ]);
+    return user !== null || invitedUser !== null;
+};
+
+// Same advisory lock as linkAccountForVerifiedIdentity, so a live link and this pass cannot
+// both pass their holder check before either writes. The holder check is repeated under the
+// lock because the plan above was computed from a snapshot taken before it.
+const linkGroupUnderLock = (group: EmailGroup): Promise<GroupLinkOutcome> =>
+    sequelize.transaction(async (transaction) => {
+        await sequelize.query('SELECT pg_advisory_xact_lock(hashtext(:key))', {
+            replacements: { key: `account-link:${group.accountId}` },
+            transaction,
+        });
+
+        const rowCount = group.userIds.length + group.invitedUserIds.length;
+        if (await holdsAccount(group.accountId, transaction)) {
+            logger.warn(
+                { accountBackfillSharedAccount: { accountId: group.accountId, raced: true } },
+                'Account backfill: Account was claimed by another row before the link - skipped',
+            );
+            return { usersLinked: 0, invitedUsersLinked: 0, skipped: rowCount };
+        }
+
+        let usersLinked = 0;
+        let invitedUsersLinked = 0;
+        if (group.userIds.length > 0) {
+            [usersLinked] = await User.update(
+                { account_id: group.accountId },
+                { where: { id: { [Op.in]: group.userIds }, account_id: null }, transaction },
+            );
+        }
+        if (group.invitedUserIds.length > 0) {
+            [invitedUsersLinked] = await InvitedUser.update(
+                { account_id: group.accountId },
+                { where: { id: { [Op.in]: group.invitedUserIds }, account_id: null }, transaction },
+            );
+        }
+        return { usersLinked, invitedUsersLinked, skipped: 0 };
+    });
+
 // Every normalized email backed by more than one credential row across the FULL set
 // (verified and unverified together) — logged for manual review regardless of whether
 // this pass actually links anything for that email. This is what makes an
@@ -254,23 +305,13 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
 
     let usersLinked = 0;
     let invitedUsersLinked = 0;
+    let racedSkipped = 0;
 
     for (const group of groups.values()) {
-        if (group.userIds.length > 0) {
-            const [linked] = await User.update(
-                { account_id: group.accountId },
-                { where: { id: { [Op.in]: group.userIds }, account_id: null } },
-            );
-            usersLinked += linked;
-        }
-
-        if (group.invitedUserIds.length > 0) {
-            const [linked] = await InvitedUser.update(
-                { account_id: group.accountId },
-                { where: { id: { [Op.in]: group.invitedUserIds }, account_id: null } },
-            );
-            invitedUsersLinked += linked;
-        }
+        const outcome = await linkGroupUnderLock(group);
+        usersLinked += outcome.usersLinked;
+        invitedUsersLinked += outcome.invitedUsersLinked;
+        racedSkipped += outcome.skipped;
     }
 
     const result: AccountBackfillResult = {
@@ -280,7 +321,7 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
         collisionGroups,
         unverifiedRowsSkipped,
         staleLinksUnlinked,
-        sharedAccountRowsSkipped,
+        sharedAccountRowsSkipped: sharedAccountRowsSkipped + racedSkipped,
     };
 
     logger.info({ accountBackfill: result }, 'Account backfill pass complete');

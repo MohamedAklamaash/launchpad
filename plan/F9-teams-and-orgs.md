@@ -376,6 +376,11 @@ flagged for the required pre-review (see Risks):
   (F6) — widening or weakening either would contradict a decision already made under a
   security pre-review and is explicitly out of scope here.
 
+**Owner decision (2026-10-31): developers keep spend authority.** A `developer` can create
+applications and change cpu, memory, port, branch and dockerfile path. Those cells stay as
+decided above and were reviewed and accepted by the owner as a known cost-control trade-off,
+not an open finding.
+
 Admin cannot grant or hold the `owner` role, cannot remove or demote the org's owner, and
 cannot touch billing — enforced by: the partial-unique-index invariant (only one `owner` row
 can ever exist) plus an explicit role-transition check (`new_role == 'owner'` requires
@@ -723,6 +728,23 @@ Operational steps for shipping the auth-service side of F9. Order matters.
       `-- --republish-existing`: it re-emits `org.created` for correctly owned existing orgs
       and writes nothing. Consumers ignore a redelivery whose `version` is not newer.
    5. Only then set `ORGS_ENABLED=true` on the long-running services.
+
+   **Reset inviter-chosen passwords before the flip.** Before verify-time reset existed, an
+   inviter chose the password on the row they created, and verified invitees kept it, so the
+   inviter can still log in as those rows. There is no signal for whether an invitee later
+   changed it, so the script resets **every** verified `invited_users` row (unverified rows are
+   handled at verification). Steps:
+
+   1. Send the notice first: affected invitees will have to use "Forgot password" once.
+   2. Boot the new auth-service (adds `password_reset_required_at`).
+   3. Dry run, which only prints the count:
+      `pnpm --filter auth-service reset:inviter-passwords -- --dry-run`
+   4. Run it: `pnpm --filter auth-service reset:inviter-passwords`. Optional
+      `-- --verified-before=<ISO date>` skips rows verified after the verify-time fix shipped.
+   5. It sets an unusable random hash, sets `password_reset_required_at`, and revokes the
+      rows' refresh tokens (access tokens expire on their own, 15 minutes). Re-running skips
+      marked rows. Login for a marked row returns 401 "Password reset required"; completing
+      forgot-password clears the marker. It never runs automatically.
 
    After the flag is on, `upsertUser` ensures the personal org on each GitHub login (same
    idempotent, no-steal logic), so new signups need no backfill. A failure there is logged

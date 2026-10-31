@@ -72,6 +72,7 @@ export interface OrgEventsDeliveryReport {
     delivered: boolean;
     pending: number;
     bufferedWhileDisconnected: number;
+    connectionLosses: number;
     error?: string;
 }
 
@@ -80,6 +81,7 @@ export interface OrgEventsDeliveryReport {
 export const verifyOrgEventsDelivered = async (): Promise<OrgEventsDeliveryReport> => {
     const pending = orgEventsPublisher.pendingCount();
     const bufferedWhileDisconnected = orgEventsPublisher.bufferedWhileDisconnectedCount();
+    const connectionLosses = orgEventsPublisher.confirmChannelLossCount();
     let error: string | undefined;
     try {
         await orgEventsPublisher.waitForConfirms();
@@ -87,9 +89,14 @@ export const verifyOrgEventsDelivered = async (): Promise<OrgEventsDeliveryRepor
         error = err instanceof Error ? err.message : String(err);
     }
     return {
-        delivered: pending === 0 && bufferedWhileDisconnected === 0 && error === undefined,
+        delivered:
+            pending === 0 &&
+            bufferedWhileDisconnected === 0 &&
+            connectionLosses === 0 &&
+            error === undefined,
         pending,
         bufferedWhileDisconnected,
+        connectionLosses,
         ...(error === undefined ? {} : { error }),
     };
 };

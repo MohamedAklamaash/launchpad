@@ -26,6 +26,13 @@ export class InvitedUserAuthService extends BaseService {
             const user = await InvitedUser.findOne({ where: { email }, transaction });
             if (!user) throw new HttpError(404, 'User not found');
 
+            if (user.password_reset_required_at) {
+                throw new HttpError(
+                    401,
+                    'Password reset required - use "Forgot password" to set a new one',
+                );
+            }
+
             const isValid = await comparePassword(password, user.password_hash);
             if (!isValid) throw new HttpError(401, 'Invalid password');
 
@@ -124,11 +131,19 @@ export class InvitedUserAuthService extends BaseService {
                         password_hash = CASE
                             WHEN email_verified_at IS NULL THEN :passwordHash
                             ELSE password_hash
+                        END,
+                        password_reset_required_at = CASE
+                            WHEN email_verified_at IS NULL AND :markResetRequired THEN NOW()
+                            ELSE password_reset_required_at
                         END
                   WHERE id = :userId
               RETURNING email_verified_at`,
                 {
-                    replacements: { userId: claim.userId, passwordHash },
+                    replacements: {
+                        userId: claim.userId,
+                        passwordHash,
+                        markResetRequired: newPassword === undefined,
+                    },
                     type: QueryTypes.SELECT,
                     transaction,
                 },

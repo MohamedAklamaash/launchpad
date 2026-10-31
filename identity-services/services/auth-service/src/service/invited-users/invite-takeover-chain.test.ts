@@ -96,7 +96,10 @@ mock.method(sequelize, 'query', async (sql: string, opts: { replacements?: Row }
         const firstVerification = row.email_verified_at === null;
         row.is_authenticated = true;
         row.email_verified_at ??= new Date();
-        if (firstVerification) row.password_hash = opts.replacements?.passwordHash;
+        if (firstVerification) {
+            row.password_hash = opts.replacements?.passwordHash;
+            if (opts.replacements?.markResetRequired) row.password_reset_required_at = new Date();
+        }
         return [{ email_verified_at: row.email_verified_at }];
     }
     return [];

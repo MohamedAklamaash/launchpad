@@ -41,6 +41,7 @@ export class ResilientAmqpPublisher {
     private retryCount = 0;
     private confirmMode = false;
     private bufferedWhileDisconnected = 0;
+    private confirmChannelLosses = 0;
 
     private readonly url: string;
     private readonly exchange: string;
@@ -78,6 +79,15 @@ export class ResilientAmqpPublisher {
     /** Messages that were ever published while disconnected, including since flushed or dropped. */
     bufferedWhileDisconnectedCount(): number {
         return this.bufferedWhileDisconnected;
+    }
+
+    /**
+     * Times the connection or channel closed on its own while confirm mode was on. Messages
+     * in flight on the lost channel are invisible to the replacement channel's
+     * waitForConfirms(), so any loss means delivery can no longer be vouched for.
+     */
+    confirmChannelLossCount(): number {
+        return this.confirmChannelLosses;
     }
 
     /** Resolves once the broker confirmed every publish so far; rejects on a nack or a closed channel. */
@@ -158,7 +168,10 @@ export class ResilientAmqpPublisher {
         this.channel = ch;
         this.retryCount = 0;
 
+        ch.on('close', () => this.recordConfirmLoss());
+
         conn.on('close', () => {
+            this.recordConfirmLoss();
             this.log.warn('RabbitMQ connection closed');
             this.channel = null;
             this.connection = null;
@@ -171,6 +184,10 @@ export class ResilientAmqpPublisher {
 
         this.log.info('RabbitMQ publisher connected');
         await this.flushBuffer();
+    }
+
+    private recordConfirmLoss(): void {
+        if (this.confirmMode && !this.stopped) this.confirmChannelLosses += 1;
     }
 
     private scheduleReconnect(): void {
