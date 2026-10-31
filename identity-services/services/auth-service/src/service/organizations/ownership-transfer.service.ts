@@ -91,7 +91,10 @@ const lockAndValidate = async (
     });
     if (!organization) throw new HttpError(404, 'Organization not found');
     if (organization.owner_account_id !== ownerAccountId) {
-        throw new HttpError(409, 'Organization ownership record is inconsistent');
+        throw new HttpError(
+            409,
+            'Organization ownership changed or is inconsistent; reload and retry',
+        );
     }
     if (await isPersonalOrganization(input.organizationId, ownerAccountId, t)) {
         throw new HttpError(409, 'A personal organization cannot change owner');
