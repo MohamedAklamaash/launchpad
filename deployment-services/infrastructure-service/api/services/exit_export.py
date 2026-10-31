@@ -21,6 +21,7 @@ from api.cloud_providers.aws.iam_policy.live_diff import POLICY_NAME, ROLE_NAME
 from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from api.services.infrastructure import validate_aws_region, validate_vpc_cidr
+from api.services.org_authz import Capability, get_infra_with_capability, orgs_enabled
 from api.services.terraform_worker import (
     DEFAULT_EKS_CLUSTER_VERSION,
     TF_MODULES_DIR,
@@ -411,7 +412,14 @@ class ExitExportService:
             timeout=settings.EXIT_EXPORT_UPSTREAM_TIMEOUT_SECONDS,
         )
 
-    def get_owned_infra(self, user_id, infra_id):
+    def get_owned_infra(self, user_id, infra_id, actor=None):
+        if orgs_enabled():
+            try:
+                return get_infra_with_capability(actor, infra_id, Capability.EXIT)
+            except LookupError:
+                raise ExitExportNotFound("Infrastructure not found") from None
+            except PermissionError:
+                raise ExitExportForbidden("Only the infrastructure owner can export this infrastructure") from None
         # A malformed id reaching filter(id=...) on a UUIDField raises Django's
         # ValidationError, not a ValueError — matches evidence_pack.py's guard.
         try:

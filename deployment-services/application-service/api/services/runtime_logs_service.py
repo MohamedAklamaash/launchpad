@@ -162,13 +162,13 @@ class StreamContext:
 
 
 class RuntimeLogsService:
-    def get_logs(self, *, user_id, app_id, container: str, minutes, cursor, previous: bool) -> LogsResult:
+    def get_logs(self, *, user_id, app_id, container: str, minutes, cursor, previous: bool, actor=None) -> LogsResult:
         if container not in CONTAINERS:
             raise ValueError("container must be 'app' or 'proxy'")
         if cursor and minutes is not None:
             raise ValueError("cursor and minutes cannot be combined")
 
-        app = get_owner_authorized_app(user_id, app_id)
+        app = get_owner_authorized_app(user_id, app_id, actor)
         infra = app.infrastructure
         is_eks = infra.compute_type == ComputeType.EKS
 
@@ -368,7 +368,7 @@ class RuntimeLogsService:
 
     # ── SSE tail loop ────────────────────────────────────────────────────────
 
-    def open_stream(self, *, user_id, app_id, container: str) -> StreamContext:
+    def open_stream(self, *, user_id, app_id, container: str, actor=None) -> StreamContext:
         """Runs the owner-only authz ladder and every AssumeRole/EKS-token-mint exactly
         once, then returns a `StreamContext` a tick can poll cheaply. Raises the same
         {LookupError, PermissionError, NotDeployedError, UpstreamUnavailableError}
@@ -377,7 +377,7 @@ class RuntimeLogsService:
         if container not in CONTAINERS:
             raise ValueError("container must be 'app' or 'proxy'")
 
-        app = get_owner_authorized_app(user_id, app_id)
+        app = get_owner_authorized_app(user_id, app_id, actor)
         infra = app.infrastructure
         is_eks = infra.compute_type == ComputeType.EKS
 

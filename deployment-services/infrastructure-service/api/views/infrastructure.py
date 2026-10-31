@@ -8,6 +8,11 @@ import time  # noqa: F401
 import uuid
 
 from api.services.infrastructure import InfrastructureService
+from api.services.org_authz import (
+    Capability,
+    get_infra_with_capability,
+    orgs_enabled,
+)
 from django.http import HttpRequest
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -97,9 +102,11 @@ class ErrorSerializer(serializers.Serializer):
 @api_view(['GET', 'POST'])
 def infrastructure_list_create(request: HttpRequest):
     if request.method == 'GET':
-        return Response(infrastructure_service.get_all_for_user(user_id=request.user.id))
+        return Response(infrastructure_service.get_all_for_user(user_id=request.user.id, actor=request.user))
     try:
-        infra = infrastructure_service.create_infrastructure(user_id=request.user.id, infra_data=request.data)
+        infra = infrastructure_service.create_infrastructure(
+            user_id=request.user.id, infra_data=request.data, actor=request.user,
+        )
         return Response(infra, status=status.HTTP_201_CREATED)
     except HttpError as e:
         # Authorization denials (e.g. non-super_admin create) are raised as HttpError by the repo;
@@ -133,12 +140,16 @@ def infrastructure_list_create(request: HttpRequest):
 @api_view(['GET', 'DELETE'])
 def infrastructure_detail(request: HttpRequest, infra_id):
     if request.method == 'GET':
-        infra = infrastructure_service.get_infrastructure(user_id=request.user.id, infra_id=infra_id)
+        infra = infrastructure_service.get_infrastructure(
+            user_id=request.user.id, infra_id=infra_id, actor=request.user,
+        )
         if infra:
             return Response(infra)
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
     try:
-        success = infrastructure_service.delete_infrastructure(user_id=request.user.id, infra_id=infra_id)
+        success = infrastructure_service.delete_infrastructure(
+            user_id=request.user.id, infra_id=infra_id, actor=request.user,
+        )
         if success:
             return Response(status=status.HTTP_204_NO_CONTENT)
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -160,7 +171,7 @@ def infrastructure_detail(request: HttpRequest, infra_id):
 def infrastructure_update(request: HttpRequest, infra_id):
     try:
         infra = infrastructure_service.update_infrastructure_config(
-            user_id=request.user.id, infra_id=infra_id, update_data=request.data
+            user_id=request.user.id, infra_id=infra_id, update_data=request.data, actor=request.user,
         )
         if infra:
             return Response(infra)
@@ -190,12 +201,19 @@ def infrastructure_reprovision(request: HttpRequest, infra_id):
     from api.models.environment import Environment
     from api.services.infra_queue import InfraQueue
 
-    infra = infrastructure_service.get_infrastructure(user_id=request.user.id, infra_id=infra_id)
+    infra = infrastructure_service.get_infrastructure(
+        user_id=request.user.id, infra_id=infra_id, actor=request.user,
+    )
     if not infra:
         return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
     # Owner-only, matching update/delete. get_infrastructure resolves for owner OR invited member,
     # so without this an invited (view-only) user could force a real Terraform re-run.
-    if str(infra['user_id']) != str(request.user.id):
+    if orgs_enabled():
+        try:
+            get_infra_with_capability(request.user, infra_id, Capability.MANAGE_INFRASTRUCTURE)
+        except PermissionError:
+            return Response({'error': 'Only the infrastructure owner can reprovision it'}, status=status.HTTP_403_FORBIDDEN)
+    elif str(infra['user_id']) != str(request.user.id):
         return Response({'error': 'Only the infrastructure owner can reprovision it'}, status=status.HTTP_403_FORBIDDEN)
     # F6: an exited infrastructure has told its owner Launchpad is done touching its
     # account. Re-running Terraform against it after that would contradict the whole
@@ -245,7 +263,9 @@ def infrastructure_reprovision(request: HttpRequest, infra_id):
 @api_view(['POST'])
 def infrastructure_reissue_token(request: HttpRequest, infra_id):
     try:
-        result = infrastructure_service.reissue_onboarding_token(user_id=request.user.id, infra_id=infra_id)
+        result = infrastructure_service.reissue_onboarding_token(
+            user_id=request.user.id, infra_id=infra_id, actor=request.user,
+        )
         if result is None:
             return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
         return Response(result, status=status.HTTP_200_OK)
@@ -389,7 +409,7 @@ def infrastructure_onboarding_callback(request: HttpRequest):
 def infrastructure_remove_user(request: HttpRequest, infra_id, user_id):
     try:
         success = infrastructure_service.remove_invited_user(
-            owner_id=request.user.id, infra_id=infra_id, target_user_id=user_id,
+            owner_id=request.user.id, infra_id=infra_id, target_user_id=user_id, actor=request.user,
         )
         if success:
             return Response(status=status.HTTP_204_NO_CONTENT)

@@ -18,10 +18,10 @@ class InfrastructureRepository:
             id=infra_id
         ).distinct().first()
 
-    def create(self, user_id, infra_data) -> Infrastructure:
+    def create(self, user_id, infra_data, require_global_super_admin=True) -> Infrastructure:
         try:
             user = User.objects.get(id=user_id)
-            if user.role != UserRole.SUPER_ADMIN:
+            if require_global_super_admin and user.role != UserRole.SUPER_ADMIN:
                 raise HttpError(
                     message="Unauthorized",
                     status_code=403,
@@ -50,8 +50,10 @@ class InfrastructureRepository:
             return infra_qs.first()
         return None
 
-    def delete(self, user_id, infra_id) -> bool:
-        infra_qs = Infrastructure.objects.filter(user_id=user_id, id=infra_id)
+    def delete(self, user_id, infra_id, by_owner=True) -> bool:
+        infra_qs = Infrastructure.objects.filter(id=infra_id)
+        if by_owner:
+            infra_qs = infra_qs.filter(user_id=user_id)
         if infra_qs.exists():
             infra_qs.delete()
             return True

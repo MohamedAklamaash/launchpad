@@ -21,8 +21,33 @@ from api.services.application_service import ApplicationService
 from api.services.application_sleep_service import ApplicationSleepService
 from api.services.deployment_queue import DeploymentQueue
 from api.services.exit_enforcement import InfrastructureExitedError, require_not_exited
+from api.services.org_authz import (
+    Capability,
+    get_app_with_capability,
+    has_app_capability,
+    orgs_enabled,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _org_authorized_app(request, app_id, capability):
+    """Flag-on lookup for an app-scoped action: (app, None) when the caller may perform
+    `capability`, else (None, the 404/403 response). 404 covers a missing app, another
+    org's app and a non-member alike."""
+    try:
+        return get_app_with_capability(request.user, app_id, capability), None
+    except LookupError:
+        return None, Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+    except PermissionError:
+        return None, Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+
+
+def _visible_envs(request, app):
+    """Env values are secrets. Under org roles a viewer sees the application but not them."""
+    if orgs_enabled() and not has_app_capability(request.user, app, Capability.ENV_VARS):
+        return {}
+    return app.envs
 
 
 # ── Reusable inline serializers for Swagger ──────────────────────────────────
@@ -146,7 +171,7 @@ class ApplicationListCreateView(APIView):
             infra_id = request.query_params.get("infrastructure_id", "")
             if not infra_id:
                 raise Exception("infrastructure_id query parameter is required")
-            apps = self.service.get_user_applications(request.user.id, infra_id)
+            apps = self.service.get_user_applications(request.user.id, infra_id, actor=request.user)
             return Response([{"id": str(a.id), "name": a.name, "cpu": a.alloted_cpu,
                                "memory": a.alloted_memory, "port": a.port} for a in apps])
         except Exception as e:
@@ -187,7 +212,7 @@ class ApplicationDetailDeleteView(APIView):
         responses={200: AppDetailSerializer, 404: ErrorSerializer},
     )
     def get(self, request, pk=None):
-        app = self.service.get_application_details(request.user.id, pk)
+        app = self.service.get_application_details(request.user.id, pk, actor=request.user)
         if not app:
             return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
         from api.common.host_url import app_host_url
@@ -199,7 +224,7 @@ class ApplicationDetailDeleteView(APIView):
             "auto_deploy_paused": app.auto_deploy_paused,
             "cpu": app.alloted_cpu, "memory": app.alloted_memory, "storage": app.alloted_storage,
             "port": app.port, "url": app.project_remote_url, "branch": app.project_branch,
-            "dockerfile_path": app.dockerfile_path, "build_context": app.build_context or "", "envs": app.envs,
+            "dockerfile_path": app.dockerfile_path, "build_context": app.build_context or "", "envs": _visible_envs(request, app),
             "attached_database_ids": app.attached_database_ids or [],
             "deployment_url": app.deployment_url,
             "host_url": host_url, "host_url_status": host_url_status,
@@ -218,7 +243,7 @@ class ApplicationDetailDeleteView(APIView):
     def delete(self, request, pk=None):
         from api.services.application_service import DeploymentInProgressError
         try:
-            self.service.delete_application(request.user.id, pk)
+            self.service.delete_application(request.user.id, pk, actor=request.user)
             return Response(status=status.HTTP_204_NO_CONTENT)
         except PermissionError as e:
             return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
@@ -243,7 +268,7 @@ class ApplicationUpdateView(APIView):
     )
     def patch(self, request, pk=None):
         try:
-            updated = self.service.update_application(request.user.id, pk, request.data)
+            updated = self.service.update_application(request.user.id, pk, request.data, actor=request.user)
             if not updated:
                 return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
             return Response({
@@ -286,16 +311,22 @@ class ApplicationDeployView(APIView):
     )
     def post(self, request, pk=None):
         try:
-            app = ApplicationRepository().get_by_id(pk)
-            if not app:
-                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            from api.repositories.infrastructure import InfrastructureRepository
-            from api.services.infrastructure_permissions import (
-                InfrastructurePermissions,
-            )
-            infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
-            if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
-                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            if orgs_enabled():
+                app, denied = _org_authorized_app(request, pk, Capability.DEPLOY)
+                if denied:
+                    return denied
+                infra = app.infrastructure
+            else:
+                app = ApplicationRepository().get_by_id(pk)
+                if not app:
+                    return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+                from api.repositories.infrastructure import InfrastructureRepository
+                from api.services.infrastructure_permissions import (
+                    InfrastructurePermissions,
+                )
+                infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
+                if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
+                    return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
             require_not_exited(infra)
             # A manual deploy is an explicit override of whatever a prior rollback pinned.
             if app.auto_deploy_paused:
@@ -328,16 +359,22 @@ class ApplicationRetryDeployView(APIView):
     )
     def post(self, request, pk=None):
         try:
-            app = ApplicationRepository().get_by_id(pk)
-            if not app:
-                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            from api.repositories.infrastructure import InfrastructureRepository
-            from api.services.infrastructure_permissions import (
-                InfrastructurePermissions,
-            )
-            infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
-            if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
-                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            if orgs_enabled():
+                app, denied = _org_authorized_app(request, pk, Capability.DEPLOY)
+                if denied:
+                    return denied
+                infra = app.infrastructure
+            else:
+                app = ApplicationRepository().get_by_id(pk)
+                if not app:
+                    return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+                from api.repositories.infrastructure import InfrastructureRepository
+                from api.services.infrastructure_permissions import (
+                    InfrastructurePermissions,
+                )
+                infra = InfrastructureRepository().get_infrastructure(app.infrastructure_id)
+                if not infra or not InfrastructurePermissions.can_update_application(infra, request.user.id):
+                    return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
             require_not_exited(infra)
 
             # A manual (re)deploy is an explicit override of whatever a prior rollback pinned.
@@ -402,11 +439,16 @@ class ApplicationSleepView(APIView):
     )
     def post(self, request, pk=None):
         try:
-            app = self.app_repo.get_by_id(pk)
-            if not app:
-                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            if str(app.user_id) != str(request.user.id):
-                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            if orgs_enabled():
+                app, denied = _org_authorized_app(request, pk, Capability.DEPLOY)
+                if denied:
+                    return denied
+            else:
+                app = self.app_repo.get_by_id(pk)
+                if not app:
+                    return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+                if str(app.user_id) != str(request.user.id):
+                    return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
             require_not_exited(app.infrastructure)
             self.sleep_service.sleep_application(app)
             return Response({"message": "Application put to sleep successfully",
@@ -437,11 +479,16 @@ class ApplicationWakeView(APIView):
     )
     def post(self, request, pk=None):
         try:
-            app = self.app_repo.get_by_id(pk)
-            if not app:
-                return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            if str(app.user_id) != str(request.user.id):
-                return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+            if orgs_enabled():
+                app, denied = _org_authorized_app(request, pk, Capability.DEPLOY)
+                if denied:
+                    return denied
+            else:
+                app = self.app_repo.get_by_id(pk)
+                if not app:
+                    return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+                if str(app.user_id) != str(request.user.id):
+                    return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
             require_not_exited(app.infrastructure)
             self.sleep_service.wake_application(app)
             return Response({"message": "Application is starting — this may take a minute",
@@ -525,7 +572,7 @@ class ApplicationDeploymentsView(APIView):
     )
     def get(self, request, pk=None):
         try:
-            deployments = self.service.list_deployments(request.user.id, pk)
+            deployments = self.service.list_deployments(request.user.id, pk, actor=request.user)
         except Exception as e:
             return _rollback_error_response(e)
         from api.models.deployment import Deployment
@@ -556,7 +603,7 @@ class ApplicationRollbackPreviewView(APIView):
     )
     def get(self, request, pk=None, deployment_id=None):
         try:
-            preview = self.service.get_rollback_preview(request.user.id, pk, deployment_id)
+            preview = self.service.get_rollback_preview(request.user.id, pk, deployment_id, actor=request.user)
         except Exception as e:
             return _rollback_error_response(e)
         return Response(preview)
@@ -586,7 +633,7 @@ class ApplicationRollbackView(APIView):
     )
     def post(self, request, pk=None, deployment_id=None):
         try:
-            target = self.service.trigger_rollback(request.user.id, pk, deployment_id)
+            target = self.service.trigger_rollback(request.user.id, pk, deployment_id, actor=request.user)
         except Exception as e:
             return _rollback_error_response(e)
         return Response({
@@ -611,7 +658,7 @@ class ApplicationResumeAutoDeployView(APIView):
     )
     def post(self, request, pk=None):
         try:
-            self.service.resume_auto_deploy(request.user.id, pk)
+            self.service.resume_auto_deploy(request.user.id, pk, actor=request.user)
         except Exception as e:
             return _rollback_error_response(e)
         return Response({"message": "Auto-deploy resumed", "application_id": str(pk)})
@@ -771,11 +818,16 @@ def application_github_webhook(request, app_id: str):
 )
 @api_view(['POST'])
 def application_rotate_webhook_secret(request, app_id: str):
-    app = ApplicationRepository().get_by_id(app_id)
-    if not app:
-        return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-    if str(app.user_id) != str(request.user.id):
-        return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
+    if orgs_enabled():
+        app, denied = _org_authorized_app(request, app_id, Capability.DEPLOY)
+        if denied:
+            return denied
+    else:
+        app = ApplicationRepository().get_by_id(app_id)
+        if not app:
+            return Response({"error": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+        if str(app.user_id) != str(request.user.id):
+            return Response({"error": "Unauthorized"}, status=status.HTTP_403_FORBIDDEN)
 
     # Gateway is mounted at /api (see gateway-service/main.py), so the public URL we hand
     # to GitHub uses /api/webhooks/... — NOT /api/v1/, which is the internal upstream path.

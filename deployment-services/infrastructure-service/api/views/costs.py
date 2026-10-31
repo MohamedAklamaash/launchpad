@@ -122,7 +122,9 @@ def infrastructure_costs(request: HttpRequest, infra_id):
         return Response({'error': 'months must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        payload = cost_service.get_costs(user_id=request.user.id, infra_id=infra_id, months=months)
+        payload = cost_service.get_costs(
+            user_id=request.user.id, infra_id=infra_id, months=months, actor=request.user,
+        )
         return Response(payload)
     except Exception as e:
         return _error_response(e)

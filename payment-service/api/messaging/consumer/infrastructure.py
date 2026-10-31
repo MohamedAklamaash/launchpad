@@ -77,7 +77,10 @@ class InfraEventConsumer:
             connection.close()
             with transaction.atomic():
                 self.infra_repo.upsert_infrastructure(
-                    {"id": infra_id, "user_id": user_id, "name": name, "status": status}
+                    {
+                        "id": infra_id, "user_id": user_id, "name": name, "status": status,
+                        "organization_id": payload.get("organization_id"),
+                    }
                 )
             log.info(
                 "infrastructure upserted successfully — ACKing",

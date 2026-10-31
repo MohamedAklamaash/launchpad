@@ -161,11 +161,11 @@ def _aws_error_code(exc: ClientError) -> str:
 
 
 class AppMetricsService:
-    def get_metrics(self, *, user_id, app_id, time_range: str) -> MetricsResult:
+    def get_metrics(self, *, user_id, app_id, time_range: str, actor=None) -> MetricsResult:
         if time_range not in RANGE_SPECS:
             raise ValueError(f"range must be one of {sorted(RANGE_SPECS)}")
 
-        app = get_owner_authorized_app(user_id, app_id)
+        app = get_owner_authorized_app(user_id, app_id, actor)
         infra = app.infrastructure
 
         cached = _cache_get(app.id, time_range)

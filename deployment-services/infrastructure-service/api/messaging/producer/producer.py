@@ -81,6 +81,7 @@ class InfraEventProducer:
         invited_users=None,
         metadata=None,
         dns_label=None,
+        organization_id=None,
         correlation_id=None,
     ):
         """
@@ -114,6 +115,9 @@ class InfraEventProducer:
                 # read-model even if that event is ever lost, since infrastructure.created
                 # fires on every apply.
                 "dns_label": dns_label,
+                # The tenant this infrastructure belongs to. Read-models store it so their
+                # own org-role checks can compare it with the caller's token org.
+                "organization_id": str(organization_id) if organization_id else None,
                 "invited_users": invited_users or [],
                 # Never ship live STS credentials over the broker / into the read-model DB.
                 # application-service re-assumes the role itself, so these keys are redundant.

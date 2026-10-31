@@ -22,6 +22,14 @@ from api.services.deployment_lock import DeploymentLock
 from api.services.deployment_queue import DeploymentQueue
 from api.services.exit_enforcement import require_not_exited
 from api.services.infrastructure_permissions import InfrastructurePermissions
+from api.services.org_authz import (
+    Capability,
+    apps_visible_in_infra,
+    find_app_with_capability,
+    orgs_enabled,
+    require_app_capability,
+    require_org_capability,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +108,7 @@ class ApplicationService:
         "task_definition_arn", "service_arn", "target_group_arn", "listener_rule_arn",
         "host_forward_rule_arn", "host_route_applied",
         "deployment_url", "build_id", "error_message", "is_sleeping", "desired_count",
-        "runtime_refs", "auto_deploy_paused",
+        "runtime_refs", "auto_deploy_paused", "organization_id",
         "created_at", "updated_at",
     })
 
@@ -169,7 +177,12 @@ class ApplicationService:
         # Check permissions (SUPER_ADMIN or ADMIN can create) BEFORE the exit check — a
         # non-member must get PermissionError regardless of infra state, not a 409 that
         # leaks whether an infra it has no access to has exited.
-        if not InfrastructurePermissions.can_create_application(infra, user.id):
+        if orgs_enabled():
+            try:
+                require_org_capability(user, infra, Capability.DEPLOY)
+            except LookupError:
+                raise ValueError("Infrastructure not found") from None
+        elif not InfrastructurePermissions.can_create_application(infra, user.id):
             raise PermissionError("You don't have permission to create applications. Required role: SUPER_ADMIN or ADMIN")
         require_not_exited(infra)
 
@@ -196,6 +209,7 @@ class ApplicationService:
         self._validate_compute_shape(infra, requested_cpu, requested_mem)
 
         data["user"] = user
+        data["organization_id"] = infra.organization_id
         app = self.app_repo.create(data)
         
         app_id_str = str(app.id)
@@ -209,20 +223,24 @@ class ApplicationService:
         
         return app
 
-    def get_user_applications(self, user_id: str, infra_id: str):
+    def get_user_applications(self, user_id: str, infra_id: str, actor=None):
         """List applications in an infra the caller is allowed to view.
 
         Gate on membership first — the repo falls back to returning ALL apps in the infra
         when the caller owns none, so without this a non-member could enumerate another
         tenant's app names/ports by passing their infrastructure_id.
         """
+        if orgs_enabled():
+            return apps_visible_in_infra(actor, infra_id)
         infra = self.infra_repo.get_infrastructure(infra_id)
         if not infra or not InfrastructurePermissions.can_view_application(infra, user_id):
             return []
         return self.app_repo.get_all_for_user(user_id, infra_id)
 
-    def get_application_details(self, user_id: str, app_id: str):
+    def get_application_details(self, user_id: str, app_id: str, actor=None):
         """Get details of a specific application if user is authorized."""
+        if orgs_enabled():
+            return find_app_with_capability(actor, app_id, Capability.VIEW)
         app = self.app_repo.get_by_id(app_id)
         if not app:
             return None
@@ -231,20 +249,25 @@ class ApplicationService:
             return None
         return app
 
-    def delete_application(self, user_id: str, app_id: str):
+    def delete_application(self, user_id: str, app_id: str, actor=None):
         """Delete application DB record immediately; enqueue AWS cleanup async."""
         # H1 security review (REC2): deletion never reads envs — deferring it means an
         # app whose envs value doesn't decrypt can still be deleted.
-        app = self.app_repo.get_by_id(app_id, defer_envs=True)
-        if not app:
-            raise PermissionError("Application not found")
+        if orgs_enabled():
+            app = find_app_with_capability(actor, app_id, Capability.DELETE_APPLICATION, defer_envs=True)
+            if not app:
+                raise PermissionError("Application not found")
+        else:
+            app = self.app_repo.get_by_id(app_id, defer_envs=True)
+            if not app:
+                raise PermissionError("Application not found")
 
-        infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
-        if not infra:
-            raise ValueError("Infrastructure not found")
+            infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
+            if not infra:
+                raise ValueError("Infrastructure not found")
 
-        if not InfrastructurePermissions.can_delete_application(infra, user_id):
-            raise PermissionError("You don't have permission to delete applications. Required role: SUPER_ADMIN or ADMIN")
+            if not InfrastructurePermissions.can_delete_application(infra, user_id):
+                raise PermissionError("You don't have permission to delete applications. Required role: SUPER_ADMIN or ADMIN")
 
         # Serialize with any in-flight deploy. A running deploy holds this lock and calls
         # application.save() repeatedly; deleting the row underneath it resurrects it (UUID PK →
@@ -396,24 +419,32 @@ class ApplicationService:
         return self.deployment_service.deploy_application(app)
     
     @transaction.atomic
-    def update_application(self, user_id: str, app_id: str, update_data: dict):
+    def update_application(self, user_id: str, app_id: str, update_data: dict, actor=None):
         """Update application configuration.
 
         Transactional so `_reserve_slug`'s row lock is still held when the new name is
         saved; otherwise two concurrent renames can each pass the collision scan and then
         save names that collapse to the same slug — and so the same Kubernetes resources.
         """
-        app = self.app_repo.get_by_id(app_id)
-        if not app:
-            raise PermissionError("Application not found")
-        
-        infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
-        if not infra:
-            raise ValueError("Infrastructure not found")
+        if orgs_enabled():
+            app = find_app_with_capability(actor, app_id, Capability.DEPLOY)
+            if not app:
+                raise PermissionError("Application not found")
+            infra = app.infrastructure
+            if 'envs' in update_data:
+                require_app_capability(actor, app, Capability.ENV_VARS)
+        else:
+            app = self.app_repo.get_by_id(app_id)
+            if not app:
+                raise PermissionError("Application not found")
 
-        # Permission check BEFORE the exit check — see create_application's comment.
-        if not InfrastructurePermissions.can_update_application(infra, user_id):
-            raise PermissionError("You don't have permission to update applications. Required role: SUPER_ADMIN or ADMIN")
+            infra = self.infra_repo.get_infrastructure(app.infrastructure_id)
+            if not infra:
+                raise ValueError("Infrastructure not found")
+
+            # Permission check BEFORE the exit check — see create_application's comment.
+            if not InfrastructurePermissions.can_update_application(infra, user_id):
+                raise PermissionError("You don't have permission to update applications. Required role: SUPER_ADMIN or ADMIN")
         require_not_exited(infra)
 
         update_fields = []
@@ -435,7 +466,9 @@ class ApplicationService:
             update_fields.append('envs')
 
         if 'attached_database_ids' in update_data:
-            if not InfrastructurePermissions.can_attach_database(infra, user_id):
+            if orgs_enabled():
+                require_app_capability(actor, app, Capability.DATABASES)
+            elif not InfrastructurePermissions.can_attach_database(infra, user_id):
                 raise PermissionError(
                     "You don't have permission to attach databases. Required role: SUPER_ADMIN or ADMIN"
                 )

@@ -52,7 +52,9 @@ def _error_response(e: Exception):
 @rate_limited('evidence', limit=settings.RATE_BUDGET_EVIDENCE_LIMIT, window=settings.RATE_BUDGET_EVIDENCE_WINDOW_SECONDS)
 def evidence_pack(request: HttpRequest, infra_id):
     try:
-        zip_bytes, infra = evidence_pack_service.get_pack(user_id=request.user.id, infra_id=infra_id)
+        zip_bytes, infra = evidence_pack_service.get_pack(
+            user_id=request.user.id, infra_id=infra_id, actor=request.user,
+        )
     except Exception as e:
         return _error_response(e)
     logger.info(f"Evidence pack served: user={request.user.id} infra={infra_id} bytes={len(zip_bytes)}")

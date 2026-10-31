@@ -9,6 +9,7 @@ from api.models.database import Database
 from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from api.services.infra_queue import InfraQueue
+from api.services.org_authz import Capability, get_infra_with_capability, orgs_enabled
 from api.services.policy_errors import PolicyRefreshRequiredError
 from api.validators import validate_database_name
 from django.conf import settings
@@ -34,15 +35,18 @@ class DatabaseService:
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
 
-    def _get_environment_or_raise(self, user_id, infra_id):
+    def _get_environment_or_raise(self, user_id, infra_id, actor=None, capability=Capability.VIEW):
         _require_valid_uuid(infra_id, "Infrastructure not found")
-        # Owner-OR-invited resolution closes the cross-tenant IDOR path: an infra_id must
-        # resolve through the same predicate infrastructure-service uses everywhere else,
-        # never a bare Environment/Database lookup by id. Invited members may still view
-        # (list/get) — write operations enforce owner-only themselves, below.
-        infra = self.infra_repo.get_by_id(user_id, infra_id)
-        if not infra:
-            raise LookupError("Infrastructure not found")
+        if orgs_enabled():
+            infra = get_infra_with_capability(actor, infra_id, capability)
+        else:
+            # Owner-OR-invited resolution closes the cross-tenant IDOR path: an infra_id must
+            # resolve through the same predicate infrastructure-service uses everywhere else,
+            # never a bare Environment/Database lookup by id. Invited members may still view
+            # (list/get) — write operations enforce owner-only themselves, below.
+            infra = self.infra_repo.get_by_id(user_id, infra_id)
+            if not infra:
+                raise LookupError("Infrastructure not found")
         try:
             env = Environment.objects.get(infrastructure_id=infra.id)
         except Environment.DoesNotExist:
@@ -50,23 +54,41 @@ class DatabaseService:
         return env, infra
 
     def _require_owner(self, user_id, infra):
+        if orgs_enabled():
+            return
         if str(infra.user_id) != str(user_id):
             raise PermissionError("Only the infrastructure owner can manage its databases")
 
-    def list_databases(self, user_id, infra_id):
-        env, _ = self._get_environment_or_raise(user_id, infra_id)
-        return Database.objects.filter(environment=env).exclude(status='DELETED').order_by('-created_at')
-
-    def get_database(self, user_id, infra_id, database_id):
-        env, _ = self._get_environment_or_raise(user_id, infra_id)
-        _require_valid_uuid(database_id, "Database not found")
-        try:
-            return Database.objects.get(id=database_id, environment=env)
-        except Database.DoesNotExist:
+    @staticmethod
+    def _require_database_in_infra_org(db, infra):
+        """A Database has no owner of its own; its org is its infrastructure's. A row whose
+        own column is NULL or disagrees is treated as missing rather than guessed at."""
+        if orgs_enabled() and db.organization_id != infra.organization_id:
+            logger.error(
+                "org authz: database %s organization_id %s disagrees with infrastructure %s (%s); refusing access",
+                db.id, db.organization_id, infra.id, infra.organization_id,
+            )
             raise LookupError("Database not found")
 
-    def create_database(self, user_id, infra_id, data: dict) -> Database:
-        env, infra = self._get_environment_or_raise(user_id, infra_id)
+    def list_databases(self, user_id, infra_id, actor=None):
+        env, infra = self._get_environment_or_raise(user_id, infra_id, actor)
+        dbs = Database.objects.filter(environment=env).exclude(status='DELETED').order_by('-created_at')
+        if orgs_enabled():
+            dbs = dbs.filter(organization_id=infra.organization_id)
+        return dbs
+
+    def get_database(self, user_id, infra_id, database_id, actor=None):
+        env, infra = self._get_environment_or_raise(user_id, infra_id, actor)
+        _require_valid_uuid(database_id, "Database not found")
+        try:
+            db = Database.objects.get(id=database_id, environment=env)
+        except Database.DoesNotExist:
+            raise LookupError("Database not found")
+        self._require_database_in_infra_org(db, infra)
+        return db
+
+    def create_database(self, user_id, infra_id, data: dict, actor=None) -> Database:
+        env, infra = self._get_environment_or_raise(user_id, infra_id, actor, Capability.DATABASES)
         self._require_owner(user_id, infra)
 
         if env.status != 'ACTIVE':
@@ -130,20 +152,22 @@ class DatabaseService:
             db = Database.objects.create(
                 environment=env, name=name, engine=engine, engine_version=engine_version,
                 instance_class=instance_class, allocated_storage=allocated_storage, status='PENDING',
+                organization_id=infra.organization_id,
             )
             transaction.on_commit(lambda: InfraQueue.enqueue_provision(str(infra_id)))
 
         logger.info(f"Database {db.id} ({name}/{engine}) queued for infra {infra_id}")
         return db
 
-    def delete_database(self, user_id, infra_id, database_id, confirm_name: str):
-        env, infra = self._get_environment_or_raise(user_id, infra_id)
+    def delete_database(self, user_id, infra_id, database_id, confirm_name: str, actor=None):
+        env, infra = self._get_environment_or_raise(user_id, infra_id, actor, Capability.DATABASES)
         self._require_owner(user_id, infra)
         _require_valid_uuid(database_id, "Database not found")
         try:
             db = Database.objects.get(id=database_id, environment=env)
         except Database.DoesNotExist:
             raise LookupError("Database not found")
+        self._require_database_in_infra_org(db, infra)
 
         if db.status == 'DELETED':
             raise ValueError("Database is already deleted")

@@ -41,6 +41,7 @@ from api.services.custom_domain_routing import (
     detach_custom_domain,
 )
 from api.services.exit_enforcement import InfrastructureExitedError, require_not_exited
+from api.services.org_authz import Capability, find_app_with_capability, orgs_enabled
 
 
 class CustomDomainAttachRequestSerializer(serializers.Serializer):
@@ -137,7 +138,12 @@ def application_summary_for_custom_domains(request, app_id):
     from api.services.application_service import ApplicationService
 
     try:
-        app = ApplicationService().get_application_details(request.user.id, app_id)
+        if orgs_enabled():
+            app = find_app_with_capability(request.user, app_id, Capability.CUSTOM_DOMAINS)
+        else:
+            app = ApplicationService().get_application_details(request.user.id, app_id)
+    except PermissionError:
+        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
     except (ValidationError, ValueError):
         return Response({"error": "Not found"}, status=status.HTTP_404_NOT_FOUND)
     if app is None:

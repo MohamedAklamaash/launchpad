@@ -153,7 +153,9 @@ def application_metrics(request: HttpRequest, app_id):
     time_range = query.validated_data["range"]
 
     try:
-        result = app_metrics_service.get_metrics(user_id=request.user.id, app_id=app_id, time_range=time_range)
+        result = app_metrics_service.get_metrics(
+            user_id=request.user.id, app_id=app_id, time_range=time_range, actor=request.user,
+        )
     except LookupError:
         return _respond(status.HTTP_404_NOT_FOUND, {"error": "Application not found", "code": "not_found"})
     except PermissionError:

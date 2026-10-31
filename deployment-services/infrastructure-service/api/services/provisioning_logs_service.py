@@ -4,6 +4,7 @@ import uuid
 from api.models.environment import Environment
 from api.repositories.infrastructure import InfrastructureRepository
 from api.services.log_redaction import redact_provisioning_text
+from api.services.org_authz import Capability, get_infra_with_capability, orgs_enabled
 from api.services.terraform_worker import MAX_LOG_CHARS
 
 logger = logging.getLogger(__name__)
@@ -20,8 +21,8 @@ class ProvisioningLogsService:
     def __init__(self):
         self.infra_repo = InfrastructureRepository()
 
-    def get_logs(self, user_id, infra_id):
-        env = self._get_owned_environment(user_id, infra_id)
+    def get_logs(self, user_id, infra_id, actor=None):
+        env = self._get_owned_environment(user_id, infra_id, actor)
         truncated = len(env.logs or "") >= MAX_LOG_CHARS - _CLIP_SLACK
         logs = _reread(infra_id, "logs", env.logs)
         error = _reread(infra_id, "error_message", env.error_message)
@@ -34,18 +35,21 @@ class ProvisioningLogsService:
             "updated_at": env.updated_at,
         }
 
-    def _get_owned_environment(self, user_id, infra_id):
-        # A malformed id reaching filter(id=...) on a UUIDField raises
-        # django.core.exceptions.ValidationError — not a ValueError — and would escape as a 500.
-        try:
-            uuid.UUID(str(infra_id))
-        except ValueError:
-            raise LookupError("Infrastructure not found")
-        infra = self.infra_repo.get_by_id(user_id, infra_id)
-        if not infra:
-            raise LookupError("Infrastructure not found")
-        if str(infra.user_id) != str(user_id):
-            raise PermissionError("Only the infrastructure owner can view provisioning logs")
+    def _get_owned_environment(self, user_id, infra_id, actor=None):
+        if orgs_enabled():
+            infra = get_infra_with_capability(actor, infra_id, Capability.MANAGE_INFRASTRUCTURE)
+        else:
+            # A malformed id reaching filter(id=...) on a UUIDField raises
+            # django.core.exceptions.ValidationError — not a ValueError — and would escape as a 500.
+            try:
+                uuid.UUID(str(infra_id))
+            except ValueError:
+                raise LookupError("Infrastructure not found")
+            infra = self.infra_repo.get_by_id(user_id, infra_id)
+            if not infra:
+                raise LookupError("Infrastructure not found")
+            if str(infra.user_id) != str(user_id):
+                raise PermissionError("Only the infrastructure owner can view provisioning logs")
         try:
             return Environment.objects.get(infrastructure_id=infra.id)
         except Environment.DoesNotExist:

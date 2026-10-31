@@ -1,6 +1,7 @@
 import logging
 
 from api.models.user import User
+from django.conf import settings
 from django.http import JsonResponse
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,12 @@ class UserVerificationMiddleware:
 
         try:
             req_user = User.objects.get(id=user_id)
+            if settings.ORGS_ENABLED:
+                # Swapping in the DB row drops the JWT's claims. OrgPermissions.get_role
+                # reads org_id and account_id off request.user, so carry the
+                # signature-verified values over or every org check resolves to no role.
+                req_user.org_id = getattr(request.user, "org_id", None)
+                req_user.account_id = getattr(request.user, "account_id", None)
             request.user = req_user
         except User.DoesNotExist:
             logger.warning(f"User {user_id} authenticated via JWT but not found in DB")

@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
@@ -23,6 +24,16 @@ class InfrastructureRepository:
         Idempotent: a no-op (returns False) if the row is already gone."""
         deleted, _ = Infrastructure.objects.filter(id=infra_id).delete()
         return deleted > 0
+
+    @staticmethod
+    def _canonical_organization_id(value):
+        if not value:
+            return None
+        try:
+            return str(uuid.UUID(str(value)))
+        except (ValueError, TypeError):
+            logger.error("upsert_infrastructure: rejecting malformed organization_id in event payload")
+            return None
 
     def is_user_authorized(self, infra_id: str, user_id: str) -> bool:
         """Check if user owns or is invited to the infrastructure."""
@@ -87,6 +98,7 @@ class InfrastructureRepository:
             )
             incoming_dns_label = None
 
+        incoming_organization_id = self._canonical_organization_id(infra_data.get("organization_id"))
         incoming_is_mock = bool(infra_data.get("is_mock", False))
 
         try:
@@ -97,6 +109,22 @@ class InfrastructureRepository:
                     .first()
                 )
                 defaults["is_mock"] = (existing.is_mock if existing else False) or incoming_is_mock
+                if incoming_organization_id:
+                    # Write-once like dns_label: org authorization compares this against the
+                    # caller's token org, so a forged or buggy later event must not be able
+                    # to move an infrastructure into a different org.
+                    if existing is None or existing.organization_id is None:
+                        defaults["organization_id"] = incoming_organization_id
+                    elif str(existing.organization_id) != incoming_organization_id:
+                        logger.error(
+                            "upsert_infrastructure: refusing to overwrite an already-set "
+                            "organization_id with a different value",
+                            extra={
+                                "infra_id": str(infra_id),
+                                "stored_organization_id": str(existing.organization_id),
+                                "incoming_organization_id": incoming_organization_id,
+                            },
+                        )
                 if incoming_dns_label:
                     if existing is None or existing.dns_label is None:
                         defaults["dns_label"] = incoming_dns_label

@@ -11,12 +11,21 @@ from api.serializers.infrastructure import InfrastructureSerializer
 from api.services import onboarding as onboarding_service
 from api.services.infra_queue import InfraQueue
 from api.services.infrastructure_permissions import InfrastructurePermissions
+from api.services.org_authz import (
+    Capability,
+    find_infra_with_capability,
+    org_infrastructures,
+    orgs_enabled,
+    require_token_org_capability,
+)
 from django.conf import settings
 from django.db import transaction
 from shared.enums.cloud_provider import CloudProvider
 from shared.enums.orchestrator import ComputeType
+from shared.errors.exception import HttpError
 from shared.mode import is_dev_mode
 from shared.resilience.circuit_breaker import CircuitBreaker
+from shared.utils.org_id import personal_org_id
 
 logger = logging.getLogger(__name__)
 
@@ -110,17 +119,40 @@ class InfrastructureService:
     def __init__(self):
         self.repo = InfrastructureRepository()
 
-    def get_all_for_user(self, user_id):
+    def get_all_for_user(self, user_id, actor=None):
+        if orgs_enabled():
+            return InfrastructureSerializer.serialize_list(org_infrastructures(actor))
         infras = self.repo.get_all_for_user(user_id)
         return InfrastructureSerializer.serialize_list(infras)
 
-    def get_infrastructure(self, user_id, infra_id):
-        infra = self.repo.get_by_id(user_id, infra_id)
+    def get_infrastructure(self, user_id, infra_id, actor=None):
+        if orgs_enabled():
+            infra = find_infra_with_capability(actor, infra_id, Capability.VIEW)
+        else:
+            infra = self.repo.get_by_id(user_id, infra_id)
         if infra:
             return InfrastructureSerializer.serialize_instance(infra)
         return None
 
-    def create_infrastructure(self, user_id, infra_data):
+    @staticmethod
+    def _creation_org_id(user_id, actor):
+        """The org a new infrastructure is stamped into. Flag on: the token's org, and only
+        an owner/admin of it may create. Flag off: the creator's personal org, a value
+        nothing reads yet, so that rows created before a flag flip are not left NULL."""
+        if not orgs_enabled():
+            try:
+                return personal_org_id(user_id)
+            except (ValueError, TypeError):
+                return None
+        try:
+            return require_token_org_capability(actor, Capability.CREATE_INFRASTRUCTURE)
+        except (LookupError, PermissionError):
+            raise HttpError(
+                message="Unauthorized", status_code=403,
+                details="Only an owner or admin of the active organization can create an infrastructure.",
+            ) from None
+
+    def create_infrastructure(self, user_id, infra_data, actor=None):
         """Create infrastructure row and mint a single-use onboarding token.
 
         Authentication and provisioning are deferred to the onboarding callback because the customer
@@ -163,9 +195,10 @@ class InfrastructureService:
 
         dev_mode = is_dev_mode(app_config.mode)
         infra_data.pop("is_mock", None)
+        infra_data["organization_id"] = self._creation_org_id(user_id, actor)
 
         with transaction.atomic():
-            infra = self.repo.create(user_id, infra_data)
+            infra = self.repo.create(user_id, infra_data, require_global_super_admin=not orgs_enabled())
 
             if dev_mode:
                 infra.is_mock = True
@@ -195,14 +228,19 @@ class InfrastructureService:
         serialized_infra["onboarding_token"] = onboarding_token
         return serialized_infra
 
-    def reissue_onboarding_token(self, user_id, infra_id):
+    def reissue_onboarding_token(self, user_id, infra_id, actor=None):
         """Mint a fresh onboarding token for an infra that isn't onboarded yet, so a user can
         recover from an expired or already-consumed token without deleting and recreating."""
-        infra = self.repo.get_by_id(user_id, infra_id)
-        if not infra:
-            return None
-        if not InfrastructurePermissions.can_update_infrastructure(infra, user_id):
-            raise PermissionError("Only the infrastructure owner can reissue its onboarding token")
+        if orgs_enabled():
+            infra = find_infra_with_capability(actor, infra_id, Capability.MANAGE_INFRASTRUCTURE)
+            if not infra:
+                return None
+        else:
+            infra = self.repo.get_by_id(user_id, infra_id)
+            if not infra:
+                return None
+            if not InfrastructurePermissions.can_update_infrastructure(infra, user_id):
+                raise PermissionError("Only the infrastructure owner can reissue its onboarding token")
         if infra.is_cloud_authenticated:
             raise ValueError("Infrastructure is already onboarded; no onboarding token is needed.")
         onboarding_token = infra.issue_onboarding_token()
@@ -275,14 +313,18 @@ class InfrastructureService:
             InfraQueue.enqueue_destroy(str(infra_id))
         logger.info(f"Infrastructure {infra_id} destroy enqueued")
 
-    def delete_infrastructure(self, user_id, infra_id):
+    def delete_infrastructure(self, user_id, infra_id, actor=None):
         """Delete infrastructure — enqueues async destroy for ACTIVE infra, immediate delete otherwise."""
-        infra = self.repo.get_by_id(user_id, infra_id)
-        if not infra:
-            return False
-
-        if not InfrastructurePermissions.can_delete_infrastructure(infra, user_id):
-            raise PermissionError("Only the infrastructure owner can delete it")
+        if orgs_enabled():
+            infra = find_infra_with_capability(actor, infra_id, Capability.DELETE_INFRASTRUCTURE)
+            if not infra:
+                return False
+        else:
+            infra = self.repo.get_by_id(user_id, infra_id)
+            if not infra:
+                return False
+            if not InfrastructurePermissions.can_delete_infrastructure(infra, user_id):
+                raise PermissionError("Only the infrastructure owner can delete it")
 
         from api.models import Application
         app_count = Application.objects.filter(infrastructure_id=infra_id).count()
@@ -333,7 +375,7 @@ class InfrastructureService:
                 self._assert_dns_teardown_complete(infra_id)
                 logger.warning(f"No environment found for infrastructure {infra_id}, deleting record")
 
-        deleted = self.repo.delete(user_id, infra_id)
+        deleted = self.repo.delete(user_id, infra_id, by_owner=not orgs_enabled())
         if deleted:
             # Propagate to read-models (application-service) so they drop the row; without this
             # a later infra with the same (user, name) collides on materialization.
@@ -346,14 +388,19 @@ class InfrastructureService:
                 )
         return deleted
 
-    def remove_invited_user(self, owner_id, infra_id, target_user_id):
+    def remove_invited_user(self, owner_id, infra_id, target_user_id, actor=None):
         """Remove an invited user from an infrastructure. Delete user if they belong to no other infra."""
         from api.models.user import User
-        infra = self.repo.get_by_id(owner_id, infra_id)
-        if not infra:
-            return False
-        if str(infra.user_id) != str(owner_id):
-            raise PermissionError("Only the infrastructure owner can remove users")
+        if orgs_enabled():
+            infra = find_infra_with_capability(actor, infra_id, Capability.MANAGE_INFRASTRUCTURE)
+            if not infra:
+                return False
+        else:
+            infra = self.repo.get_by_id(owner_id, infra_id)
+            if not infra:
+                return False
+            if str(infra.user_id) != str(owner_id):
+                raise PermissionError("Only the infrastructure owner can remove users")
         try:
             target_user = User.objects.get(id=target_user_id)
         except User.DoesNotExist:
@@ -373,15 +420,20 @@ class InfrastructureService:
             )
         return True
     
-    def update_infrastructure_config(self, user_id, infra_id, update_data):
+    def update_infrastructure_config(self, user_id, infra_id, update_data, actor=None):
         """Update infrastructure configuration and publish event."""
-        infra = self.repo.get_by_id(user_id, infra_id)
-        if not infra:
-            return None
-        
-        # Check permissions (only SUPER_ADMIN/owner can update)
-        if not InfrastructurePermissions.can_update_infrastructure(infra, user_id):
-            raise PermissionError("Only the infrastructure owner can update it")
+        if orgs_enabled():
+            infra = find_infra_with_capability(actor, infra_id, Capability.MANAGE_INFRASTRUCTURE)
+            if not infra:
+                return None
+        else:
+            infra = self.repo.get_by_id(user_id, infra_id)
+            if not infra:
+                return None
+
+            # Check permissions (only SUPER_ADMIN/owner can update)
+            if not InfrastructurePermissions.can_update_infrastructure(infra, user_id):
+                raise PermissionError("Only the infrastructure owner can update it")
 
         # F6: an exited infrastructure is done being managed by Launchpad — config changes
         # here have nothing left to apply against.

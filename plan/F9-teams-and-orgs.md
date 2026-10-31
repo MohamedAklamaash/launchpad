@@ -671,6 +671,26 @@ Operational steps for shipping the auth-service side of F9. Order matters.
    - `DASHBOARD_URL` must be set on notification-service, or invitation email jobs fail
      permanently (the link cannot be built).
 
+5. **Permission-matrix enforcement (ticket 7) rollout.** With `ORGS_ENABLED` on, access in
+   infrastructure-service, application-service and payment-service comes only from an active
+   Membership in the resource's org; the legacy `invited_users` M2M and
+   `InfrastructureUserRole` grant nothing. Before flipping the flag:
+   - **Personal orgs must exist.** Nothing creates the personal `Organization` and owner
+     `Membership` for existing users: `createOrganization` has no caller outside tests, and
+     `backfillAccounts` writes Accounts only. Until a backfill writes them (and the Django
+     mirrors have consumed the `org.created` events), every pre-F9 owner resolves to no role
+     and every existing infrastructure returns 404. Organic GitHub signups need the same
+     creation hook. This is not built in ticket 7.
+   - **Run the Django migrations first.** `0041` (infrastructure-service), `0045`
+     (application-service) and `0008` (payment-service) re-stamp `organization_id` on rows
+     created after the first backfill. A NULL `organization_id` is inaccessible under the flag.
+   - **Deploy before the flag.** New `infrastructure.created` events carry `organization_id`;
+     the application-service and payment-service mirrors store it write-once.
+   - **Old tokens resolve to no role.** A token with no `account_id` claim gets no role
+     (review M1), so every session minted before F9 must re-login or refresh.
+   - Open SSE log streams authorize once, at open. A member removed mid-stream keeps the
+     stream for at most `LOG_STREAM_MAX_DURATION_SECONDS` (10 minutes by default).
+
 ## Open questions
 
 Everything else above is decided. These two genuinely need the owner, not because they're
