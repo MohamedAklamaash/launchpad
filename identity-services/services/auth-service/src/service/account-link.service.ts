@@ -1,5 +1,6 @@
 import { Transaction } from 'sequelize';
 import { Account, InvitedUser, User } from '@/db';
+import { sequelize } from '@/db/sequalize';
 import { accountIdForEmail, normalizeEmail } from '@/utils/account-id';
 import { logger } from '@/utils/logger';
 
@@ -36,6 +37,17 @@ export const linkAccountForVerifiedIdentity = async (
     input: LinkAccountInput,
 ): Promise<string | null> => {
     const accountId = accountIdForEmail(input.email);
+
+    // Serializes concurrent links for the same Account: without it, a User login and an
+    // InvitedUser verify can both pass the collision check below before either writes,
+    // and both link. A blanket unique(account_id) per table cannot express the rule
+    // because one Account may legitimately hold one User row and one InvitedUser row
+    // after manual review; this lock makes check-then-write atomic without forbidding that.
+    // Released automatically when the transaction ends.
+    await sequelize.query('SELECT pg_advisory_xact_lock(hashtext(:key))', {
+        replacements: { key: `account-link:${accountId}` },
+        transaction: input.transaction,
+    });
 
     const [existingUser, existingInvitedUser] = await Promise.all([
         User.findOne({ where: { account_id: accountId }, transaction: input.transaction }),

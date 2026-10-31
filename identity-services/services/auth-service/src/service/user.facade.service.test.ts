@@ -24,6 +24,7 @@ process.env.ORGS_ENABLED = 'true';
 const { sequelize } = await import('@/db/sequalize');
 const { Account, InvitedUser, RefreshToken, User } = await import('@/db');
 const { UserFacadeService } = await import('@/service/user.facade.service');
+const { HttpError } = await import('@launchpad/common');
 const { verifyAccessToken } = await import('@/utils/handle-token');
 const { accountIdForEmail } = await import('@/utils/account-id');
 
@@ -31,6 +32,8 @@ const withTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
 
 const service = new UserFacadeService();
+
+const withAdvisoryLockMock = () => mock.method(sequelize, 'query', async () => []);
 
 const githubData = {
     token: 'gh-token',
@@ -47,6 +50,7 @@ const githubData = {
 // meantime.
 test('upsertUser links a newly-created GitHub User to its deterministic Account', async () => {
     const txSpy = withTransactionMock();
+    const lockSpy = withAdvisoryLockMock();
     const findUserSpy = mock.method(User, 'findOne', async () => null);
     const createdUser = {
         id: '11111111-1111-1111-1111-111111111111',
@@ -88,6 +92,7 @@ test('upsertUser links a newly-created GitHub User to its deterministic Account'
         );
     } finally {
         txSpy.mock.restore();
+        lockSpy.mock.restore();
         findUserSpy.mock.restore();
         createUserSpy.mock.restore();
         invitedFindOneSpy.mock.restore();
@@ -141,6 +146,7 @@ test('upsertUser leaves an already-linked GitHub User alone (no re-link attempt)
 // construction" rows.
 test('upsertUser declines to link when the Account is already held by a different row', async () => {
     const txSpy = withTransactionMock();
+    const lockSpy = withAdvisoryLockMock();
     const createdUser = {
         id: '11111111-1111-1111-1111-111111111111',
         email: githubData.email,
@@ -178,11 +184,121 @@ test('upsertUser declines to link when the Account is already held by a differen
         assert.equal('account_id' in payload, false);
     } finally {
         txSpy.mock.restore();
+        lockSpy.mock.restore();
         findUserSpy.mock.restore();
         createUserSpy.mock.restore();
         invitedFindOneSpy.mock.restore();
         findOrCreateSpy.mock.restore();
         updateSpy.mock.restore();
+        refreshSpy.mock.restore();
+    }
+});
+
+const linkedRow = (githubId: string | null) => {
+    const row = {
+        id: '22222222-2222-2222-2222-222222222222',
+        email: githubData.email,
+        user_name: githubData.username,
+        role: 'super_admin',
+        infra_id: [] as string[],
+        account_id: 'already-linked-account-id',
+        created_at: new Date(),
+        metadata: (githubId === null ? {} : { github: { id: githubId } }) as Record<
+            string,
+            unknown
+        >,
+        profile_url: null as string | null,
+        saves: 0,
+        async save() {
+            row.saves += 1;
+            return row;
+        },
+    };
+    return row;
+};
+
+const isEmailLookup = (opts?: { where?: object }) => !!opts?.where && 'email' in opts.where;
+
+const withRefreshTokenMock = () =>
+    mock.method(RefreshToken, 'create', async (attrs: object) => ({ ...attrs, token_id: 'tok-1' }));
+
+test('upsertUser: the same github id logs in normally and never consults the email', async () => {
+    const txSpy = withTransactionMock();
+    const row = linkedRow(githubData.github_id);
+    const findSpy = mock.method(User, 'findOne', async (opts?: { where?: object }) =>
+        isEmailLookup(opts) ? null : row,
+    );
+    const refreshSpy = withRefreshTokenMock();
+
+    try {
+        const result = await service.upsertUser(githubData);
+        assert.equal(verifyAccessToken(result.accessToken).account_id, 'already-linked-account-id');
+        assert.equal(findSpy.mock.callCount(), 1);
+        assert.equal(row.saves, 1);
+    } finally {
+        txSpy.mock.restore();
+        findSpy.mock.restore();
+        refreshSpy.mock.restore();
+    }
+});
+
+test('upsertUser: a legacy row with no github id is bound by email once and the id is recorded', async () => {
+    const row = linkedRow(null);
+
+    const txSpy = withTransactionMock();
+    const findSpy = mock.method(User, 'findOne', async (opts?: { where?: object }) =>
+        isEmailLookup(opts) ? row : null,
+    );
+    const refreshSpy = withRefreshTokenMock();
+    try {
+        await service.upsertUser(githubData);
+        assert.equal((row.metadata.github as { id: string }).id, githubData.github_id);
+        assert.equal(row.saves, 1);
+    } finally {
+        txSpy.mock.restore();
+        findSpy.mock.restore();
+        refreshSpy.mock.restore();
+    }
+
+    const txSpy2 = withTransactionMock();
+    const findSpy2 = mock.method(User, 'findOne', async (opts?: { where?: object }) =>
+        isEmailLookup(opts) ? null : row,
+    );
+    const refreshSpy2 = withRefreshTokenMock();
+    try {
+        await service.upsertUser(githubData);
+        assert.equal(findSpy2.mock.callCount(), 1);
+    } finally {
+        txSpy2.mock.restore();
+        findSpy2.mock.restore();
+        refreshSpy2.mock.restore();
+    }
+});
+
+test('upsertUser: a different github id with the same email never reaches the original row', async () => {
+    const txSpy = withTransactionMock();
+    const row = linkedRow('99999');
+    const findSpy = mock.method(User, 'findOne', async (opts?: { where?: object }) =>
+        isEmailLookup(opts) ? row : null,
+    );
+    const createSpy = mock.method(User, 'create', async () => {
+        throw new Error('must not create a second row for a unique email');
+    });
+    const refreshSpy = withRefreshTokenMock();
+
+    try {
+        await assert.rejects(
+            () => service.upsertUser(githubData),
+            (err: unknown) => err instanceof HttpError && err.statusCode === 409,
+        );
+        assert.equal(row.saves, 0);
+        assert.deepEqual(row.metadata, { github: { id: '99999' } });
+        assert.equal(refreshSpy.mock.callCount(), 0);
+        assert.equal(createSpy.mock.callCount(), 0);
+    } finally {
+        txSpy.mock.restore();
+        findSpy.mock.restore();
+        createSpy.mock.restore();
         refreshSpy.mock.restore();
     }
 });
