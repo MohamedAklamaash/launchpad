@@ -29,6 +29,7 @@ process.env.RABBITMQ_URL = 'amqp://guest:guest@127.0.0.1:1/';
 process.env.ORGS_ENABLED ??= 'true';
 
 const Redis = (await import('ioredis')).default;
+const { Op, UniqueConstraintError } = await import('sequelize');
 const { sequelize } = await import('@/db/sequalize');
 const db = await import('@/db');
 const { createApp } = await import('@/app');
@@ -67,6 +68,7 @@ export const createHarness = async () => {
         published: [] as { routingKey: string; payload: Row }[],
         redisCounts: new Map<string, number>(),
         redisDown: false,
+        membershipCreateError: null as Error | null,
     };
 
     let tail: Promise<unknown> = Promise.resolve();
@@ -85,6 +87,11 @@ export const createHarness = async () => {
                 (m) => m.id === opts.replacements?.membershipId,
             );
             if (!membership) return [];
+            if (sql.includes('removed_at = NOW()')) {
+                membership.version = (membership.version as number) + 1;
+                membership.removed_at = new Date();
+                return [{ version: membership.version }];
+            }
             membership.version = (membership.version as number) + 1;
             membership.role = opts.replacements?.role ?? membership.role;
             membership.removed_at = null;
@@ -141,7 +148,25 @@ export const createHarness = async () => {
             'findOne',
             async (o: { where: Row }) => state.memberships.find((m) => matches(m, o.where)) ?? null,
         ),
+        mock.method(db.User, 'findAll', async (o: { where: Row }) =>
+            state.users.filter((u) => matches(u, o.where)),
+        ),
+        mock.method(db.InvitedUser, 'findAll', async (o: { where: Row }) =>
+            state.invitedUsers.filter((u) => matches(u, o.where)),
+        ),
+        mock.method(db.RefreshToken, 'destroy', async () => 0),
+        mock.method(db.Invitation, 'update', async (values: Row, o: { where: Row }) => {
+            const emails = (o.where.email as { [Op.in]?: string[] } | string | undefined) ?? null;
+            const wanted = typeof emails === 'object' && emails ? (emails[Op.in] ?? []) : null;
+            const hits = state.invitations.filter(
+                (i) =>
+                    matches(i, o.where) && (wanted === null || wanted.includes(i.email as string)),
+            );
+            hits.forEach((i) => Object.assign(i, values));
+            return [hits.length];
+        }),
         mock.method(db.Membership, 'create', async (attrs: Row) => {
+            if (state.membershipCreateError) throw state.membershipCreateError;
             const row = { id: randomUUID(), version: 1, removed_at: null, ...attrs };
             state.memberships.push(row);
             return row;
@@ -260,6 +285,7 @@ export const createHarness = async () => {
         addMembership,
         tokenFor,
         call,
+        newUniqueError: () => new UniqueConstraintError({ message: 'duplicate' }),
         close: async () => {
             await new Promise<void>((resolve) => server.close(() => resolve()));
             mocks.forEach((m) => m.mock.restore());

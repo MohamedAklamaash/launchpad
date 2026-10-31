@@ -47,11 +47,26 @@ export const issueInvitation = async (
 
     const token = randomBytes(INVITATION_TOKEN_BYTES).toString('base64url');
 
+    const email = normalizeEmail(input.email);
     const invitation = await sequelize.transaction(async (transaction) => {
+        // One live invitation per (org, email): a re-invite supersedes older ones, so a
+        // stale higher-role invitation cannot outlive the one that replaced it.
+        await Invitation.update(
+            { revoked_at: new Date() },
+            {
+                where: {
+                    organization_id: input.organizationId,
+                    email,
+                    accepted_at: null,
+                    revoked_at: null,
+                },
+                transaction,
+            },
+        );
         const created = await Invitation.create(
             {
                 organization_id: input.organizationId,
-                email: normalizeEmail(input.email),
+                email,
                 role: input.role,
                 invited_by_account_id: input.invitedByAccountId,
                 token_hash: hashToken(token),

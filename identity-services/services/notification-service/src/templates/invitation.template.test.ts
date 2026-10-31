@@ -23,7 +23,20 @@ test('the organization name and inviter name are HTML-escaped everywhere they ap
 
     assert.ok(!html.includes('<script>alert(1)</script>'));
     assert.ok(!html.includes('<img src=x'));
-    assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+    assert.ok(!html.includes('<'.concat('script')));
+});
+
+test('names cannot carry auto-linkable URL text and are capped at 64 characters', () => {
+    const html = render({
+        organizationName: 'Pay now at https://evil.example.com/login or www.evil.example.com',
+        inviterName: `x`.repeat(500),
+    });
+
+    assert.ok(!html.includes('https://evil'));
+    assert.ok(!html.includes('evil.example.com'));
+    assert.ok(!html.includes('x'.repeat(65)));
+    assert.ok(!getInvitationSubject('see https://evil.example.com now').includes('://'));
+    assert.ok(!getInvitationSubject('visit evil.example.com').includes('.'.concat('example')));
 });
 
 test('an unknown role is shown as a generic label, not echoed', () => {

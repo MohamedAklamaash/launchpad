@@ -1,8 +1,9 @@
 import { HttpError, ORG_INVITATION_EMAIL_EVENT } from '@launchpad/common';
 import { Op } from 'sequelize';
-import { Invitation, Organization } from '@/db';
+import { Invitation, Membership, Organization } from '@/db';
 import { userAuthenticationQueue } from '@/messaging/producer/user-created.message';
 import { ORG_ROLE, type OrgRole } from '@/types/org-role';
+import { accountIdForEmail } from '@/utils/account-id';
 import type { AccessTokenPayload } from '@/utils/handle-token';
 import { logger } from '@/utils/logger';
 import { otpAttempts } from '@/utils/otp-attempts';
@@ -60,13 +61,26 @@ export const createInvitation = async (
         throw new HttpError(409, 'Cannot invite a member with this role');
     }
 
+    const alreadyMember = await Membership.findOne({
+        where: {
+            organization_id: input.organizationId,
+            account_id: accountIdForEmail(input.email),
+            removed_at: null,
+        },
+    });
+    if (alreadyMember) throw new HttpError(409, 'This email already belongs to a member');
+
+    await enforce(
+        () => otpAttempts.consumeOrgEmailInviteSlot(input.organizationId, input.email),
+        'Too many invites for this email in this organization - try again later',
+    );
+    await enforce(
+        () => otpAttempts.consumeGlobalEmailInviteSlot(input.email),
+        'This address cannot receive more invitations right now - try again later',
+    );
     await enforce(
         () => otpAttempts.consumeOrgInviteSlot(input.organizationId),
         'Too many invitations for this organization - try again later',
-    );
-    await enforce(
-        () => otpAttempts.consumeInviteSlot(input.email),
-        'Too many invites for this email - try again later',
     );
 
     const organization = await Organization.findByPk(input.organizationId);

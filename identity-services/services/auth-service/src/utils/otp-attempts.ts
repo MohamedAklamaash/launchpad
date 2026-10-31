@@ -25,6 +25,11 @@ export const MAX_INVITES_PER_WINDOW = 3;
 // 20/hour is a deliberate pick: a real team onboards a handful of people at a time, and
 // the per-target-email cap above already bounds spam against any one address.
 export const MAX_ORG_INVITES_PER_WINDOW = 20;
+// Org invitations get their own per-(org, email) cap, so one tenant can never exhaust
+// another tenant's (or the legacy infra flow's) ability to invite the same address. The
+// global per-email ceiling is a much higher anti-spam backstop across all orgs.
+export const MAX_ORG_EMAIL_INVITES_PER_WINDOW = 3;
+export const MAX_GLOBAL_EMAIL_INVITES_PER_WINDOW = 10;
 const INVITE_WINDOW_SECONDS = 60 * 60;
 // Matches invited-user.base.service.ts's createOTP expiry — the attempt counter can
 // never meaningfully outlive the OTP it's guarding.
@@ -149,7 +154,7 @@ export const otpAttempts = {
     // caller fails closed, since an outage is not a reason to lift an abuse limit.
     async consumeInviteSlot(email: string): Promise<boolean> {
         const count = await incrementWithWindow(
-            `invite-throttle:${normalizeEmail(email)}`,
+            `invite-throttle:legacy:${normalizeEmail(email)}`,
             INVITE_WINDOW_SECONDS,
         );
         return count <= MAX_INVITES_PER_WINDOW;
@@ -163,5 +168,21 @@ export const otpAttempts = {
             INVITE_WINDOW_SECONDS,
         );
         return count <= MAX_ORG_INVITES_PER_WINDOW;
+    },
+
+    async consumeOrgEmailInviteSlot(organizationId: string, email: string): Promise<boolean> {
+        const count = await incrementWithWindow(
+            `invite-throttle:org:${organizationId}:${normalizeEmail(email)}`,
+            INVITE_WINDOW_SECONDS,
+        );
+        return count <= MAX_ORG_EMAIL_INVITES_PER_WINDOW;
+    },
+
+    async consumeGlobalEmailInviteSlot(email: string): Promise<boolean> {
+        const count = await incrementWithWindow(
+            `invite-throttle:global:${normalizeEmail(email)}`,
+            INVITE_WINDOW_SECONDS,
+        );
+        return count <= MAX_GLOBAL_EMAIL_INVITES_PER_WINDOW;
     },
 };

@@ -1,6 +1,6 @@
 import { HttpError } from '@launchpad/common';
-import type { Transaction } from 'sequelize';
-import { Membership, Organization } from '@/db';
+import { UniqueConstraintError, type Transaction } from 'sequelize';
+import { Invitation, Membership, Organization } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { publishInvitationAccepted } from '@/messaging/producer/org-events.message';
 import { ORG_ROLE } from '@/types/org-role';
@@ -57,6 +57,22 @@ const requireVerifiedMatchingCredential = (
     return credential;
 };
 
+// Defense in depth for removal: removeMember revokes pending invitations, but an
+// invitation issued before the member's tombstone can never revive that membership.
+const rejectIfIssuedBeforeRemoval = async (
+    invitation: Invitation,
+    accountId: string,
+    transaction: Transaction,
+): Promise<void> => {
+    const prior = await Membership.findOne({
+        where: { organization_id: invitation.organization_id, account_id: accountId },
+        transaction,
+    });
+    if (prior?.removed_at && invitation.created_at.getTime() <= prior.removed_at.getTime()) {
+        throw invalidInvitation();
+    }
+};
+
 const resolveAccountId = async (
     credential: CredentialRow,
     invitationEmail: string,
@@ -82,6 +98,20 @@ const resolveAccountId = async (
     return linked;
 };
 
+// Two concurrent accepts of different invitations for the same (org, account) both see no
+// Membership row and both insert; the loser trips the unique index. That is "already a
+// member", not a server fault.
+const runAcceptTransaction = async <T>(work: (transaction: Transaction) => Promise<T>) => {
+    try {
+        return await sequelize.transaction(work);
+    } catch (error) {
+        if (error instanceof UniqueConstraintError) {
+            throw new HttpError(409, 'Account is already a member of this organization');
+        }
+        throw error;
+    }
+};
+
 // Everything that must be atomic is in one transaction: the row lock on the invitation
 // (the single-use guard: a concurrent accept blocks here, then sees accepted_at set and is
 // rejected), the Account link, the Membership add/revive, the accepted_at stamp and the
@@ -93,7 +123,7 @@ export const acceptInvitation = async (
 ): Promise<AcceptInvitationResult> => {
     assertOrgsEnabled();
 
-    const accepted = await sequelize.transaction(async (transaction) => {
+    const accepted = await runAcceptTransaction(async (transaction) => {
         const invitation = await verifyInvitationToken(input.token, transaction);
         if (!invitation) throw invalidInvitation();
 
@@ -113,6 +143,7 @@ export const acceptInvitation = async (
         if (!organization || !inviterStillAllowed) throw invalidInvitation();
 
         const accountId = await resolveAccountId(credential, invitation.email, transaction);
+        await rejectIfIssuedBeforeRemoval(invitation, accountId, transaction);
         const membership = await addMemberInTransaction(
             {
                 organizationId: invitation.organization_id,

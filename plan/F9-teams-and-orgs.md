@@ -587,6 +587,12 @@ cutover ticket).
 10. **Frontend**: org switcher, members page, invite/accept UI, role-gated UI via
     `useOrgRole()`, settings billing tab. Tests: role-gated controls hidden/disabled per role
     (component tests), E2E invite-to-accept-to-member-visible flow.
+    **Accept page requirements (from the ticket 6 security review):** the invitation token
+    arrives in the URL fragment (`#token=...`). The page must scrub it with
+    `history.replaceState` before any analytics or session-replay script loads, must never
+    move it into a query string or a `?next=` value when bouncing through login (keep it in
+    memory or sessionStorage across the login redirect), and must send it with
+    `POST /api/invitations/accept` carrying only the bearer header and the JSON body.
 11. **Audit log HTTP surface** (added to the same `endpoints/organization.py` gateway router
     from ticket 6) **+ observability** (structured log line, role-change-rate metric,
     owner-role-change-attempt alert). Tests: every mutation produces exactly one audit row in

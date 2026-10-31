@@ -1,8 +1,9 @@
 import { HttpError } from '@launchpad/common';
 import { Op, type Transaction } from 'sequelize';
-import { InvitedUser, Membership, RefreshToken, User } from '@/db';
+import { Invitation, InvitedUser, Membership, RefreshToken, User } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { ORG_ROLE, type OrgRole } from '@/types/org-role';
+import { normalizeEmail } from '@/utils/account-id';
 import {
     bumpMembershipVersion,
     bumpMembershipVersionForRemoval,
@@ -23,17 +24,43 @@ import {
 // credential row yet (shouldn't happen for a real Membership, but not impossible), this
 // is a no-op rather than a failure that would roll back the removal itself.
 const revokeRefreshTokensForAccount = async (
+    organizationId: string,
     accountId: string,
     transaction: Transaction,
 ): Promise<void> => {
     const [users, invitedUsers] = await Promise.all([
-        User.findAll({ where: { account_id: accountId }, attributes: ['id'], transaction }),
-        InvitedUser.findAll({ where: { account_id: accountId }, attributes: ['id'], transaction }),
+        User.findAll({
+            where: { account_id: accountId },
+            attributes: ['id', 'email'],
+            transaction,
+        }),
+        InvitedUser.findAll({
+            where: { account_id: accountId },
+            attributes: ['id', 'email'],
+            transaction,
+        }),
     ]);
-    const userIds = [...users.map((u) => u.id), ...invitedUsers.map((u) => u.id)];
-    if (userIds.length === 0) return;
+    const credentials = [...users, ...invitedUsers];
+    if (credentials.length === 0) return;
 
-    await RefreshToken.destroy({ where: { user_id: { [Op.in]: userIds } }, transaction });
+    await RefreshToken.destroy({
+        where: { user_id: { [Op.in]: credentials.map((c) => c.id) } },
+        transaction,
+    });
+    // A removed member must not be able to walk back in with an invitation issued before
+    // the removal, so every pending invitation to one of their addresses dies with it.
+    await Invitation.update(
+        { revoked_at: new Date() },
+        {
+            where: {
+                organization_id: organizationId,
+                email: { [Op.in]: credentials.map((c) => normalizeEmail(c.email)) },
+                accepted_at: null,
+                revoked_at: null,
+            },
+            transaction,
+        },
+    );
 };
 
 export interface AddMemberInput {
@@ -228,7 +255,7 @@ export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
         // eviction / the refresh-token re-validation in InvitedUserAuthService.refresh
         // alone — the highest-consequence transition (actual removal) doesn't wait for
         // the removed member's next refresh to notice.
-        await revokeRefreshTokensForAccount(account_id, transaction);
+        await revokeRefreshTokensForAccount(organization_id, account_id, transaction);
         return { organization_id, account_id, version: newVersion };
     });
 

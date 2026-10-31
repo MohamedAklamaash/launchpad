@@ -243,7 +243,12 @@ test('accept: a removed member who is re-invited revives the tombstoned membersh
     const { h, orgId, token } = await seed({ role: 'viewer' });
     try {
         const invitee = h.addCredential('invitedUsers', { email: 'invitee@example.com' });
-        const tombstone = h.addMembership(orgId, invitee.account_id as string, 'admin', new Date());
+        const tombstone = h.addMembership(
+            orgId,
+            invitee.account_id as string,
+            'admin',
+            new Date(Date.now() - 3_600_000),
+        );
         tombstone.version = 4;
 
         const res = await accept(h, token, h.tokenFor(invitee));

@@ -17,16 +17,22 @@ const ROLE_LABELS: Record<string, string> = {
     viewer: 'Viewer',
 };
 
-const MAX_SUBJECT_NAME_LENGTH = 80;
+const MAX_DISPLAY_NAME_LENGTH = 64;
 
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+// Org and inviter names are attacker-controlled text inside a Launchpad-branded email.
+// Keep letters, digits, spaces and a few harmless marks, and drop anything that lets a mail
+// client auto-link text (":", "/", ".", "@"), so a name can't smuggle in a clickable URL.
+export const sanitizeDisplayName = (value: string): string =>
+    value
+        .normalize('NFKC')
+        .replace(/[^\p{L}\p{N} '&(),_-]/gu, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, MAX_DISPLAY_NAME_LENGTH)
+        .trim();
 
 export const getInvitationSubject = (organizationName: string): string => {
-    const name = (organizationName || 'a team')
-        .replace(CONTROL_CHARS, ' ')
-        .trim()
-        .slice(0, MAX_SUBJECT_NAME_LENGTH);
+    const name = sanitizeDisplayName(organizationName) || 'a team';
     return `You've been invited to join ${name} on Launchpad`;
 };
 
@@ -59,8 +65,8 @@ export interface InvitationTemplateInput {
 }
 
 export const getInvitationTemplate = (input: InvitationTemplateInput): string => {
-    const organization = escapeHtml(input.organizationName || 'a team');
-    const inviter = escapeHtml(input.inviterName || 'A teammate');
+    const organization = escapeHtml(sanitizeDisplayName(input.organizationName) || 'a team');
+    const inviter = escapeHtml(sanitizeDisplayName(input.inviterName) || 'A teammate');
     const role = escapeHtml(ROLE_LABELS[input.role] ?? 'Member');
     const expires = escapeHtml(input.expiresAt.toUTCString());
     const url = escapeHtml(input.acceptUrl);
