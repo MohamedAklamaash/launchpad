@@ -23,6 +23,7 @@ process.env.REDIS_PASSWORD = 'test';
 process.env.RABBITMQ_URL = 'amqp://guest:guest@127.0.0.1:1/';
 process.env.ORGS_ENABLED = 'true';
 
+const { Op } = await import('sequelize');
 const { sequelize } = await import('@/db/sequalize');
 const { InvitedUser, User } = await import('@/db');
 const { backfillPersonalOrgs } = await import('@/service/personal-org-backfill.service');
@@ -40,6 +41,20 @@ const UNLINKED_ID = '33333333-3333-4333-8333-333333333333';
 
 let userRows: { id: string; account_id: string | null; user_name: string }[] = [];
 mock.method(User, 'findAll', async () => userRows);
+let invitedHolders: { id: string; account_id: string }[] = [];
+mock.method(
+    User,
+    'findOne',
+    async (o: { where: { account_id: string; id: { [Op.ne]: string } } }) =>
+        userRows.find((u) => u.account_id === o.where.account_id && u.id !== o.where.id[Op.ne]) ??
+        null,
+);
+mock.method(
+    InvitedUser,
+    'findOne',
+    async (o: { where: { account_id: string } }) =>
+        invitedHolders.find((r) => r.account_id === o.where.account_id) ?? null,
+);
 const invitedFindAll = mock.method(InvitedUser, 'findAll', async () => {
     throw new Error('the personal-org backfill must never read invited_users');
 });
@@ -48,6 +63,7 @@ beforeEach(() => {
     store.orgs.clear();
     store.memberships.length = 0;
     store.published.length = 0;
+    invitedHolders = [];
     userRows = [
         { id: OWNER_ID, account_id: OWNER_ACCOUNT, user_name: 'octocat' },
         { id: OTHER_ID, account_id: OTHER_ACCOUNT, user_name: 'hubot' },
@@ -63,6 +79,7 @@ test('creates a deterministic personal org plus owner membership per linked user
         alreadyExisted: 0,
         skippedUnlinked: 1,
         conflicts: 0,
+        sharedAccounts: 0,
         inconsistent: 0,
         failed: 0,
     });
@@ -185,4 +202,44 @@ test('one user failing does not abort the pass', async () => {
     } finally {
         failing.mock.restore();
     }
+});
+
+test('a user whose account is also held by an invited row gets no org and no event', async () => {
+    invitedHolders = [{ id: 'invited-row', account_id: OWNER_ACCOUNT }];
+
+    const result = await backfillPersonalOrgs();
+
+    assert.equal(result.sharedAccounts, 1);
+    assert.equal(result.created, 1);
+    assert.equal(store.orgs.has(personalOrgId(OWNER_ID)), false);
+    assert.equal(
+        store.published.some((e) => e.payload.organization_id === personalOrgId(OWNER_ID)),
+        false,
+    );
+});
+
+test('two users sharing one account both get no org', async () => {
+    userRows = [
+        { id: OWNER_ID, account_id: OWNER_ACCOUNT, user_name: 'octocat' },
+        { id: OTHER_ID, account_id: OWNER_ACCOUNT, user_name: 'hubot' },
+    ];
+
+    const result = await backfillPersonalOrgs();
+
+    assert.equal(result.sharedAccounts, 2);
+    assert.equal(store.orgs.size, 0);
+});
+
+test('an existing org owned by a shared account is reported, not republished', async () => {
+    const orgId = personalOrgId(OWNER_ID);
+    store.orgs.set(orgId, { id: orgId, owner_account_id: OWNER_ACCOUNT, name: 'octocat' });
+    invitedHolders = [{ id: 'invited-row', account_id: OWNER_ACCOUNT }];
+
+    const result = await backfillPersonalOrgs({ republishExisting: true });
+
+    assert.equal(result.sharedAccounts, 1);
+    assert.equal(
+        store.published.some((e) => e.payload.organization_id === orgId),
+        false,
+    );
 });

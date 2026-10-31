@@ -1,7 +1,8 @@
 import { BaseService } from '@/service/invited-users/invited-user.base.service';
 import { InvitedUser, Membership, UserOTP, RefreshToken } from '@/db';
 import { sequelize } from '@/db/sequalize';
-import { comparePassword } from '@/utils/handle-password';
+import { randomBytes } from 'node:crypto';
+import { comparePassword, hashPassword } from '@/utils/handle-password';
 import { verifyRefreshToken } from '@/utils/handle-token';
 import { personalOrgId } from '@/utils/org-id';
 import { env } from '@/config/env';
@@ -11,6 +12,12 @@ import { HttpError } from '@launchpad/common';
 import { InvitedUserLoginInput, AuthenticateUserInput } from '@/types/auth.invited_user.types';
 import { OTP_PURPOSE } from '@/types/otp-purpose';
 import { linkAccountForVerifiedIdentity } from '@/service/account-link.service';
+
+// The inviter chose the password on the row they created, so it cannot outlive first
+// verification: it is replaced with the invitee's own, or with the hash of a random
+// secret nobody holds (forgot-password is then the only way to get password login).
+const passwordHashForFirstVerification = (newPassword?: string): Promise<string> =>
+    hashPassword(newPassword ?? randomBytes(32).toString('hex'));
 
 export class InvitedUserAuthService extends BaseService {
     public async login(input: Omit<InvitedUserLoginInput, 'infra_id'>) {
@@ -59,7 +66,7 @@ export class InvitedUserAuthService extends BaseService {
     }
 
     public async authenticateWithOTP(input: AuthenticateUserInput) {
-        const { email, otp } = input;
+        const { email, otp, newPassword } = input;
         const purpose = OTP_PURPOSE.REGISTER;
 
         // Claims a slot unconditionally, before the guess (or even whether the account
@@ -86,6 +93,7 @@ export class InvitedUserAuthService extends BaseService {
         // touching UserOTP — the same 400 an existing user gets for a wrong guess, and
         // now the same DB work behind it too.
         const lookupUserId = claim?.userId ?? NIL_INVITED_USER_ID;
+        const passwordHash = await passwordHashForFirstVerification(newPassword);
 
         return sequelize.transaction(async (transaction) => {
             const otpRecord = await UserOTP.findOne({
@@ -112,10 +120,18 @@ export class InvitedUserAuthService extends BaseService {
             }>(
                 `UPDATE invited_users
                     SET is_authenticated = true,
-                        email_verified_at = COALESCE(email_verified_at, NOW())
+                        email_verified_at = COALESCE(email_verified_at, NOW()),
+                        password_hash = CASE
+                            WHEN email_verified_at IS NULL THEN :passwordHash
+                            ELSE password_hash
+                        END
                   WHERE id = :userId
               RETURNING email_verified_at`,
-                { replacements: { userId: claim.userId }, type: QueryTypes.SELECT, transaction },
+                {
+                    replacements: { userId: claim.userId, passwordHash },
+                    type: QueryTypes.SELECT,
+                    transaction,
+                },
             );
             await otpRecord.destroy({ transaction });
             await otpAttempts.resetAttempts(claim.userId);

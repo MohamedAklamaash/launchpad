@@ -19,6 +19,7 @@ import {
     registerSchema,
     loginSchema,
     otpSchema,
+    otpBodySchema,
     forgotPasswordSchema,
     verifyResetSchema,
     resetPasswordSchema,
@@ -203,6 +204,14 @@ authRouter.get(
  *             properties:
  *               email: { type: string, format: email, example: user@example.com }
  *               otp: { type: string, minLength: 6, maxLength: 6, example: "123456" }
+ *               new_password:
+ *                 type: string
+ *                 minLength: 6
+ *                 maxLength: 72
+ *                 description: >
+ *                   Password to set on first verification. The inviter-chosen password
+ *                   never survives first verification; when this is omitted the account
+ *                   has no usable password until the forgot-password flow is completed.
  *     responses:
  *       200:
  *         description: OTP verified, returns tokens
@@ -214,7 +223,7 @@ authRouter.get(
  */
 authRouter.post(
     '/authenticate-with-otp',
-    validateRequest({ body: otpSchema.shape.query }),
+    validateRequest({ body: otpBodySchema.shape.body }),
     AuthenticateOTPWithBody,
 );
 

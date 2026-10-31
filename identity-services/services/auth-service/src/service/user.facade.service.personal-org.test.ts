@@ -59,6 +59,8 @@ const userRow = (accountId: string | null) => ({
     },
 });
 
+let invitedHolder: object | null = null;
+
 const loginAs = async (row: ReturnType<typeof userRow>, accountLinkDeclined = false) => {
     const txSpy = mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
         cb({}),
@@ -68,7 +70,7 @@ const loginAs = async (row: ReturnType<typeof userRow>, accountLinkDeclined = fa
             ? { id: 'some-other-user-row' }
             : row,
     );
-    const invitedSpy = mock.method(InvitedUser, 'findOne', async () => null);
+    const invitedSpy = mock.method(InvitedUser, 'findOne', async () => invitedHolder);
     const lockSpy = mock.method(sequelize, 'query', async () => []);
     const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
         ...attrs,
@@ -85,6 +87,7 @@ beforeEach(() => {
     store.orgs.clear();
     store.memberships.length = 0;
     store.published.length = 0;
+    invitedHolder = null;
 });
 
 test('first login creates the personal org and owner membership once; the next login is a no-op', async () => {
@@ -137,4 +140,14 @@ test('a failure creating the org does not block sign-in', async () => {
     } finally {
         failing.mock.restore();
     }
+});
+
+test('login creates no org while an invited row shares the same account', async () => {
+    invitedHolder = { id: 'invited-row', account_id: ACCOUNT_ID };
+
+    const result = await loginAs(userRow(ACCOUNT_ID));
+
+    assert.ok(result.accessToken);
+    assert.equal(store.orgs.size, 0);
+    assert.equal(store.published.length, 0);
 });

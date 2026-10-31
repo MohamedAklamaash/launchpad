@@ -1,5 +1,5 @@
-import { UniqueConstraintError } from 'sequelize';
-import { Membership, Organization } from '@/db';
+import { Op, UniqueConstraintError } from 'sequelize';
+import { InvitedUser, Membership, Organization, User } from '@/db';
 import { ORG_ROLE } from '@/types/org-role';
 import { personalOrgId } from '@/utils/org-id';
 import { logger } from '@/utils/logger';
@@ -19,7 +19,7 @@ export interface PersonalOrgOwner {
 }
 
 export type PersonalOrgStatus =
-    'created' | 'exists' | 'skipped_unlinked' | 'conflict' | 'inconsistent';
+    'created' | 'exists' | 'skipped_unlinked' | 'conflict' | 'shared_account' | 'inconsistent';
 
 export interface EnsurePersonalOrgOptions {
     republishExisting?: boolean;
@@ -37,6 +37,18 @@ const findOwnerMembership = (organizationId: string, accountId: string) =>
             removed_at: null,
         },
     });
+
+// An Account linked to more than one credential row is reachable by every holder (the
+// token's account_id is all org authz looks at), so it must never own a personal org:
+// the second holder could be an InvitedUser whose password someone other than the
+// GitHub user chose.
+const isHeldByAnotherCredential = async (accountId: string, userId: string) => {
+    const [otherUser, invitedUser] = await Promise.all([
+        User.findOne({ where: { account_id: accountId, id: { [Op.ne]: userId } } }),
+        InvitedUser.findOne({ where: { account_id: accountId } }),
+    ]);
+    return (otherUser !== null && otherUser.id !== userId) || invitedUser !== null;
+};
 
 const classifyExisting = async (
     organization: Organization,
@@ -95,6 +107,13 @@ export const ensurePersonalOrganization = async (
         return 'skipped_unlinked';
     }
     const linkedOwner = { ...owner, account_id: owner.account_id };
+    if (await isHeldByAnotherCredential(linkedOwner.account_id, owner.id)) {
+        logger.warn(
+            { personalOrgSharedAccount: { userId: owner.id, accountId: linkedOwner.account_id } },
+            'Account is held by more than one credential row - no personal org, needs manual review',
+        );
+        return 'shared_account';
+    }
     const organizationId = personalOrgId(owner.id);
 
     const existing = await Organization.findByPk(organizationId);

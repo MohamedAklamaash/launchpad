@@ -256,10 +256,16 @@ direction):
 
 - **`Account`** `(id, email, display_name, created_at)`. Backfill id =
   `uuid5(ACCOUNT_NAMESPACE, normalized email)`, one per *distinct normalized email*, not one
-  per legacy row — deduped by construction: a same-email pair across `users`/`invited_users`
-  (or even within one table, since `email`'s unique index is case-sensitive) deliberately
-  computes the same id and ends up sharing one Account row, consistent with the Non-goal that
-  this project doesn't resolve that collision, just link it (documented, not fixed). This is
+  per legacy row. A same-email pair across `users`/`invited_users` (or even within one table,
+  since `email`'s unique index is case-sensitive) computes the same id, but an Account is
+  **never linked to a second credential row**, by the backfill or by the live paths: whoever
+  can log in as any row holding an Account acts as that Account in every org, so a merge is
+  a decision that one person controls both rows, made by a human. The backfill links a row
+  only when it is the single unlinked verified row for that email and no other row holds the
+  Account; otherwise it logs `accountBackfillSharedAccount` and links nothing. Separately, an
+  inviter-chosen password never survives first OTP verification (the invitee sets one, or the
+  account has none until forgot-password), so an inviter cannot keep a working login on an
+  email they do not own. This is
   safe despite email being mutable because the id is computed **once**, at backfill time, and
   stored in the FK — no service ever recomputes `Account.id` from a row's *current* email
   later (that pattern — a service deriving the same id independently, with no coordination —
@@ -587,6 +593,11 @@ cutover ticket).
 10. **Frontend**: org switcher, members page, invite/accept UI, role-gated UI via
     `useOrgRole()`, settings billing tab. Tests: role-gated controls hidden/disabled per role
     (component tests), E2E invite-to-accept-to-member-visible flow.
+    **Legacy invite verify (from the PR #166 security review):** `POST
+    /api/auth/authenticate-with-otp` accepts an optional `new_password`; the frontend verify
+    page does not send it yet. Until it does, a newly verified invited user has no usable
+    password and must use forgot-password once. The verify page should prompt for a password
+    and send it.
     **Accept page requirements (from the ticket 6 security review):** the invitation token
     arrives in the URL fragment (`#token=...`). The page must scrub it with
     `history.replaceState` before any analytics or session-replay script loads, must never
@@ -694,7 +705,20 @@ Operational steps for shipping the auth-service side of F9. Order matters.
       different Account; left untouched, logged as `personalOrgConflict`), `inconsistent`
       (org exists, owner Membership missing) or `failed` row. Resolve those by hand before
       continuing. `skippedUnlinked` users (email collision held for review) get no org until
-      they are linked; they are logged as `personalOrgSkipped`.
+      they are linked; they are logged as `personalOrgSkipped`. `shared_account` users (another
+      `users` or `invited_users` row holds the same Account; logged as
+      `personalOrgSharedAccount`) also get no org and also make the script exit `2`.
+
+      **Never link a `User` to an Account held by an `InvitedUser`, or the reverse, without
+      confirming that one person controls both.** An `InvitedUser` password may have been chosen
+      by an inviter, and the shared Account would let that login act as the GitHub user in
+      every org they own. For a legacy shared Account, unlink the `InvitedUser` row
+      (`account_id = NULL`, and have that person verify again) after checking the personal org
+      and its mirrors were not already created for it.
+
+      The script runs on a confirm channel and exits `3` if the broker did not confirm every
+      publish, if any publish happened while disconnected, or if messages are still buffered.
+      Re-run with `--republish-existing` in that case.
    4. Verify every mirror received the events (queries below). If any are missing, re-run with
       `-- --republish-existing`: it re-emits `org.created` for correctly owned existing orgs
       and writes nothing. Consumers ignore a redelivery whose `version` is not newer.

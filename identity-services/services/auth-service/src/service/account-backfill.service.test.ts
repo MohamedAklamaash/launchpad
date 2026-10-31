@@ -109,11 +109,8 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
         { id: 'user-2', email: 'second@example.com', user_name: 'second', account_id: null },
     );
     fakeInvitedUsers.rows.push(
-        // Cross-table collision: same normalized email as user-1, deliberately not fixed
-        // (F9 Non-goals) — both rows must end up sharing one account_id. Both already
-        // verified (a real InvitedUser row's email_verified_at is SQL NULL or a real
-        // timestamp, never "unset" the way an optional JS field can be — set explicitly
-        // here to match).
+        // Cross-table collision: same normalized email as user-1. Neither row may be
+        // linked: merging two credential rows into one Account is a manual decision.
         {
             id: 'invited-1',
             email: '  owner@example.com  ',
@@ -140,15 +137,15 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
     try {
         const first = await backfillAccounts();
 
-        assert.equal(first.accountsCreated, 3);
-        assert.equal(first.usersLinked, 2);
-        assert.equal(first.invitedUsersLinked, 2);
+        assert.equal(first.accountsCreated, 2);
+        assert.equal(first.usersLinked, 1);
+        assert.equal(first.invitedUsersLinked, 1);
         assert.equal(first.collisionGroups, 1);
+        assert.equal(first.sharedAccountRowsSkipped, 2);
 
-        const sharedId = accountIdForEmail('owner@example.com');
-        assert.equal(fakeUsers.rows[0].account_id, sharedId);
-        assert.equal(fakeInvitedUsers.rows[0].account_id, sharedId);
-        assert.equal(fakeAccounts.rows.length, 3);
+        assert.equal(fakeUsers.rows[0].account_id, null);
+        assert.equal(fakeInvitedUsers.rows[0].account_id, null);
+        assert.equal(fakeAccounts.rows.length, 2);
 
         const snapshotAfterFirst = {
             users: JSON.parse(JSON.stringify(fakeUsers.rows)),
@@ -162,6 +159,7 @@ test('backfillAccounts is idempotent: running it twice yields the same final sta
         assert.equal(second.usersLinked, 0);
         assert.equal(second.invitedUsersLinked, 0);
         assert.equal(second.collisionGroups, 1);
+        assert.equal(second.sharedAccountRowsSkipped, 2);
         assert.equal(second.staleLinksUnlinked, 0);
 
         // Round-tripped through JSON on both sides — snapshotAfterFirst already was,
@@ -225,10 +223,10 @@ test('backfillAccounts never overwrites a row already linked to a different acco
     }
 });
 
-test('backfillAccounts links a case-only collision within the same table to one account', async () => {
+test('backfillAccounts links neither row of a case-only collision within the same table', async () => {
     // Postgres's unique index on `email` is case-sensitive, so `Foo@x.com` and `foo@x.com`
     // can coexist today within `users` itself (not just across tables) — the normalized-
-    // email dedup must catch this one too.
+    // email grouping must catch this one too, and refuse to merge the two rows.
     const fakeUsers = makeFakeTable();
     const fakeInvitedUsers = makeFakeTable();
     const fakeAccounts = makeFakeAccounts();
@@ -248,9 +246,11 @@ test('backfillAccounts links a case-only collision within the same table to one 
     try {
         const result = await backfillAccounts();
 
-        assert.equal(result.accountsCreated, 1);
+        assert.equal(result.accountsCreated, 0);
         assert.equal(result.collisionGroups, 1);
-        assert.equal(fakeUsers.rows[0].account_id, fakeUsers.rows[1].account_id);
+        assert.equal(result.sharedAccountRowsSkipped, 2);
+        assert.equal(fakeUsers.rows[0].account_id, null);
+        assert.equal(fakeUsers.rows[1].account_id, null);
     } finally {
         findUsersSpy.mock.restore();
         findInvitedSpy.mock.restore();
@@ -414,5 +414,47 @@ test('backfillAccounts leaves a verified rows account_id untouched (no stale unl
         bulkCreateSpy.mock.restore();
         updateUsersSpy.mock.restore();
         updateInvitedSpy.mock.restore();
+    }
+});
+
+test('backfillAccounts never links a verified row into an Account another row already holds, on any run', async () => {
+    const fakeUsers = makeFakeTable();
+    const fakeInvitedUsers = makeFakeTable();
+    const fakeAccounts = makeFakeAccounts();
+
+    const heldId = accountIdForEmail('victim@example.com');
+    fakeUsers.rows.push({
+        id: 'victim-user',
+        email: 'victim@example.com',
+        user_name: 'victim',
+        account_id: heldId,
+    });
+    fakeInvitedUsers.rows.push({
+        id: 'attacker-invited',
+        email: 'Victim@example.com',
+        user_name: 'attacker-chosen',
+        account_id: null,
+        email_verified_at: new Date(),
+    });
+
+    const spies = [
+        mock.method(User, 'findAll', fakeUsers.findAll),
+        mock.method(InvitedUser, 'findAll', fakeInvitedUsers.findAll),
+        mock.method(Account, 'findAll', fakeAccounts.findAll),
+        mock.method(Account, 'bulkCreate', fakeAccounts.bulkCreate),
+        mock.method(User, 'update', fakeUsers.update),
+        mock.method(InvitedUser, 'update', fakeInvitedUsers.update),
+    ];
+
+    try {
+        for (const run of [1, 2]) {
+            const result = await backfillAccounts();
+            assert.equal(result.invitedUsersLinked, 0, `run ${run}`);
+            assert.equal(result.sharedAccountRowsSkipped, 1, `run ${run}`);
+            assert.equal(fakeInvitedUsers.rows[0].account_id, null, `run ${run}`);
+            assert.equal(fakeUsers.rows[0].account_id, heldId, `run ${run}`);
+        }
+    } finally {
+        spies.forEach((spy) => spy.mock.restore());
     }
 });

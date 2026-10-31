@@ -24,6 +24,10 @@ export interface AccountBackfillResult {
     // row goes through authenticateWithOTP's verify hook again to get correctly
     // relinked with email_verified_at set.
     staleLinksUnlinked: number;
+    // Verified rows left unlinked because linking them would put a second credential row
+    // on an Account another row already holds (or two unlinked rows would both claim it).
+    // The live link path declines the same merge; here it is logged for a human instead.
+    sharedAccountRowsSkipped: number;
 }
 
 interface CredentialRow {
@@ -41,6 +45,7 @@ interface CredentialRow {
     // memberships via a shared email) until it proves ownership by completing OTP
     // verification once, ever.
     email_verified_at?: Date | null;
+    account_id?: string | null;
 }
 
 interface EmailGroup {
@@ -48,6 +53,8 @@ interface EmailGroup {
     displayName: string;
     userIds: string[];
     invitedUserIds: string[];
+    // Rows (any table, verified or not) already holding this Account.
+    holderCount: number;
 }
 
 const isLinkable = (row: CredentialRow): boolean => row.email_verified_at !== null;
@@ -58,7 +65,7 @@ const groupByNormalizedEmail = (
 ): Map<string, EmailGroup> => {
     const groups = new Map<string, EmailGroup>();
 
-    const addRow = (row: CredentialRow, target: 'userIds' | 'invitedUserIds') => {
+    const groupFor = (row: CredentialRow): EmailGroup => {
         const normalized = normalizeEmail(row.email);
         let group = groups.get(normalized);
         if (!group) {
@@ -67,10 +74,17 @@ const groupByNormalizedEmail = (
                 displayName: row.user_name,
                 userIds: [],
                 invitedUserIds: [],
+                holderCount: 0,
             };
             groups.set(normalized, group);
         }
-        group[target].push(row.id);
+        return group;
+    };
+
+    const addRow = (row: CredentialRow, target: 'userIds' | 'invitedUserIds') => {
+        const group = groupFor(row);
+        if (row.account_id === group.accountId) group.holderCount += 1;
+        else if (!row.account_id) group[target].push(row.id);
     };
 
     // Only verified rows are grouped for linking — an unverified InvitedUser never
@@ -81,6 +95,40 @@ const groupByNormalizedEmail = (
         addRow(invitedUser, 'invitedUserIds');
 
     return groups;
+};
+
+// Live-path rule (account-link.service.ts): an Account is never extended to a second
+// credential row. A group links its single unlinked verified row only when no other row
+// holds the Account; with a holder already present, or with two or more unlinked rows
+// competing, nothing is linked and the rows are logged for a human to resolve. Whoever
+// holds an Account is reachable by anyone who can log in as ANY of its rows, so merging
+// is a decision about one person controlling both, never a default.
+const planLinks = (groups: Map<string, EmailGroup>) => {
+    const linkable = new Map<string, EmailGroup>();
+    let sharedAccountRowsSkipped = 0;
+
+    for (const [email, group] of groups) {
+        const unlinkedCount = group.userIds.length + group.invitedUserIds.length;
+        if (unlinkedCount === 0) continue;
+        if (group.holderCount > 0 || unlinkedCount > 1) {
+            sharedAccountRowsSkipped += unlinkedCount;
+            logger.warn(
+                {
+                    accountBackfillSharedAccount: {
+                        email,
+                        accountId: group.accountId,
+                        existingHolders: group.holderCount,
+                        skippedUsers: group.userIds,
+                        skippedInvitedUsers: group.invitedUserIds,
+                    },
+                },
+                'Account backfill: refusing to link a credential row into an Account another row holds or contests - confirm one person controls both before linking by hand',
+            );
+            continue;
+        }
+        linkable.set(email, group);
+    }
+    return { linkable, sharedAccountRowsSkipped };
 };
 
 // Every normalized email backed by more than one credential row across the FULL set
@@ -148,8 +196,10 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
     );
 
     const [users, invitedUsers] = await Promise.all([
-        User.findAll({ attributes: ['id', 'email', 'user_name'] }),
-        InvitedUser.findAll({ attributes: ['id', 'email', 'user_name', 'email_verified_at'] }),
+        User.findAll({ attributes: ['id', 'email', 'user_name', 'account_id'] }),
+        InvitedUser.findAll({
+            attributes: ['id', 'email', 'user_name', 'email_verified_at', 'account_id'],
+        }),
     ]);
 
     const userRows = users.map((u) => u.get({ plain: true }) as CredentialRow);
@@ -161,7 +211,9 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
     ]);
     const unverifiedRowsSkipped = invitedUserRows.filter((r) => !isLinkable(r)).length;
 
-    const groups = groupByNormalizedEmail(userRows, invitedUserRows);
+    const { linkable: groups, sharedAccountRowsSkipped } = planLinks(
+        groupByNormalizedEmail(userRows, invitedUserRows),
+    );
 
     if (groups.size === 0) {
         return {
@@ -171,6 +223,7 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
             collisionGroups,
             unverifiedRowsSkipped,
             staleLinksUnlinked,
+            sharedAccountRowsSkipped,
         };
     }
 
@@ -227,6 +280,7 @@ export const backfillAccounts = async (): Promise<AccountBackfillResult> => {
         collisionGroups,
         unverifiedRowsSkipped,
         staleLinksUnlinked,
+        sharedAccountRowsSkipped,
     };
 
     logger.info({ accountBackfill: result }, 'Account backfill pass complete');

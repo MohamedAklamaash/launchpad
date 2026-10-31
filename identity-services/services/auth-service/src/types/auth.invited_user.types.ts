@@ -22,6 +22,7 @@ export interface InvitedUserLoginInput {
 export interface AuthenticateUserInput {
     email: string;
     otp: string;
+    newPassword?: string;
 }
 
 export interface UserData {

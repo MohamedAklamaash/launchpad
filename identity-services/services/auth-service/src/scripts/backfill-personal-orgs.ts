@@ -6,6 +6,7 @@ import {
     InitOrgEventsPublisher,
     closeOrgEventsPublisher,
     orgEventsPublisher,
+    verifyOrgEventsDelivered,
 } from '@/messaging/producer/org-events.message';
 import { logger } from '@/utils/logger';
 
@@ -19,6 +20,7 @@ const main = async (): Promise<number> => {
     }
     await sequelize.authenticate();
     await initModels();
+    orgEventsPublisher.enableConfirms();
     await InitOrgEventsPublisher();
     if (!orgEventsPublisher.isConnected()) {
         throw new Error(
@@ -30,7 +32,17 @@ const main = async (): Promise<number> => {
         republishExisting: process.argv.includes('--republish-existing'),
     });
     logger.info({ result }, 'backfill-personal-orgs finished');
-    return result.conflicts + result.inconsistent + result.failed > 0 ? 2 : 0;
+    const delivery = await verifyOrgEventsDelivered();
+    if (!delivery.delivered) {
+        logger.error(
+            { delivery },
+            'org.created events were not confirmed by the broker - re-run with --republish-existing',
+        );
+        return 3;
+    }
+    return result.conflicts + result.sharedAccounts + result.inconsistent + result.failed > 0
+        ? 2
+        : 0;
 };
 
 main()

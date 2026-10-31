@@ -10,6 +10,7 @@ export interface PersonalOrgBackfillResult {
     alreadyExisted: number;
     skippedUnlinked: number;
     conflicts: number;
+    sharedAccounts: number;
     inconsistent: number;
     failed: number;
 }
@@ -33,6 +34,7 @@ export const backfillPersonalOrgs = async (
         alreadyExisted: 0,
         skippedUnlinked: 0,
         conflicts: 0,
+        sharedAccounts: 0,
         inconsistent: 0,
         failed: 0,
     };
@@ -45,6 +47,7 @@ export const backfillPersonalOrgs = async (
             );
             if (status === 'created') result.created += 1;
             else if (status === 'exists') result.alreadyExisted += 1;
+            else if (status === 'shared_account') result.sharedAccounts += 1;
             else if (status === 'skipped_unlinked') result.skippedUnlinked += 1;
             else if (status === 'conflict') result.conflicts += 1;
             else result.inconsistent += 1;
