@@ -690,6 +690,37 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      (review M1), so every session minted before F9 must re-login or refresh.
    - Open SSE log streams authorize once, at open. A member removed mid-stream keeps the
      stream for at most `LOG_STREAM_MAX_DURATION_SECONDS` (10 minutes by default).
+   - **The personal-org backfill grants only `owner`.** Legacy `InfrastructureUserRole`
+     invitees and `invited_users` members are not folded into the owner's personal org.
+     Membership is per org, so folding them in would widen a per-infra grant to every infra
+     that owner has. Each invitee needs an explicit re-invite into the org. Until then they
+     have no access with the flag on.
+   - **Personal org ids are computable by anyone** (`uuid5(ORG_NAMESPACE, user_id)`). No
+     endpoint may ever accept a client-chosen org id; org scope comes only from the signed
+     token claim and the stored resource column.
+   - **Turning the flag back off after flag-on creates is unsupported.** With the flag on,
+     an org admin can create an infrastructure and `Infrastructure.user` is that admin.
+     The flag-off checks treat `user` as the owner, which would give the admin owner-only
+     powers and lock out the real owner. infrastructure-service records
+     `created_by_non_owner_under_orgs` at create time and refuses to start with the flag off
+     while any row has it set. Recover by turning the flag back on, or by reassigning those
+     rows by hand.
+   - **Re-run the idempotent backfill after the full rollout, immediately before the
+     flip** (migrations `0041`, `0045`, `0008` re-stamp NULL rows; rerun them, or the
+     equivalent update, once every service is on the new code).
+   - **Known gap, policy refresh callback.** It authenticates with the per-user script API
+     key and matches `Infrastructure.user == key.user`. The Django services have no mapping
+     from a User to an org-owner Account, so with the flag on it still matches the
+     creator, not the org owner. A creator later removed from the org can still record a
+     refresh. Close it in ticket 8 with the ownership transfer.
+   - **Role staleness bounds.** A removed member loses access within about 60s (cache TTL)
+     when the Django `org.events` consumers are healthy. If a consumer is stalled the
+     mirror keeps the old Membership, and access lasts until it recovers (their token
+     stays valid up to `JWT_EXPIRES_IN`, 7 days). Open SSE streams authorize once and last
+     at most `LOG_STREAM_MAX_DURATION_SECONDS`.
+   - **Trust boundary.** The mirrors store `organization_id` write-once, first writer wins,
+     so anyone holding AMQP publish credentials is inside the trust boundary for org
+     derivation.
 
 ## Open questions
 

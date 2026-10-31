@@ -1,5 +1,6 @@
 import logging
 
+from django.core.exceptions import ValidationError
 from django.shortcuts import redirect
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -8,6 +9,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from api.models.infrastructure import Infrastructure
 from api.repositories.user import UserRepository
 from api.services.org_authz import Capability, get_infra_with_capability, orgs_enabled
 from api.services.payment_service import PaymentService
@@ -40,16 +42,21 @@ class ErrorSerializer(serializers.Serializer):
     error = serializers.CharField()
 
 
-def _billing_denied(request, infra_id):
-    """Flag-on billing gate: owner-only on the infrastructure's org. None when allowed,
-    else the 404/403 response. 404 covers a missing infrastructure, another org's and a
-    non-member alike."""
+def _billing_denied(request, user, infra_id):
+    """Billing gate. None when allowed, else the 404/403 response. 404 covers a missing
+    infrastructure, another tenant's and a non-member alike. Flag on: owner-only on the
+    infrastructure's org. Flag off: the infrastructure must be the caller's own."""
+    not_found = Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
     if not orgs_enabled():
-        return None
+        try:
+            owned = Infrastructure.objects.filter(id=infra_id, user_id=user.id).exists()
+        except (ValidationError, ValueError, TypeError):
+            owned = False
+        return None if owned else not_found
     try:
         get_infra_with_capability(request.user, infra_id, Capability.BILLING)
     except LookupError:
-        return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
+        return not_found
     except PermissionError:
         return Response({'error': 'Only the organization owner can manage billing'}, status=status.HTTP_403_FORBIDDEN)
     return None
@@ -71,14 +78,14 @@ def create_checkout_session(request):
         infra_id = request.data.get('infrastructure_id')
         if not amount or not infra_id:
             return Response({'error': 'amount and infrastructure_id are required'}, status=status.HTTP_400_BAD_REQUEST)
-        denied = _billing_denied(request, infra_id)
+        denied = _billing_denied(request, user, infra_id)
         if denied:
             return denied
         session = payment_service.create_checkout_session(user, amount, infra_id)
         return Response({'checkout_url': session.url, 'session_id': session.id})
     except Exception as e:  # view boundary, must return a JSON error not a 500 stack trace
         logger.error(f"Error in create_checkout_session: {e}")
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'error': 'Internal error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(
@@ -99,14 +106,14 @@ def process_payment(request):
         if not amount or not payment_method_id or not infra_id:
             return Response({'error': 'amount, payment_method_id, and infrastructure_id are required'},
                             status=status.HTTP_400_BAD_REQUEST)
-        denied = _billing_denied(request, infra_id)
+        denied = _billing_denied(request, user, infra_id)
         if denied:
             return denied
         result = payment_service.process_direct_payment(user, amount, payment_method_id, infra_id)
         return Response(result, status=status.HTTP_200_OK if result.get('success') else status.HTTP_400_BAD_REQUEST)
     except Exception as e:  # view boundary, must return a JSON error not a 500 stack trace
         logger.error(f"Error in process_payment: {e}")
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'error': 'Internal error'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(

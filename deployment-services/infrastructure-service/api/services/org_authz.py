@@ -61,16 +61,16 @@ def require_org_capability(user, resource, capability: Capability) -> str:
     return role
 
 
-def require_token_org_capability(user, capability: Capability) -> str:
+def require_token_org_capability(user, capability: Capability) -> tuple[str, str]:
     """For an action with no resource yet (creating an infrastructure): authorizes against
-    the token's own org and returns it, so the caller can stamp it on the new row."""
+    the token's own org and returns (org_id, role), so the caller can stamp the new row."""
     org_id = token_org_id(user)
     role = OrgPermissions.get_role(user, org_id) if org_id else None
     if role is None:
         raise LookupError("Organization not found")
     if not role_allows(role, capability):
         raise PermissionError(INSUFFICIENT_ROLE_MESSAGE)
-    return org_id
+    return org_id, role
 
 
 def has_org_capability(user, resource, capability: Capability) -> bool:

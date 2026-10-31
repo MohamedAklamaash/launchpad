@@ -135,17 +135,20 @@ class InfrastructureService:
         return None
 
     @staticmethod
-    def _creation_org_id(user_id, actor):
-        """The org a new infrastructure is stamped into. Flag on: the token's org, and only
-        an owner/admin of it may create. Flag off: the creator's personal org, a value
-        nothing reads yet, so that rows created before a flag flip are not left NULL."""
+    def _creation_scope(user_id, actor):
+        """(organization_id, created_by_non_owner) for a new infrastructure. Flag on: the
+        token's org, and only an owner/admin of it may create; the second value records an
+        admin creating, which the flag-off startup guard refuses to boot over. Flag off: the
+        creator's personal org, a value nothing reads yet, so that rows created before a
+        flag flip are not left NULL."""
         if not orgs_enabled():
             try:
-                return personal_org_id(user_id)
+                return personal_org_id(user_id), False
             except (ValueError, TypeError):
-                return None
+                return None, False
         try:
-            return require_token_org_capability(actor, Capability.CREATE_INFRASTRUCTURE)
+            org_id, role = require_token_org_capability(actor, Capability.CREATE_INFRASTRUCTURE)
+            return org_id, role != "owner"
         except (LookupError, PermissionError):
             raise HttpError(
                 message="Unauthorized", status_code=403,
@@ -195,7 +198,9 @@ class InfrastructureService:
 
         dev_mode = is_dev_mode(app_config.mode)
         infra_data.pop("is_mock", None)
-        infra_data["organization_id"] = self._creation_org_id(user_id, actor)
+        infra_data["organization_id"], infra_data["created_by_non_owner_under_orgs"] = (
+            self._creation_scope(user_id, actor)
+        )
 
         with transaction.atomic():
             infra = self.repo.create(user_id, infra_data, require_global_super_admin=not orgs_enabled())

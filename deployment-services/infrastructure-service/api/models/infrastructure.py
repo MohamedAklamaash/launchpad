@@ -117,6 +117,11 @@ class Infrastructure(models.Model):
     # shared/utils/org_id.py:personal_org_id and plan/F9-teams-and-orgs.md. Nothing
     # reads this yet; nothing is wired to it.
     organization_id = models.UUIDField(null=True, blank=True, editable=False)
+    # Set when an org admin (not the org owner) created this row with ORGS_ENABLED on. With
+    # the flag back off, `user` (the creator) is the only owner the legacy checks know, so
+    # such a row would hand owner-only powers to the admin. api/services/org_flag_guard.py
+    # refuses to start in that state.
+    created_by_non_owner_under_orgs = models.BooleanField(default=False, editable=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

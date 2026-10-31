@@ -211,6 +211,8 @@ def infrastructure_reprovision(request: HttpRequest, infra_id):
     if orgs_enabled():
         try:
             get_infra_with_capability(request.user, infra_id, Capability.MANAGE_INFRASTRUCTURE)
+        except LookupError:
+            return Response({'error': 'Infrastructure not found'}, status=status.HTTP_404_NOT_FOUND)
         except PermissionError:
             return Response({'error': 'Only the infrastructure owner can reprovision it'}, status=status.HTTP_403_FORBIDDEN)
     elif str(infra['user_id']) != str(request.user.id):

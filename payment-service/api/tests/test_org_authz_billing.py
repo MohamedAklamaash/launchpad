@@ -188,12 +188,32 @@ def test_pending_billing_row_is_stamped_with_the_infrastructure_org(orgs_on, fac
     assert Billing.objects.get(user_id=payer.id).organization_id == org.id
 
 
-def test_flag_off_keeps_the_pre_f9_behaviour_no_ownership_check(settings, stripe_ok, factory, payer, org):
+@pytest.mark.parametrize("site", SITES, ids=[s.__name__ for s in SITES])
+def test_flag_off_billing_requires_the_callers_own_infrastructure(settings, stripe_ok, factory, payer, org, site):
     settings.ORGS_ENABLED = False
-    stranger_infra = _infra(org)
     plain = JWTUser(sub=str(payer.id))
-    assert _checkout(factory, plain, stranger_infra.id).status_code == 200
-    assert _direct(factory, plain, stranger_infra.id).status_code == 200
+    someone_elses = _infra(org)
+    own = _infra(org)
+    type(own).objects.filter(id=own.id).update(user_id=payer.id)
+    assert site(factory, plain, someone_elses.id).status_code == 404
+    assert site(factory, plain, uuid.uuid4()).status_code == 404
+    assert site(factory, plain, "not-a-uuid").status_code == 404
+    assert site(factory, plain, own.id).status_code == 200
+
+
+@pytest.mark.parametrize("site", SITES, ids=[s.__name__ for s in SITES])
+def test_500_body_is_generic_and_never_echoes_the_exception(settings, factory, payer, org, site):
+    settings.ORGS_ENABLED = False
+    own = _infra(org)
+    type(own).objects.filter(id=own.id).update(user_id=payer.id)
+    import api.views.payment  # noqa: F401
+
+    boom = RuntimeError("secret-internal-detail")
+    with patch("api.views.payment.payment_service.create_checkout_session", side_effect=boom), \
+         patch("api.views.payment.payment_service.process_direct_payment", side_effect=boom):
+        resp = site(factory, JWTUser(sub=str(payer.id)), own.id)
+    assert resp.status_code == 500
+    assert "secret-internal-detail" not in str(resp.data)
 
 
 def test_infra_mirror_stores_organization_id_write_once(org):
