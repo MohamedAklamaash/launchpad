@@ -11,6 +11,8 @@ import {
 import { useAuthStore } from '@/lib/store/auth';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
+import { OrgSwitcher } from '@/components/org-switcher';
+import { ORGS_ENABLED } from '@/lib/orgs-enabled';
 
 export function Header() {
   const router = useRouter();
@@ -23,11 +25,14 @@ export function Header() {
 
   return (
     <header className="h-16 shrink-0 border-b border-hairline bg-surface-1/60 backdrop-blur-sm flex items-center justify-between px-6">
-      <div className="flex items-center gap-2">
-        <span className="w-1.5 h-1.5 rounded-full bg-success" />
-        <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-          Mission Control
-        </span>
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-success" />
+          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+            Mission Control
+          </span>
+        </div>
+        {ORGS_ENABLED && <OrgSwitcher />}
       </div>
 
       <div className="flex items-center gap-3">

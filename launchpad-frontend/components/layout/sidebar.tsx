@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutGrid, Server, Rocket } from 'lucide-react';
+import { LayoutGrid, Server, Rocket, Users } from 'lucide-react';
 import { LogoMark } from '@/components/logo-mark';
+import { useOrgRole } from '@/lib/use-org-role';
 
 const navItems = [
   { href: '/dashboard', icon: LayoutGrid, label: 'Overview', match: 'exact' as const },
@@ -13,6 +14,10 @@ const navItems = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { enabled, org } = useOrgRole();
+  const items = enabled && org
+    ? [...navItems, { href: `/dashboard/organizations/${org.id}/members`, icon: Users, label: 'Members', match: 'prefix' as const }]
+    : navItems;
 
   return (
     <aside className="w-60 shrink-0 bg-sidebar border-r border-hairline flex flex-col">
@@ -30,7 +35,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 px-3 space-y-1">
-        {navItems.map((item) => {
+        {items.map((item) => {
           const isActive =
             item.match === 'exact'
               ? pathname === item.href

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Plus, Server, Cpu, HardDrive, ArrowUpRight } from 'lucide-react';
 import { Infrastructure } from '@/types/infrastructure';
 import { infrastructureApi } from '@/lib/api/infrastructures';
+import { useOrgRole } from '@/lib/use-org-role';
 import { toast } from 'sonner';
 
 const STATUS: Record<string, { dot: string; label: string }> = {
@@ -27,6 +28,7 @@ export default function InfrastructuresPage() {
   const router = useRouter();
   const [infrastructures, setInfrastructures] = useState<Infrastructure[]>([]);
   const [loading, setLoading] = useState(true);
+  const canCreate = useOrgRole().allow('create_infrastructure', true);
 
   useEffect(() => {
     infrastructureApi.list()
@@ -43,9 +45,11 @@ export default function InfrastructuresPage() {
           <h1 className="mt-2 text-2xl font-display font-semibold text-foreground tracking-tight">Infrastructure</h1>
           <p className="text-sm text-muted-foreground mt-1.5">Manage your cloud environments and deployments.</p>
         </div>
-        <Button size="lg" onClick={() => router.push('/dashboard/infrastructures/new')} className="gap-1.5">
-          <Plus className="w-4 h-4" /> Create Infrastructure
-        </Button>
+        {canCreate && (
+          <Button size="lg" onClick={() => router.push('/dashboard/infrastructures/new')} className="gap-1.5">
+            <Plus className="w-4 h-4" /> Create Infrastructure
+          </Button>
+        )}
       </div>
 
       {loading ? (
@@ -63,9 +67,11 @@ export default function InfrastructuresPage() {
             </div>
             <p className="text-base font-display font-medium text-foreground mb-1.5">No infrastructure yet</p>
             <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">Provision your first cloud environment to start shipping applications to AWS.</p>
-            <Button size="lg" onClick={() => router.push('/dashboard/infrastructures/new')} className="gap-1.5">
-              <Plus className="w-4 h-4" /> Create Infrastructure
-            </Button>
+            {canCreate && (
+              <Button size="lg" onClick={() => router.push('/dashboard/infrastructures/new')} className="gap-1.5">
+                <Plus className="w-4 h-4" /> Create Infrastructure
+              </Button>
+            )}
           </div>
         </div>
       ) : (
