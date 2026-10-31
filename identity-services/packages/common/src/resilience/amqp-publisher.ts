@@ -24,6 +24,8 @@ export interface AmqpPublisherOptions {
     maxBufferSize?: number;
     /** Name for logging */
     name?: string;
+    /** Max wait for broker confirms in waitForConfirms(), in ms (default: 30000) */
+    confirmTimeoutMs?: number;
 }
 
 interface BufferedMessage {
@@ -49,6 +51,7 @@ export class ResilientAmqpPublisher {
     private readonly maxRetries: number;
     private readonly retryDelay: number;
     private readonly maxBufferSize: number;
+    private readonly confirmTimeoutMs: number;
     private readonly log: ReturnType<typeof rootLogger.child>;
 
     constructor(options: AmqpPublisherOptions) {
@@ -58,6 +61,7 @@ export class ResilientAmqpPublisher {
         this.maxRetries = options.maxRetries ?? 10;
         this.retryDelay = options.retryDelay ?? 1_000;
         this.maxBufferSize = options.maxBufferSize ?? 100;
+        this.confirmTimeoutMs = options.confirmTimeoutMs ?? 30_000;
         this.log = rootLogger.child({ amqpPublisher: options.name ?? options.exchange });
     }
 
@@ -94,7 +98,20 @@ export class ResilientAmqpPublisher {
     async waitForConfirms(): Promise<void> {
         if (!this.channel) throw new Error('AMQP publisher is not connected');
         if (!this.confirmMode) throw new Error('AMQP publisher was not created in confirm mode');
-        await (this.channel as ConfirmChannel).waitForConfirms();
+        const channel = this.channel as ConfirmChannel;
+        let timer: NodeJS.Timeout | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(
+                () => reject(new Error(`AMQP confirms timed out after ${this.confirmTimeoutMs}ms`)),
+                this.confirmTimeoutMs,
+            );
+        });
+        try {
+            // A half-open connection never answers; without the race the caller would wait forever.
+            await Promise.race([channel.waitForConfirms(), timeout]);
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     publish(routingKey: string, content: Buffer, options: Options.Publish = {}): void {

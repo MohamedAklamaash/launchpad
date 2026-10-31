@@ -79,6 +79,9 @@ const envSchema = z.object({
 
     // Same name and default as infrastructure-service's exit-export freshness window.
     // Ownership transfer is gated by that exact window so the two cannot drift apart.
+    // Sent org.events outbox rows older than this are deleted by the dispatcher (hourly).
+    ORG_EVENT_OUTBOX_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
+
     EXIT_EXPORT_REAUTH_MAX_AGE_SECONDS: z.coerce.number().int().positive().default(600),
 });
 

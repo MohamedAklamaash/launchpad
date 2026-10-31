@@ -11,10 +11,12 @@ import {
 import { Op, QueryTypes, type Transaction } from 'sequelize';
 import { OrgEventOutbox } from '@/db';
 import { sequelize } from '@/db/sequalize';
+import { env } from '@/config/env';
 import { orgEventsPublisher, publishOutboxEvent } from '@/messaging/producer/org-events.message';
 import { logger } from '@/utils/logger';
 
 const BATCH_SIZE = 100;
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const POLL_INTERVAL_MS = 500;
 const MAX_BACKOFF_MS = 30_000;
 // Only one dispatcher cluster-wide may publish at a time, or two replicas could interleave
@@ -113,6 +115,18 @@ export const drainOutbox = async (): Promise<DrainResult> => {
     });
 };
 
+// Deletes rows sent more than `retentionDays` ago, in its own short transaction. Pending
+// rows are never touched.
+export const pruneSentOutboxRows = async (
+    retentionDays: number = env.ORG_EVENT_OUTBOX_RETENTION_DAYS,
+    now: Date = new Date(),
+): Promise<number> => {
+    const cutoff = new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000);
+    return sequelize.transaction((transaction) =>
+        OrgEventOutbox.destroy({ where: { sent_at: { [Op.lt]: cutoff } }, transaction }),
+    );
+};
+
 export const countPendingOutboxRows = (): Promise<number> =>
     OrgEventOutbox.count({ where: { sent_at: null } });
 
@@ -141,6 +155,18 @@ export const nextDispatchDelay = (failures: number, lastPublished: number): numb
 
 let timer: NodeJS.Timeout | null = null;
 let stopped = true;
+let lastPruneAt = 0;
+
+const pruneIfDue = async (): Promise<void> => {
+    if (Date.now() - lastPruneAt < PRUNE_INTERVAL_MS) return;
+    lastPruneAt = Date.now();
+    try {
+        const removed = await pruneSentOutboxRows();
+        if (removed > 0) logger.info({ removed }, 'pruned sent org.events outbox rows');
+    } catch (error) {
+        logger.error({ err: error }, 'org.events outbox prune failed');
+    }
+};
 
 const runDispatcherPass = async (failures: number): Promise<void> => {
     let nextFailures = 0;
@@ -151,6 +177,7 @@ const runDispatcherPass = async (failures: number): Promise<void> => {
         nextFailures = failures + 1;
         logger.error({ err: error, failures: nextFailures }, 'org.events outbox dispatch failed');
     }
+    await pruneIfDue();
     if (stopped) return;
     timer = setTimeout(
         () => void runDispatcherPass(nextFailures),

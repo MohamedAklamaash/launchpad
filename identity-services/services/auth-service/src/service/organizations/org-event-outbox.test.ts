@@ -28,8 +28,13 @@ const { Op } = await import('sequelize');
 const { sequelize } = await import('@/db/sequalize');
 const { OrgEventOutbox } = await import('@/db');
 const { orgEventsPublisher } = await import('@/messaging/producer/org-events.message');
-const { drainOutbox, drainOutboxFully, enqueueMembershipChanged, nextDispatchDelay } =
-    await import('@/service/organizations/org-event-outbox.service');
+const {
+    drainOutbox,
+    drainOutboxFully,
+    enqueueMembershipChanged,
+    nextDispatchDelay,
+    pruneSentOutboxRows,
+} = await import('@/service/organizations/org-event-outbox.service');
 
 interface Row {
     seq: string;
@@ -212,4 +217,55 @@ test('dispatch backoff grows on failure, is capped, and polls again immediately 
     assert.equal(nextDispatchDelay(20, 0), 30_000);
     assert.equal(nextDispatchDelay(0, 100), 0);
     assert.equal(nextDispatchDelay(0, 3), 500);
+});
+
+test('pruning deletes only sent rows older than the retention window, never pending ones', async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const now = new Date('2026-11-10T00:00:00Z');
+    const rows = [
+        { seq: '1', sent_at: new Date(now.getTime() - 8 * day) },
+        { seq: '2', sent_at: new Date(now.getTime() - 6 * day) },
+        { seq: '3', sent_at: null as Date | null },
+    ];
+    const txSpy = mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+        cb({}),
+    );
+    const destroySpy = mock.method(
+        OrgEventOutbox,
+        'destroy',
+        async (o: { where: { sent_at: Record<symbol, Date> } }) => {
+            const cutoff = o.where.sent_at[Op.lt]!;
+            const keep = rows.filter((r) => !(r.sent_at !== null && r.sent_at < cutoff));
+            const removed = rows.length - keep.length;
+            rows.splice(0, rows.length, ...keep);
+            return removed;
+        },
+    );
+    try {
+        assert.equal(await pruneSentOutboxRows(7, now), 1);
+        assert.deepEqual(
+            rows.map((r) => r.seq),
+            ['2', '3'],
+        );
+    } finally {
+        txSpy.mock.restore();
+        destroySpy.mock.restore();
+    }
+});
+
+test('waitForConfirms gives up after the configured timeout instead of hanging on a half-open connection', async () => {
+    const { ResilientAmqpPublisher } = await import('@launchpad/common');
+    const publisher = new ResilientAmqpPublisher({
+        url: 'amqp://guest:guest@127.0.0.1:1/',
+        exchange: 'x',
+        confirmTimeoutMs: 20,
+    });
+    publisher.enableConfirms();
+    const internals = publisher as unknown as { channel: object };
+    internals.channel = { waitForConfirms: () => new Promise<void>(() => undefined) };
+
+    await assert.rejects(publisher.waitForConfirms(), /timed out after 20ms/);
+
+    internals.channel = { waitForConfirms: async () => undefined };
+    await publisher.waitForConfirms();
 });
