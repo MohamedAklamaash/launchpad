@@ -482,16 +482,24 @@ def _delete_tagged_task_definitions(ctx: _NukeContext) -> list:
     return arns
 
 
+_EKS_CONTAINER_INSIGHTS_GROUPS = ("application", "dataplane", "host", "performance")
+
+
 def _cluster_log_group_names(ctx: _NukeContext) -> list:
     """Log groups AWS itself creates for the cluster, outside Terraform state: EKS
-    control-plane logs and ECS Container Insights. Seen on real AWS: the EKS one
-    survived a nuke that otherwise came back clean."""
+    control-plane logs, ECS Container Insights, and the EKS Container Insights groups the
+    amazon-cloudwatch-observability add-on writes. Seen on real AWS: the EKS control-plane
+    group and all four add-on groups survived nukes that otherwise came back clean."""
     env = ctx.infra.environments.first()
     cluster_arn = getattr(env, "cluster_arn", None) or ""
     name = cluster_arn.rsplit("/", 1)[-1]
     if not name:
         return []
-    return [f"/aws/eks/{name}/cluster", f"/aws/ecs/containerinsights/{name}/performance"]
+    return [
+        f"/aws/eks/{name}/cluster",
+        f"/aws/ecs/containerinsights/{name}/performance",
+        *(f"/aws/containerinsights/{name}/{kind}" for kind in _EKS_CONTAINER_INSIGHTS_GROUPS),
+    ]
 
 
 def _delete_cluster_log_groups(ctx: _NukeContext) -> list:

@@ -1086,6 +1086,10 @@ def test_cluster_log_groups_are_deleted_and_verified(make_nuke_run):
     logs = MagicMock()
     assert _delete_cluster_log_groups_with(ctx, logs, _delete_cluster_log_groups) == [
         eks_group, "/aws/ecs/containerinsights/infra-abc-123/performance",
+        "/aws/containerinsights/infra-abc-123/application",
+        "/aws/containerinsights/infra-abc-123/dataplane",
+        "/aws/containerinsights/infra-abc-123/host",
+        "/aws/containerinsights/infra-abc-123/performance",
     ]
 
     logs.describe_log_groups.side_effect = lambda logGroupNamePrefix: {
