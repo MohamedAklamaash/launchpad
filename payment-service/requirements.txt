@@ -14,5 +14,6 @@ urllib3==2.7.0
 djangorestframework==3.18.0
 pika==1.3.2
 psycopg2-binary==2.9.11
+redis==5.0.1
 uuid6==2024.7.10
 drf-spectacular==0.28.0
