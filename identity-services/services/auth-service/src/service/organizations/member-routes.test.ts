@@ -85,7 +85,11 @@ test('change role: nobody can grant owner, at the edge or by any other spelling'
         try {
             for (const role of ['owner', 'OWNER', 'superuser', '', 7]) {
                 const res = await patchRole(f, f.target.account_id as string, role as string);
-                assert.equal(res.status, 422, `${callerRole} ${String(role)}`);
+                assert.equal(
+                    res.status,
+                    role === 'owner' ? 409 : 422,
+                    `${callerRole} ${String(role)}`,
+                );
             }
             const extra = await f.h.call(
                 'PATCH',
@@ -110,7 +114,7 @@ test('change role: an admin cannot promote themselves past admin or touch the ow
         const selfToOwner = await patchRole(f, f.caller.account_id as string, 'owner');
         const demoteOwner = await patchRole(f, f.owner.account_id as string, 'admin');
 
-        assert.equal(selfToOwner.status, 422);
+        assert.equal(selfToOwner.status, 409);
         assert.equal(demoteOwner.status, 409);
         assert.equal(f.targetRow.role, 'owner');
     } finally {

@@ -10,6 +10,7 @@ import { otpAttempts } from '@/utils/otp-attempts';
 import { issueInvitation, revokeInvitation } from './invitation.service';
 import { requireOrgManager } from './org-access.service';
 import { enforceSlot } from './org-rate-limit';
+import { reportOwnerRoleAttempt } from './owner-attempt-signal';
 
 const INVITABLE_ROLES: readonly OrgRole[] = [ORG_ROLE.ADMIN, ORG_ROLE.DEVELOPER, ORG_ROLE.VIEWER];
 
@@ -51,6 +52,13 @@ export const createInvitation = async (
 ): Promise<InvitationSummary> => {
     const manager = await requireOrgManager(input.caller, input.organizationId);
     if (!INVITABLE_ROLES.includes(input.role)) {
+        if (input.role === ORG_ROLE.OWNER) {
+            reportOwnerRoleAttempt({
+                reason: 'owner_role_requested',
+                organization_id: input.organizationId,
+                actor_account_id: manager.accountId,
+            });
+        }
         throw new HttpError(409, 'Cannot invite a member with this role');
     }
 

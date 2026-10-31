@@ -248,6 +248,7 @@ test('response shape: people carry sanitized names and manager-visible emails, i
             user_name: 'Eve <script>alert(1)</script>@x.io',
         });
         h.addAccount(victim);
+        h.addMembership(orgId, victim.account_id as string, 'developer');
         seedEvent(h, orgId, 0, {
             actor_account_id: caller.account_id,
             target_account_id: victim.account_id,
@@ -278,6 +279,39 @@ test('response shape: people carry sanitized names and manager-visible emails, i
         assert.ok(!/[<>@:/.]/.test(target.display_name as string), target.display_name as string);
         assert.equal(issued!.target, null);
         assert.deepEqual(removed!.actor, { account_id: gone, display_name: 'Member' });
+    } finally {
+        await h.close();
+    }
+});
+
+test('a former member appears by id and sanitized name only, never with an email', async () => {
+    const { h, orgId, caller, get } = await setup('admin');
+    try {
+        const former = h.addCredential('invitedUsers', { user_name: 'Former Person' });
+        h.addAccount(former);
+        h.addMembership(orgId, former.account_id as string, 'developer', new Date());
+        const current = h.addCredential('invitedUsers', { user_name: 'Current Person' });
+        h.addAccount(current);
+        h.addMembership(orgId, current.account_id as string, 'viewer');
+        seedEvent(h, orgId, 0, {
+            actor_account_id: caller.account_id,
+            target_account_id: former.account_id,
+        });
+        seedEvent(h, orgId, 1, {
+            actor_account_id: caller.account_id,
+            target_account_id: current.account_id,
+        });
+
+        const res = await get();
+
+        const [currentEvent, formerEvent] = res.body?.events as Row[];
+        assert.deepEqual(formerEvent!.target, {
+            account_id: former.account_id,
+            display_name: 'Former Person',
+        });
+        assert.equal((currentEvent!.target as Row).email, current.email);
+        assert.equal((currentEvent!.actor as Row).email, caller.email);
+        assert.ok(!res.text.includes(former.email));
     } finally {
         await h.close();
     }

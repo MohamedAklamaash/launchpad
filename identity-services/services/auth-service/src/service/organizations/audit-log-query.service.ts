@@ -1,5 +1,5 @@
 import { Op, type WhereOptions } from 'sequelize';
-import { Account, MembershipAuditEvent } from '@/db';
+import { Account, Membership, MembershipAuditEvent } from '@/db';
 import type { AccessTokenPayload } from '@/utils/handle-token';
 import type { OrgRole } from '@/types/org-role';
 import { encodeAuditCursor, type AuditCursor, type AuditQuery } from '@/schemas/audit-event.schema';
@@ -58,12 +58,24 @@ const accountIdsIn = (rows: MembershipAuditEvent[]): string[] => {
     return [...ids];
 };
 
+// Account rows outlive membership, so an address is shown only for someone who is still an
+// active member of this org. A former member appears by id and sanitized name alone.
+const activeMemberIds = async (organizationId: string, ids: string[]): Promise<Set<string>> => {
+    const active = await Membership.findAll({
+        where: { organization_id: organizationId, account_id: { [Op.in]: ids }, removed_at: null },
+        attributes: ['account_id'],
+    });
+    return new Set(active.map((membership) => membership.account_id));
+};
+
 const loadPeople = async (
+    organizationId: string,
     rows: MembershipAuditEvent[],
     viewerRole: OrgRole,
 ): Promise<Map<string, AuditPerson>> => {
     const ids = accountIdsIn(rows);
     if (ids.length === 0) return new Map();
+    const active = await activeMemberIds(organizationId, ids);
 
     const accounts = await Account.findAll({
         where: { id: { [Op.in]: ids } },
@@ -76,7 +88,7 @@ const loadPeople = async (
             {
                 account_id: account.id,
                 display_name: displayNameFor(account.display_name, viewerRole),
-                ...(withEmail ? { email: account.email } : {}),
+                ...(withEmail && active.has(account.id) ? { email: account.email } : {}),
             },
         ]),
     );
@@ -108,7 +120,7 @@ export const listAuditEvents = async (
         limit: query.limit + 1,
     });
     const page = rows.slice(0, query.limit);
-    const people = await loadPeople(page, manager.role);
+    const people = await loadPeople(organizationId, page, manager.role);
     const hasMore = rows.length > query.limit;
     const last = page[page.length - 1];
 

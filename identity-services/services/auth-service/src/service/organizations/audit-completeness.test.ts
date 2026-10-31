@@ -371,7 +371,7 @@ test('mutation log lines carry ids and roles only: no email, token or name', asy
     }
 });
 
-test('owner-role alert signal: edge 422, owner target 409, owner invite, and a non-owner transfer are each reported once', async () => {
+test('owner-role alert signal: owner role change 409, owner target 409, owner invite 409, and a non-owner transfer are each reported once', async () => {
     const { h, owner, orgId, member } = await orgWithOwner();
     try {
         const admin = member('admin');
@@ -414,18 +414,67 @@ test('owner-role alert signal: edge 422, owner target 409, owner invite, and a n
     }
 });
 
-test('owner-role alert signal: a request with no valid session is not reported', async () => {
-    const { h, orgId, owner } = await orgWithOwner();
+test('owner-role alert signal: a non-member, a developer and a bad session sending role=owner raise nothing, and nothing is written', async () => {
+    const { h, orgId, owner, member } = await orgWithOwner();
     try {
-        await h.call('PATCH', `/organizations/${orgId}/members/${owner.account_id}`, {
-            bearer: 'not-a-jwt',
-            body: { role: 'owner' },
-        });
-        await h.call('PATCH', `/organizations/${orgId}/members/${owner.account_id}`, {
-            body: { role: 'owner' },
+        const stranger = h.addCredential('users');
+        h.addAccount(stranger);
+        const developer = member('developer');
+        const sends = (bearer?: string, org = orgId) => [
+            h.call('PATCH', `/organizations/${org}/members/${owner.account_id}`, {
+                bearer,
+                body: { role: 'owner' },
+            }),
+            h.call('POST', `/organizations/${org}/invitations`, {
+                bearer,
+                body: { email: 'x@example.com', role: 'owner' },
+            }),
+        ];
+
+        const responses = await Promise.all([
+            ...sends(h.tokenFor(stranger), randomUUID()),
+            ...sends(h.tokenFor(stranger)),
+            ...sends(h.tokenFor(developer.credential)),
+            ...sends('not-a-jwt'),
+            ...sends(),
+        ]);
+
+        assert.ok(responses.every((r) => [401, 403, 404].includes(r.status)));
+        assert.equal(signalLogs(h).length, 0);
+        assert.equal(h.state.audit.length, 0);
+    } finally {
+        await h.close();
+    }
+});
+
+test('owner-role alert signal: a manager sending role=owner gets 409 and exactly one warn line, with no write', async () => {
+    const { h, orgId, owner, member } = await orgWithOwner();
+    try {
+        const admin = member('admin');
+        const target = member('viewer');
+
+        const change = await h.call(
+            'PATCH',
+            `/organizations/${orgId}/members/${target.credential.account_id}`,
+            { bearer: h.tokenFor(admin.credential), body: { role: 'owner' } },
+        );
+        const invite = await h.call('POST', `/organizations/${orgId}/invitations`, {
+            bearer: h.tokenFor(owner),
+            body: { email: 'x@example.com', role: 'owner' },
         });
 
-        assert.equal(signalLogs(h).length, 0);
+        assert.equal(change.status, 409);
+        assert.equal(invite.status, 409);
+        assert.deepEqual(
+            signalLogs(h).map((l) => [l.level, l.fields.reason, l.fields.actor_account_id]),
+            [
+                ['warn', 'owner_role_requested', admin.credential.account_id],
+                ['warn', 'owner_role_requested', owner.account_id],
+            ],
+        );
+        assert.equal(target.row.role, 'viewer');
+        assert.equal(h.state.audit.length, 0);
+        assert.equal(h.state.invitations.length, 0);
     } finally {
         await h.close();
     }

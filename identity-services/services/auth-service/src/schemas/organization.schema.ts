@@ -1,5 +1,5 @@
 import { z } from '@launchpad/common';
-import { ORG_ROLE } from '@/types/org-role';
+import { ORG_ROLE_VALUES } from '@/types/org-role';
 
 export const orgParamsSchema = z.object({
     id: z.uuid(),
@@ -22,9 +22,12 @@ export const organizationNameSchema = z.strictObject({
     name: z.string().min(1).max(ORG_NAME_INPUT_MAX),
 });
 
-// `owner` is not a member of this enum: ownership moves only through transfer-ownership.
+// `owner` is accepted by the schema on purpose: the request must reach the service, which
+// answers 409 only after the caller is proven an active manager, and reports the attempt
+// then. Refusing it here would hide manager attempts from the alert. Nothing is ever
+// written for it; ownership moves only through transfer-ownership.
 export const changeMemberRoleSchema = z.strictObject({
-    role: z.enum([ORG_ROLE.ADMIN, ORG_ROLE.DEVELOPER, ORG_ROLE.VIEWER]),
+    role: z.enum(ORG_ROLE_VALUES),
 });
 
 export const transferOwnershipSchema = z.object({
@@ -33,7 +36,7 @@ export const transferOwnershipSchema = z.object({
 
 export const createInvitationSchema = z.object({
     email: z.email().max(254),
-    role: z.enum([ORG_ROLE.ADMIN, ORG_ROLE.DEVELOPER, ORG_ROLE.VIEWER]),
+    role: z.enum(ORG_ROLE_VALUES),
 });
 
 // 32 random bytes, base64url, unpadded: exactly 43 characters. Rejecting anything else at

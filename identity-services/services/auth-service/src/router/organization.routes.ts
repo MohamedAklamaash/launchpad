@@ -15,7 +15,6 @@ import {
     TransferOwnership,
 } from '@/controllers/organization.controller';
 import { auditQuerySchema } from '@/schemas/audit-event.schema';
-import { flagOwnerRoleRequest } from '@/service/organizations/owner-attempt-signal';
 import { requireOrgsEnabled } from '@/middleware/orgs-enabled.middleware';
 import {
     acceptInvitationSchema,
@@ -172,7 +171,6 @@ organizationRouter.patch(
 organizationRouter.get('/:id/members', validateRequest({ params: orgParamsSchema }), ListMembers);
 organizationRouter.patch(
     '/:id/members/:accountId',
-    flagOwnerRoleRequest,
     validateRequest({ params: orgMemberParamsSchema, body: changeMemberRoleSchema }),
     ChangeMemberRole,
 );
@@ -226,7 +224,6 @@ organizationRouter.delete(
  */
 organizationRouter.post(
     '/:id/invitations',
-    flagOwnerRoleRequest,
     validateRequest({ params: orgParamsSchema, body: createInvitationSchema }),
     CreateInvitation,
 );

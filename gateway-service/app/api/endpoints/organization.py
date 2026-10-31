@@ -13,7 +13,10 @@ router = APIRouter(prefix="/organizations", tags=["Organizations"])
 invitation_router = APIRouter(prefix="/invitations", tags=["Organizations"])
 
 
-class InvitableRole(str, Enum):
+class RequestedRole(str, Enum):
+    """`owner` is accepted so auth-service sees the attempt after proving the caller is a
+    manager; it always answers 409 and writes nothing."""
+    owner = "owner"
     admin = "admin"
     developer = "developer"
     viewer = "viewer"
@@ -35,7 +38,8 @@ class AuditAction(str, Enum):
 
 class CreateInvitationBody(BaseModel):
     email: str = Field(max_length=254, example="teammate@example.com")
-    role: InvitableRole = Field(description="Never owner: nobody can be invited as owner.")
+    role: RequestedRole = Field(
+        description="owner is always refused (409) by auth-service; nobody is invited as owner.")
 
 
 class AcceptInvitationBody(BaseModel):
@@ -51,7 +55,9 @@ class OrganizationNameBody(BaseModel):
 class ChangeMemberRoleBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    role: InvitableRole = Field(description="Never owner: ownership moves only by transfer.")
+    role: RequestedRole = Field(
+        description="owner is always refused (409) by auth-service; ownership moves only by "
+                    "transfer.")
 
 
 class TransferOwnershipBody(BaseModel):

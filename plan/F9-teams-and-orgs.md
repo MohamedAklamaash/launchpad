@@ -989,7 +989,10 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      `to`). Unknown keys are 422. The gateway types the same parameters.
    - **Response.** `{events: [{id, action, occurred_at, actor, target, old_role, new_role}],
      next_cursor}`. `actor` and `target` are `{account_id, display_name, email}` or null; the
-     name is sanitized and the email follows the members-list rule (managers see it). An
+     name is sanitized and the email follows the members-list rule (managers see it), but only for
+     an account that is still an ACTIVE member of this org; a former member shows `account_id`
+     and display name only. `Account` rows persist after removal; an erasure or retention
+     policy for them is future work. An
      invitation event has no target and carries no invited email, token or hash: the audit
      table has no such column, and the response is built from an explicit field list.
    - **Rate limit.** 60 reads per minute per (organization, account), fail closed (503) like
@@ -1016,15 +1019,19 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      token. `role_change` is true for `membership.role_changed` and the two ownership actions.
      The alert signal is `{event: "org_owner_role_change_attempt", reason,
      organization_id, actor_account_id, target_account_id}` at warn level, for `reason` one of
-     `owner_role_requested` (role=owner sent to change-role or invite, including the 422 the
-     schema would otherwise answer silently, reported only when the session token is validly
-     signed), `target_is_owner` (a role change aimed at the owner row) and
-     `transfer_by_non_owner`.
+     `owner_role_requested` (role=owner sent to change-role or invite by an active owner or
+     admin), `target_is_owner` (a role change aimed at the owner row) and `transfer_by_non_owner`
+     (an active member who is not the owner calling transfer). Every reason is raised only after
+     the actor is proven an active member of the org (managers for role changes and invites), so
+     a stranger or a non-member cannot page anyone. For that reason the change-role and invite
+     schemas, and the gateway enums, accept `owner` and let auth-service answer **409** (it was
+     422 at the edge before): nothing is written either way.
      Alert queries (Loki/LogQL shown; the same fields work in any JSON log store):
      role-change rate, `sum(rate({app="auth-service"} | json | event="org_mutation" and
      role_change="true" [5m]))`, page when it exceeds a few per minute for one
      `organization_id`; owner attempts, `sum(count_over_time({app="auth-service"} | json |
-     event="org_owner_role_change_attempt" [10m])) > 0` per `actor_account_id`, page on any.
+     event="org_owner_role_change_attempt" [10m])) > 0` per `actor_account_id`, page on any (every
+     reason is member-attributed, so none needs filtering out).
      If a metrics endpoint is wanted later, these two events are the only increment sites.
    - **Create-then-switch race, decided: frontend retry, not a server wait.** After `POST
      /organizations` the Django mirrors 404 until the consumer applies `org.created`. A
