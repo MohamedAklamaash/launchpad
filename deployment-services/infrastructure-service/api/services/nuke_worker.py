@@ -1002,6 +1002,17 @@ def _is_deleted_tombstone(ctx: _NukeContext, arn: str) -> bool:
                 return not clusters or clusters[0]["status"] == "INACTIVE"
             definition = ecs.describe_task_definition(taskDefinition=arn)["taskDefinition"]
             return definition["status"] == "DELETE_IN_PROGRESS"
+        if kind in ("service", "task") and arn.split(":")[2] == "ecs":
+            # Both stay describable after deletion: a deleted service as INACTIVE, a
+            # task as STOPPED. Real run: the tagging API listed both after a clean
+            # teardown and verify failed the nuke.
+            cluster = resource_id.split("/", 1)[0]
+            ecs = ctx.boto_client("ecs")
+            if kind == "service":
+                services = ecs.describe_services(cluster=cluster, services=[arn])["services"]
+                return not services or services[0]["status"] == "INACTIVE"
+            tasks = ecs.describe_tasks(cluster=cluster, tasks=[arn])["tasks"]
+            return not tasks or tasks[0]["lastStatus"] == "STOPPED"
         if kind == "instance":
             ec2 = ctx.boto_client("ec2")
             reservations = ec2.describe_instances(InstanceIds=[resource_id])["Reservations"]
