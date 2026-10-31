@@ -34,6 +34,7 @@ const { sequelize } = await import('@/db/sequalize');
 const db = await import('@/db');
 const { createApp } = await import('@/app');
 const { signAccessToken } = await import('@/utils/handle-token');
+const { logger } = await import('@/utils/logger');
 const { accountIdForEmail } = await import('@/utils/account-id');
 const queueModule = await import('@/messaging/producer/user-created.message');
 const { orgEventsPublisher, publishOutboxEvent } =
@@ -51,6 +52,33 @@ const matchesValue = (actual: unknown, expected: unknown): boolean => {
 
 const matches = (row: Row, where: Row): boolean =>
     Object.entries(where).every(([key, value]) => matchesValue(row[key], value));
+
+const compareOp = (actual: unknown, spec: Record<symbol, unknown>): boolean => {
+    const time = (value: unknown) => (value instanceof Date ? value.getTime() : value);
+    const a = time(actual) as number | string;
+    return (
+        (spec[Op.lt] === undefined || a < (time(spec[Op.lt]) as number | string)) &&
+        (spec[Op.gte] === undefined || a >= (time(spec[Op.gte]) as number | string)) &&
+        (spec[Op.lte] === undefined || a <= (time(spec[Op.lte]) as number | string))
+    );
+};
+
+// Evaluates the subset of Sequelize where-clauses the audit query builds: equality, Op.and,
+// Op.or and the Op.lt / Op.gte / Op.lte comparisons on dates and ids.
+const matchesClause = (row: Row, clause: Row): boolean => {
+    const ands = (clause as Record<symbol, Row[]>)[Op.and];
+    if (ands) return ands.every((c) => matchesClause(row, c));
+    const ors = (clause as Record<symbol, Row[]>)[Op.or];
+    if (ors) return ors.some((c) => matchesClause(row, c));
+    return Object.entries(clause).every(([key, value]) => {
+        const actual = row[key];
+        if (value instanceof Date) return (actual as Date).getTime() === value.getTime();
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+            return compareOp(actual, value as Record<symbol, unknown>);
+        }
+        return matchesValue(actual, value);
+    });
+};
 
 export interface Credential {
     id: string;
@@ -78,19 +106,22 @@ export const createHarness = async () => {
         refreshRevokedFor: [] as string[],
         outbox: [] as { routing_key: string; payload: Row }[],
         queryLog: [] as { role: unknown; membershipId: unknown }[],
+        logs: [] as { level: string; fields: Row }[],
         auditFailOnCall: null as number | null,
         outboxFailOnCall: null as number | null,
     };
 
     // Restores every row and append-only log to its pre-transaction value if the callback
     // throws, standing in for the ROLLBACK Postgres would issue.
-    const runWithRollback = async <T>(cb: () => Promise<T>): Promise<T> => {
+    const runWithRollback = async <T>(cb: (hooks: (() => void)[]) => Promise<T>): Promise<T> => {
         const tables = [state.memberships, state.orgs, state.invitations];
         const rowCopies = tables.map((rows) => rows.map((row) => ({ row, copy: { ...row } })));
         const logLengths = [state.audit.length, state.refreshRevokedFor.length];
         const outboxStart = state.outbox.length;
+        const afterCommitHooks: (() => void)[] = [];
         try {
-            const result = await cb();
+            const result = await cb(afterCommitHooks);
+            afterCommitHooks.forEach((hook) => hook());
             // Stands in for the dispatcher: outbox rows reach the publisher only once the
             // transaction that wrote them has committed, in insertion order.
             state.outbox
@@ -119,7 +150,14 @@ export const createHarness = async () => {
         // invitation (FOR UPDATE), since there is no Postgres in unit tests. It does not model
         // rollback; the assertions below only rely on ordering.
         mock.method(sequelize, 'transaction', (cb: (t: object) => Promise<unknown>) => {
-            const run = tail.then(() => runWithRollback(() => cb({ LOCK: { UPDATE: 'UPDATE' } })));
+            const run = tail.then(() =>
+                runWithRollback((hooks) =>
+                    cb({
+                        LOCK: { UPDATE: 'UPDATE' },
+                        afterCommit: (hook: () => void) => hooks.push(hook),
+                    }),
+                ),
+            );
             tail = run.catch(() => undefined);
             return run;
         }),
@@ -295,6 +333,16 @@ export const createHarness = async () => {
                 (i) => matches(i, o.where) && (i.expires_at as Date).getTime() > Date.now(),
             ),
         ),
+        mock.method(db.MembershipAuditEvent, 'findAll', async (o: { where: Row; limit?: number }) =>
+            state.audit
+                .filter((row) => matchesClause(row, o.where))
+                .sort(
+                    (a, b) =>
+                        (b.occurred_at as Date).getTime() - (a.occurred_at as Date).getTime() ||
+                        String(b.id).localeCompare(String(a.id)),
+                )
+                .slice(0, o.limit),
+        ),
         mock.method(db.MembershipAuditEvent, 'create', async (attrs: Row) => {
             if (
                 state.auditFailOnCall !== null &&
@@ -302,9 +350,17 @@ export const createHarness = async () => {
             ) {
                 throw new Error('audit insert failed');
             }
-            state.audit.push(attrs);
-            return attrs;
+            const row = { id: randomUUID(), occurred_at: new Date(), ...attrs };
+            state.audit.push(row);
+            return row;
         }),
+        ...(['info', 'warn'] as const).map((level) =>
+            mock.method(logger, level, (fields: unknown) => {
+                if (fields && typeof fields === 'object') {
+                    state.logs.push({ level, fields: fields as Row });
+                }
+            }),
+        ),
         mock.method(
             queueModule.userAuthenticationQueue,
             'add',

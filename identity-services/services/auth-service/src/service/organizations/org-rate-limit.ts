@@ -11,6 +11,15 @@ export const enforceOrgActionSlot = (
         unavailable: 'Organization changes are temporarily unavailable - try again shortly',
     });
 
+export const enforceAuditReadSlot = (
+    organizationId: string,
+    actorAccountId: string,
+): Promise<void> =>
+    enforceSlot(() => otpAttempts.consumeAuditReadSlot(organizationId, actorAccountId), {
+        tooMany: 'Too many audit log requests - try again shortly',
+        unavailable: 'The audit log is temporarily unavailable - try again shortly',
+    });
+
 export interface SlotMessages {
     tooMany: string;
     unavailable: string;

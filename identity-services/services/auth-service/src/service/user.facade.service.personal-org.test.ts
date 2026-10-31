@@ -63,7 +63,7 @@ let invitedHolder: object | null = null;
 
 const loginAs = async (row: ReturnType<typeof userRow>, accountLinkDeclined = false) => {
     const txSpy = mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({}),
+        cb({ afterCommit: () => undefined }),
     );
     const findSpy = mock.method(User, 'findOne', async (opts?: { where?: object }) =>
         accountLinkDeclined && opts?.where && 'account_id' in opts.where

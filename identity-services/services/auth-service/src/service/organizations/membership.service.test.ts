@@ -29,6 +29,7 @@ const { Invitation, InvitedUser, Membership, MembershipAuditEvent, RefreshToken,
     await import('@/db');
 
 mock.method(Invitation, 'update', async () => [0]);
+mock.method(Invitation, 'findAll', async () => []);
 const { addMember, changeMemberRole, removeMember } =
     await import('@/service/organizations/membership.service');
 const { orgEventsPublisher } = await import('@/messaging/producer/org-events.message');
@@ -47,7 +48,7 @@ const stubNoLinkedCredentials = () => {
 
 const withLockingTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({ LOCK: { UPDATE: 'UPDATE' } }),
+        cb({ LOCK: { UPDATE: 'UPDATE' }, afterCommit: () => undefined }),
     );
 
 test('addMember creates a non-owner Membership, records one audit event, and publishes org.membership.changed', async () => {

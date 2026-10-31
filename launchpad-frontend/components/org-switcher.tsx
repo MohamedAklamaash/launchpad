@@ -29,11 +29,11 @@ export function OrgSwitcher() {
   const [name, setName] = useState('');
   const [creating, setCreating] = useState(false);
 
-  const handleSwitch = async (id: string) => {
+  const handleSwitch = async (id: string, settling = false) => {
     if (id === active?.id || switchingId) return;
     setSwitchingId(id);
     try {
-      await switchToOrg(id);
+      await switchToOrg(id, settling);
       goToDashboard();
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not switch organization'));
@@ -49,7 +49,7 @@ export function OrgSwitcher() {
       await load(true);
       toast.success(`Created ${created.name}`);
       setCreateOpen(false);
-      await handleSwitch(created.id);
+      await handleSwitch(created.id, true);
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not create organization'));
     } finally {

@@ -30,7 +30,9 @@ const { userAuthenticationQueue } = await import('@/messaging/producer/user-crea
 const { otpAttempts } = await import('@/utils/otp-attempts');
 
 const withTransactionMock = () =>
-    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+        cb({ afterCommit: () => undefined }),
+    );
 
 // Every test below is exercising something past the throttle gate, so it's stubbed open
 // by default; the two throttle-specific tests override it.

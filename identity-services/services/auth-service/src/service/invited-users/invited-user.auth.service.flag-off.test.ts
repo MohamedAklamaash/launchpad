@@ -36,7 +36,7 @@ const { verifyAccessToken, signRefreshToken } = await import('@/utils/handle-tok
 // LOCK.UPDATE token.
 const withTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({ LOCK: { UPDATE: 'UPDATE' } }),
+        cb({ LOCK: { UPDATE: 'UPDATE' }, afterCommit: () => undefined }),
     );
 
 const service = new InvitedUserAuthService();

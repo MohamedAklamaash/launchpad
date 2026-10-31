@@ -52,7 +52,9 @@ const isCandidate = (row: Row, where: Record<string, unknown>) => {
     );
 };
 
-mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+    cb({ afterCommit: () => undefined }),
+);
 mock.method(
     InvitedUser,
     'count',

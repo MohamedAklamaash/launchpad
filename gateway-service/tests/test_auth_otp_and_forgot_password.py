@@ -92,3 +92,48 @@ def test_update_password_body_no_longer_accepts_email():
     from app.api.endpoints.auth import UpdatePasswordBody
 
     assert "email" not in UpdatePasswordBody.model_fields
+
+
+def test_authenticate_otp_body_declares_new_password_with_its_bounds():
+    from app.api.endpoints.auth import AuthenticateOtpBody
+    from pydantic import ValidationError
+
+    field = AuthenticateOtpBody.model_fields["new_password"]
+    assert field.is_required() is False
+    base = {"email": "user@example.com", "otp": "123456"}
+    assert AuthenticateOtpBody(**base).new_password is None
+    assert AuthenticateOtpBody(**base, new_password="x" * 6).new_password == "x" * 6
+    assert AuthenticateOtpBody(**base, new_password="x" * 72).new_password == "x" * 72
+    for bad in ("x" * 5, "x" * 73):
+        with pytest.raises(ValidationError):
+            AuthenticateOtpBody(**base, new_password=bad)
+
+
+def test_authenticate_with_otp_openapi_documents_new_password_and_the_route_still_forwards_it(
+    monkeypatch,
+):
+    captured = {}
+
+    async def _fake(url, request):
+        from starlette.responses import JSONResponse
+        captured["body"] = await request.body()
+        return JSONResponse({"accessToken": "x", "refreshToken": "y"})
+
+    monkeypatch.setattr("app.api.endpoints.auth.proxy_request", _fake)
+    client = _client()
+
+    schema = client.app.openapi()["components"]["schemas"]["AuthenticateOtpBody"]
+    assert "new_password" in schema["properties"]
+
+    resp = client.post(
+        "/auth/authenticate-with-otp",
+        json={"email": "user@example.com", "otp": "123456", "new_password": "n" * 12},
+    )
+    assert resp.status_code == 200
+    assert b"new_password" in captured["body"]
+
+    too_short = client.post(
+        "/auth/authenticate-with-otp",
+        json={"email": "user@example.com", "otp": "123456", "new_password": "n" * 5},
+    )
+    assert too_short.status_code == 422

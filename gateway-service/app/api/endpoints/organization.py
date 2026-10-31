@@ -1,7 +1,9 @@
+from datetime import datetime
 from enum import Enum
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import settings
@@ -15,6 +17,20 @@ class InvitableRole(str, Enum):
     admin = "admin"
     developer = "developer"
     viewer = "viewer"
+
+
+class AuditAction(str, Enum):
+    organization_created = "organization.created"
+    organization_renamed = "organization.renamed"
+    membership_added = "membership.added"
+    membership_revived = "membership.revived"
+    membership_role_changed = "membership.role_changed"
+    membership_removed = "membership.removed"
+    membership_ownership_demoted = "membership.ownership_demoted"
+    membership_ownership_promoted = "membership.ownership_promoted"
+    invitation_issued = "invitation.issued"
+    invitation_accepted = "invitation.accepted"
+    invitation_revoked = "invitation.revoked"
 
 
 class CreateInvitationBody(BaseModel):
@@ -90,6 +106,29 @@ async def remove_member(organization_id: UUID, account_id: UUID, request: Reques
     return await proxy_request(
         f"{settings.AUTH_SERVICE_URL}/api/v1/organizations/{organization_id}"
         f"/members/{account_id}", request)
+
+
+@router.get("/{organization_id}/audit-events",
+            summary="List the organization's audit events, newest first",
+            description="Owner or admin only, resolved by auth-service. Cursor-paginated: pass "
+                        "the previous response's `next_cursor` as `cursor`. Never contains "
+                        "invitation tokens or invited emails.")
+async def list_audit_events(
+    organization_id: UUID,
+    request: Request,
+    limit: int = Query(50, ge=1, le=100),
+    cursor: str | None = Query(None, max_length=100, pattern=r"^[A-Za-z0-9_-]+$"),
+    actor_account_id: UUID | None = None,
+    target_account_id: UUID | None = None,
+    action: AuditAction | None = None,
+    from_: Annotated[datetime | None, Query(
+        alias="from", description="UTC instant, e.g. 2026-01-01T00:00:00Z")] = None,
+    to: Annotated[datetime | None, Query(
+        description="UTC instant, e.g. 2026-01-01T00:00:00Z")] = None,
+):
+    return await proxy_request(
+        f"{settings.AUTH_SERVICE_URL}/api/v1/organizations/{organization_id}/audit-events",
+        request)
 
 
 @router.post("/{organization_id}/transfer-ownership",

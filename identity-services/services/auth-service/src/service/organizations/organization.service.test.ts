@@ -31,7 +31,9 @@ const { stubOutbox } = await import('@/test-support/outbox-stub');
 await stubOutbox();
 
 const withTransactionMock = () =>
-    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+        cb({ afterCommit: () => undefined }),
+    );
 
 test('createOrganization writes the Organization row and its owner Membership row atomically, then publishes org.created', async () => {
     const txSpy = withTransactionMock();

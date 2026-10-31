@@ -4,6 +4,7 @@ import { ORG_ROLE, type OrgRole } from '@/types/org-role';
 import type { AccessTokenPayload } from '@/utils/handle-token';
 import { assertOrgsEnabled } from './org-guard';
 import { MANAGER_ROLES } from './actor-lock';
+import { reportOwnerRoleAttempt } from './owner-attempt-signal';
 import { findCredentialRow } from './switch-org.service';
 
 export interface VerifiedCaller {
@@ -88,6 +89,11 @@ export const requireOrgOwner = async (
 ): Promise<OrgManager> => {
     const member = await requireActiveMember(payload, organizationId);
     if (member.role !== ORG_ROLE.OWNER) {
+        reportOwnerRoleAttempt({
+            reason: 'transfer_by_non_owner',
+            organization_id: organizationId,
+            actor_account_id: member.accountId,
+        });
         throw new HttpError(403, 'Only the organization owner can do this');
     }
     return member;

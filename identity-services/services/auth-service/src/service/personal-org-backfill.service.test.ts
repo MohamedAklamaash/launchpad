@@ -30,7 +30,9 @@ const { backfillPersonalOrgs } = await import('@/service/personal-org-backfill.s
 const { personalOrgId } = await import('@/utils/org-id');
 const { installPersonalOrgStore } = await import('@/test-support/personal-org-store');
 
-mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+    cb({ afterCommit: () => undefined }),
+);
 const store = await installPersonalOrgStore();
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';

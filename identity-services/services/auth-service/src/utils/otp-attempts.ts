@@ -35,6 +35,10 @@ export const MAX_GLOBAL_EMAIL_INVITES_PER_WINDOW = 10;
 export const MAX_ORG_CREATES_PER_WINDOW = 5;
 // Rename, role change and member removal, per (organization, acting account): 60/hour.
 export const MAX_ORG_ACTIONS_PER_WINDOW = 60;
+// Audit log reads, per (organization, acting account): 60/minute. A page is one indexed
+// query; the cap stops a script from scraping the whole log in a tight loop.
+export const MAX_AUDIT_READS_PER_WINDOW = 60;
+const AUDIT_READ_WINDOW_SECONDS = 60;
 const INVITE_WINDOW_SECONDS = 60 * 60;
 // Matches invited-user.base.service.ts's createOTP expiry — the attempt counter can
 // never meaningfully outlive the OTP it's guarding.
@@ -198,6 +202,14 @@ export const otpAttempts = {
             INVITE_WINDOW_SECONDS,
         );
         return count <= MAX_ORG_ACTIONS_PER_WINDOW;
+    },
+
+    async consumeAuditReadSlot(organizationId: string, actorAccountId: string): Promise<boolean> {
+        const count = await incrementWithWindow(
+            `budget:audit-read:${organizationId}:${actorAccountId}`,
+            AUDIT_READ_WINDOW_SECONDS,
+        );
+        return count <= MAX_AUDIT_READS_PER_WINDOW;
     },
 
     async consumeGlobalEmailInviteSlot(email: string): Promise<boolean> {

@@ -31,6 +31,7 @@ const { issueInvitation, verifyInvitationToken, revokeInvitation } =
 const { HttpError } = await import('@launchpad/common');
 
 mock.method(Invitation, 'update', async () => [0]);
+mock.method(Invitation, 'findAll', async () => []);
 
 interface FakeInvitationRow {
     id: string;
@@ -74,7 +75,7 @@ const makeFakeInvitations = () => {
 
 const withLockingTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({ LOCK: { UPDATE: 'UPDATE' } }),
+        cb({ LOCK: { UPDATE: 'UPDATE' }, afterCommit: () => undefined }),
     );
 
 test('issueInvitation mints a random token, stores only its SHA-256 hash, and never derives the token from any id', async () => {

@@ -59,7 +59,7 @@ const rig = () => {
         mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => {
             const snapshot = rows.map((row) => ({ ...row }));
             try {
-                return await cb({});
+                return await cb({ afterCommit: () => undefined });
             } catch (error) {
                 rows.forEach((row, i) => Object.assign(row, snapshot[i]));
                 throw error;
@@ -228,7 +228,7 @@ test('pruning deletes only sent rows older than the retention window, never pend
         { seq: '3', sent_at: null as Date | null },
     ];
     const txSpy = mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({}),
+        cb({ afterCommit: () => undefined }),
     );
     const destroySpy = mock.method(
         OrgEventOutbox,

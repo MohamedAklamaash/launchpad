@@ -6,7 +6,7 @@
 #149), ticket 3 (personal-org backfill + `organization_id` columns on infrastructure-service/
 application-service/payment-service, #151), and ticket 4 (`org.events` consumers mirroring
 Organization/Membership read-models in those same three services, #154) are merged, as are
-tickets 5-8; ticket 13 (org and member management HTTP surface) is in review. All
+tickets 5-8, 10 and 13; ticket 11 (audit log HTTP surface and observability) is in review. All
 ship behind `ORGS_ENABLED` (default off), so none changes request behavior yet. **Depends
 on:** nothing technical. **Blocked by:** nothing. The owner has since decided both Open
 Questions below: Stripe consolidation is deferred, and there is one global limit with no
@@ -468,10 +468,11 @@ this endpoint lives in auth-service, Node/Express, not behind `JWTAuthMiddleware
 
 ### Audit log
 
-`GET /api/organizations/{id}/audit-log` — owner/admin only. Every Membership/Invitation
+`GET /api/organizations/{id}/audit-events` — owner/admin only. Every Membership/Invitation
 mutation writes one `MembershipAuditEvent` row in the same transaction as the mutation itself
 (not a side effect published after the fact) so the log can never drift from what actually
-happened.
+happened. The shipped route name is `audit-events` (ticket 11); the earlier `audit-log` spelling
+in this plan was never implemented.
 
 ### Frontend
 
@@ -613,7 +614,8 @@ cutover ticket).
 11. **Audit log HTTP surface** (added to the same `endpoints/organization.py` gateway router
     from ticket 6) **+ observability** (structured log line, role-change-rate metric,
     owner-role-change-attempt alert). Tests: every mutation produces exactly one audit row in
-    the same transaction.
+    the same transaction. **Shipped; decisions in Rollout note 9.** **Security review required
+    before merge** (new manager-only read surface over actor and target identities).
 12. **Cutover**: flip `ORGS_ENABLED=true` by default once 1–11 are verified (mirrors F7's
     staged real-environment validation). Legacy `invited_users`/`InfrastructureUserRole`/
     `roles{}` retirement is explicitly its own later ticket, not part of this plan — same
@@ -974,6 +976,68 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      org is fine and expected, since legacy invitees are re-invited there (note 6).
    - Rolling back the flag after team orgs hold infra is unsupported for the same reason as
      transfer: members lose all access and the legacy `user` link covers only the creator.
+9. **Audit log surface and observability (ticket 11).**
+   - **Route.** `GET /api/organizations/{id}/audit-events`, behind `ORGS_ENABLED` (404 when
+     off, same as every org route). Owner and admin only: developers and viewers get 403, a
+     non-member, a removed member, a caller without a verified credential and a missing org
+     all get the same 404. The log names every actor and target, which is manager-level
+     information, and the plan always said owner/admin.
+   - **Query.** Newest first (`occurred_at DESC, id DESC`), keyset cursor over that pair
+     (`next_cursor` null at the end; the cursor is a position, not a credential, and the org
+     filter applies on every page). `limit` 1-100 (default 50), filters `actor_account_id`,
+     `target_account_id`, `action` (closed enum), `from` and `to` (UTC `...Z`, `from` not after
+     `to`). Unknown keys are 422. The gateway types the same parameters.
+   - **Response.** `{events: [{id, action, occurred_at, actor, target, old_role, new_role}],
+     next_cursor}`. `actor` and `target` are `{account_id, display_name, email}` or null; the
+     name is sanitized and the email follows the members-list rule (managers see it). An
+     invitation event has no target and carries no invited email, token or hash: the audit
+     table has no such column, and the response is built from an explicit field list.
+   - **Rate limit.** 60 reads per minute per (organization, account), fail closed (503) like
+     the other org limits. The gateway's global per-IP limit still applies on top.
+   - **Audit completeness, verified and fixed.** Every path writes its row in the mutation's
+     transaction: team and personal create (`organization.created`), add and revive
+     (`membership.added`, `membership.revived`), change role, remove and leave
+     (`membership.removed`, leave has actor equal to target), invitation issue, revoke and
+     accept, transfer (`membership.ownership_demoted` plus `membership.ownership_promoted`) and
+     rename. "One row per mutation" means one row per mutated entity: accept changes both a
+     Membership and an Invitation, so it writes `membership.added` or `membership.revived`
+     plus `invitation.accepted`; transfer changes two memberships and writes two rows. **Two
+     gaps found and closed:** a re-invite silently revoked the older pending invitations, and
+     removing a member silently revoked their pending invitations. Both now write one
+     `invitation.revoked` row per revoked invitation (`pending-invitation-revocation.ts`).
+   - **Observability, logs not a metrics endpoint.** auth-service has no metrics endpoint and
+     no Prometheus client (the Django services use `prometheus-client`; `infra/.docker/
+     prometheus.yml` scrapes only those two). Adding `prom-client`, an unauthenticated
+     `/metrics` route and a scrape job is more surface than a log line, so ticket 11 uses
+     structured pino logs and documents queries. After each committed org mutation (emitted in
+     `transaction.afterCommit`, so a rolled-back mutation is never logged) one line is written:
+     `{event: "org_mutation", action, organization_id, actor_account_id, target_account_id,
+     old_role, new_role, role_change}`. Ids and roles only: never an email, display name or
+     token. `role_change` is true for `membership.role_changed` and the two ownership actions.
+     The alert signal is `{event: "org_owner_role_change_attempt", reason,
+     organization_id, actor_account_id, target_account_id}` at warn level, for `reason` one of
+     `owner_role_requested` (role=owner sent to change-role or invite, including the 422 the
+     schema would otherwise answer silently, reported only when the session token is validly
+     signed), `target_is_owner` (a role change aimed at the owner row) and
+     `transfer_by_non_owner`.
+     Alert queries (Loki/LogQL shown; the same fields work in any JSON log store):
+     role-change rate, `sum(rate({app="auth-service"} | json | event="org_mutation" and
+     role_change="true" [5m]))`, page when it exceeds a few per minute for one
+     `organization_id`; owner attempts, `sum(count_over_time({app="auth-service"} | json |
+     event="org_owner_role_change_attempt" [10m])) > 0` per `actor_account_id`, page on any.
+     If a metrics endpoint is wanted later, these two events are the only increment sites.
+   - **Create-then-switch race, decided: frontend retry, not a server wait.** After `POST
+     /organizations` the Django mirrors 404 until the consumer applies `org.created`. A
+     server-side wait cannot close it: the outbox dispatcher only publishes, and the request
+     cannot observe when three other services have consumed. It would also tie every create to
+     RabbitMQ health and hold a request and a DB connection for seconds. Instead
+     `switchToOrg(id, true)` marks a 20 second window in `sessionStorage` and the axios
+     response interceptor retries a 404 on a GET up to three times (500 ms, 1 s, 2 s). Writes
+     are never retried and a 404 outside the window is untouched. The invitation accept page
+     uses the same flag, since `org.invitation.accepted` has the same lag.
+   - **Gaps closed alongside.** The caller's own row in the members list carries `account_id`
+     for every role (viewers need it to call leave); other rows keep the viewer redaction. The
+     gateway `AuthenticateOtpBody` declares `new_password` (6-72).
 
 ## Open questions
 

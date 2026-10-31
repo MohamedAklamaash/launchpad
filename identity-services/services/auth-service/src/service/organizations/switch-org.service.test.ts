@@ -43,7 +43,7 @@ const OTHER_ORG_ID = '44444444-4444-4444-4444-444444444444';
 // membership.service.test.ts's withLockingTransactionMock does.
 const withTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({ LOCK: { UPDATE: 'UPDATE' } }),
+        cb({ LOCK: { UPDATE: 'UPDATE' }, afterCommit: () => undefined }),
     );
 
 const service = new SwitchOrgService();

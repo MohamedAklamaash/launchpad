@@ -37,6 +37,11 @@ class ForgotPasswordResponse(BaseModel):
 class AuthenticateOtpBody(BaseModel):
     email: str = Field(example="user@example.com")
     otp: str = Field(min_length=6, max_length=6, example="123456")
+    new_password: str | None = Field(
+        default=None, min_length=6, max_length=72,
+        description="Password to set on first verification of an invited account. The "
+                    "inviter-chosen password never survives first verification.",
+    )
 
 class VerifyResetOTPBody(BaseModel):
     email: str = Field(example="user@example.com")

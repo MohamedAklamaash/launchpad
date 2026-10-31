@@ -5,6 +5,7 @@ import {
     ChangeMemberRole,
     CreateInvitation,
     CreateOrganization,
+    ListAuditEvents,
     ListInvitations,
     ListMembers,
     ListMyOrganizations,
@@ -13,6 +14,8 @@ import {
     RevokeInvitation,
     TransferOwnership,
 } from '@/controllers/organization.controller';
+import { auditQuerySchema } from '@/schemas/audit-event.schema';
+import { flagOwnerRoleRequest } from '@/service/organizations/owner-attempt-signal';
 import { requireOrgsEnabled } from '@/middleware/orgs-enabled.middleware';
 import {
     acceptInvitationSchema,
@@ -169,6 +172,7 @@ organizationRouter.patch(
 organizationRouter.get('/:id/members', validateRequest({ params: orgParamsSchema }), ListMembers);
 organizationRouter.patch(
     '/:id/members/:accountId',
+    flagOwnerRoleRequest,
     validateRequest({ params: orgMemberParamsSchema, body: changeMemberRoleSchema }),
     ChangeMemberRole,
 );
@@ -222,6 +226,7 @@ organizationRouter.delete(
  */
 organizationRouter.post(
     '/:id/invitations',
+    flagOwnerRoleRequest,
     validateRequest({ params: orgParamsSchema, body: createInvitationSchema }),
     CreateInvitation,
 );
@@ -229,6 +234,44 @@ organizationRouter.get(
     '/:id/invitations',
     validateRequest({ params: orgParamsSchema }),
     ListInvitations,
+);
+
+/**
+ * @swagger
+ * /api/v1/organizations/{id}/audit-events:
+ *   get:
+ *     summary: List the organization's audit events, newest first
+ *     description: >
+ *       Behind ORGS_ENABLED. Owner or admin only (a developer or viewer gets 403, a
+ *       non-member the same 404 as a missing org). Cursor-paginated: pass the previous
+ *       response's `next_cursor` as `cursor`; null means the end. Each event has the action,
+ *       time, old and new role, and the actor and target accounts (display name, plus email
+ *       for managers). Never contains an invitation token, hash or invited email. Limited
+ *       to 60 requests per minute per (organization, account); refused with 503 if the
+ *       limiter is unavailable.
+ *     tags: [Organizations]
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+ *       - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+ *       - { in: query, name: cursor, schema: { type: string, maxLength: 100 } }
+ *       - { in: query, name: actor_account_id, schema: { type: string, format: uuid } }
+ *       - { in: query, name: target_account_id, schema: { type: string, format: uuid } }
+ *       - { in: query, name: action, schema: { type: string } }
+ *       - { in: query, name: from, schema: { type: string, format: date-time, description: "UTC, ending in Z" } }
+ *       - { in: query, name: to, schema: { type: string, format: date-time, description: "UTC, ending in Z" } }
+ *     responses:
+ *       200: { description: "{ events: [{ id, action, occurred_at, actor, target, old_role, new_role }], next_cursor }" }
+ *       403: { description: Caller is a member but not an owner or admin }
+ *       404: { description: Organization not found, or the caller is not an active member }
+ *       422: { description: Unknown query key, bad uuid, action, cursor or time, or from after to }
+ *       429: { description: Read limit reached }
+ *       503: { description: Rate limiter unavailable }
+ */
+organizationRouter.get(
+    '/:id/audit-events',
+    validateRequest({ params: orgParamsSchema, query: auditQuerySchema }),
+    ListAuditEvents,
 );
 
 /**

@@ -1,4 +1,4 @@
-import { HttpError, sanitizeDisplayName } from '@launchpad/common';
+import { HttpError } from '@launchpad/common';
 import { Op } from 'sequelize';
 import { Account, Membership } from '@/db';
 import { ORG_ROLE, type OrgRole } from '@/types/org-role';
@@ -6,11 +6,13 @@ import type { AccessTokenPayload } from '@/utils/handle-token';
 import { assertManager, requireActiveMember, requireOrgManager } from './org-access.service';
 import { changeMemberRole, removeMember } from './membership.service';
 import { enforceOrgActionSlot } from './org-rate-limit';
+import { canSeeEmails, displayNameFor } from './member-view';
 
 // `id` is the membership row id: opaque, random, and not derivable from anyone's email.
 // `account_id` is uuid5(email) under a public namespace, so it confirms a guessed email
-// offline; it is withheld from viewers, who also get no email. Managers need it for the
-// change-role and remove routes, which address a member by account id.
+// offline; it is withheld from viewers, who also get no email, except on the viewer's OWN
+// row (it is their own id; the leave route addresses a member by account id). Managers need
+// it for the change-role and remove routes.
 export interface MemberSummary {
     id: string;
     account_id?: string;
@@ -19,17 +21,6 @@ export interface MemberSummary {
     role: OrgRole;
     joined_at: Date;
 }
-
-const ANONYMOUS_NAME = 'Member';
-
-const canSeeEmails = (role: OrgRole): boolean => role !== ORG_ROLE.VIEWER;
-
-// Names are user-typed text (often an email). Everyone gets the sanitized form; a viewer,
-// who must not learn addresses, gets a neutral name for anything that looked like one.
-const displayNameFor = (raw: string | null | undefined, viewerRole: OrgRole): string => {
-    if (viewerRole === ORG_ROLE.VIEWER && raw?.includes('@')) return ANONYMOUS_NAME;
-    return sanitizeDisplayName(raw ?? '') || ANONYMOUS_NAME;
-};
 
 export const listMembers = async (
     caller: AccessTokenPayload,
@@ -51,7 +42,9 @@ export const listMembers = async (
         const account = byId.get(membership.account_id);
         return {
             id: membership.id,
-            ...(withEmail ? { account_id: membership.account_id } : {}),
+            ...(withEmail || membership.account_id === viewer.accountId
+                ? { account_id: membership.account_id }
+                : {}),
             display_name: displayNameFor(account?.display_name, viewer.role),
             ...(withEmail && account ? { email: account.email } : {}),
             role: membership.role,
