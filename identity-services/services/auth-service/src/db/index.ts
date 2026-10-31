@@ -10,6 +10,7 @@ import { Organization } from './models/organization.model';
 import { Membership } from './models/membership.model';
 import { Invitation } from './models/invitation.model';
 import { MembershipAuditEvent } from './models/membership-audit-event.model';
+import { OrgEventOutbox } from './models/org-event-outbox.model';
 
 // F9 ticket 2: exactly one `owner` membership per org, enforced by the database, not just
 // application logic (plan/F9-teams-and-orgs.md, Decision: Data model). Declared here, not
@@ -26,6 +27,9 @@ import { MembershipAuditEvent } from './models/membership-audit-event.model';
 export const MEMBERSHIPS_ONE_OWNER_PER_ORG_LEGACY_INDEX_NAME = 'memberships_one_owner_per_org';
 export const MEMBERSHIPS_ONE_OWNER_PER_ORG_INDEX_SQL =
     "CREATE UNIQUE INDEX IF NOT EXISTS memberships_one_owner_per_org_active ON memberships (organization_id) WHERE role = 'owner' AND removed_at IS NULL";
+
+export const ORG_EVENT_OUTBOX_PENDING_INDEX_SQL =
+    'CREATE INDEX IF NOT EXISTS org_event_outbox_pending ON org_event_outbox (seq) WHERE sent_at IS NULL';
 
 // sequelize.sync() below creates missing tables but never alters existing ones (see
 // memory/auth-service-no-migrations.md — this service has no migration framework), so a
@@ -89,6 +93,9 @@ const applyPendingSchemaPatches = async () => {
     await sequelize.query(
         'UPDATE invited_users SET email_verified_at = NOW() WHERE is_authenticated = true AND email_verified_at IS NULL',
     );
+    // `org_event_outbox` is a brand-new table (created by sync()); only the pending-row
+    // index the dispatcher scans needs this hand-applied step.
+    await sequelize.query(ORG_EVENT_OUTBOX_PENDING_INDEX_SQL);
 };
 
 export const initModels = async () => {
@@ -107,4 +114,5 @@ export {
     Membership,
     Invitation,
     MembershipAuditEvent,
+    OrgEventOutbox,
 };

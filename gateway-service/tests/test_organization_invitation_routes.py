@@ -133,3 +133,38 @@ def test_path_ids_must_be_uuids(captured, path):
 
     assert resp.status_code in (404, 422)
     assert "calls" not in captured
+
+
+def test_transfer_ownership_proxies_a_post_with_authorization_unchanged(captured):
+    resp = _client().post(
+        f"/organizations/{ORG_ID}/transfer-ownership",
+        json={"new_owner_account_id": INVITATION_ID},
+        headers={"Authorization": BEARER},
+    )
+
+    assert resp.status_code == 200
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith(f"/api/v1/organizations/{ORG_ID}/transfer-ownership")
+    assert captured["authorization"] == BEARER
+
+
+def test_transfer_ownership_rejects_non_uuid_path_and_body_before_proxying(captured):
+    client = _client()
+
+    bad_path = client.post(
+        "/organizations/not-a-uuid/transfer-ownership",
+        json={"new_owner_account_id": INVITATION_ID},
+    )
+    bad_body = client.post(
+        f"/organizations/{ORG_ID}/transfer-ownership", json={"new_owner_account_id": "x"},
+    )
+    missing_body = client.post(f"/organizations/{ORG_ID}/transfer-ownership", json={})
+
+    assert bad_path.status_code == bad_body.status_code == missing_body.status_code == 422
+    assert captured.get("calls") is None
+
+
+def test_transfer_ownership_is_not_rate_limit_exempt():
+    from constants import is_rate_limit_exempt
+
+    assert not is_rate_limit_exempt("POST", f"/api/organizations/{ORG_ID}/transfer-ownership")

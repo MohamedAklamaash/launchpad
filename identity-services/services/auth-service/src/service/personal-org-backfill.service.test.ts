@@ -185,6 +185,49 @@ test('republishExisting re-emits org.created for a correctly owned org without w
     assert.ok(store.published.every((e) => e.payload.version === 1));
 });
 
+test('republishExisting publishes the owner membership at its current version, not the creation version', async () => {
+    await backfillPersonalOrgs();
+    const orgId = personalOrgId(OWNER_ID);
+    const ownerRow = store.memberships.find((m) => m.organization_id === orgId)!;
+    ownerRow.version = 7;
+    store.published.length = 0;
+
+    await backfillPersonalOrgs({ republishExisting: true });
+
+    const event = store.published.find((e) => e.payload.organization_id === orgId)!;
+    assert.equal(event.payload.version, 7);
+    assert.equal(event.payload.owner_account_id, OWNER_ACCOUNT);
+});
+
+test('republishExisting after ownership moved away publishes nothing for that org and never resurrects the old owner', async () => {
+    await backfillPersonalOrgs();
+    const orgId = personalOrgId(OWNER_ID);
+    store.orgs.get(orgId)!.owner_account_id = OTHER_ACCOUNT;
+    const oldOwnerRow = store.memberships.find((m) => m.organization_id === orgId)!;
+    oldOwnerRow.role = 'admin';
+    oldOwnerRow.version = 2;
+    store.memberships.push({
+        id: 'm-new-owner',
+        organization_id: orgId,
+        account_id: OTHER_ACCOUNT,
+        role: 'owner',
+        version: 2,
+        removed_at: null,
+    });
+    store.published.length = 0;
+
+    const result = await backfillPersonalOrgs({ republishExisting: true });
+
+    assert.equal(result.conflicts, 1);
+    assert.equal(
+        store.published.some(
+            (e) =>
+                e.payload.organization_id === orgId && e.payload.owner_account_id === OWNER_ACCOUNT,
+        ),
+        false,
+    );
+});
+
 test('one user failing does not abort the pass', async () => {
     const originalFindByPk = (await import('@/db')).Organization.findByPk;
     const failing = mock.method(

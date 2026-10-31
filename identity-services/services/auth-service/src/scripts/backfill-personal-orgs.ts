@@ -6,13 +6,14 @@ import {
     InitOrgEventsPublisher,
     closeOrgEventsPublisher,
     orgEventsPublisher,
-    verifyOrgEventsDelivered,
 } from '@/messaging/producer/org-events.message';
+import { drainOutboxFully } from '@/service/organizations/org-event-outbox.service';
 import { logger } from '@/utils/logger';
 
 // Run by hand after `backfill:accounts`: `ORGS_ENABLED=true pnpm backfill:personal-orgs`
 // (append `-- --republish-existing` to re-emit org.created for orgs that already exist,
-// for a mirror that was down or not yet consuming). The flag is needed on this process
+// for a mirror that was down or not yet consuming). Events go through the outbox; exit
+// code 3 means some are still pending. The flag is needed on this process
 // only; it does not enable anything on the running service.
 const main = async (): Promise<number> => {
     if (!env.ORGS_ENABLED) {
@@ -20,7 +21,6 @@ const main = async (): Promise<number> => {
     }
     await sequelize.authenticate();
     await initModels();
-    orgEventsPublisher.enableConfirms();
     await InitOrgEventsPublisher();
     if (!orgEventsPublisher.isConnected()) {
         throw new Error(
@@ -32,11 +32,14 @@ const main = async (): Promise<number> => {
         republishExisting: process.argv.includes('--republish-existing'),
     });
     logger.info({ result }, 'backfill-personal-orgs finished');
-    const delivery = await verifyOrgEventsDelivered();
-    if (!delivery.delivered) {
+    // org.created events sit in the outbox (written with each org). Drain it here on a
+    // confirm channel instead of waiting for the service's dispatcher: a row is marked sent
+    // only after the broker confirmed it, so any row left pending means "not delivered".
+    const pending = await drainOutboxFully();
+    if (pending > 0) {
         logger.error(
-            { delivery },
-            'org.created events were not confirmed by the broker - re-run with --republish-existing',
+            { pending },
+            'org.created events are still pending in the outbox - the running service will deliver them, or re-run this script',
         );
         return 3;
     }

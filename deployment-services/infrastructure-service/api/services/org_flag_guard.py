@@ -2,8 +2,11 @@
 
 With the flag on, an org admin can create an infrastructure; `Infrastructure.user` is then
 that admin. The flag-off checks treat `user` as the owner, so rolling the flag back would
-give the admin owner-only powers (nuke, exit, costs) and lock out the real owner. Rolling
-back after such creates is unsupported: the service refuses to start until the rows are
+give the admin owner-only powers (nuke, exit, costs) and lock out the real owner. The same
+holds after an ownership transfer: the creator would regain owner powers and the new owner
+would have none, so the org.events consumer marks that org's infrastructures too (the
+creator-to-Account mapping is not available here, so every infra in a transferred org is
+marked). Rolling back after such creates or transfers is unsupported: the service refuses to start until the rows are
 handled by hand.
 """
 import logging
@@ -31,7 +34,7 @@ def enforce_flag_off_safety() -> None:
     if offending:
         raise ImproperlyConfigured(
             f"ORGS_ENABLED is off but {offending} infrastructure(s) were created by a non-owner "
-            "org member while it was on. Their creator would become the owner under the legacy "
+            "org member, or sit in an org whose ownership was transferred, while it was on. Their creator would become the owner under the legacy "
             "checks. Turning the flag back off after flag-on creates is unsupported; re-enable "
             "ORGS_ENABLED, or reassign these rows by hand first."
         )

@@ -36,7 +36,8 @@ const { createApp } = await import('@/app');
 const { signAccessToken } = await import('@/utils/handle-token');
 const { accountIdForEmail } = await import('@/utils/account-id');
 const queueModule = await import('@/messaging/producer/user-created.message');
-const { orgEventsPublisher } = await import('@/messaging/producer/org-events.message');
+const { orgEventsPublisher, publishOutboxEvent } =
+    await import('@/messaging/producer/org-events.message');
 
 export const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN;
 
@@ -69,6 +70,42 @@ export const createHarness = async () => {
         redisCounts: new Map<string, number>(),
         redisDown: false,
         membershipCreateError: null as Error | null,
+        refreshRevokedFor: [] as string[],
+        outbox: [] as { routing_key: string; payload: Row }[],
+        queryLog: [] as { role: unknown; membershipId: unknown }[],
+        auditFailOnCall: null as number | null,
+        outboxFailOnCall: null as number | null,
+    };
+
+    // Restores every row and append-only log to its pre-transaction value if the callback
+    // throws, standing in for the ROLLBACK Postgres would issue.
+    const runWithRollback = async <T>(cb: () => Promise<T>): Promise<T> => {
+        const tables = [state.memberships, state.orgs, state.invitations];
+        const rowCopies = tables.map((rows) => rows.map((row) => ({ row, copy: { ...row } })));
+        const logLengths = [state.audit.length, state.refreshRevokedFor.length];
+        const outboxStart = state.outbox.length;
+        try {
+            const result = await cb();
+            // Stands in for the dispatcher: outbox rows reach the publisher only once the
+            // transaction that wrote them has committed, in insertion order.
+            state.outbox
+                .slice(outboxStart)
+                .forEach((row) => publishOutboxEvent(row.routing_key, row.payload, new Date()));
+            return result;
+        } catch (error) {
+            state.outbox.length = outboxStart;
+            tables.forEach((rows, i) => {
+                rows.length = rowCopies[i]!.length;
+                rowCopies[i]!.forEach(({ row, copy }, j) => {
+                    rows[j] = row;
+                    Object.keys(row).forEach((key) => delete row[key]);
+                    Object.assign(row, copy);
+                });
+            });
+            state.audit.length = logLengths[0]!;
+            state.refreshRevokedFor.length = logLengths[1]!;
+            throw error;
+        }
     };
 
     let tail: Promise<unknown> = Promise.resolve();
@@ -77,7 +114,7 @@ export const createHarness = async () => {
         // invitation (FOR UPDATE), since there is no Postgres in unit tests. It does not model
         // rollback; the assertions below only rely on ordering.
         mock.method(sequelize, 'transaction', (cb: (t: object) => Promise<unknown>) => {
-            const run = tail.then(() => cb({ LOCK: { UPDATE: 'UPDATE' } }));
+            const run = tail.then(() => runWithRollback(() => cb({ LOCK: { UPDATE: 'UPDATE' } })));
             tail = run.catch(() => undefined);
             return run;
         }),
@@ -87,6 +124,23 @@ export const createHarness = async () => {
                 (m) => m.id === opts.replacements?.membershipId,
             );
             if (!membership) return [];
+            state.queryLog.push({
+                role: opts.replacements?.role,
+                membershipId: opts.replacements?.membershipId,
+            });
+            const wantsOwner = opts.replacements?.role === 'owner' && membership.role !== 'owner';
+            const otherActiveOwner = state.memberships.some(
+                (m) =>
+                    m !== membership &&
+                    m.organization_id === membership.organization_id &&
+                    m.role === 'owner' &&
+                    m.removed_at === null,
+            );
+            if (wantsOwner && otherActiveOwner) {
+                throw new Error(
+                    'duplicate key value violates unique constraint "memberships_one_owner_per_org_active"',
+                );
+            }
             if (sql.includes('removed_at = NOW()')) {
                 membership.version = (membership.version as number) + 1;
                 membership.removed_at = new Date();
@@ -154,7 +208,23 @@ export const createHarness = async () => {
         mock.method(db.InvitedUser, 'findAll', async (o: { where: Row }) =>
             state.invitedUsers.filter((u) => matches(u, o.where)),
         ),
-        mock.method(db.RefreshToken, 'destroy', async () => 0),
+        mock.method(db.RefreshToken, 'destroy', async (o: { where: { user_id: object } }) => {
+            const ids = (o.where.user_id as Record<symbol, string[]>)[Op.in] ?? [];
+            state.refreshRevokedFor.push(...ids);
+            return ids.length;
+        }),
+        mock.method(db.OrgEventOutbox, 'create', async (attrs: Row) => {
+            state.outbox.push(attrs as { routing_key: string; payload: Row });
+            if (state.outboxFailOnCall === state.outbox.length) {
+                throw new Error('outbox insert failed');
+            }
+            return attrs;
+        }),
+        mock.method(db.Organization, 'update', async (values: Row, o: { where: Row }) => {
+            const hits = state.orgs.filter((org) => matches(org, o.where));
+            hits.forEach((org) => Object.assign(org, values));
+            return [hits.length];
+        }),
         mock.method(db.Invitation, 'update', async (values: Row, o: { where: Row }) => {
             const emails = (o.where.email as { [Op.in]?: string[] } | string | undefined) ?? null;
             const wanted = typeof emails === 'object' && emails ? (emails[Op.in] ?? []) : null;
@@ -194,6 +264,12 @@ export const createHarness = async () => {
             ),
         ),
         mock.method(db.MembershipAuditEvent, 'create', async (attrs: Row) => {
+            if (
+                state.auditFailOnCall !== null &&
+                state.audit.length + 1 === state.auditFailOnCall
+            ) {
+                throw new Error('audit insert failed');
+            }
             state.audit.push(attrs);
             return attrs;
         }),
@@ -217,8 +293,12 @@ export const createHarness = async () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
-    const addOrg = (name = 'Acme <b>Corp</b>') => {
-        const org = { id: randomUUID(), name };
+    const addOrg = (
+        name = 'Acme <b>Corp</b>',
+        ownerAccountId?: string,
+        id: string = randomUUID(),
+    ) => {
+        const org = { id, name, owner_account_id: ownerAccountId };
         state.orgs.push(org);
         return org.id;
     };

@@ -11,23 +11,18 @@ import {
 } from '@/utils/membership-version';
 import { assertOrgsEnabled } from './org-guard';
 import { recordAuditEvent } from './audit-log.service';
-import {
-    publishMembershipChanged,
-    publishMembershipRemoved,
-} from '@/messaging/producer/org-events.message';
+import { enqueueMembershipChanged, enqueueMembershipRemoved } from './org-event-outbox.service';
 
 // Security review H3(b): RefreshToken.user_id is the legacy credential id (User.id or
 // InvitedUser.id), never an Account id — Membership only ever knows the account_id, so
-// removal has to map backwards through both credential tables to find every refresh
-// token this account could use to keep acting in the org it was just removed from. Best
-// effort within the removal's own transaction: if this account is linked to no
-// credential row yet (shouldn't happen for a real Membership, but not impossible), this
-// is a no-op rather than a failure that would roll back the removal itself.
-const revokeRefreshTokensForAccount = async (
-    organizationId: string,
+// revocation has to map backwards through both credential tables to find every refresh
+// token this account could use. Best effort within the caller's own transaction: if this
+// account is linked to no credential row yet (shouldn't happen for a real Membership, but
+// not impossible), this is a no-op rather than a failure that would roll back the caller.
+export const revokeRefreshTokens = async (
     accountId: string,
     transaction: Transaction,
-): Promise<void> => {
+): Promise<{ id: string; email: string }[]> => {
     const [users, invitedUsers] = await Promise.all([
         User.findAll({
             where: { account_id: accountId },
@@ -41,14 +36,25 @@ const revokeRefreshTokensForAccount = async (
         }),
     ]);
     const credentials = [...users, ...invitedUsers];
-    if (credentials.length === 0) return;
+    if (credentials.length === 0) return [];
 
     await RefreshToken.destroy({
         where: { user_id: { [Op.in]: credentials.map((c) => c.id) } },
         transaction,
     });
-    // A removed member must not be able to walk back in with an invitation issued before
-    // the removal, so every pending invitation to one of their addresses dies with it.
+    return credentials;
+};
+
+// A removed member must not be able to walk back in with an invitation issued before the
+// removal, so every pending invitation to one of their addresses dies with it.
+const revokeAccessForRemovedAccount = async (
+    organizationId: string,
+    accountId: string,
+    transaction: Transaction,
+): Promise<void> => {
+    const credentials = await revokeRefreshTokens(accountId, transaction);
+    if (credentials.length === 0) return;
+
     await Invitation.update(
         { revoked_at: new Date() },
         {
@@ -70,8 +76,8 @@ export interface AddMemberInput {
     actorAccountId: string | null;
 }
 
-// Adds a non-owner member. Ownership is only ever set by createOrganization or (ticket 8)
-// a dedicated ownership-transfer transaction — never through this generic path, which is
+// Adds a non-owner member. Ownership is only ever set by createOrganization or
+// ownership-transfer.service.ts — never through this generic path, which is
 // the service-level half of the owner invariant (the partial unique index is the DB half).
 //
 // A removed account re-added to the same org revives its tombstoned row (bumping its
@@ -135,18 +141,16 @@ export const addMember = async (input: AddMemberInput): Promise<Membership> => {
         throw new HttpError(409, 'Cannot add a member as owner; use ownership transfer');
     }
 
-    const membership = await sequelize.transaction((transaction) =>
-        addMemberInTransaction(input, transaction),
-    );
-
-    publishMembershipChanged({
-        organization_id: membership.organization_id,
-        account_id: membership.account_id,
-        role: membership.role,
-        version: membership.version,
+    return sequelize.transaction(async (transaction) => {
+        const membership = await addMemberInTransaction(input, transaction);
+        await enqueueMembershipChanged(transaction, {
+            organization_id: membership.organization_id,
+            account_id: membership.account_id,
+            role: membership.role,
+            version: membership.version,
+        });
+        return membership;
     });
-
-    return membership;
 };
 
 export interface ChangeMemberRoleInput {
@@ -195,14 +199,13 @@ export const changeMemberRole = async (input: ChangeMemberRoleInput): Promise<Me
 
         existing.role = input.newRole;
         existing.version = newVersion;
+        await enqueueMembershipChanged(transaction, {
+            organization_id: existing.organization_id,
+            account_id: existing.account_id,
+            role: existing.role,
+            version: existing.version,
+        });
         return existing;
-    });
-
-    publishMembershipChanged({
-        organization_id: membership.organization_id,
-        account_id: membership.account_id,
-        role: membership.role,
-        version: membership.version,
     });
 
     return membership;
@@ -222,7 +225,7 @@ export interface RemoveMemberInput {
 export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
     assertOrgsEnabled();
 
-    const removed = await sequelize.transaction(async (transaction) => {
+    await sequelize.transaction(async (transaction) => {
         const existing = await Membership.findOne({
             where: {
                 organization_id: input.organizationId,
@@ -236,8 +239,8 @@ export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
         if (existing.role === ORG_ROLE.OWNER) {
             // Last-owner lockout, the removal-side counterpart to the partial unique
             // index: that index stops a SECOND owner row from ever existing; this stops
-            // the ONLY owner from ever being removed. Full reauth-gated ownership
-            // transfer is ticket 8 — this is the floor it builds on, not a substitute.
+            // the ONLY owner from ever being removed. The owner leaves the role only
+            // through the reauth-gated ownership transfer.
             throw new HttpError(409, 'Cannot remove the organization owner');
         }
 
@@ -255,13 +258,11 @@ export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
         // eviction / the refresh-token re-validation in InvitedUserAuthService.refresh
         // alone — the highest-consequence transition (actual removal) doesn't wait for
         // the removed member's next refresh to notice.
-        await revokeRefreshTokensForAccount(organization_id, account_id, transaction);
-        return { organization_id, account_id, version: newVersion };
-    });
-
-    publishMembershipRemoved({
-        organization_id: removed.organization_id,
-        account_id: removed.account_id,
-        version: removed.version,
+        await revokeAccessForRemovedAccount(organization_id, account_id, transaction);
+        await enqueueMembershipRemoved(transaction, {
+            organization_id,
+            account_id,
+            version: newVersion,
+        });
     });
 };

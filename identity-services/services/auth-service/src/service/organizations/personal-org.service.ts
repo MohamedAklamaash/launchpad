@@ -3,9 +3,10 @@ import { InvitedUser, Membership, Organization, User } from '@/db';
 import { ORG_ROLE } from '@/types/org-role';
 import { personalOrgId } from '@/utils/org-id';
 import { logger } from '@/utils/logger';
-import { publishOrgCreated } from '@/messaging/producer/org-events.message';
+import { sequelize } from '@/db/sequalize';
 import { assertOrgsEnabled } from './org-guard';
 import { createOrganization } from './organization.service';
+import { enqueueOrgCreated } from './org-event-outbox.service';
 
 const ORG_NAME_MAX_LENGTH = 255;
 const FALLBACK_ORG_NAME = 'Personal';
@@ -80,11 +81,13 @@ const classifyExisting = async (
     }
 
     if (options.republishExisting) {
-        publishOrgCreated({
-            organization_id: organization.id,
-            owner_account_id: organization.owner_account_id,
-            version: membership.version,
-        });
+        await sequelize.transaction((transaction) =>
+            enqueueOrgCreated(transaction, {
+                organization_id: organization.id,
+                owner_account_id: organization.owner_account_id,
+                version: membership.version,
+            }),
+        );
     }
     return 'exists';
 };

@@ -26,6 +26,13 @@ export interface OrgMembershipChangedPayload extends EventPayload {
     account_id: string;
     role: string;
     version: number;
+    // Set only on an ownership-transfer promote: the account that held owner until this
+    // event. A mirror demotes that row atomically with the promote, so losing the separate
+    // demote event can never leave two owners.
+    previous_owner_account_id?: string;
+    // The version the separate demote event for that account carries; the mirror stamps it so
+    // that event becomes a no-op.
+    previous_owner_version?: number;
 }
 
 export interface OrgMembershipRemovedPayload extends EventPayload {

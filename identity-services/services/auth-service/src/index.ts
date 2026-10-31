@@ -10,18 +10,24 @@ import {
     closeOrgEventsPublisher,
     InitOrgEventsPublisher,
 } from '@/messaging/producer/org-events.message';
+import {
+    startOutboxDispatcher,
+    stopOutboxDispatcher,
+} from '@/service/organizations/org-event-outbox.service';
 
 const main = async () => {
     await connectToDatabase();
     await initModels();
     await InitPublisher();
     await InitOrgEventsPublisher();
+    if (env.ORGS_ENABLED) startOutboxDispatcher();
     await startInfraConsumer();
 
     const app = createApp();
     const server = createServer(app);
 
     const shutdown = () => {
+        stopOutboxDispatcher();
         Promise.all([
             closeDatabase(),
             closePublisher(),

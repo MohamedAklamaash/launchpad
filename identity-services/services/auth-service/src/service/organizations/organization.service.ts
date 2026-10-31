@@ -3,7 +3,7 @@ import { sequelize } from '@/db/sequalize';
 import { ORG_ROLE } from '@/types/org-role';
 import { assertOrgsEnabled } from './org-guard';
 import { recordAuditEvent } from './audit-log.service';
-import { publishOrgCreated } from '@/messaging/producer/org-events.message';
+import { enqueueOrgCreated } from './org-event-outbox.service';
 
 export interface CreateOrganizationInput {
     ownerAccountId: string;
@@ -51,16 +51,14 @@ export const createOrganization = async (
             old_role: null,
             new_role: ORG_ROLE.OWNER,
         });
+        // The outbox row commits with the org, and the dispatcher publishes it only after
+        // that commit, so a consumer never sees an event for a rolled-back row.
+        await enqueueOrgCreated(transaction, {
+            organization_id: organization.id,
+            owner_account_id: organization.owner_account_id,
+            version: membership.version,
+        });
         return { organization, membership };
-    });
-
-    // Published after commit, never from inside the transaction — a consumer that saw
-    // this event before the row was durable could retry-until-materialized forever against
-    // a row that was then rolled back.
-    publishOrgCreated({
-        organization_id: result.organization.id,
-        owner_account_id: result.organization.owner_account_id,
-        version: result.membership.version,
     });
 
     return result;
