@@ -36,6 +36,9 @@ export interface InvitedUserAttributes {
     // row's email is proven via OTP (authenticateWithOTP), and never cleared again —
     // `is_authenticated`'s per-infra resets no longer affect it.
     email_verified_at: Date | null;
+    // Set when the stored password is known to be unusable (inviter-chosen, then reset):
+    // login tells the user to use forgot-password. Cleared by a successful reset.
+    password_reset_required_at: Date | null;
 }
 
 export type InvitedUserCreationAttributes = Optional<
@@ -51,6 +54,7 @@ export type InvitedUserCreationAttributes = Optional<
     | 'otp_attempts_window_start'
     | 'account_id'
     | 'email_verified_at'
+    | 'password_reset_required_at'
 >;
 
 export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreationAttributes> {
@@ -71,6 +75,7 @@ export class InvitedUser extends Model<InvitedUserAttributes, InvitedUserCreatio
     declare otp_attempts_window_start: Date | null;
     declare account_id: string | null;
     declare email_verified_at: Date | null;
+    declare password_reset_required_at: Date | null;
 }
 
 InvitedUser.init(
@@ -148,6 +153,10 @@ InvitedUser.init(
             allowNull: true,
         },
         email_verified_at: {
+            type: DataTypes.DATE,
+            allowNull: true,
+        },
+        password_reset_required_at: {
             type: DataTypes.DATE,
             allowNull: true,
         },

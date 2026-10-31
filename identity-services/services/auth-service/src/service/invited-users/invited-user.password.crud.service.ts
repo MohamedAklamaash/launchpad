@@ -139,6 +139,7 @@ export class PasswordService extends BaseService {
 
             user.password_hash = await hashPassword(newPassword);
             user.forgot_password = false;
+            user.password_reset_required_at = null;
             await user.save({ transaction });
 
             const expiresAt = new Date();

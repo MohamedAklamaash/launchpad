@@ -256,10 +256,16 @@ direction):
 
 - **`Account`** `(id, email, display_name, created_at)`. Backfill id =
   `uuid5(ACCOUNT_NAMESPACE, normalized email)`, one per *distinct normalized email*, not one
-  per legacy row — deduped by construction: a same-email pair across `users`/`invited_users`
-  (or even within one table, since `email`'s unique index is case-sensitive) deliberately
-  computes the same id and ends up sharing one Account row, consistent with the Non-goal that
-  this project doesn't resolve that collision, just link it (documented, not fixed). This is
+  per legacy row. A same-email pair across `users`/`invited_users` (or even within one table,
+  since `email`'s unique index is case-sensitive) computes the same id, but an Account is
+  **never linked to a second credential row**, by the backfill or by the live paths: whoever
+  can log in as any row holding an Account acts as that Account in every org, so a merge is
+  a decision that one person controls both rows, made by a human. The backfill links a row
+  only when it is the single unlinked verified row for that email and no other row holds the
+  Account; otherwise it logs `accountBackfillSharedAccount` and links nothing. Separately, an
+  inviter-chosen password never survives first OTP verification (the invitee sets one, or the
+  account has none until forgot-password), so an inviter cannot keep a working login on an
+  email they do not own. This is
   safe despite email being mutable because the id is computed **once**, at backfill time, and
   stored in the FK — no service ever recomputes `Account.id` from a row's *current* email
   later (that pattern — a service deriving the same id independently, with no coordination —
@@ -369,6 +375,11 @@ flagged for the required pre-review (see Risks):
   irreversible, or money-moving. Exit specifically keeps its existing `auth_time` reauth gate
   (F6) — widening or weakening either would contradict a decision already made under a
   security pre-review and is explicitly out of scope here.
+
+**Owner decision (2026-10-31): developers keep spend authority.** A `developer` can create
+applications and change cpu, memory, port, branch and dockerfile path. Those cells stay as
+decided above and were reviewed and accepted by the owner as a known cost-control trade-off,
+not an open finding.
 
 Admin cannot grant or hold the `owner` role, cannot remove or demote the org's owner, and
 cannot touch billing — enforced by: the partial-unique-index invariant (only one `owner` row
@@ -587,6 +598,11 @@ cutover ticket).
 10. **Frontend**: org switcher, members page, invite/accept UI, role-gated UI via
     `useOrgRole()`, settings billing tab. Tests: role-gated controls hidden/disabled per role
     (component tests), E2E invite-to-accept-to-member-visible flow.
+    **Legacy invite verify (from the PR #166 security review):** `POST
+    /api/auth/authenticate-with-otp` accepts an optional `new_password`; the frontend verify
+    page does not send it yet. Until it does, a newly verified invited user has no usable
+    password and must use forgot-password once. The verify page should prompt for a password
+    and send it.
     **Accept page requirements (from the ticket 6 security review):** the invitation token
     arrives in the URL fragment (`#token=...`). The page must scrub it with
     `history.replaceState` before any analytics or session-replay script loads, must never
@@ -671,16 +687,105 @@ Operational steps for shipping the auth-service side of F9. Order matters.
    - `DASHBOARD_URL` must be set on notification-service, or invitation email jobs fail
      permanently (the link cannot be built).
 
-5. **Permission-matrix enforcement (ticket 7) rollout.** With `ORGS_ENABLED` on, access in
+5. **Personal orgs must exist before `ORGS_ENABLED` is flipped.** Nothing else creates them.
+   The Django services stamp every pre-F9 resource with `organization_id =
+   uuid5(ORG_NAMESPACE, infra.user_id)`, so with the flag on an owner whose personal org was
+   never created resolves to no role. Order:
+
+   1. Boot the new auth-service, run `backfill:accounts` (note 1), review its collision log.
+   2. Make sure each Django mirror's `org.events` consumer is running. The consumer starts
+      only when that service has `ORGS_ENABLED=true`, and its durable queue is what binds to
+      the exchange. `org.created` published while no queue is bound is dropped by the broker.
+      If a mirror was not consuming during step 3, use `--republish-existing` below.
+   3. Run the personal-org backfill with the flag set on that process only:
+
+      ```bash
+      ORGS_ENABLED=true pnpm --filter auth-service backfill:personal-orgs
+      ```
+
+      It creates `uuid5(ORG_NAMESPACE, users.id)` for every GitHub `User` with a linked
+      `account_id`, owned by that Account, and publishes `org.created` for each. Re-running is
+      safe: existing orgs are skipped. It refuses to start if the `org.events` publisher cannot
+      connect. Exit code `2` means at least one `conflict` (an org with that id is owned by a
+      different Account; left untouched, logged as `personalOrgConflict`), `inconsistent`
+      (org exists, owner Membership missing) or `failed` row. Resolve those by hand before
+      continuing. `skippedUnlinked` users (email collision held for review) get no org until
+      they are linked; they are logged as `personalOrgSkipped`. `shared_account` users (another
+      `users` or `invited_users` row holds the same Account; logged as
+      `personalOrgSharedAccount`) also get no org and also make the script exit `2`.
+
+      **Never link a `User` to an Account held by an `InvitedUser`, or the reverse, without
+      confirming that one person controls both.** An `InvitedUser` password may have been chosen
+      by an inviter, and the shared Account would let that login act as the GitHub user in
+      every org they own. For a legacy shared Account, unlink the `InvitedUser` row
+      (`account_id = NULL`, and have that person verify again) after checking the personal org
+      and its mirrors were not already created for it.
+
+      The script runs on a confirm channel and exits `3` if the broker did not confirm every
+      publish, if any publish happened while disconnected, or if messages are still buffered.
+      Re-run with `--republish-existing` in that case.
+   4. Verify every mirror received the events (queries below). If any are missing, re-run with
+      `-- --republish-existing`: it re-emits `org.created` for correctly owned existing orgs
+      and writes nothing. Consumers ignore a redelivery whose `version` is not newer.
+   5. Only then set `ORGS_ENABLED=true` on the long-running services.
+
+   **Reset inviter-chosen passwords before the flip.** Before verify-time reset existed, an
+   inviter chose the password on the row they created, and verified invitees kept it, so the
+   inviter can still log in as those rows. There is no signal for whether an invitee later
+   changed it, so the script resets **every** verified `invited_users` row (unverified rows are
+   handled at verification). Steps:
+
+   1. Send the notice first: affected invitees will have to use "Forgot password" once.
+   2. Boot the new auth-service (adds `password_reset_required_at`).
+   3. Dry run, which only prints the count:
+      `pnpm --filter auth-service reset:inviter-passwords -- --dry-run`
+   4. Run it: `pnpm --filter auth-service reset:inviter-passwords`. Optional
+      `-- --verified-before=<ISO date>` skips rows verified after the verify-time fix shipped.
+   5. It sets an unusable random hash, sets `password_reset_required_at`, and revokes the
+      rows' refresh tokens (access tokens expire on their own, 15 minutes). Re-running skips
+      marked rows. Login for a marked row returns 401 "Password reset required"; completing
+      forgot-password clears the marker. It never runs automatically.
+
+   After the flag is on, `upsertUser` ensures the personal org on each GitHub login (same
+   idempotent, no-steal logic), so new signups need no backfill. A failure there is logged
+   (`Failed to ensure personal org at login`) and does not block sign-in; the next login retries.
+
+   `InvitedUser` rows get no org on purpose: creating an infra requires `super_admin`, invited
+   roles are clamped below `super_admin` (`clampInvitedRole`), and only GitHub `User` rows are
+   created as `super_admin`, so an invited user never owns an infra.
+
+   **Verification, run in each Django mirror (infrastructure-service and application-service
+   databases).** Both must return zero rows:
+
+   ```sql
+   -- infra rows with no organization_id, or whose org / owner membership is not mirrored
+   SELECT i.id, i.user_id, i.organization_id,
+          (o.id IS NOT NULL) AS has_org, (m.id IS NOT NULL) AS has_owner_membership
+   FROM api_infrastructure i
+   LEFT JOIN api_organization o ON o.id = i.organization_id
+   LEFT JOIN api_membership m
+          ON m.organization_id = o.id
+         AND m.account_id = o.owner_account_id
+         AND m.role = 'owner'
+         AND m.removed_at IS NULL
+   WHERE i.organization_id IS NULL OR o.id IS NULL OR m.id IS NULL;
+   ```
+
+   Users the backfill skipped for having no linked Account show up here as missing orgs; that
+   is expected until they are linked. To cross-check the auth-service side (needs the
+   `uuid-ossp` extension for `uuid_generate_v5`):
+
+   ```sql
+   SELECT u.id FROM users u
+   LEFT JOIN organizations o ON o.id = uuid_generate_v5('4c900569-d11e-46e2-b34c-cd677a57ca73', u.id::text)
+   WHERE u.account_id IS NOT NULL AND o.id IS NULL;
+   ```
+
+6. **Permission-matrix enforcement (ticket 7) rollout.** With `ORGS_ENABLED` on, access in
    infrastructure-service, application-service and payment-service comes only from an active
    Membership in the resource's org; the legacy `invited_users` M2M and
    `InfrastructureUserRole` grant nothing. Before flipping the flag:
-   - **Personal orgs must exist.** Nothing creates the personal `Organization` and owner
-     `Membership` for existing users: `createOrganization` has no caller outside tests, and
-     `backfillAccounts` writes Accounts only. Until a backfill writes them (and the Django
-     mirrors have consumed the `org.created` events), every pre-F9 owner resolves to no role
-     and every existing infrastructure returns 404. Organic GitHub signups need the same
-     creation hook. This is not built in ticket 7.
+   - **Personal orgs must exist first** — see note 5.
    - **Run the Django migrations first.** `0041` (infrastructure-service), `0045`
      (application-service) and `0008` (payment-service) re-stamp `organization_id` on rows
      created after the first backfill. A NULL `organization_id` is inaccessible under the flag.

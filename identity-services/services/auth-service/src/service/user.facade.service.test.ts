@@ -29,6 +29,10 @@ const { UserFacadeService } = await import('@/service/user.facade.service');
 const { HttpError } = await import('@launchpad/common');
 const { verifyAccessToken } = await import('@/utils/handle-token');
 const { accountIdForEmail } = await import('@/utils/account-id');
+const { installPersonalOrgStore } = await import('@/test-support/personal-org-store');
+
+await installPersonalOrgStore();
+mock.method(InvitedUser, 'findOne', async () => null);
 
 const withTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
@@ -121,9 +125,10 @@ test('upsertUser leaves an already-linked GitHub User alone (no re-link attempt)
         },
     };
     const findUserSpy = mock.method(User, 'findOne', async () => existingUser);
+    const invitedFindOneSpy = mock.method(InvitedUser, 'findOne', async () => null);
     // If the already-linked case ever started calling the link flow by mistake, this
     // would throw — proving it never does.
-    const invitedFindOneSpy = mock.method(InvitedUser, 'findOne', async () => {
+    const findOrCreateSpy = mock.method(Account, 'findOrCreate', async () => {
         throw new Error('must not run the link flow when already linked');
     });
     const refreshSpy = mock.method(RefreshToken, 'create', async (attrs: object) => ({
@@ -139,6 +144,7 @@ test('upsertUser leaves an already-linked GitHub User alone (no re-link attempt)
         txSpy.mock.restore();
         findUserSpy.mock.restore();
         invitedFindOneSpy.mock.restore();
+        findOrCreateSpy.mock.restore();
         refreshSpy.mock.restore();
     }
 });
@@ -219,6 +225,11 @@ const linkedRow = (githubId: string | null) => {
     return row;
 };
 
+const githubLookups = (spy: { mock: { calls: { arguments: unknown[] }[] } }) =>
+    spy.mock.calls.filter(
+        (call) => !('account_id' in ((call.arguments[0] as { where?: object })?.where ?? {})),
+    ).length;
+
 const isEmailLookup = (opts?: { where?: object }) => !!opts?.where && 'email' in opts.where;
 
 const withRefreshTokenMock = () =>
@@ -235,7 +246,7 @@ test('upsertUser: the same github id logs in normally and never consults the ema
     try {
         const result = await service.upsertUser(githubData);
         assert.equal(verifyAccessToken(result.accessToken).account_id, 'already-linked-account-id');
-        assert.equal(findSpy.mock.callCount(), 1);
+        assert.equal(githubLookups(findSpy), 1);
         assert.equal(row.saves, 1);
     } finally {
         txSpy.mock.restore();
@@ -269,7 +280,7 @@ test('upsertUser: a legacy row with no github id is bound by email once and the 
     const refreshSpy2 = withRefreshTokenMock();
     try {
         await service.upsertUser(githubData);
-        assert.equal(findSpy2.mock.callCount(), 1);
+        assert.equal(githubLookups(findSpy2), 1);
     } finally {
         txSpy2.mock.restore();
         findSpy2.mock.restore();

@@ -119,8 +119,8 @@ export const LoginUser = async (req: Request, res: Response) => {
     }
 };
 
-const authenticateOTP = async (email: string, otp: string, res: Response) => {
-    const authRes = await invitedUserFacade.authenticateWithOTP({ email, otp });
+const authenticateOTP = async (email: string, otp: string, res: Response, newPassword?: string) => {
+    const authRes = await invitedUserFacade.authenticateWithOTP({ email, otp, newPassword });
     return res.status(200).json(authRes);
 };
 
@@ -142,8 +142,12 @@ export const AuthenticateOTP = async (req: Request, res: Response) => {
 
 export const AuthenticateOTPWithBody = async (req: Request, res: Response) => {
     try {
-        const { email, otp } = req.body as { email: string; otp: string };
-        return await authenticateOTP(email, otp, res);
+        const { email, otp, new_password } = req.body as {
+            email: string;
+            otp: string;
+            new_password?: string;
+        };
+        return await authenticateOTP(email, otp, res, new_password);
     } catch (error: unknown) {
         if (error instanceof HttpError) throw error;
         throw new HttpError(500, 'Internal Server Error');

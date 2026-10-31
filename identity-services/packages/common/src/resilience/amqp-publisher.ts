@@ -1,4 +1,10 @@
-import { connect, type Channel, type ChannelModel, type Options } from 'amqplib';
+import {
+    connect,
+    type Channel,
+    type ChannelModel,
+    type ConfirmChannel,
+    type Options,
+} from 'amqplib';
 import { CreateLogger } from '../utils/logger.js';
 
 const rootLogger = CreateLogger({ name: 'resilience' });
@@ -33,6 +39,9 @@ export class ResilientAmqpPublisher {
     private reconnecting = false;
     private stopped = false;
     private retryCount = 0;
+    private confirmMode = false;
+    private bufferedWhileDisconnected = 0;
+    private confirmChannelLosses = 0;
 
     private readonly url: string;
     private readonly exchange: string;
@@ -57,11 +66,43 @@ export class ResilientAmqpPublisher {
         await this.attemptConnect();
     }
 
+    /** Must be called before connect(). Publishes then go through a confirm channel. */
+    enableConfirms(): void {
+        this.confirmMode = true;
+    }
+
+    /** Messages waiting for a connection right now. */
+    pendingCount(): number {
+        return this.buffer.length;
+    }
+
+    /** Messages that were ever published while disconnected, including since flushed or dropped. */
+    bufferedWhileDisconnectedCount(): number {
+        return this.bufferedWhileDisconnected;
+    }
+
+    /**
+     * Times the connection or channel closed on its own while confirm mode was on. Messages
+     * in flight on the lost channel are invisible to the replacement channel's
+     * waitForConfirms(), so any loss means delivery can no longer be vouched for.
+     */
+    confirmChannelLossCount(): number {
+        return this.confirmChannelLosses;
+    }
+
+    /** Resolves once the broker confirmed every publish so far; rejects on a nack or a closed channel. */
+    async waitForConfirms(): Promise<void> {
+        if (!this.channel) throw new Error('AMQP publisher is not connected');
+        if (!this.confirmMode) throw new Error('AMQP publisher was not created in confirm mode');
+        await (this.channel as ConfirmChannel).waitForConfirms();
+    }
+
     publish(routingKey: string, content: Buffer, options: Options.Publish = {}): void {
         const msg: BufferedMessage = { routingKey, content, options };
 
         if (!this.channel) {
-            this.log.warn({ routingKey }, 'Channel not ready – buffering message');
+            this.bufferedWhileDisconnected += 1;
+            this.log.error({ routingKey }, 'Channel not ready – buffering message');
             if (this.buffer.length >= this.maxBufferSize) {
                 const dropped = this.buffer.shift();
                 this.log.warn(
@@ -120,12 +161,17 @@ export class ResilientAmqpPublisher {
         this.log.info('Connecting to RabbitMQ...');
         const conn = await connect(this.url);
         this.connection = conn;
-        const ch = await conn.createChannel();
+        const ch = this.confirmMode
+            ? await conn.createConfirmChannel()
+            : await conn.createChannel();
         await ch.assertExchange(this.exchange, this.exchangeType, { durable: true });
         this.channel = ch;
         this.retryCount = 0;
 
+        ch.on('close', () => this.recordConfirmLoss());
+
         conn.on('close', () => {
+            this.recordConfirmLoss();
             this.log.warn('RabbitMQ connection closed');
             this.channel = null;
             this.connection = null;
@@ -138,6 +184,10 @@ export class ResilientAmqpPublisher {
 
         this.log.info('RabbitMQ publisher connected');
         await this.flushBuffer();
+    }
+
+    private recordConfirmLoss(): void {
+        if (this.confirmMode && !this.stopped) this.confirmChannelLosses += 1;
     }
 
     private scheduleReconnect(): void {

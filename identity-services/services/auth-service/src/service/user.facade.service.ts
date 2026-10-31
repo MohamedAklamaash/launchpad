@@ -18,6 +18,10 @@ import { verifySessionToken } from '@/utils/handle-token';
 import { HttpError } from '@launchpad/common';
 import { logger } from '@/utils/logger';
 import { normalizeEmail } from '@/utils/account-id';
+import {
+    ensurePersonalOrganization,
+    type PersonalOrgOwner,
+} from '@/service/organizations/personal-org.service';
 
 const storedGithubId = (user: User): string | null => {
     const github = (user.metadata as { github?: { id?: unknown } } | null)?.github;
@@ -141,8 +145,21 @@ export class UserFacadeService extends BaseService {
         );
     }
 
+    // Runs after the signup/login transaction commits so the org is never created for an
+    // Account link that later rolled back. The owner comes only from the server-side
+    // users row and its linked Account, never from the GitHub payload or request. A
+    // failure must not block sign-in; the next login or the backfill retries.
+    private async ensureOrgForLogin(owner: PersonalOrgOwner): Promise<void> {
+        if (!env.ORGS_ENABLED) return;
+        try {
+            await ensurePersonalOrganization(owner);
+        } catch (error) {
+            logger.error({ error, userId: owner.id }, 'Failed to ensure personal org at login');
+        }
+    }
+
     public async upsertUser(githubData: GithubUserUpsertInput) {
-        return sequelize.transaction(async (transaction) => {
+        const { response, owner } = await sequelize.transaction(async (transaction) => {
             let user = await User.findOne({
                 where: sequelize.where(
                     sequelize.cast(sequelize.json('metadata.github.id'), 'text'),
@@ -222,10 +239,16 @@ export class UserFacadeService extends BaseService {
 
             const refreshTokenRecord = await this.createRefreshToken(user.id, transaction);
 
-            return this.buildAuthResponse(user, refreshTokenRecord.token_id, undefined, {
-                accountId,
-                orgId: refreshTokenRecord.active_org_id,
-            });
+            return {
+                owner: { id: user.id, account_id: accountId, user_name: user.user_name },
+                response: this.buildAuthResponse(user, refreshTokenRecord.token_id, undefined, {
+                    accountId,
+                    orgId: refreshTokenRecord.active_org_id,
+                }),
+            };
         });
+
+        await this.ensureOrgForLogin(owner);
+        return response;
     }
 }

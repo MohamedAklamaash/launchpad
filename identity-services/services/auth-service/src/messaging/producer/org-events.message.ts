@@ -68,6 +68,39 @@ export const publishMembershipRemoved = (payload: OrgMembershipRemovedPayload) =
 export const publishInvitationAccepted = (payload: OrgInvitationAcceptedPayload) =>
     publish(ORG_INVITATION_ACCEPTED_ROUTING_KEY, payload);
 
+export interface OrgEventsDeliveryReport {
+    delivered: boolean;
+    pending: number;
+    bufferedWhileDisconnected: number;
+    connectionLosses: number;
+    error?: string;
+}
+
+// For one-shot scripts: delivered only if the broker confirmed every publish and none was
+// ever published while disconnected (a buffered message can be dropped or lost at close).
+export const verifyOrgEventsDelivered = async (): Promise<OrgEventsDeliveryReport> => {
+    const pending = orgEventsPublisher.pendingCount();
+    const bufferedWhileDisconnected = orgEventsPublisher.bufferedWhileDisconnectedCount();
+    const connectionLosses = orgEventsPublisher.confirmChannelLossCount();
+    let error: string | undefined;
+    try {
+        await orgEventsPublisher.waitForConfirms();
+    } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+    }
+    return {
+        delivered:
+            pending === 0 &&
+            bufferedWhileDisconnected === 0 &&
+            connectionLosses === 0 &&
+            error === undefined,
+        pending,
+        bufferedWhileDisconnected,
+        connectionLosses,
+        ...(error === undefined ? {} : { error }),
+    };
+};
+
 export const closeOrgEventsPublisher = async () => {
     if (!env.ORGS_ENABLED) {
         return;

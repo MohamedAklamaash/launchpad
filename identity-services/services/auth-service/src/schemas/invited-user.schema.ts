@@ -25,6 +25,14 @@ export const otpSchema = z.object({
     }),
 });
 
+export const otpBodySchema = z.object({
+    body: z.object({
+        email: z.email(),
+        otp: z.string().length(6),
+        new_password: z.string().min(6).max(72).optional(),
+    }),
+});
+
 export const forgotPasswordSchema = z.object({
     body: z.object({
         email: z.email(),
