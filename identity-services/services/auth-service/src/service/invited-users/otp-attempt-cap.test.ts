@@ -55,7 +55,9 @@ const fakeClaim = {
 };
 
 const withTransactionMock = () =>
-    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+        cb({ afterCommit: () => undefined }),
+    );
 
 const authService = new InvitedUserAuthService();
 const passwordService = new PasswordService();
@@ -140,7 +142,7 @@ test('authenticateWithOTP: an unknown email and a known-email wrong guess run id
         calls.length = 0;
         const txSpy = mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => {
             calls.push('transaction');
-            return cb({});
+            return cb({ afterCommit: () => undefined });
         });
         const claimSpy = mock.method(otpAttempts, 'claimAttempt', async () => {
             calls.push('claimAttempt');

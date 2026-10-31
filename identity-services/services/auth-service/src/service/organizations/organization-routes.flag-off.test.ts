@@ -22,6 +22,8 @@ test('flag off: every organization route is a plain 404, even without credential
             ['POST', '/organizations', { name: 'Team' }],
             ['PATCH', `/organizations/${org}`, { name: 'Team' }],
             ['GET', `/organizations/${org}/members`],
+            ['GET', `/organizations/${org}/audit-events`],
+            ['GET', `/organizations/${org}/audit-events?limit=nope`],
             ['PATCH', `/organizations/${org}/members/${org}`, { role: 'viewer' }],
             ['DELETE', `/organizations/${org}/members/${org}`],
             ['POST', `/organizations/${org}/transfer-ownership`, { new_owner_account_id: org }],

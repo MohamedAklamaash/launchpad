@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { ORGS_ENABLED } from '@/lib/orgs-enabled';
 import { loginUrlWithNext } from '@/lib/post-login';
+import { isOrgSettling, settlingRetryDelay } from '@/lib/org-settling';
 
 const API_GATEWAY = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
 
@@ -95,6 +96,16 @@ apiClient.interceptors.response.use(
       localStorage.removeItem('user');
       window.location.href = loginRedirectUrl('reauth');
       return Promise.reject(error);
+    }
+
+    if (error.response?.status === 404 && originalRequest?.method === 'get' && isOrgSettling()) {
+      const attempt: number = originalRequest._settlingAttempt ?? 0;
+      const delay = settlingRetryDelay(attempt);
+      if (delay !== null) {
+        originalRequest._settlingAttempt = attempt + 1;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return apiClient(originalRequest);
+      }
     }
 
     if (error.response?.status === 401 && !originalRequest._retry) {

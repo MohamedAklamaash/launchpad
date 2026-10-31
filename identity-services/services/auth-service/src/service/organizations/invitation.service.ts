@@ -7,6 +7,8 @@ import { ORG_ROLE, type OrgRole } from '@/types/org-role';
 import { normalizeEmail } from '@/utils/account-id';
 import { assertOrgsEnabled } from './org-guard';
 import { recordAuditEvent } from './audit-log.service';
+import { reportOwnerRoleAttempt } from './owner-attempt-signal';
+import { revokePendingInvitations } from './pending-invitation-revocation';
 
 // Direct copy of Infrastructure.issue_onboarding_token's pattern (CLAUDE.md: "Onboarding
 // token" — single-use, SHA-256-hashed, plaintext returned exactly once). 32 random bytes
@@ -42,6 +44,11 @@ export const issueInvitation = async (
 ): Promise<IssueInvitationResult> => {
     assertOrgsEnabled();
     if (input.role === ORG_ROLE.OWNER) {
+        reportOwnerRoleAttempt({
+            reason: 'owner_role_requested',
+            organization_id: input.organizationId,
+            actor_account_id: input.invitedByAccountId,
+        });
         throw new HttpError(409, 'Cannot invite a member as owner');
     }
 
@@ -51,17 +58,13 @@ export const issueInvitation = async (
     const invitation = await sequelize.transaction(async (transaction) => {
         // One live invitation per (org, email): a re-invite supersedes older ones, so a
         // stale higher-role invitation cannot outlive the one that replaced it.
-        await Invitation.update(
-            { revoked_at: new Date() },
+        await revokePendingInvitations(
             {
-                where: {
-                    organization_id: input.organizationId,
-                    email,
-                    accepted_at: null,
-                    revoked_at: null,
-                },
-                transaction,
+                organizationId: input.organizationId,
+                emails: [email],
+                actorAccountId: input.invitedByAccountId,
             },
+            transaction,
         );
         const created = await Invitation.create(
             {

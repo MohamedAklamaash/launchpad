@@ -1,4 +1,5 @@
 import { apiClient } from './client';
+import { markOrgSettling } from '@/lib/org-settling';
 import type { AssignableRole, OrgInvitation, OrgMember, Organization } from '@/types/organization';
 
 export interface SwitchOrgResult {
@@ -80,9 +81,10 @@ export const organizationApi = {
 };
 
 // Stores the tokens a switch-org call returned, the same way login and the 401 refresh
-// path do. Callers then reload at the dashboard: pages hold per-org data in local state
+// path do. `settling` is for an org that was just created or joined, whose mirrors in the
+// other services lag briefly (see org-settling.ts). Callers then reload at the dashboard: pages hold per-org data in local state
 // and a resource from the previous org would 404 in the new one.
-export async function switchToOrg(organizationId: string): Promise<void> {
+export async function switchToOrg(organizationId: string, settling = false): Promise<void> {
   const refresh = localStorage.getItem('refresh_token');
   if (!refresh) throw new Error('No refresh token');
   const res = await organizationApi.switchOrg(organizationId, refresh);
@@ -91,6 +93,7 @@ export async function switchToOrg(organizationId: string): Promise<void> {
   if (!access || !nextRefresh) throw new Error('Switch failed');
   localStorage.setItem('access_token', access);
   localStorage.setItem('refresh_token', nextRefresh);
+  if (settling) markOrgSettling();
 }
 
 export function goToDashboard(): void {

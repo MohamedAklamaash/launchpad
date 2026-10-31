@@ -41,7 +41,7 @@ const PERSONAL_ORG_ID = personalOrgId(USER_ID);
 // M2) — the mocked transaction object needs a LOCK.UPDATE token.
 const withTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({ LOCK: { UPDATE: 'UPDATE' } }),
+        cb({ LOCK: { UPDATE: 'UPDATE' }, afterCommit: () => undefined }),
     );
 
 const service = new InvitedUserAuthService();

@@ -85,7 +85,11 @@ test('change role: nobody can grant owner, at the edge or by any other spelling'
         try {
             for (const role of ['owner', 'OWNER', 'superuser', '', 7]) {
                 const res = await patchRole(f, f.target.account_id as string, role as string);
-                assert.equal(res.status, 422, `${callerRole} ${String(role)}`);
+                assert.equal(
+                    res.status,
+                    role === 'owner' ? 409 : 422,
+                    `${callerRole} ${String(role)}`,
+                );
             }
             const extra = await f.h.call(
                 'PATCH',
@@ -110,7 +114,7 @@ test('change role: an admin cannot promote themselves past admin or touch the ow
         const selfToOwner = await patchRole(f, f.caller.account_id as string, 'owner');
         const demoteOwner = await patchRole(f, f.owner.account_id as string, 'admin');
 
-        assert.equal(selfToOwner.status, 422);
+        assert.equal(selfToOwner.status, 409);
         assert.equal(demoteOwner.status, 409);
         assert.equal(f.targetRow.role, 'owner');
     } finally {
@@ -400,16 +404,25 @@ test('members list: owner, admin and developer see emails; a viewer sees names a
             for (const member of members.body) {
                 assert.ok(member.id && member.display_name && member.role && member.joined_at);
                 assert.equal('email' in member, role !== 'viewer', role);
-                assert.equal('account_id' in member, role !== 'viewer', role);
+                const isOwnRow =
+                    member.id ===
+                    f.h.state.memberships.find(
+                        (m) => m.account_id === (role === 'owner' ? f.owner : f.caller).account_id,
+                    )?.id;
+                assert.equal('account_id' in member, role !== 'viewer' || isOwnRow, role);
+                if (role === 'viewer' && isOwnRow) {
+                    assert.equal(member.account_id, f.caller.account_id);
+                }
             }
             if (role === 'viewer') {
-                const derived = [f.owner, f.caller, f.target].flatMap((c) => [
-                    c.account_id as string,
-                    c.email,
-                ]);
+                const derived = [
+                    f.owner.account_id as string,
+                    f.target.account_id as string,
+                    ...[f.owner, f.caller, f.target].map((c) => c.email),
+                ];
                 for (const value of derived) assert.ok(!members.text.includes(value), value);
                 assert.ok(!members.text.includes('email'));
-                assert.ok(!members.text.includes('account_id'));
+                assert.equal(members.body.filter((m) => 'account_id' in m).length, 1);
                 const ids = f.h.state.memberships.map((m) => m.id);
                 assert.deepEqual(members.body.map((m) => m.id).sort(), [...ids].sort());
             }

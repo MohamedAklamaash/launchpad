@@ -78,7 +78,7 @@ const victimUser = () => ({
 const orgStore = await installPersonalOrgStore();
 
 mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-    cb({ LOCK: { UPDATE: 'UPDATE' } }),
+    cb({ LOCK: { UPDATE: 'UPDATE' }, afterCommit: () => undefined }),
 );
 mock.method(Redis.prototype, 'eval', async () => 1);
 mock.method(messageModule.userAuthenticationQueue, 'add', async () => undefined as never);

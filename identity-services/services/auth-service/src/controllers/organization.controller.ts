@@ -20,6 +20,8 @@ import {
     listMembers,
     removeOrLeaveOrganization,
 } from '@/service/organizations/member-admin.service';
+import { listAuditEvents } from '@/service/organizations/audit-log-query.service';
+import { auditQuerySchema } from '@/schemas/audit-event.schema';
 import { acceptInvitation } from '@/service/organizations/invitation-accept.service';
 
 const toHttpError = (error: unknown): HttpError =>
@@ -162,6 +164,19 @@ export const RemoveMember = async (req: Request, res: Response) => {
             canonicalizeUuid(req.params.accountId as string),
         );
         return res.status(204).send();
+    } catch (error: unknown) {
+        throw toHttpError(error);
+    }
+};
+
+export const ListAuditEvents = async (req: Request, res: Response) => {
+    try {
+        const page = await listAuditEvents(
+            sessionFrom(req),
+            canonicalizeUuid(req.params.id as string),
+            auditQuerySchema.parse(req.query),
+        );
+        return res.status(200).json(page);
     } catch (error: unknown) {
         throw toHttpError(error);
     }

@@ -36,7 +36,9 @@ const { sequelize } = await import('@/db/sequalize');
 const events: string[] = [];
 let afterLock: (() => void) | null = null;
 
-mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+    cb({ afterCommit: () => undefined }),
+);
 mock.method(sequelize, 'query', async (sql: string, opts: { replacements: { key: string } }) => {
     assert.match(sql, /pg_advisory_xact_lock\(hashtext\(:key\)\)/);
     events.push(`lock:${opts.replacements.key}`);

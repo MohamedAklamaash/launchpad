@@ -35,7 +35,9 @@ await installPersonalOrgStore();
 mock.method(InvitedUser, 'findOne', async () => null);
 
 const withTransactionMock = () =>
-    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+        cb({ afterCommit: () => undefined }),
+    );
 
 const service = new UserFacadeService();
 

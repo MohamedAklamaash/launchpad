@@ -1,6 +1,6 @@
 import { HttpError } from '@launchpad/common';
 import { Op, type Transaction } from 'sequelize';
-import { Invitation, InvitedUser, Membership, RefreshToken, User } from '@/db';
+import { InvitedUser, Membership, RefreshToken, User } from '@/db';
 import { sequelize } from '@/db/sequalize';
 import { ORG_ROLE, type OrgRole } from '@/types/org-role';
 import { normalizeEmail } from '@/utils/account-id';
@@ -11,7 +11,9 @@ import {
 } from '@/utils/membership-version';
 import { lockManagerActor } from './actor-lock';
 import { assertOrgsEnabled } from './org-guard';
-import { recordAuditEvent } from './audit-log.service';
+import { recordAuditEvent, type AuditAction } from './audit-log.service';
+import { reportOwnerRoleAttempt } from './owner-attempt-signal';
+import { revokePendingInvitations } from './pending-invitation-revocation';
 import { enqueueMembershipChanged, enqueueMembershipRemoved } from './org-event-outbox.service';
 
 // Security review H3(b): RefreshToken.user_id is the legacy credential id (User.id or
@@ -47,26 +49,24 @@ export const revokeRefreshTokens = async (
 };
 
 // A removed member must not be able to walk back in with an invitation issued before the
-// removal, so every pending invitation to one of their addresses dies with it.
+// removal, so every pending invitation to one of their addresses dies with it. Each one
+// gets its own invitation.revoked audit row, the same as a manual revoke.
 const revokeAccessForRemovedAccount = async (
     organizationId: string,
     accountId: string,
+    actorAccountId: string | null,
     transaction: Transaction,
 ): Promise<void> => {
     const credentials = await revokeRefreshTokens(accountId, transaction);
     if (credentials.length === 0) return;
 
-    await Invitation.update(
-        { revoked_at: new Date() },
+    await revokePendingInvitations(
         {
-            where: {
-                organization_id: organizationId,
-                email: { [Op.in]: credentials.map((c) => normalizeEmail(c.email)) },
-                accepted_at: null,
-                revoked_at: null,
-            },
-            transaction,
+            organizationId,
+            emails: credentials.map((c) => normalizeEmail(c.email)),
+            actorAccountId,
         },
+        transaction,
     );
 };
 
@@ -91,6 +91,12 @@ export const addMemberInTransaction = async (
 ): Promise<Membership> => {
     assertOrgsEnabled();
     if (input.role === ORG_ROLE.OWNER) {
+        reportOwnerRoleAttempt({
+            reason: 'owner_role_requested',
+            organization_id: input.organizationId,
+            actor_account_id: input.actorAccountId,
+            target_account_id: input.accountId,
+        });
         throw new HttpError(409, 'Cannot add a member as owner; use ownership transfer');
     }
 
@@ -105,7 +111,7 @@ export const addMemberInTransaction = async (
     }
 
     let result: Membership;
-    let action: string;
+    let action: AuditAction;
     if (existing) {
         const newVersion = await reviveMembershipVersion(existing.id, input.role, transaction);
         existing.role = input.role;
@@ -139,6 +145,12 @@ export const addMemberInTransaction = async (
 export const addMember = async (input: AddMemberInput): Promise<Membership> => {
     assertOrgsEnabled();
     if (input.role === ORG_ROLE.OWNER) {
+        reportOwnerRoleAttempt({
+            reason: 'owner_role_requested',
+            organization_id: input.organizationId,
+            actor_account_id: input.actorAccountId,
+            target_account_id: input.accountId,
+        });
         throw new HttpError(409, 'Cannot add a member as owner; use ownership transfer');
     }
 
@@ -165,6 +177,12 @@ export interface ChangeMemberRoleInput {
 export const changeMemberRole = async (input: ChangeMemberRoleInput): Promise<Membership> => {
     assertOrgsEnabled();
     if (input.newRole === ORG_ROLE.OWNER) {
+        reportOwnerRoleAttempt({
+            reason: 'owner_role_requested',
+            organization_id: input.organizationId,
+            actor_account_id: input.actorAccountId,
+            target_account_id: input.accountId,
+        });
         throw new HttpError(
             409,
             'Cannot grant owner role via a role change; use ownership transfer',
@@ -188,6 +206,12 @@ export const changeMemberRole = async (input: ChangeMemberRoleInput): Promise<Me
         });
         if (!existing) throw new HttpError(404, 'Membership not found');
         if (existing.role === ORG_ROLE.OWNER) {
+            reportOwnerRoleAttempt({
+                reason: 'target_is_owner',
+                organization_id: input.organizationId,
+                actor_account_id: input.actorAccountId,
+                target_account_id: input.accountId,
+            });
             throw new HttpError(409, 'Cannot change the owner role; use ownership transfer');
         }
 
@@ -267,7 +291,12 @@ export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
         // eviction / the refresh-token re-validation in InvitedUserAuthService.refresh
         // alone — the highest-consequence transition (actual removal) doesn't wait for
         // the removed member's next refresh to notice.
-        await revokeAccessForRemovedAccount(organization_id, account_id, transaction);
+        await revokeAccessForRemovedAccount(
+            organization_id,
+            account_id,
+            input.actorAccountId,
+            transaction,
+        );
         await enqueueMembershipRemoved(transaction, {
             organization_id,
             account_id,

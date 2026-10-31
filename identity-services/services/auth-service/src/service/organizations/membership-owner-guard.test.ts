@@ -38,7 +38,7 @@ const { HttpError } = await import('@launchpad/common');
 
 const withLockingTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({ LOCK: { UPDATE: 'UPDATE' } }),
+        cb({ LOCK: { UPDATE: 'UPDATE' }, afterCommit: () => undefined }),
     );
 
 test('addMember refuses to create a second owner row, never reaching the database', async () => {

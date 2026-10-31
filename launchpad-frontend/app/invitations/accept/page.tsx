@@ -38,7 +38,7 @@ function AcceptInvitation() {
       const joined = await organizationApi.acceptInvitation(token);
       clearInviteToken(sessionStorage);
       try {
-        await switchToOrg(joined.organization_id);
+        await switchToOrg(joined.organization_id, true);
       } catch {
         setView({ kind: 'joined-no-switch' });
         return;

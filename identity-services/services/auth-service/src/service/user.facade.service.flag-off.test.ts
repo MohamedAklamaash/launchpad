@@ -34,7 +34,7 @@ const forbidden = (name: string) => async () => {
 
 test('flag off: login touches no org table and publishes no org event', async () => {
     const txSpy = mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
-        cb({}),
+        cb({ afterCommit: () => undefined }),
     );
     const findOrgSpy = mock.method(Organization, 'findByPk', forbidden('Organization.findByPk'));
     const createOrgSpy = mock.method(Organization, 'create', forbidden('Organization.create'));

@@ -69,7 +69,7 @@ test('an admin cannot invite as owner, and nothing is created or sent', async ()
     try {
         const res = await invite(orgId, { email: 'x@example.com', role: 'owner' }, bearer, h);
 
-        assert.equal(res.status, 422);
+        assert.equal(res.status, 409);
         assert.equal(h.state.invitations.length, 0);
         assert.equal(h.state.emailJobs.length, 0);
     } finally {

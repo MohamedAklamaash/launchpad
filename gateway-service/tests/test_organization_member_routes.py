@@ -125,18 +125,25 @@ def test_member_routes_proxy_to_the_matching_upstream_routes(captured):
 
 
 @pytest.mark.parametrize("body", [
-    {"role": "owner"},
     {"role": "OWNER"},
     {"role": "superuser"},
     {},
     {"role": "admin", "organization_id": ORG_ID},
 ])
-def test_change_role_rejects_owner_and_malformed_bodies_before_proxying(captured, body):
+def test_change_role_rejects_malformed_bodies_before_proxying(captured, body):
     resp = _client().patch(f"/organizations/{ORG_ID}/members/{ACCOUNT_ID}", json=body,
                            headers=_h())
 
     assert resp.status_code == 422
     assert "calls" not in captured
+
+
+def test_change_role_forwards_owner_so_auth_service_can_refuse_and_report_it(captured):
+    resp = _client().patch(f"/organizations/{ORG_ID}/members/{ACCOUNT_ID}",
+                           json={"role": "owner"}, headers=_h())
+
+    assert resp.status_code == 200
+    assert captured["calls"] == 1
 
 
 @pytest.mark.parametrize("method,path", [

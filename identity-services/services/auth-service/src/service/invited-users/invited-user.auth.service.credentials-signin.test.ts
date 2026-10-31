@@ -30,7 +30,9 @@ const { hashPassword } = await import('@/utils/handle-password');
 const { HttpError } = await import('@launchpad/common');
 
 const withTransactionMock = () =>
-    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
+    mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) =>
+        cb({ afterCommit: () => undefined }),
+    );
 
 // This whole file runs with ORGS_ENABLED unset (default off) — login()'s
 // email_verified_at gate is NOT behind that flag (it's a security fix, not an org

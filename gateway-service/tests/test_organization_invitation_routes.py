@@ -96,18 +96,26 @@ def test_accept_has_no_get_form(captured):
 
 
 @pytest.mark.parametrize("body", [
-    {"email": "a@example.com", "role": "owner"},
     {"email": "a@example.com", "role": "superuser"},
     {"email": "a@example.com"},
     {"role": "viewer"},
     {},
 ])
-def test_create_invitation_rejects_owner_and_malformed_bodies_before_proxying(captured, body):
+def test_create_invitation_rejects_malformed_bodies_before_proxying(captured, body):
     resp = _client().post(
         f"/organizations/{ORG_ID}/invitations", json=body, headers={"Authorization": BEARER})
 
     assert resp.status_code == 422
     assert "calls" not in captured
+
+
+def test_create_invitation_forwards_owner_so_auth_service_can_refuse_and_report_it(captured):
+    resp = _client().post(f"/organizations/{ORG_ID}/invitations",
+                          json={"email": "a@example.com", "role": "owner"},
+                          headers={"Authorization": BEARER})
+
+    assert resp.status_code < 300
+    assert captured["calls"] == 1
 
 
 @pytest.mark.parametrize("token", ["", "short", "A" * 42, "A" * 44, "A" * 42 + "/", "A" * 42 + "."])
