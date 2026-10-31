@@ -934,12 +934,23 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      request in the new org is a 404. Not exercised in this PR's test run (no Django
      environment); the existing `test_org_authz_matrix.py` create cases already use a random
      non-personal org.
-   - **`GET /organizations/{id}/members`**: any active member. Returns `account_id`,
-     `display_name` (the Account's `user_name`, falling back to "Member"), `role`, `joined_at`
-     (the row's `created_at`; a revived member keeps the original date). Owner, admin and
-     developer also get `email`. A viewer does not: the viewer role is a stakeholder who needs
-     "is it up", not a contact list. `account_id` is `uuid5(email)`, so a viewer holding a
-     guessed email can still test whether it is a member; accepted.
+   - **`GET /organizations/{id}/members`**: any active member. Every row has `id` (the
+     membership row id: opaque, not derived from anything), `display_name`, `role`, `joined_at`.
+     Owner, admin and developer also get `account_id` and `email`. A viewer gets neither:
+     `account_id` is `uuid5(email)` under a public namespace, so it would confirm guessed
+     emails offline. Managers need `account_id` because the change-role and remove routes
+     address members by it. `display_name` (the Account's name, "Member" if missing) is run
+     through `sanitizeDisplayName` for every caller, and a viewer gets "Member" for any name
+     containing `@`. The name is also capped and sanitized at the source: legacy invite
+     register (`user_name` max 200, sanitized to 64, min 3 after sanitizing) and every write of
+     `Account.display_name` (account link, backfill). `joined_at` is the row's `created_at`, so
+     a revived member keeps the original date.
+   - **Abuse limits and locking.** Creation: 5 per Account per hour plus at most 20 owned orgs
+     (personal included; 409). Rename, change role and remove-others: 60 per hour per
+     (org, actor), fail closed (leaving is not counted). Those three re-verify the actor is
+     still an active owner/admin inside the transaction: lock order Organization, actor row,
+     target row. Transfer also locks Organization first, so the two serialize and cannot
+     deadlock. The team-org creation audit row records the creator as actor.
    - **`PATCH .../members/{accountId} {role}`**: owner or admin, via `changeMemberRole`. The
      schema allows `admin`, `developer`, `viewer`; `owner` is a 422, an owner's own row is a
      409 (even for the owner), so there is no path to or from owner except transfer. An admin

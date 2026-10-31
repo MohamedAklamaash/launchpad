@@ -1,11 +1,11 @@
-import { z } from '@launchpad/common';
+import { sanitizeDisplayName, z } from '@launchpad/common';
 import { USER_ROLE } from '@/types/auth.invited_user.types';
 
 export const registerSchema = z.object({
     body: z.object({
         email: z.email(),
         password: z.string().min(6),
-        user_name: z.string().min(3),
+        user_name: z.string().max(200).transform(sanitizeDisplayName).pipe(z.string().min(3)),
         infra_id: z.uuid(),
         role: z.enum(USER_ROLE),
     }),

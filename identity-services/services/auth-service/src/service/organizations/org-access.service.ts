@@ -3,9 +3,8 @@ import { Membership } from '@/db';
 import { ORG_ROLE, type OrgRole } from '@/types/org-role';
 import type { AccessTokenPayload } from '@/utils/handle-token';
 import { assertOrgsEnabled } from './org-guard';
+import { MANAGER_ROLES } from './actor-lock';
 import { findCredentialRow } from './switch-org.service';
-
-const MANAGER_ROLES: readonly OrgRole[] = [ORG_ROLE.OWNER, ORG_ROLE.ADMIN];
 
 export interface VerifiedCaller {
     accountId: string;

@@ -9,6 +9,7 @@ import {
     bumpMembershipVersionForRemoval,
     reviveMembershipVersion,
 } from '@/utils/membership-version';
+import { lockManagerActor } from './actor-lock';
 import { assertOrgsEnabled } from './org-guard';
 import { recordAuditEvent } from './audit-log.service';
 import { enqueueMembershipChanged, enqueueMembershipRemoved } from './org-event-outbox.service';
@@ -158,6 +159,7 @@ export interface ChangeMemberRoleInput {
     accountId: string;
     newRole: OrgRole;
     actorAccountId: string | null;
+    lockActorAsManager?: boolean;
 }
 
 export const changeMemberRole = async (input: ChangeMemberRoleInput): Promise<Membership> => {
@@ -170,6 +172,9 @@ export const changeMemberRole = async (input: ChangeMemberRoleInput): Promise<Me
     }
 
     const membership = await sequelize.transaction(async (transaction) => {
+        if (input.lockActorAsManager && input.actorAccountId) {
+            await lockManagerActor(input.organizationId, input.actorAccountId, transaction);
+        }
         // removed_at: null — a tombstoned row is not a current member; re-adding it is
         // addMember's revive path, not a role change on something that no longer applies.
         const existing = await Membership.findOne({
@@ -215,6 +220,7 @@ export interface RemoveMemberInput {
     organizationId: string;
     accountId: string;
     actorAccountId: string | null;
+    lockActorAsManager?: boolean;
 }
 
 // Tombstones (never hard-deletes) the row — see bumpMembershipVersionForRemoval. A hard
@@ -226,6 +232,9 @@ export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
     assertOrgsEnabled();
 
     await sequelize.transaction(async (transaction) => {
+        if (input.lockActorAsManager && input.actorAccountId) {
+            await lockManagerActor(input.organizationId, input.actorAccountId, transaction);
+        }
         const existing = await Membership.findOne({
             where: {
                 organization_id: input.organizationId,

@@ -1,5 +1,15 @@
 import { HttpError } from '@launchpad/common';
 import { logger } from '@/utils/logger';
+import { otpAttempts } from '@/utils/otp-attempts';
+
+export const enforceOrgActionSlot = (
+    organizationId: string,
+    actorAccountId: string,
+): Promise<void> =>
+    enforceSlot(() => otpAttempts.consumeOrgActionSlot(organizationId, actorAccountId), {
+        tooMany: 'Too many changes to this organization - try again later',
+        unavailable: 'Organization changes are temporarily unavailable - try again shortly',
+    });
 
 export interface SlotMessages {
     tooMany: string;

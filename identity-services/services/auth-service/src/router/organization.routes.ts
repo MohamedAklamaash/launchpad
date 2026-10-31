@@ -112,14 +112,15 @@ organizationRouter.patch(
  *   get:
  *     summary: List the organization's active members
  *     description: >
- *       Behind ORGS_ENABLED. Any active member. Viewers receive display names and roles only;
- *       every other role also receives each member's email.
+ *       Behind ORGS_ENABLED. Any active member. Every row has an opaque membership `id`, a
+ *       sanitized display name, role and joined_at. Viewers get nothing else; other roles also
+ *       get `account_id` and `email`.
  *     tags: [Organizations]
  *     security: [{ bearerAuth: [] }]
  *     parameters:
  *       - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
  *     responses:
- *       200: { description: "[{ account_id, display_name, email?, role, joined_at }]" }
+ *       200: { description: "[{ id, account_id?, display_name, email?, role, joined_at }]" }
  *       404: { description: Organization not found, or the caller is not an active member }
  * /api/v1/organizations/{id}/members/{accountId}:
  *   patch:

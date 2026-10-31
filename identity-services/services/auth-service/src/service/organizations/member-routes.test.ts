@@ -398,14 +398,20 @@ test('members list: owner, admin and developer see emails; a viewer sees names a
             const members = res as unknown as { body: Record<string, unknown>[]; text: string };
             assert.equal(members.body.length, role === 'owner' ? 2 : 3);
             for (const member of members.body) {
-                assert.ok(
-                    member.account_id && member.display_name && member.role && member.joined_at,
-                );
+                assert.ok(member.id && member.display_name && member.role && member.joined_at);
                 assert.equal('email' in member, role !== 'viewer', role);
+                assert.equal('account_id' in member, role !== 'viewer', role);
             }
             if (role === 'viewer') {
-                assert.ok(!members.text.includes('@example.com'));
+                const derived = [f.owner, f.caller, f.target].flatMap((c) => [
+                    c.account_id as string,
+                    c.email,
+                ]);
+                for (const value of derived) assert.ok(!members.text.includes(value), value);
                 assert.ok(!members.text.includes('email'));
+                assert.ok(!members.text.includes('account_id'));
+                const ids = f.h.state.memberships.map((m) => m.id);
+                assert.deepEqual(members.body.map((m) => m.id).sort(), [...ids].sort());
             }
         } finally {
             await f.h.close();

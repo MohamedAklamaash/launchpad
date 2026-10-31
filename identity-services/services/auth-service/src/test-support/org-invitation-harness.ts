@@ -219,6 +219,12 @@ export const createHarness = async () => {
         mock.method(db.Membership, 'findAll', async (o: { where: Row }) =>
             state.memberships.filter((m) => matches(m, o.where)),
         ),
+        mock.method(
+            db.Membership,
+            'count',
+            async (o: { where: Row }) =>
+                state.memberships.filter((m) => matches(m, o.where)).length,
+        ),
         mock.method(db.Account, 'findAll', async (o: { where: Row }) =>
             state.accounts.filter((a) => matches(a, o.where)),
         ),

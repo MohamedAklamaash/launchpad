@@ -8,7 +8,8 @@ import { otpAttempts } from '@/utils/otp-attempts';
 import { recordAuditEvent } from './audit-log.service';
 import { requireOrgManager, requireVerifiedCaller } from './org-access.service';
 import { hasVerifiedCredential, personalOrgIdsAmong } from './org-identity';
-import { enforceSlot } from './org-rate-limit';
+import { lockManagerActor } from './actor-lock';
+import { enforceOrgActionSlot, enforceSlot } from './org-rate-limit';
 import { createOrganization } from './organization.service';
 
 export interface OrganizationSummary {
@@ -17,6 +18,9 @@ export interface OrganizationSummary {
     role: OrgRole;
     is_personal: boolean;
 }
+
+// Counts every org the account owns, personal included.
+export const MAX_OWNED_ORGS = 20;
 
 const cleanName = (raw: string): string => {
     const name = sanitizeDisplayName(raw);
@@ -71,12 +75,22 @@ export const createTeamOrganization = async (
         throw new HttpError(403, 'A verified account with a single sign-in is required');
     }
     const name = cleanName(rawName);
+    const owned = await Membership.count({
+        where: { account_id: owner.accountId, role: ORG_ROLE.OWNER, removed_at: null },
+    });
+    if (owned >= MAX_OWNED_ORGS) {
+        throw new HttpError(409, `An account can own at most ${MAX_OWNED_ORGS} organizations`);
+    }
     await enforceSlot(() => otpAttempts.consumeOrgCreateSlot(owner.accountId), {
         tooMany: 'Too many organizations created recently - try again later',
         unavailable: 'Organization creation is temporarily unavailable - try again shortly',
     });
 
-    const { organization } = await createOrganization({ ownerAccountId: owner.accountId, name });
+    const { organization } = await createOrganization({
+        ownerAccountId: owner.accountId,
+        name,
+        actorAccountId: owner.accountId,
+    });
     return {
         id: organization.id,
         name: organization.name,
@@ -94,8 +108,10 @@ export const renameOrganization = async (
 ): Promise<{ id: string; name: string }> => {
     const manager = await requireOrgManager(caller, organizationId);
     const name = cleanName(rawName);
+    await enforceOrgActionSlot(organizationId, manager.accountId);
 
     await sequelize.transaction(async (transaction) => {
+        await lockManagerActor(organizationId, manager.accountId, transaction);
         const [updated] = await Organization.update(
             { name },
             { where: { id: organizationId }, transaction },
