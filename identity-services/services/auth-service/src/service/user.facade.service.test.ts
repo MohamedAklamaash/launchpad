@@ -29,6 +29,9 @@ const { UserFacadeService } = await import('@/service/user.facade.service');
 const { HttpError } = await import('@launchpad/common');
 const { verifyAccessToken } = await import('@/utils/handle-token');
 const { accountIdForEmail } = await import('@/utils/account-id');
+const { installPersonalOrgStore } = await import('@/test-support/personal-org-store');
+
+await installPersonalOrgStore();
 
 const withTransactionMock = () =>
     mock.method(sequelize, 'transaction', async (cb: (t: object) => unknown) => cb({}));
