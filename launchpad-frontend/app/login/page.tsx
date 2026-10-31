@@ -9,6 +9,8 @@ import { Github, Mail, Lock, KeyRound, ArrowLeft, Rocket, ShieldCheck, Zap } fro
 import { LogoMark } from '@/components/logo-mark';
 import { useAuthStore } from '@/lib/store/auth';
 import { authApi } from '@/lib/api/auth';
+import { ORGS_ENABLED } from '@/lib/orgs-enabled';
+import { postLoginPath, rememberNext, safeNextPath } from '@/lib/post-login';
 import { toast } from 'sonner';
 
 type CredsStep = 'login' | 'otp' | 'forgot' | 'verify-reset' | 'reset-done';
@@ -22,6 +24,8 @@ function LoginPageInner() {
   const setAuth = useAuthStore((s) => s.setAuth);
 
   const prefillEmail = searchParams.get('email') || '';
+  const nextParam = ORGS_ENABLED ? safeNextPath(searchParams.get('next')) : null;
+  const afterLogin = () => (ORGS_ENABLED ? postLoginPath(nextParam) : '/dashboard');
 
   const [tab, setTab] = useState<'github' | 'creds'>(prefillEmail ? 'creds' : 'github');
   const [step, setStep] = useState<CredsStep>('login');
@@ -30,27 +34,35 @@ function LoginPageInner() {
   const [otp, setOtp] = useState('');
   const [resetToken, setResetToken] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [otpPassword, setOtpPassword] = useState('');
+  const [resetRequired, setResetRequired] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (isAuthenticated) router.push('/dashboard');
+    if (isAuthenticated) router.push(ORGS_ENABLED ? postLoginPath(safeNextPath(searchParams.get('next'))) : '/dashboard');
     const error = searchParams.get('error');
     if (error) toast.error(decodeURIComponent(error));
+    if (ORGS_ENABLED && searchParams.get('reason') === 'reauth') {
+      toast.info('Sign in again to confirm this action', { id: 'reauth-notice' });
+    }
   }, [isAuthenticated, router, searchParams]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     try {
+      setResetRequired(false);
       const res = await authApi.credentialsLogin(email, password);
       setAuth(res.user, res.access_token, res.refresh_token);
-      router.push('/dashboard');
+      router.push(afterLogin());
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string; message?: string } } };
       const msg: string = error.response?.data?.error || error.response?.data?.message || '';
       if (msg.toLowerCase().includes('otp pending')) {
         toast.info('Verify your email OTP to continue');
         setStep('otp');
+      } else if (msg.toLowerCase().includes('password reset required')) {
+        setResetRequired(true);
       } else {
         toast.error(msg || 'Invalid credentials');
       }
@@ -63,9 +75,9 @@ function LoginPageInner() {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await authApi.verifyOtp(email, otp);
+      const res = await authApi.verifyOtp(email, otp, otpPassword || undefined);
       setAuth(res.user, res.access_token, res.refresh_token);
-      router.push('/dashboard');
+      router.push(afterLogin());
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } };
       toast.error(error.response?.data?.error || 'Invalid or expired OTP');
@@ -132,6 +144,14 @@ function LoginPageInner() {
             required maxLength={6}
             className="bg-transparent border-0 h-9 font-mono text-lg tracking-[0.5em] text-center placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-0" />
         </Field>
+        {ORGS_ENABLED && (
+          <Field icon={<Lock className="w-3.5 h-3.5" />} label="Set your password (optional)">
+            <Input type="password" placeholder="6–72 characters" value={otpPassword}
+              onChange={(e) => setOtpPassword(e.target.value)} minLength={6} maxLength={72}
+              autoComplete="new-password"
+              className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
+          </Field>
+        )}
         <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Verifying…' : 'Verify & Sign In'}
         </Button>
@@ -196,6 +216,15 @@ function LoginPageInner() {
               className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
           </Field>
         </div>
+        {resetRequired && (
+          <div role="alert" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs text-foreground">
+            <p>Password reset required. Your old password can no longer be used.</p>
+            <button type="button" onClick={() => setStep('forgot')}
+              className="mt-1 font-medium text-brand underline-offset-2 hover:underline">
+              Use Forgot password to set a new one
+            </button>
+          </div>
+        )}
         <Button type="submit" size="lg" disabled={loading} className="w-full">
           {loading ? 'Signing in…' : 'Sign In'}
         </Button>
@@ -246,7 +275,7 @@ function LoginPageInner() {
             <div className="p-5">
               {tab === 'github' ? (
                 <div className="space-y-4">
-                  <Button onClick={() => authApi.githubLogin()} size="lg" className="w-full gap-2">
+                  <Button onClick={() => { if (ORGS_ENABLED) rememberNext(nextParam); authApi.githubLogin(); }} size="lg" className="w-full gap-2">
                     <Github className="h-4 w-4" />
                     Continue with GitHub
                   </Button>

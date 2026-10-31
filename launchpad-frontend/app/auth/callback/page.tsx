@@ -6,6 +6,8 @@ import { motion } from 'framer-motion';
 import { LogoMark } from '@/components/logo-mark';
 import { useAuthStore } from '@/lib/store/auth';
 import { authApi } from '@/lib/api/auth';
+import { ORGS_ENABLED } from '@/lib/orgs-enabled';
+import { postLoginPath } from '@/lib/post-login';
 
 const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
@@ -47,7 +49,7 @@ function AuthCallbackInner() {
           const user = await authApi.getCurrentUser();
           setAuth(user, accessToken, refreshToken);
 
-          router.push('/dashboard');
+          router.push(ORGS_ENABLED ? postLoginPath() : '/dashboard');
         } catch (err) {
           console.error('Auth callback error:', err);
           router.push('/login?error=Authentication failed');

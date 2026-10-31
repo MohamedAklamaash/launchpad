@@ -1,4 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
+import { ORGS_ENABLED } from '@/lib/orgs-enabled';
+import { loginUrlWithNext } from '@/lib/post-login';
 
 const API_GATEWAY = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
 
@@ -37,6 +39,18 @@ async function extractErrorCode(error: unknown): Promise<string | undefined> {
 }
 
 const REAUTH_REQUIRED_CODE = 'reauth_required';
+
+// With orgs on, a forced login returns the user to the page they were on (a plain path,
+// see post-login.ts). With orgs off it stays the bare /login it has always been.
+function loginRedirectUrl(reason?: 'reauth'): string {
+  if (!ORGS_ENABLED) return '/login';
+  const base = process.env.NEXT_PUBLIC_BASE_PATH || '';
+  const path = window.location.pathname.startsWith(base)
+    ? window.location.pathname.slice(base.length) || '/'
+    : window.location.pathname;
+  const url = loginUrlWithNext(path);
+  return reason && url !== '/login' ? `${url}&reason=${reason}` : url;
+}
 
 // Best-effort: revoke every refresh token for the current user before forcing a re-login.
 // A stale-auth_time 401 means whatever refresh token is sitting in this browser (or one
@@ -79,7 +93,7 @@ apiClient.interceptors.response.use(
       localStorage.removeItem('access_token');
       localStorage.removeItem('refresh_token');
       localStorage.removeItem('user');
-      window.location.href = '/login';
+      window.location.href = loginRedirectUrl('reauth');
       return Promise.reject(error);
     }
 
@@ -112,7 +126,7 @@ apiClient.interceptors.response.use(
         localStorage.removeItem('access_token');
         localStorage.removeItem('refresh_token');
         localStorage.removeItem('user');
-        window.location.href = '/login';
+        window.location.href = loginRedirectUrl();
         return Promise.reject(refreshError);
       }
     }

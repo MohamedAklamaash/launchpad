@@ -9,6 +9,7 @@ import { Plus, Rocket, Cpu, HardDrive, Network, ArrowUpRight } from 'lucide-reac
 import { ApplicationSummary } from '@/types/application';
 import { Infrastructure } from '@/types/infrastructure';
 import { applicationApi } from '@/lib/api/applications';
+import { useOrgRole } from '@/lib/use-org-role';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { toast } from 'sonner';
 import { Suspense } from 'react';
@@ -41,6 +42,7 @@ export default function ApplicationsPage() {
 }
 
 function ApplicationsPageInner() {
+  const canDeploy = useOrgRole().allow('deploy', true);
   const router = useRouter();
   const searchParams = useSearchParams();
   const [infrastructures, setInfrastructures] = useState<Infrastructure[]>([]);
@@ -113,9 +115,11 @@ function ApplicationsPageInner() {
           <h1 className="mt-2 text-3xl font-display font-semibold text-foreground tracking-tight">Applications</h1>
           <p className="text-sm text-muted-foreground mt-1.5">Deploy and manage services running on your environments.</p>
         </div>
-        <Button size="lg" onClick={() => router.push(deployHref)} className="gap-1.5">
-          <Plus className="w-4 h-4" /> Deploy Application
-        </Button>
+        {canDeploy && (
+          <Button size="lg" onClick={() => router.push(deployHref)} className="gap-1.5">
+            <Plus className="w-4 h-4" /> Deploy Application
+          </Button>
+        )}
       </div>
 
       {infrastructures.length > 0 && (
@@ -167,9 +171,11 @@ function ApplicationsPageInner() {
             </div>
             <p className="text-base font-display font-medium text-foreground mb-1.5">No applications yet</p>
             <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">Deploy your first service to this environment and ship it straight to AWS.</p>
-            <Button size="lg" onClick={() => router.push(deployHref)} className="gap-1.5">
-              <Plus className="w-4 h-4" /> Deploy Application
-            </Button>
+            {canDeploy && (
+              <Button size="lg" onClick={() => router.push(deployHref)} className="gap-1.5">
+                <Plus className="w-4 h-4" /> Deploy Application
+              </Button>
+            )}
           </div>
         </div>
       ) : (

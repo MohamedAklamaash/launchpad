@@ -10,6 +10,7 @@ import { Application } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { applicationApi } from '@/lib/api/applications';
 import { useAuthStore } from '@/lib/store/auth';
+import { useOrgRole } from '@/lib/use-org-role';
 import { toast } from 'sonner';
 
 const STATUS: Record<string, { dot: string; label: string }> = {
@@ -112,7 +113,8 @@ export default function DashboardPage() {
   const [apps, setApps] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const isSuperAdmin = user?.role === 'super_admin';
+  const orgRole = useOrgRole();
+  const isSuperAdmin = orgRole.allow('create_infrastructure', user?.role === 'super_admin');
 
   useEffect(() => {
     const load = async () => {

@@ -32,6 +32,7 @@ import { infrastructureApi } from '@/lib/api/infrastructures';
 import { applicationApi } from '@/lib/api/applications';
 import { authApi } from '@/lib/api/auth';
 import { useAuthStore } from '@/lib/store/auth';
+import { useOrgRole } from '@/lib/use-org-role';
 import { toast } from 'sonner';
 import { DatabasesSection } from '@/components/databases-section';
 import { ProvisioningLogsPanel } from '@/components/provisioning-logs-panel';
@@ -124,8 +125,9 @@ export default function InfrastructureDetailPage() {
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const orgRole = useOrgRole();
   const isSuperAdmin = user?.role === 'super_admin';
-  const canDeploy = isSuperAdmin || user?.role === 'admin';
+  const canDeploy = orgRole.allow('deploy', isSuperAdmin || user?.role === 'admin');
   const loadData = useCallback(async () => {
     try {
       const [infraData, appsData] = await Promise.all([
@@ -142,7 +144,12 @@ export default function InfrastructureDetailPage() {
     }
   }, [id]);
 
-  const isOwner = isSuperAdmin && infra?.user_id === user?.id;
+  // Owner-only controls (nuke, exit, delete, setup command, evidence pack, rename,
+  // provisioning logs). With orgs on the matrix decides; with them off, the original check.
+  const legacyIsOwner = isSuperAdmin && infra?.user_id === user?.id;
+  const isOwner = orgRole.allow('manage_infrastructure', legacyIsOwner);
+  const canSeeCosts = orgRole.allow('costs', legacyIsOwner);
+  const canManageDatabases = orgRole.allow('databases', legacyIsOwner);
 
   useEffect(() => {
     if (!isOwner || infra?.status !== 'ERROR') return;
@@ -479,12 +486,12 @@ export default function InfrastructureDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {isSuperAdmin && (infra.status === 'ERROR' || infra.status === 'DESTROYED' || infra.status === 'PENDING') && (
+          {orgRole.allow('manage_infrastructure', isSuperAdmin) && (infra.status === 'ERROR' || infra.status === 'DESTROYED' || infra.status === 'PENDING') && (
             <Button variant="outline" size="sm" onClick={handleReprovision} disabled={reprovisioning} className="gap-1.5 text-brand hover:text-brand">
               <RefreshCw className={`w-3.5 h-3.5 ${reprovisioning ? 'animate-spin' : ''}`} /> Reprovision
             </Button>
           )}
-          {isSuperAdmin && (
+          {isSuperAdmin && !orgRole.enabled && (
             <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)} className="gap-1.5">
               <UserPlus className="w-3.5 h-3.5" /> Invite
             </Button>
@@ -634,9 +641,9 @@ export default function InfrastructureDetailPage() {
         )}
       </div>
 
-      <DatabasesSection infraId={id} environmentActive={infra.status === 'ACTIVE'} canManage={isOwner} />
+      <DatabasesSection infraId={id} environmentActive={infra.status === 'ACTIVE'} canManage={canManageDatabases} />
 
-      {isOwner && <CostsPanel infraId={id} connected={infra.is_cloud_authenticated} />}
+      {canSeeCosts && <CostsPanel infraId={id} connected={infra.is_cloud_authenticated} />}
 
       {isOwner && <ProvisioningLogsPanel infraId={id} status={infra.status} connected={infra.is_cloud_authenticated} />}
 

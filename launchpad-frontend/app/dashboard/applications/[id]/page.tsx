@@ -10,6 +10,7 @@ import { Infrastructure } from '@/types/infrastructure';
 import { applicationApi } from '@/lib/api/applications';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { useAuthStore } from '@/lib/store/auth';
+import { useOrgRole } from '@/lib/use-org-role';
 import { toast } from 'sonner';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -68,12 +69,22 @@ export default function ApplicationDetailPage() {
   const [hasRollbackAccess, setHasRollbackAccess] = useState(false);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const user = useAuthStore((s) => s.user);
-  const canEdit = user?.role === 'super_admin' || user?.role === 'admin';
+  const orgRole = useOrgRole();
+  const legacyCanEdit = user?.role === 'super_admin' || user?.role === 'admin';
+  // With orgs on, each control follows the org-role matrix; with them off these all
+  // collapse to the checks this page always had.
+  const canEdit = orgRole.allow('deploy', legacyCanEdit);
+  const canEditEnvs = orgRole.allow('env_vars', legacyCanEdit);
+  const canRollbackRole = orgRole.allow('rollback', legacyCanEdit);
+  const canDeployNow = orgRole.allow('deploy', true);
+  const canDeleteApp = orgRole.allow('delete_application', true);
   // Runtime logs are gated on ownership of THIS application's infrastructure, not the
   // global JWT role — an infra owner isn't necessarily super_admin platform-wide, and a
   // platform super_admin viewing someone else's infra isn't its owner. The backend
   // enforces this regardless; this only decides whether to show the panel at all.
-  const isOwner = !!infra && !!user && infra.user_id === user.id;
+  const legacyIsOwner = !!infra && !!user && infra.user_id === user.id;
+  const canSeeLogs = orgRole.allow('logs_metrics', legacyIsOwner);
+  const canManageDomains = orgRole.allow('custom_domains', legacyIsOwner);
 
   const loadApp = useCallback(async () => {
     try {
@@ -277,7 +288,7 @@ export default function ApplicationDetailPage() {
         </div>
       )}
 
-      {isOwner && IN_PROGRESS_BUILD_STATUSES.includes(app.status) && (
+      {canSeeLogs && IN_PROGRESS_BUILD_STATUSES.includes(app.status) && (
         <BuildLogs appId={id} />
       )}
 
@@ -296,7 +307,7 @@ export default function ApplicationDetailPage() {
       )}
 
       <div className="flex gap-2 flex-wrap">
-        {app.status === 'ACTIVE' && !app.is_sleeping && (
+        {canDeployNow && app.status === 'ACTIVE' && !app.is_sleeping && (
           <>
             {!app.infrastructure_exited && (
               <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Redeployment queued', 'deploy')} disabled={actionLoading} className="gap-1.5">
@@ -311,26 +322,28 @@ export default function ApplicationDetailPage() {
             )}
           </>
         )}
-        {app.is_sleeping && !app.infrastructure_exited && (
+        {canDeployNow && app.is_sleeping && !app.infrastructure_exited && (
           <Button size="sm" onClick={() => action(() => applicationApi.wake(id), 'Application waking up', 'wake')} disabled={actionLoading} className="gap-1.5">
             <Sun className="w-3.5 h-3.5" /> {pendingAction === 'wake' ? 'Waking…' : 'Wake Up'}
           </Button>
         )}
-        {app.status === 'FAILED' && !app.infrastructure_exited && (
+        {canDeployNow && app.status === 'FAILED' && !app.infrastructure_exited && (
           <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Retry queued', 'retry')} disabled={actionLoading} className="gap-1.5">
             <RefreshCw className={`w-3.5 h-3.5 ${pendingAction === 'retry' ? 'animate-spin' : ''}`} /> {pendingAction === 'retry' ? 'Queuing…' : 'Retry'}
           </Button>
         )}
-        {app.auto_deploy_paused && canEdit && hasRollbackAccess && !app.infrastructure_exited && (
+        {app.auto_deploy_paused && canRollbackRole && hasRollbackAccess && !app.infrastructure_exited && (
           <Button variant="outline" size="sm" className="gap-1.5"
             onClick={() => action(() => applicationApi.resumeAutoDeploy(id), 'Auto-deploy resumed')} disabled={actionLoading}>
             <PlayCircle className="w-3.5 h-3.5" /> Resume auto-deploy
           </Button>
         )}
-        <Button variant="destructive" size="sm" className="gap-1.5 ml-auto"
-          onClick={() => setDeleteOpen(true)} disabled={actionLoading}>
-          <Trash2 className="w-3.5 h-3.5" /> Delete
-        </Button>
+        {canDeleteApp && (
+          <Button variant="destructive" size="sm" className="gap-1.5 ml-auto"
+            onClick={() => setDeleteOpen(true)} disabled={actionLoading}>
+            <Trash2 className="w-3.5 h-3.5" /> Delete
+          </Button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -433,7 +446,7 @@ export default function ApplicationDetailPage() {
         )}
       </div>
 
-      {(canEdit || (app.envs && Object.keys(app.envs).length > 0)) && (
+      {(canEditEnvs || (app.envs && Object.keys(app.envs).length > 0)) && (
         <div className="rounded-xl panel p-4">
           <div className="flex items-center justify-between mb-3">
             <p className="eyebrow">Environment Variables</p>
@@ -453,7 +466,7 @@ export default function ApplicationDetailPage() {
                   {app.envs && Object.keys(app.envs).length > 0 && (
                     <span className="font-mono text-[10px] text-muted-foreground/60">{Object.keys(app.envs).length} vars</span>
                   )}
-                  {canEdit && !app.infrastructure_exited && (
+                  {canEditEnvs && !app.infrastructure_exited && (
                     <button onClick={startEditEnvs}
                       className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors">
                       <Pencil className="w-3 h-3" /> Edit
@@ -502,12 +515,12 @@ export default function ApplicationDetailPage() {
       <DeploymentHistory
         appId={id}
         appStatus={app.status}
-        canRollback={!!canEdit && !app.infrastructure_exited}
+        canRollback={!!canRollbackRole && !app.infrastructure_exited}
         onRolledBack={() => loadApp()}
         onAccessChange={setHasRollbackAccess}
       />
 
-      {isOwner && infra && (
+      {canSeeLogs && infra && (
         <div className="space-y-3">
           <span className="eyebrow">Observability</span>
           <AppMetricsPanel appId={id} infraId={infra.id} computeType={infra.compute_type} />
@@ -515,7 +528,7 @@ export default function ApplicationDetailPage() {
         </div>
       )}
 
-      {isOwner && infra && <CustomDomainsPanel appId={id} infraId={infra.id} />}
+      {canManageDomains && infra && <CustomDomainsPanel appId={id} infraId={infra.id} />}
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

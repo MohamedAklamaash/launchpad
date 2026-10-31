@@ -3,6 +3,10 @@
 import { create } from 'zustand';
 import { User } from '@/types/auth';
 import { authApi } from '@/lib/api/auth';
+import { useOrgStore } from '@/lib/store/org';
+
+// A different user can sign in without a page reload, so the previous user's org list must go.
+const resetOrgs = () => useOrgStore.setState({ orgs: [], status: 'idle' });
 
 interface AuthState {
   user: User | null;
@@ -23,6 +27,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.setItem('access_token', accessToken);
     localStorage.setItem('refresh_token', refreshToken);
     localStorage.setItem('user', JSON.stringify(user));
+    resetOrgs();
     set({ user, isAuthenticated: true, isLoading: false });
   },
 
@@ -30,6 +35,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
     localStorage.removeItem('user');
+    resetOrgs();
     set({ user: null, isAuthenticated: false, isLoading: false });
   },
 
@@ -80,6 +86,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
+      resetOrgs();
       set({ user: null, isAuthenticated: false });
       localStorage.removeItem('access_token');
       localStorage.removeItem('refresh_token');

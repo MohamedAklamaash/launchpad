@@ -15,6 +15,10 @@ import {
   Check,
 } from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
+import { ORGS_ENABLED } from "@/lib/orgs-enabled";
+import { useOrgRole } from "@/lib/use-org-role";
+import { ROLE_LABEL } from "@/lib/org-matrix";
 import { useAuthStore } from "@/lib/store/auth";
 import { infrastructureApi } from "@/lib/api/infrastructures";
 import { applicationApi } from "@/lib/api/applications";
@@ -88,6 +92,7 @@ interface Member {
 
 export default function SettingsPage() {
   const user = useAuthStore((s) => s.user);
+  const orgRole = useOrgRole();
   const [infras, setInfras] = useState<Infrastructure[]>([]);
   const [invited, setInvited] = useState<InvitedUser[]>([]);
   const [appCount, setAppCount] = useState<number | null>(null);
@@ -114,7 +119,7 @@ export default function SettingsPage() {
         setAppCount(appLists.reduce((n, a) => n + a.length, 0));
       })
       .catch(() => setAppCount(0));
-    if (canSeeOrg) {
+    if (canSeeOrg && !ORGS_ENABLED) {
       authApi
         .listInvitedUsers()
         .then(setInvited)
@@ -266,9 +271,14 @@ export default function SettingsPage() {
       key: "organization",
       label: "Organization",
       icon: Users,
-      show: canSeeOrg,
+      show: ORGS_ENABLED || canSeeOrg,
     },
-    { key: "billing", label: "Billing", icon: CreditCard, show: true },
+    {
+      key: "billing",
+      label: "Billing",
+      icon: CreditCard,
+      show: orgRole.allow("billing", true),
+    },
   ];
 
   return (
@@ -391,7 +401,47 @@ export default function SettingsPage() {
                 </section>
               )}
 
-              {tab === "organization" && canSeeOrg && (
+              {tab === "organization" && ORGS_ENABLED && (
+                <section className="space-y-3">
+                  <p className="eyebrow">Organization</p>
+                  <div className="rounded-2xl panel p-5 space-y-4">
+                    {orgRole.org ? (
+                      <>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-foreground truncate">
+                              {orgRole.org.name}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {orgRole.org.is_personal ? "Personal" : "Team"}{" "}
+                              organization
+                            </p>
+                          </div>
+                          <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-md border border-hairline bg-surface-1 text-muted-foreground">
+                            {ROLE_LABEL[orgRole.org.role]}
+                          </span>
+                        </div>
+                        <Link
+                          href={`/dashboard/organizations/${orgRole.org.id}/members`}
+                          className="inline-flex"
+                        >
+                          <Button variant="outline" size="sm" className="gap-1.5">
+                            <Users className="w-3.5 h-3.5" /> Manage members and name
+                          </Button>
+                        </Link>
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        {orgRole.loading
+                          ? "Loading organization…"
+                          : "No active organization. Pick one from the switcher in the header."}
+                      </p>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {tab === "organization" && canSeeOrg && !ORGS_ENABLED && (
                 <section className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-baseline gap-2.5 min-w-0">
