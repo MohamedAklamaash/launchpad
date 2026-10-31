@@ -15,16 +15,21 @@ export interface OrgManager {
 
 const orgNotFound = () => new HttpError(404, 'Organization not found');
 
+interface ActiveMember {
+    accountId: string;
+    role: OrgRole;
+    userName: string;
+}
+
 // Resolves "who is asking" for owner/admin-only org routes. The token's `account_id` claim
 // is a lookup key, never the authorization itself: the credential row must still be
 // verified and still linked to that exact account, and an ACTIVE (non-tombstoned)
-// Membership must exist in the path's org with a manager role. A caller who is not a
-// member gets the same 404 as an org that does not exist, so org ids cannot be probed;
-// only a real member whose role is too low gets a 403.
-export const requireOrgManager = async (
+// Membership must exist in the path's org. A caller who is not a member gets the same 404
+// as an org that does not exist, so org ids cannot be probed.
+const requireActiveMember = async (
     payload: AccessTokenPayload,
     organizationId: string,
-): Promise<OrgManager> => {
+): Promise<ActiveMember> => {
     assertOrgsEnabled();
 
     const claimedAccountId = payload.account_id;
@@ -43,9 +48,28 @@ export const requireOrgManager = async (
         where: { organization_id: organizationId, account_id: claimedAccountId, removed_at: null },
     });
     if (!membership) throw orgNotFound();
-    if (!MANAGER_ROLES.includes(membership.role)) {
-        throw new HttpError(403, 'Only an owner or admin can manage invitations');
-    }
 
     return { accountId: claimedAccountId, role: membership.role, userName: credential.user_name };
+};
+
+export const requireOrgManager = async (
+    payload: AccessTokenPayload,
+    organizationId: string,
+): Promise<OrgManager> => {
+    const member = await requireActiveMember(payload, organizationId);
+    if (!MANAGER_ROLES.includes(member.role)) {
+        throw new HttpError(403, 'Only an owner or admin can manage invitations');
+    }
+    return member;
+};
+
+export const requireOrgOwner = async (
+    payload: AccessTokenPayload,
+    organizationId: string,
+): Promise<OrgManager> => {
+    const member = await requireActiveMember(payload, organizationId);
+    if (member.role !== ORG_ROLE.OWNER) {
+        throw new HttpError(403, 'Only the organization owner can do this');
+    }
+    return member;
 };

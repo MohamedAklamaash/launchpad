@@ -9,6 +9,7 @@ import {
     listPendingInvitations,
     revokeOrgInvitation,
 } from '@/service/organizations/invitation-admin.service';
+import { transferOwnership } from '@/service/organizations/ownership-transfer.service';
 import { acceptInvitation } from '@/service/organizations/invitation-accept.service';
 
 const toHttpError = (error: unknown): HttpError =>
@@ -64,6 +65,21 @@ export const AcceptInvitation = async (req: Request, res: Response) => {
         const caller = sessionFrom(req);
         const { token } = req.body as { token: string };
         const result = await acceptInvitation({ callerId: caller.sub, token });
+        return res.status(200).json(result);
+    } catch (error: unknown) {
+        throw toHttpError(error);
+    }
+};
+
+export const TransferOwnership = async (req: Request, res: Response) => {
+    try {
+        const caller = sessionFrom(req);
+        const { new_owner_account_id } = req.body as { new_owner_account_id: string };
+        const result = await transferOwnership({
+            caller,
+            organizationId: canonicalizeUuid(req.params.id as string),
+            newOwnerAccountId: canonicalizeUuid(new_owner_account_id),
+        });
         return res.status(200).json(result);
     } catch (error: unknown) {
         throw toHttpError(error);

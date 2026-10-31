@@ -10,6 +10,10 @@ export const orgInvitationParamsSchema = z.object({
     invitationId: z.uuid(),
 });
 
+export const transferOwnershipSchema = z.object({
+    new_owner_account_id: z.uuid(),
+});
+
 export const createInvitationSchema = z.object({
     email: z.email().max(254),
     role: z.enum([ORG_ROLE.ADMIN, ORG_ROLE.DEVELOPER, ORG_ROLE.VIEWER]),

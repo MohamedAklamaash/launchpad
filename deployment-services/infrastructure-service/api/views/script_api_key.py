@@ -1,6 +1,7 @@
 import logging
 import uuid
 
+from django.conf import settings
 from django.db import models
 from django.http import HttpRequest
 from django.utils import timezone
@@ -12,6 +13,33 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 logger = logging.getLogger(__name__)
+
+
+def _signed_account_id(request: HttpRequest):
+    """The `account_id` claim of the session minting a key, as a canonical UUID, or None.
+    Read only with ORGS_ENABLED on; the claim is covered by the JWT signature."""
+    if not settings.ORGS_ENABLED:
+        return None
+    claim = getattr(request.user, 'account_id', None)
+    try:
+        return uuid.UUID(str(claim)) if claim else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _is_current_org_owner(key, infra) -> bool:
+    """True only if the key's recorded Account holds the ACTIVE owner Membership in the
+    infrastructure's org right now. Read straight from the mirror, never the role cache: a
+    transferred or removed owner must lose this at once. A creator who is no longer the
+    owner (or never was, as with an admin-created infra) does not qualify."""
+    from api.models.membership import Membership
+    from shared.enums.org_role import OrgRole
+
+    if key.account_id is None or infra.organization_id is None:
+        return False
+    return Membership.objects.active().filter(
+        organization_id=infra.organization_id, account_id=key.account_id, role=OrgRole.OWNER,
+    ).exists()
 
 
 class ScriptApiKeyResponseSerializer(serializers.Serializer):
@@ -48,7 +76,7 @@ def script_api_key_issue(request: HttpRequest):
     except User.DoesNotExist:
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    plaintext = ScriptApiKey.issue(user)
+    plaintext = ScriptApiKey.issue(user, account_id=_signed_account_id(request))
     return Response({'api_key': plaintext}, status=status.HTTP_201_CREATED)
 
 
@@ -76,7 +104,8 @@ def script_api_key_issue(request: HttpRequest):
         },
     },
     responses={201: PolicyRefreshCallbackResponseSerializer,
-               400: CallbackErrorSerializer, 401: CallbackErrorSerializer},
+               400: CallbackErrorSerializer, 401: CallbackErrorSerializer,
+               403: CallbackErrorSerializer},
 )
 @csrf_exempt
 @api_view(['POST'])
@@ -99,6 +128,10 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
     # establishes identity. Scope the lookup to the key owner so a caller can't attribute
     # a policy-refresh record against an infrastructure they don't own. A bad/missing/
     # non-owned infra_id still records the refresh (just without the infra link).
+    #
+    # With ORGS_ENABLED the creator no longer counts: only the key whose Account is the
+    # org's current active owner may name the infra, and anything else is a uniform 403
+    # (existing and non-existing infra ids look the same).
     infra = None
     infra_id = request.data.get('infra_id')
     if infra_id:
@@ -107,7 +140,13 @@ def infrastructure_policy_refresh_callback(request: HttpRequest):
         except (ValueError, TypeError):
             infra_id = None
         else:
-            infra = Infrastructure.objects.filter(id=infra_id, user=key.user).first()
+            if settings.ORGS_ENABLED:
+                infra = Infrastructure.objects.filter(id=infra_id).first()
+                if infra is None or not _is_current_org_owner(key, infra):
+                    return Response({'error': 'Not the owner of this infrastructure'},
+                                    status=status.HTTP_403_FORBIDDEN)
+            else:
+                infra = Infrastructure.objects.filter(id=infra_id, user=key.user).first()
 
     reported_version = Infrastructure.parse_reported_policy_version(request.data.get('policy_version'))
     event = PolicyRefreshEvent.objects.create(

@@ -29,11 +29,13 @@ class OrganizationRepository:
         org.membership.changed (organization.service.ts's createOrganization)."""
         self._upsert_organization(organization_id, owner_account_id, version)
         self._upsert_membership(organization_id, owner_account_id, OrgRole.OWNER, version)
+        self._sync_owner_account(organization_id)
 
     def upsert_membership(self, organization_id, account_id, role: str, version: int):
         if not Organization.objects.filter(id=organization_id).exists():
             raise PendingOrganization(organization_id)
         self._upsert_membership(organization_id, account_id, role, version)
+        self._sync_owner_account(organization_id)
 
     def remove_membership(self, organization_id, account_id, version: int):
         if not Organization.objects.filter(id=organization_id).exists():
@@ -48,6 +50,27 @@ class OrganizationRepository:
         Membership.objects.filter(
             organization_id=organization_id, account_id=account_id, version__lt=version,
         ).update(removed_at=timezone.now(), version=version)
+        self._sync_owner_account(organization_id)
+
+    @staticmethod
+    def _sync_owner_account(organization_id):
+        """Keeps Organization.owner_account_id equal to the one active owner Membership.
+
+        An ownership transfer arrives as two independent membership events (each with its
+        own per-membership version), and Organization.version is the version of whichever
+        membership rode org.created, so it cannot order a second transfer. Deriving the
+        column from the membership rows makes it order-independent. With zero owners (the
+        gap between the demote and the promote) or two (never expected), the column is left
+        as it was."""
+        owners = list(
+            Membership.objects.active()
+            .filter(organization_id=organization_id, role=OrgRole.OWNER)
+            .values_list("account_id", flat=True)[:2]
+        )
+        if len(owners) == 1:
+            Organization.objects.filter(pk=organization_id).exclude(
+                owner_account_id=owners[0],
+            ).update(owner_account_id=owners[0])
 
     @staticmethod
     def _upsert_organization(organization_id, owner_account_id, version: int):

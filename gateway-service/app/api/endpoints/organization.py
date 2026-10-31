@@ -26,6 +26,23 @@ class AcceptInvitationBody(BaseModel):
     token: str = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]{43}$")
 
 
+class TransferOwnershipBody(BaseModel):
+    new_owner_account_id: UUID = Field(description="Account id of an active member to make owner.")
+
+
+@router.post("/{organization_id}/transfer-ownership",
+             summary="Transfer the organization to another active member",
+             description="Behind ORGS_ENABLED (auth-service). Current owner only, resolved by "
+                         "auth-service from the caller's active owner Membership. Requires a "
+                         "login within the exit-flow reauth window (401 reauth_required "
+                         "otherwise). The caller becomes admin and their refresh tokens are "
+                         "revoked. A personal organization cannot be transferred.")
+async def transfer_ownership(organization_id: UUID, body: TransferOwnershipBody, request: Request):
+    return await proxy_request(
+        f"{settings.AUTH_SERVICE_URL}/api/v1/organizations/{organization_id}/transfer-ownership",
+        request)
+
+
 @router.post("/{organization_id}/invitations", status_code=201,
              summary="Invite an email address to an organization",
              description="Behind ORGS_ENABLED (auth-service). Owner or admin of the "

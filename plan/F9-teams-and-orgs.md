@@ -813,11 +813,15 @@ Operational steps for shipping the auth-service side of F9. Order matters.
    - **Re-run the idempotent backfill after the full rollout, immediately before the
      flip** (migrations `0041`, `0045`, `0008` re-stamp NULL rows; rerun them, or the
      equivalent update, once every service is on the new code).
-   - **Known gap, policy refresh callback.** It authenticates with the per-user script API
-     key and matches `Infrastructure.user == key.user`. The Django services have no mapping
-     from a User to an org-owner Account, so with the flag on it still matches the
-     creator, not the org owner. A creator later removed from the org can still record a
-     refresh. Close it in ticket 8 with the ownership transfer.
+   - **Policy refresh callback (closed in ticket 8).** With the flag on, the per-user
+     script API key records the Account named by the issuing session's signed `account_id`
+     claim (`ScriptApiKey.account_id`, migration `0043`). The callback links an infra only
+     when that Account holds the ACTIVE owner Membership in the infra's org, read from the
+     mirror at request time (no cache). The creator no longer counts; an owner who did not
+     create the infra is accepted. Anything else, including an unknown infra id, is a
+     uniform 403. Keys issued before `0043`, or with the flag off, carry no Account and are
+     refused under the flag: the owner re-runs the dashboard's *Refresh policy* snippet,
+     which mints a new key. Flag off is unchanged (creator match).
    - **Role staleness bounds.** A removed member loses access within about 60s (cache TTL)
      when the Django `org.events` consumers are healthy. If a consumer is stalled the
      mirror keeps the old Membership, and access lasts until it recovers (their token
@@ -826,6 +830,45 @@ Operational steps for shipping the auth-service side of F9. Order matters.
    - **Trust boundary.** The mirrors store `organization_id` write-once, first writer wins,
      so anyone holding AMQP publish credentials is inside the trust boundary for org
      derivation.
+
+7. **Ownership transfer (ticket 8).** `POST /api/organizations/{id}/transfer-ownership`
+   `{new_owner_account_id}`, behind `ORGS_ENABLED` (404 when off).
+   - Owner only (verified credential, claim equals the row's account, ACTIVE owner
+     Membership; re-checked under row locks inside the transaction). The token's
+     `auth_time` must be within `EXIT_EXPORT_REAUTH_MAX_AGE_SECONDS` (default 600, same name
+     and value as infrastructure-service; keep them equal) or the call is a 401 with
+     `code: reauth_required`, which the dashboard already turns into a re-login.
+   - One transaction: lock the Organization row, then the owner and target Memberships;
+     demote the owner to admin, then promote the target (the partial unique owner index is
+     checked per statement); update `Organization.owner_account_id`; two audit rows; revoke
+     the old owner's refresh tokens. The old owner must sign in again.
+   - Events go out after commit, demote first. Each mirror applies per-membership versions
+     independently, so the gap between the two events is "no owner" (owner-only actions fail
+     closed), never "two owners". The Django mirrors derive `Organization.owner_account_id`
+     from the one active owner row (a second transfer cannot be ordered by
+     `Organization.version`, which is the first owner's membership version).
+   - A personal organization (id = `uuid5(ORG_NAMESPACE, users.id)` for a user linked to
+     the owner's Account) is never transferable: 409. Its id is derivable, Django stamps
+     the legacy owner's infrastructures into it, and every GitHub login re-runs
+     `ensurePersonalOrganization`, which would report `conflict` forever. This also keeps
+     `backfill:personal-orgs --republish-existing` safe: it only touches personal orgs, whose
+     owner cannot change, and it already refuses (and publishes nothing for) an org whose
+     owner column differs from the user's Account.
+   - Access bound after demotion: auth-service endpoints see the new role at once. Django
+     resolves from the mirror, so the old owner's live access token loses owner rights after
+     consumer lag plus at most the 60s role-cache TTL (eviction runs on the event). The
+     token itself stays valid up to `JWT_EXPIRES_IN` (7d in `env.example`); only the role
+     changes. Revoking refresh tokens stops new tokens from being minted.
+   - Not covered: `ResilientAmqpPublisher` drops the oldest buffered message when its
+     buffer is full and has no confirms in this path, so a lost demote event leaves the
+     mirror with two owners until the next event for that membership. Check each mirror for
+     orgs with other than one active owner:
+
+     ```sql
+     SELECT organization_id, count(*) FROM api_membership
+     WHERE role = 'owner' AND removed_at IS NULL
+     GROUP BY organization_id HAVING count(*) <> 1;
+     ```
 
 ## Open questions
 

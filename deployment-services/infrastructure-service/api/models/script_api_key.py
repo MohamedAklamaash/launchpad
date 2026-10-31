@@ -20,6 +20,11 @@ class ScriptApiKey(models.Model):
         related_name='script_api_keys',
     )
     key_hash = models.CharField(max_length=128, unique=True)
+    # The Account the issuing session's signed `account_id` claim named. Recorded only with
+    # ORGS_ENABLED on. The policy-refresh callback has no JWT, so this is the only link from
+    # a key to an org Membership. A key issued without it (flag off, unlinked credential,
+    # or before this column existed) is never accepted as an org owner's key.
+    account_id = models.UUIDField(null=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
@@ -29,12 +34,12 @@ class ScriptApiKey(models.Model):
         return hashlib.sha256(plaintext.encode()).hexdigest()
 
     @classmethod
-    def issue(cls, user) -> str:
+    def issue(cls, user, account_id=None) -> str:
         # One active key per user: issuing rotates, so a leaked older snippet
         # stops authenticating the moment the user generates a fresh key.
         plaintext = f"lp_{secrets.token_urlsafe(32)}"
         cls.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
-        cls.objects.create(user=user, key_hash=cls.hash_key(plaintext))
+        cls.objects.create(user=user, key_hash=cls.hash_key(plaintext), account_id=account_id)
         return plaintext
 
     @classmethod

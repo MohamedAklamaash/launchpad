@@ -452,3 +452,121 @@ def test_eviction_is_best_effort_at_the_org_permissions_layer_not_the_consumer(c
 
     ch.basic_ack.assert_called_once_with(delivery_tag=1)
     ch.basic_nack.assert_not_called()
+
+
+# ── F9 ticket 8: ownership transfer arrives as two independent membership events ──────────
+
+def _transfer_setup(consumer):
+    org_id = str(uuid.uuid4())
+    old_owner, new_owner = str(uuid.uuid4()), str(uuid.uuid4())
+    _deliver(consumer, "org.created", {"organization_id": org_id, "owner_account_id": old_owner, "version": 1})
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "developer", "version": 1,
+    })
+    return org_id, old_owner, new_owner
+
+
+def _active_owners(org_id):
+    from api.models.membership import Membership
+    return {
+        str(a) for a in Membership.objects.active().filter(organization_id=org_id, role="owner")
+        .values_list("account_id", flat=True)
+    }
+
+
+def _owner_column(org_id):
+    from api.models.organization import Organization
+    return str(Organization.objects.get(id=org_id).owner_account_id)
+
+
+@pytest.mark.django_db
+def test_transfer_published_demote_first_never_shows_two_owners_and_ends_with_the_new_owner(consumer):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": old_owner, "role": "admin", "version": 2,
+    })
+    assert _active_owners(org_id) == set()
+    assert _owner_column(org_id) == old_owner
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "owner", "version": 2,
+    })
+    assert _active_owners(org_id) == {new_owner}
+    assert _owner_column(org_id) == new_owner
+
+
+@pytest.mark.django_db
+def test_transfer_events_applied_in_the_other_order_converge_to_the_same_single_owner(consumer):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "owner", "version": 2,
+    })
+    assert _active_owners(org_id) == {old_owner, new_owner}
+    assert _owner_column(org_id) == old_owner
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": old_owner, "role": "admin", "version": 2,
+    })
+    assert _active_owners(org_id) == {new_owner}
+    assert _owner_column(org_id) == new_owner
+
+
+@pytest.mark.django_db
+def test_second_transfer_back_moves_the_owner_column_even_with_a_lower_membership_version(consumer):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+    for version in (2, 3, 4, 5):
+        _deliver(consumer, "org.membership.changed", {
+            "organization_id": org_id, "account_id": new_owner, "role": "developer", "version": version,
+        })
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": old_owner, "role": "admin", "version": 2,
+    })
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "owner", "version": 6,
+    })
+    assert _owner_column(org_id) == new_owner
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "admin", "version": 7,
+    })
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": old_owner, "role": "owner", "version": 3,
+    })
+
+    assert _active_owners(org_id) == {old_owner}
+    assert _owner_column(org_id) == old_owner
+
+
+@pytest.mark.django_db
+def test_stale_org_created_after_a_transfer_does_not_resurrect_the_old_owner(consumer):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": old_owner, "role": "admin", "version": 2,
+    })
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "owner", "version": 2,
+    })
+
+    _deliver(consumer, "org.created", {"organization_id": org_id, "owner_account_id": old_owner, "version": 1})
+
+    assert _active_owners(org_id) == {new_owner}
+    assert _owner_column(org_id) == new_owner
+
+
+@pytest.mark.django_db
+def test_transfer_evicts_both_cached_roles(consumer, monkeypatch):
+    org_id, old_owner, new_owner = _transfer_setup(consumer)
+    evicted = []
+    consumer_module = __import__(type(consumer).__module__, fromlist=["OrgPermissions"])
+    monkeypatch.setattr(consumer_module.OrgPermissions, "evict", lambda o, a: evicted.append((o, a)))
+
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": old_owner, "role": "admin", "version": 2,
+    })
+    _deliver(consumer, "org.membership.changed", {
+        "organization_id": org_id, "account_id": new_owner, "role": "owner", "version": 2,
+    })
+
+    assert evicted == [(org_id, old_owner), (org_id, new_owner)]
