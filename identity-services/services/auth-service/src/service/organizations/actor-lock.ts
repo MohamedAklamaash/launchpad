@@ -33,11 +33,25 @@ export const lockManagerActor = async (
     return actor.role;
 };
 
+export type ActorStanding = OrgRole | 'self' | 'system';
+
+// An actor with no verified standing (locked role, self, or system) is treated as a
+// non-owner, so omitting the manager lock can never skip the owner-only admin rule.
+export const actorStandingFor = (
+    lockedRole: OrgRole | undefined,
+    actorAccountId: string | null,
+    targetAccountId: string,
+): ActorStanding | null => {
+    if (lockedRole) return lockedRole;
+    if (actorAccountId === null) return 'system';
+    return actorAccountId === targetAccountId ? 'self' : null;
+};
+
 export const assertOwnerForAdminChange = (
-    actorRole: OrgRole | undefined,
+    standing: ActorStanding | null,
     affectedRoles: readonly OrgRole[],
 ): void => {
-    if (!actorRole || actorRole === ORG_ROLE.OWNER) return;
+    if (standing === ORG_ROLE.OWNER || standing === 'self' || standing === 'system') return;
     if (affectedRoles.includes(ORG_ROLE.ADMIN)) {
         throw new HttpError(403, 'Only the organization owner can manage admins');
     }

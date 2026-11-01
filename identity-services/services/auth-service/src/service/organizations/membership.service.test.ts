@@ -104,7 +104,7 @@ test('changeMemberRole bumps the version, writes old_role/new_role to the audit 
             organizationId: 'org-1',
             accountId: 'account-2',
             newRole: 'admin',
-            actorAccountId: 'account-1',
+            actorAccountId: null,
         });
 
         assert.equal(membership.role, 'admin');

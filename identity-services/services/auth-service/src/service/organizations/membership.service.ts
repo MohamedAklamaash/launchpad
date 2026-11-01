@@ -9,7 +9,7 @@ import {
     bumpMembershipVersionForRemoval,
     reviveMembershipVersion,
 } from '@/utils/membership-version';
-import { assertOwnerForAdminChange, lockManagerActor } from './actor-lock';
+import { actorStandingFor, assertOwnerForAdminChange, lockManagerActor } from './actor-lock';
 import { assertOrgsEnabled } from './org-guard';
 import { recordAuditEvent, type AuditAction } from './audit-log.service';
 import { reportOwnerRoleAttempt } from './owner-attempt-signal';
@@ -219,7 +219,10 @@ export const changeMemberRole = async (input: ChangeMemberRoleInput): Promise<Me
             });
             throw new HttpError(409, 'Cannot change the owner role; use ownership transfer');
         }
-        assertOwnerForAdminChange(actorRole, [existing.role, input.newRole]);
+        assertOwnerForAdminChange(
+            actorStandingFor(actorRole, input.actorAccountId, input.accountId),
+            [existing.role, input.newRole],
+        );
 
         const oldRole = existing.role;
         const newVersion = await bumpMembershipVersion(existing.id, input.newRole, transaction);
@@ -287,7 +290,10 @@ export const removeMember = async (input: RemoveMemberInput): Promise<void> => {
             // through the reauth-gated ownership transfer.
             throw new HttpError(409, 'Cannot remove the organization owner');
         }
-        assertOwnerForAdminChange(actorRole, [existing.role]);
+        assertOwnerForAdminChange(
+            actorStandingFor(actorRole, input.actorAccountId, input.accountId),
+            [existing.role],
+        );
 
         const { organization_id, account_id, role } = existing;
         const newVersion = await bumpMembershipVersionForRemoval(existing.id, transaction);

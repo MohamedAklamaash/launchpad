@@ -1053,6 +1053,26 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      for every role (viewers need it to call leave); other rows keep the viewer redaction. The
      gateway `AuthenticateOtpBody` declares `new_password` (6-72).
 
+10. **Only the owner manages admins (2026-11-01).** Admins get 403 on inviting as admin,
+    promoting to admin, changing an admin's role and removing an admin; accepting an
+    admin-role invitation also requires the inviter to still be the owner (checked under a
+    share lock on Organization then the inviter row). Pre-flag check: invitations created
+    before this rule may carry role admin from an admin inviter. List and revoke them before
+    enabling `ORGS_ENABLED`:
+
+    ```sql
+    SELECT i.id, i.organization_id, i.email, i.invited_by_account_id
+    FROM invitations i
+    LEFT JOIN memberships m
+      ON m.organization_id = i.organization_id
+     AND m.account_id = i.invited_by_account_id
+     AND m.removed_at IS NULL
+    WHERE i.role = 'admin' AND i.accepted_at IS NULL AND i.revoked_at IS NULL
+      AND (m.role IS DISTINCT FROM 'owner');
+    ```
+
+    Accept already refuses these (generic invalid-invitation 400), so revoking is hygiene.
+
 ## Open questions
 
 Everything else above is decided. These two genuinely need the owner, not because they're
