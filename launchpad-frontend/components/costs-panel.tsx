@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, CircleDollarSign, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { AppCost, ComputeType, InfrastructureCosts } from '@/types/infrastructure';
 import { PolicyRefreshDialog } from '@/components/policy-refresh-dialog';
@@ -27,7 +28,7 @@ function SourceBadge({ source }: { source: AppCost['source'] }) {
   if (source === 'actual') return null;
   const label = source === 'estimate' ? 'Estimate' : 'Mock';
   return (
-    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-warning border border-warning/30 bg-warning/10 rounded px-1.5 py-0.5">
+    <span className="text-xs text-warning border border-warning/30 bg-warning/10 rounded px-1.5 py-0.5">
       {label}
     </span>
   );
@@ -35,13 +36,13 @@ function SourceBadge({ source }: { source: AppCost['source'] }) {
 
 function ActivationNote({ tagActivation, computeType }: { tagActivation: InfrastructureCosts['tag_activation']; computeType: ComputeType }) {
   if (computeType === 'eks') {
-    return <p className="text-[11px] text-muted-foreground">Estimated from each app&apos;s allotted CPU/memory — EKS costs cannot be read from Cost Explorer directly.</p>;
+    return <p className="text-xs text-muted-foreground">Estimated from each app&apos;s allotted CPU/memory, EKS costs cannot be read from Cost Explorer directly.</p>;
   }
   if (tagActivation.activated === false) {
     return (
-      <p className="text-[11px] text-warning">
+      <p className="text-xs text-warning">
         Cost allocation tags could not be activated automatically
-        {tagActivation.reason === 'payer_account_required' ? ' — this AWS account is an Organizations member; the payer account must activate them' : ''}.
+        {tagActivation.reason === 'payer_account_required' ? ', this AWS account is an Organizations member; the payer account must activate them' : ''}.
         Figures reflect infra-level totals only until then.
       </p>
     );
@@ -88,7 +89,7 @@ export function CostsPanel({ infraId, connected }: Props) {
           setData(await infrastructureApi.getCosts(infraId, months));
           return;
         } catch (retryErr) {
-          setError(isTransient(retryErr) ? 'Cost data is temporarily unavailable — usually clears in a moment.' : e.response?.data?.error || 'Failed to load costs');
+          setError(isTransient(retryErr) ? 'Cost data is temporarily unavailable, usually clears in a moment.' : e.response?.data?.error || 'Failed to load costs');
           return;
         }
       }
@@ -105,25 +106,24 @@ export function CostsPanel({ infraId, connected }: Props) {
   const toggle = () => setExpanded((prev) => !prev);
 
   return (
-    <div className="rounded-xl panel">
+    <div className="rounded-lg border border-border bg-card">
       <button
         type="button"
         onClick={toggle}
         aria-expanded={expanded}
-        className="w-full flex items-center justify-between px-4 py-3 text-left"
+        className="flex w-full items-center justify-between rounded-lg px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
       >
-        <span className="flex items-center gap-2 text-sm font-display font-semibold text-foreground">
-          <CircleDollarSign className="w-3.5 h-3.5 text-muted-foreground" /> Cost Attribution
+        <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <CircleDollarSign className="size-3.5 text-muted-foreground" /> Costs
         </span>
-        {expanded ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />}
+        {expanded ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronRight className="size-3.5 text-muted-foreground" />}
       </button>
 
       {expanded && (
-        <div className="border-t border-hairline px-4 py-3 space-y-3">
+        <div className="border-t border-border px-4 py-3 space-y-3">
           {!connected || notConnected ? (
             <p className="text-xs text-muted-foreground">
-              Cost data becomes available once your AWS account is connected and provisioning
-              finishes. Nothing to attribute yet.
+              Costs show up once your AWS account is connected and provisioning has finished.
             </p>
           ) : (
             <>
@@ -133,24 +133,25 @@ export function CostsPanel({ infraId, connected }: Props) {
                     <button
                       key={m}
                       onClick={() => setMonths(m)}
-                      className={`font-mono text-[10px] uppercase tracking-[0.1em] rounded px-2 py-1 transition-colors ${
-                        months === m ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground'
+                      aria-pressed={months === m}
+                      className={`rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                        months === m ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'
                       }`}
                     >
-                      {m}mo
+                      {m} {m === 1 ? 'month' : 'months'}
                     </button>
                   ))}
                 </div>
                 {data?.cached && (
-                  <span className="font-mono text-[10px] text-muted-foreground/60">cached (updates daily)</span>
+                  <span className="text-xs text-muted-foreground">Cached, updates daily</span>
                 )}
               </div>
 
               {loading && !data && (
                 <div className="space-y-2">
-                  <div className="h-3 w-2/3 rounded panel-inset animate-pulse" />
-                  <div className="h-3 w-1/2 rounded panel-inset animate-pulse" />
-                  <div className="h-3 w-3/4 rounded panel-inset animate-pulse" />
+                  <Skeleton className="h-3 w-2/3" />
+                  <Skeleton className="h-3 w-1/2" />
+                  <Skeleton className="h-3 w-3/4" />
                 </div>
               )}
 
@@ -158,7 +159,7 @@ export function CostsPanel({ infraId, connected }: Props) {
                 <div className="space-y-2.5">
                   <p className="text-xs text-muted-foreground">{error}</p>
                   <Button variant="outline" size="sm" onClick={load} disabled={loading} className="gap-1.5">
-                    <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} /> Retry
+                    <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} /> Retry
                   </Button>
                 </div>
               )}
@@ -178,14 +179,14 @@ export function CostsPanel({ infraId, connected }: Props) {
                         <span className="font-mono text-foreground shrink-0">{fmt(app.amount_usd, data.currency)}</span>
                       </div>
                     ))}
-                    <div className="flex items-center justify-between text-sm pt-2 border-t border-hairline">
+                    <div className="flex items-center justify-between text-sm pt-2 border-t border-border">
                       <span className="flex items-center gap-2 text-muted-foreground">
                         Shared (ALB / NAT / control plane)
                         <SourceBadge source={data.shared.source} />
                       </span>
                       <span className="font-mono text-muted-foreground shrink-0">{fmt(data.shared.amount_usd, data.currency)}</span>
                     </div>
-                    {data.shared.note && <p className="text-[11px] text-muted-foreground/70">{data.shared.note}</p>}
+                    {data.shared.note && <p className="text-xs text-muted-foreground/70">{data.shared.note}</p>}
                   </div>
 
                   <ActivationNote tagActivation={data.tag_activation} computeType={data.compute_type} />

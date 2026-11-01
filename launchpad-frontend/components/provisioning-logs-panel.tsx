@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, ScrollText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { infrastructureApi } from '@/lib/api/infrastructures';
 import { InfrastructureStatus, ProvisioningLogs } from '@/types/infrastructure';
 
@@ -73,58 +74,56 @@ export function ProvisioningLogsPanel({ infraId, status, connected }: Props) {
   };
 
   return (
-    <div className="rounded-xl panel">
+    <div className="rounded-lg border border-border bg-card">
       <button
         type="button"
         onClick={toggle}
         aria-expanded={expanded}
-        className="w-full flex items-center justify-between px-4 py-3 text-left"
+        className="flex w-full items-center justify-between rounded-lg px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
       >
-        <span className="flex items-center gap-2 text-sm font-display font-semibold text-foreground">
-          <ScrollText className="w-3.5 h-3.5 text-muted-foreground" /> Provisioning Logs
+        <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <ScrollText className="size-3.5 text-muted-foreground" /> Provisioning logs
         </span>
         <span className="flex items-center gap-2">
           {data?.truncated && (
-            <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-warning border border-warning/30 bg-warning/10 rounded px-1.5 py-0.5">
-              truncated
+            <span className="rounded-md border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-xs text-foreground">
+              Truncated
             </span>
           )}
-          {expanded ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronRight className="w-3.5 h-3.5 text-muted-foreground" />}
+          {expanded ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronRight className="size-3.5 text-muted-foreground" />}
         </span>
       </button>
 
       {expanded && (
-        <div className="border-t border-hairline">
+        <div className="border-t border-border">
           {!connected ? (
             <div className="px-4 py-4">
               <p className="text-xs text-muted-foreground">
-                Waiting for you to run the setup script in your AWS account. There is nothing to
-                show here until that finishes — provisioning (and this log) starts automatically
-                right after.
+                Waiting for the setup script to run in your AWS account. There is nothing to show until it finishes. Provisioning, and this log, start on their own right after.
               </p>
             </div>
           ) : !data && failed ? (
             <div className="px-4 py-4 space-y-2.5">
               <p className="text-xs text-muted-foreground">Couldn&apos;t reach the logs service. This is usually temporary.</p>
               <Button variant="outline" size="sm" onClick={load} disabled={loading} className="gap-1.5">
-                <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} /> Retry
+                <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} /> Retry
               </Button>
             </div>
           ) : !data ? (
             <div className="px-4 py-4 space-y-2">
-              <div className="h-3 w-3/4 rounded panel-inset animate-pulse" />
-              <div className="h-3 w-1/2 rounded panel-inset animate-pulse" />
-              <div className="h-3 w-2/3 rounded panel-inset animate-pulse" />
+              <Skeleton className="h-3 w-3/4" />
+              <Skeleton className="h-3 w-1/2" />
+              <Skeleton className="h-3 w-2/3" />
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-3 px-4 py-2 text-[11px] text-muted-foreground font-mono">
-                <span>{live ? 'Live — refreshes every 10s' : `Last updated ${new Date(data.updated_at).toLocaleString()}`}</span>
+              <div className="flex items-center gap-3 px-4 py-2 text-xs text-muted-foreground font-mono">
+                <span>{live ? 'Live, refreshes every 10 seconds' : `Last updated ${new Date(data.updated_at).toLocaleString()}`}</span>
                 {data.withheld_lines > 0 && <span>{data.withheld_lines} lines withheld</span>}
                 {data.truncated && <span>head clipped to storage cap</span>}
               </div>
-              <pre className="max-h-96 overflow-auto px-4 pb-4 text-[11px] leading-relaxed font-mono text-foreground whitespace-pre-wrap break-words">
-                {data.logs || (live ? 'Waiting for Terraform output — first lines usually appear within a minute.' : 'No output recorded yet.')}
+              <pre className="max-h-96 overflow-auto px-4 pb-4 text-xs leading-relaxed font-mono text-foreground whitespace-pre-wrap break-words">
+                {data.logs || (live ? 'Waiting for Terraform output, first lines usually appear within a minute.' : 'No output recorded yet.')}
               </pre>
             </>
           )}

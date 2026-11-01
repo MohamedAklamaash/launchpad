@@ -2,8 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
+import { buttonVariants } from '@/components/ui/button-variants';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -25,7 +25,12 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
-import { ArrowLeft, Plus, Server, Cpu, HardDrive, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download, Terminal, Flame, CloudCog } from 'lucide-react';
+import Link from 'next/link';
+import { ArrowLeft, Plus, ExternalLink, UserPlus, Copy, Check, Settings, Trash2, User, Pencil, RefreshCw, ShieldCheck, Download, Terminal, Flame, CloudCog, AppWindow } from 'lucide-react';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 import { Infrastructure, InvitedUserSummary } from '@/types/infrastructure';
 import { ApplicationSummary, ApplicationStatus } from '@/types/application';
 import { infrastructureApi } from '@/lib/api/infrastructures';
@@ -49,27 +54,56 @@ const APP_IN_FLIGHT_STATUSES: ApplicationStatus[] = ['CREATED', 'BUILDING', 'PUS
 
 const ROLE_COLORS: Record<string, string> = {
   super_admin: 'text-brand',
-  admin: 'text-azure',
+  admin: 'text-foreground',
   user: 'text-success',
   guest: 'text-muted-foreground',
 };
 
-const STATUS: Record<string, { dot: string; badge: string; label: string }> = {
-  ACTIVE: { dot: 'bg-success', badge: 'border-success/30 bg-success/10 text-success', label: 'text-success' },
-  PROVISIONING: { dot: 'bg-azure animate-pulse', badge: 'border-azure/30 bg-azure/10 text-azure', label: 'text-azure' },
-  DEPLOYING: { dot: 'bg-azure animate-pulse', badge: 'border-azure/30 bg-azure/10 text-azure', label: 'text-azure' },
-  BUILDING: { dot: 'bg-azure animate-pulse', badge: 'border-azure/30 bg-azure/10 text-azure', label: 'text-azure' },
-  PENDING: { dot: 'bg-warning animate-pulse', badge: 'border-warning/30 bg-warning/10 text-warning', label: 'text-warning' },
-  ERROR: { dot: 'bg-destructive', badge: 'border-destructive/30 bg-destructive/10 text-destructive', label: 'text-destructive' },
-  FAILED: { dot: 'bg-destructive', badge: 'border-destructive/30 bg-destructive/10 text-destructive', label: 'text-destructive' },
-  DESTROYING: { dot: 'bg-warning animate-pulse', badge: 'border-warning/30 bg-warning/10 text-warning', label: 'text-warning' },
-  DESTROYED: { dot: 'bg-muted-foreground', badge: 'border-hairline bg-surface-1 text-muted-foreground', label: 'text-muted-foreground' },
-};
+function Banner({ tone = 'info', children }: { tone?: 'info' | 'error' | 'warning'; children: React.ReactNode }) {
+  return (
+    <div
+      className={cn(
+        'rounded-lg border px-4 py-3 text-sm',
+        tone === 'info' && 'border-border bg-surface-1 text-foreground',
+        tone === 'warning' && 'border-warning/30 bg-warning/10 text-foreground',
+        tone === 'error' && 'border-destructive/30 bg-destructive/10 text-foreground',
+      )}
+    >
+      {children}
+    </div>
+  );
+}
 
-const statusOf = (status: string) =>
-  STATUS[status] ?? { dot: 'bg-muted-foreground', badge: 'border-hairline bg-surface-1 text-muted-foreground', label: 'text-muted-foreground' };
+function Dot({ tone, pulse }: { tone: 'brand' | 'warning'; pulse?: boolean }) {
+  return <span className={cn('mt-1.5 size-1.5 shrink-0 rounded-full', tone === 'brand' ? 'bg-brand' : 'bg-warning', pulse && 'animate-pulse')} />;
+}
 
-const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
+function SettingsGroup({ title, tone, children }: { title: string; tone?: 'danger'; children: React.ReactNode }) {
+  return (
+    <section className="space-y-2">
+      <h3 className={cn('px-1 text-xs font-medium', tone === 'danger' ? 'text-destructive' : 'text-muted-foreground')}>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function SettingsRow({ title, description, action, tone, highlight }: { title: string; description: React.ReactNode; action: React.ReactNode; tone?: 'danger'; highlight?: boolean }) {
+  return (
+    <div
+      className={cn(
+        'flex items-center justify-between gap-4 rounded-lg border px-4 py-3',
+        tone === 'danger' ? 'border-destructive/30' : 'border-border bg-surface-1',
+        highlight && 'border-warning/50',
+      )}
+    >
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-foreground">{title}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+      </div>
+      <div className="shrink-0">{action}</div>
+    </div>
+  );
+}
 
 // A blob-response request (evidence pack, exit export) gets its error body back as a
 // Blob too, so the usual `err.response?.data?.error` read is undefined — read the blob's
@@ -276,7 +310,7 @@ export default function InfrastructureDetailPage() {
     try {
       await infrastructureApi.delete(id);
       const wasActive = infra?.status === 'ACTIVE';
-      toast.success(wasActive ? 'Destroy queued — We are tearing down your AWS resources' : 'Infrastructure deleted');
+      toast.success(wasActive ? 'Destroy queued. Launchpad is tearing down your AWS resources.' : 'Infrastructure deleted');
       router.push('/dashboard/infrastructures');
     } catch (error: unknown) {
       const err = error as { response?: { data?: { error?: string } } };
@@ -288,7 +322,7 @@ export default function InfrastructureDetailPage() {
   };
 
   const handleNuked = () => {
-    toast.success('Infrastructure nuked — everything removed');
+    toast.success('Infrastructure nuked. Everything is removed.');
     router.push('/dashboard/infrastructures');
   };
 
@@ -343,10 +377,10 @@ export default function InfrastructureDetailPage() {
         // Not final: the teardown request was published but not yet confirmed, and
         // exited_at is deliberately left unset server-side. Keep the dialog open so the
         // owner can retry rather than implying the exit already completed.
-        toast.info('DNS teardown still in progress — retry to finish exit');
+        toast.info('DNS teardown is still running. Retry to finish the exit.');
         return;
       }
-      toast.success('Exit complete — platform DNS records removed');
+      toast.success('Exit complete. Platform DNS records are removed.');
       setCompleteExitOpen(false);
       await loadData();
     } catch (error: unknown) {
@@ -397,7 +431,7 @@ export default function InfrastructureDetailPage() {
     setVerifyingCfn(true);
     try {
       await infrastructureApi.cfnVerify(id);
-      toast.success('Connection verified — provisioning queued');
+      toast.success('Connection verified. Provisioning is queued.');
       await loadData();
     } catch (error: unknown) {
       const err = error as { response?: { status?: number; data?: { error?: string; retry_after_seconds?: number } } };
@@ -435,211 +469,213 @@ export default function InfrastructureDetailPage() {
   };
 
   if (loading) return (
-    <div className="space-y-6">
-      <div className="h-3 w-16 rounded panel animate-pulse" />
+    <div className="space-y-6" aria-busy="true" aria-label="Loading infrastructure">
+      <Skeleton className="h-4 w-16" />
       <div className="flex items-start justify-between">
         <div className="space-y-2.5">
-          <div className="h-3 w-40 rounded panel animate-pulse" />
-          <div className="h-7 w-56 rounded panel animate-pulse" />
+          <Skeleton className="h-6 w-56" />
+          <Skeleton className="h-4 w-72 max-w-full" />
         </div>
-        <div className="h-8 w-40 rounded-lg panel animate-pulse" />
+        <Skeleton className="h-8 w-28" />
       </div>
-      <div className="grid grid-cols-3 gap-3">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-24 rounded-xl panel animate-pulse" />
-        ))}
-      </div>
-      <div className="h-40 rounded-xl panel animate-pulse" />
+      <Skeleton className="h-20 w-full" />
+      <Skeleton className="h-40 w-full" />
     </div>
   );
 
   if (!infra) return (
-    <div className="rounded-2xl panel-inset px-8 py-20 text-center">
-      <p className="text-sm text-muted-foreground">Infrastructure not found.</p>
-    </div>
+    <EmptyState
+      icon={AppWindow}
+      title="Infrastructure not found"
+      description="It may have been deleted, or you may not have access to it."
+      action={<Link href="/dashboard/infrastructures" className={buttonVariants({ variant: 'outline' })}>Back to infrastructure</Link>}
+    />
   );
 
-  const st = statusOf(infra.status);
+  const details = [
+    { label: 'AWS account', value: infra.code, mono: true },
+    { label: 'Region', value: infra.metadata?.aws_region ?? 'Not set', mono: true },
+    { label: 'Compute', value: infra.compute_type === 'eks' ? 'Kubernetes (EKS)' : 'ECS Fargate' },
+    { label: 'Max CPU', value: `${infra.max_cpu} vCPU`, mono: true },
+    { label: 'Max memory', value: `${infra.max_memory} GB`, mono: true },
+  ];
 
   return (
-    <motion.div {...rise} className="space-y-6">
-      <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-        <ArrowLeft className="w-3.5 h-3.5" /> Back
+    <div className="reveal space-y-6">
+      <button onClick={() => router.back()} className="flex items-center gap-1.5 rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground">
+        <ArrowLeft className="size-3.5" /> Back
       </button>
 
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-1.5">
-          <span className="eyebrow">Console / Infrastructure</span>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-xl font-display font-semibold text-foreground tracking-tight">{infra.name}</h1>
-            <span className={`font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${st.badge}`}>
-              {infra.status}
-            </span>
-            <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border border-hairline bg-surface-1 text-muted-foreground">
-              {infra.compute_type === 'eks' ? 'Kubernetes' : 'ECS Fargate'}
-            </span>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h1 className="truncate text-xl font-semibold tracking-tight text-foreground">{infra.name}</h1>
+            <StatusBadge status={infra.status} />
             {infra.is_mock && (
-              <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border border-brand/30 bg-brand-soft text-brand">
-                Mock / Dev
-              </span>
+              <span className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground">Mock</span>
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           {orgRole.allow('manage_infrastructure', isSuperAdmin) && (infra.status === 'ERROR' || infra.status === 'DESTROYED' || infra.status === 'PENDING') && (
-            <Button variant="outline" size="sm" onClick={handleReprovision} disabled={reprovisioning} className="gap-1.5 text-brand hover:text-brand">
-              <RefreshCw className={`w-3.5 h-3.5 ${reprovisioning ? 'animate-spin' : ''}`} /> Reprovision
+            <Button variant="outline" size="sm" onClick={handleReprovision} disabled={reprovisioning}>
+              <RefreshCw className={cn('size-3.5', reprovisioning && 'animate-spin')} /> Reprovision
             </Button>
           )}
           {isSuperAdmin && !orgRole.enabled && (
-            <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)} className="gap-1.5">
-              <UserPlus className="w-3.5 h-3.5" /> Invite
+            <Button variant="outline" size="sm" onClick={() => setInviteOpen(true)}>
+              <UserPlus className="size-3.5" /> Invite
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)} className="gap-1.5">
-            <Settings className="w-3.5 h-3.5" /> Settings
+          <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+            <Settings className="size-3.5" /> Settings
           </Button>
         </div>
       </div>
 
       {infra.is_mock && (
-        <div className="rounded-xl border border-brand/30 bg-brand-soft px-4 py-3 flex items-center gap-3">
-          <div className="w-1.5 h-1.5 rounded-full bg-brand shrink-0" />
-          <p className="text-xs text-brand">
-            This is a MOCK / DEV infrastructure. No real AWS resources exist and the load balancer link is a dead placeholder.
-          </p>
-        </div>
+        <Banner>
+          This is a mock infrastructure for development. No real AWS resources exist, and the load balancer link goes nowhere.
+        </Banner>
       )}
 
       {infra.status === 'PENDING' && !infra.is_cloud_authenticated && (
-        <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 space-y-2.5">
-          <div className="flex items-center gap-3">
-            <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
-            <p className="text-xs text-azure">
-              Waiting for you to run the setup script in AWS account <span className="font-mono">{infra.code}</span>.
-              Provisioning starts automatically once it finishes.
-            </p>
-          </div>
-          {isOwner && (
-            <div className="ml-[18px] flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={handleShowSetupCommand} disabled={reissuingToken} className="h-7 gap-1.5">
-                <Terminal className="w-3.5 h-3.5" /> {reissuingToken ? 'Preparing…' : 'Show setup command'}
-              </Button>
-              {isCfnOnboardingEnabled() && !infra.is_mock && (
-                <Button variant="outline" size="sm" onClick={handleCfnVerify} disabled={verifyingCfn} className="h-7 gap-1.5">
-                  <CloudCog className="w-3.5 h-3.5" /> {verifyingCfn ? 'Verifying…' : 'Verify connection'}
-                </Button>
+        <Banner>
+          <div className="flex items-start gap-3">
+            <Dot tone="brand" pulse />
+            <div className="space-y-2.5">
+              <p>
+                Waiting for the setup script to run in AWS account <span className="font-mono">{infra.code}</span>.
+                Provisioning starts on its own once it finishes.
+              </p>
+              {isOwner && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={handleShowSetupCommand} disabled={reissuingToken}>
+                    <Terminal className="size-3.5" /> {reissuingToken ? 'Preparing…' : 'Show setup command'}
+                  </Button>
+                  {isCfnOnboardingEnabled() && !infra.is_mock && (
+                    <Button variant="outline" size="sm" onClick={handleCfnVerify} disabled={verifyingCfn}>
+                      <CloudCog className="size-3.5" /> {verifyingCfn ? 'Verifying…' : 'Verify connection'}
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
+          </div>
+        </Banner>
       )}
       {infra.status === 'PENDING' && infra.is_cloud_authenticated && (
-        <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 flex items-center gap-3">
-          <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
-          <p className="text-xs text-azure">Provisioning queued — waiting to start…</p>
-        </div>
+        <Banner>
+          <div className="flex items-start gap-3">
+            <Dot tone="brand" pulse />
+            <p>Provisioning is queued and will start shortly.</p>
+          </div>
+        </Banner>
       )}
       {infra.status === 'PROVISIONING' && (
-        <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 flex items-center gap-3">
-          <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
-          <p className="text-xs text-azure">
-            Terraform is provisioning your AWS infrastructure…
-            {!infra.is_mock && ' Usually 8–15 minutes — watch Provisioning Logs below for live progress.'}
-          </p>
-        </div>
+        <Banner>
+          <div className="flex items-start gap-3">
+            <Dot tone="brand" pulse />
+            <p>
+              Terraform is building your AWS infrastructure.
+              {!infra.is_mock && ' This usually takes 8 to 15 minutes. The provisioning logs below show live progress.'}
+            </p>
+          </div>
+        </Banner>
       )}
       {infra.status === 'ERROR' && (
-        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 space-y-2">
-          <p className="text-xs text-destructive">Provisioning failed. Click <span className="font-medium">Reprovision</span> to retry.</p>
+        <Banner tone="error">
+          <p>Provisioning failed. Use <span className="font-medium">Reprovision</span> to retry.</p>
           {provisioningError && (
-            <pre className="text-[11px] font-mono text-destructive/80 whitespace-pre-wrap break-words max-h-40 overflow-auto">{provisioningError}</pre>
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">{provisioningError}</pre>
           )}
-        </div>
+        </Banner>
       )}
       {infra.status === 'DESTROYING' && (
-        <div className="rounded-xl border border-warning/20 bg-warning/5 px-4 py-3 flex items-center gap-3">
-          <div className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse shrink-0" />
-          <p className="text-xs text-warning">Terraform is destroying your AWS infrastructure…</p>
-        </div>
+        <Banner tone="warning">
+          <div className="flex items-start gap-3">
+            <Dot tone="warning" pulse />
+            <p>Terraform is destroying the AWS resources for this infrastructure.</p>
+          </div>
+        </Banner>
       )}
 
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          { icon: Server, label: 'Provider', value: infra.cloud_provider, mono: false, tint: 'text-brand' },
-          { icon: Cpu, label: 'Max CPU', value: `${infra.max_cpu} vCPU`, mono: true, tint: 'text-azure' },
-          { icon: HardDrive, label: 'Max Memory', value: `${infra.max_memory} GB`, mono: true, tint: 'text-success' },
-        ].map(({ icon: Icon, label, value, mono, tint }) => (
-          <div key={label} className="rounded-xl panel p-4">
-            <Icon className={`w-4 h-4 ${tint} mb-3`} />
-            <p className="eyebrow">{label}</p>
-            <p className={`mt-1 text-sm font-semibold text-foreground ${mono ? 'font-mono' : ''}`}>{value}</p>
+      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border max-md:[&>div:last-child:nth-child(odd)]:col-span-2 md:grid-cols-5">
+        {details.map(({ label, value, mono }) => (
+          <div key={label} className="bg-card px-4 py-3">
+            <dt className="text-xs text-muted-foreground">{label}</dt>
+            <dd className={cn('mt-1 truncate text-sm text-foreground', mono && 'font-mono')}>{value}</dd>
           </div>
         ))}
-      </div>
+      </dl>
 
       {infra.environment?.alb_dns && (
-        <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
-          <span className="eyebrow">Load Balancer</span>
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface-1 px-4 py-3">
+          <span className="text-xs text-muted-foreground">Load balancer</span>
           {infra.is_mock ? (
-            <span className="text-xs text-muted-foreground/70 flex items-center gap-2 font-mono cursor-not-allowed select-none">
-              {infra.environment.alb_dns} <span className="text-[10px] uppercase tracking-widest text-muted-foreground/60">dead link</span>
+            <span className="flex cursor-not-allowed select-none items-center gap-2 break-all font-mono text-xs text-muted-foreground">
+              {infra.environment.alb_dns} <span className="text-xs">(placeholder)</span>
             </span>
           ) : (
             <a href={`http://${infra.environment.alb_dns}`} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-azure hover:text-azure/80 flex items-center gap-1.5 font-mono transition-colors">
-              {infra.environment.alb_dns} <ExternalLink className="w-3 h-3" />
+              className="flex items-center gap-1.5 break-all rounded-sm font-mono text-xs text-brand transition-colors hover:underline">
+              {infra.environment.alb_dns} <ExternalLink className="size-3 shrink-0" />
             </a>
           )}
         </div>
       )}
 
-      <div className="space-y-3">
+      <section className="space-y-3" aria-labelledby="apps-title">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-display font-semibold text-foreground">
-            Applications <span className="text-muted-foreground/60 font-normal font-mono">({apps.length})</span>
+          <h2 id="apps-title" className="text-sm font-medium text-foreground">
+            Applications <span className="font-normal text-muted-foreground">{apps.length}</span>
           </h2>
-          {infra.status === 'ACTIVE' && canDeploy && (
-            <Button size="sm" onClick={() => router.push(`/dashboard/applications/new?infra=${id}`)} className="gap-1.5">
-              <Plus className="w-3.5 h-3.5" /> Deploy
+          {infra.status === 'ACTIVE' && canDeploy && apps.length > 0 && (
+            <Button size="sm" onClick={() => router.push(`/dashboard/applications/new?infra=${id}`)}>
+              <Plus className="size-3.5" /> Deploy
             </Button>
           )}
         </div>
         {apps.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-hairline-strong p-10 text-center">
-            <p className="text-xs text-muted-foreground mb-3">No applications deployed yet</p>
-            {infra.status === 'ACTIVE' && canDeploy && (
-              <Button size="sm" onClick={() => router.push(`/dashboard/applications/new?infra=${id}`)} className="gap-1.5">
-                <Plus className="w-3.5 h-3.5" /> Deploy First Application
-              </Button>
-            )}
-          </div>
+          <EmptyState
+            icon={AppWindow}
+            title="No applications yet"
+            description={
+              infra.status === 'ACTIVE'
+                ? canDeploy
+                  ? 'Connect a GitHub repository and Launchpad builds and deploys it here.'
+                  : 'Applications deployed here will show up in this list.'
+                : 'You can deploy once provisioning has finished.'
+            }
+            action={
+              infra.status === 'ACTIVE' && canDeploy ? (
+                <Button size="sm" onClick={() => router.push(`/dashboard/applications/new?infra=${id}`)}>
+                  <Plus className="size-3.5" /> Deploy an application
+                </Button>
+              ) : undefined
+            }
+          />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {apps.map((app) => {
-              const ast = statusOf(app.status);
-              return (
-                <div key={app.id}
-                  className="group rounded-xl panel p-4 cursor-pointer transition-colors hover:border-brand/30 hover:bg-surface-2"
-                  onClick={() => router.push(`/dashboard/applications/${app.id}`)}>
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-medium text-foreground truncate">{app.name}</span>
-                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                      <span className={`w-1.5 h-1.5 rounded-full ${ast.dot}`} />
-                      <span className={`font-mono text-[10px] uppercase tracking-[0.12em] ${ast.label}`}>{app.status}</span>
-                    </div>
+          <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+            {apps.map((app) => (
+              <li key={app.id}>
+                <Link
+                  href={`/dashboard/applications/${app.id}`}
+                  className="flex items-center gap-4 px-4 py-3 outline-none transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-foreground">{app.name}</p>
+                    <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+                      {app.cpu} vCPU · {app.memory} GB · :{app.port}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono">
-                    <span>{app.cpu} vCPU</span>
-                    <span>{app.memory} GB</span>
-                    <span>:{app.port}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                  <StatusBadge status={app.status} />
+                </Link>
+              </li>
+            ))}
+          </ul>
         )}
-      </div>
+      </section>
 
       <DatabasesSection infraId={id} environmentActive={infra.status === 'ACTIVE'} canManage={canManageDatabases} />
 
@@ -648,56 +684,56 @@ export default function InfrastructureDetailPage() {
       {isOwner && <ProvisioningLogsPanel infraId={id} status={infra.status} connected={infra.is_cloud_authenticated} />}
 
       <Sheet open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <SheetContent className="w-[480px] min-w-[320px] max-w-[640px] overflow-y-auto resize-x">
-          <SheetHeader className="mb-6">
-            <SheetTitle className="text-base font-display font-semibold">Settings</SheetTitle>
+        <SheetContent className="w-full overflow-y-auto sm:w-[480px] sm:max-w-[640px]">
+          <SheetHeader className="mb-2">
+            <SheetTitle className="text-base font-semibold">Settings</SheetTitle>
           </SheetHeader>
 
-          <div className="space-y-6">
-            <div className="space-y-2">
-              <p className="eyebrow px-1">Details</p>
-              <div className="rounded-xl panel-inset divide-y divide-hairline">
+          <div className="space-y-6 px-4 pb-6">
+            <SettingsGroup title="Details">
+              <div className="divide-y divide-border rounded-lg border border-border bg-surface-1">
                 {[
                   { label: 'ID', value: infra.id, mono: true },
                   { label: 'Provider', value: infra.cloud_provider },
-                  { label: 'Region', value: infra.metadata?.aws_region ?? '—', mono: true },
+                  { label: 'Region', value: infra.metadata?.aws_region ?? 'Not set', mono: true },
                   { label: 'Status', value: infra.status },
                   { label: 'Max CPU', value: `${infra.max_cpu} vCPU` },
-                  { label: 'Max Memory', value: `${infra.max_memory} GB` },
-                  { label: 'Cloud Auth', value: infra.is_cloud_authenticated ? 'Authenticated' : 'Not authenticated' },
+                  { label: 'Max memory', value: `${infra.max_memory} GB` },
+                  { label: 'Cloud access', value: infra.is_cloud_authenticated ? 'Connected' : 'Not connected' },
                   { label: 'Created', value: new Date(infra.created_at).toLocaleDateString() },
                 ].map(({ label, value, mono }) => (
-                  <div key={label} className="flex items-center justify-between px-4 py-2.5">
+                  <div key={label} className="flex items-center justify-between gap-4 px-4 py-2.5">
                     <span className="text-xs text-muted-foreground">{label}</span>
-                    <span className={`text-xs text-foreground/80 ${mono ? 'font-mono' : ''} max-w-[200px] truncate`}>{value}</span>
+                    <span className={cn('max-w-[240px] truncate text-xs text-foreground', mono && 'font-mono')}>{value}</span>
                   </div>
                 ))}
-                <div className="flex items-center justify-between px-4 py-2.5">
+                <div className="flex items-center justify-between gap-4 px-4 py-2.5">
                   <span className="text-xs text-muted-foreground">Name</span>
                   {isOwner && editingName ? (
                     <div className="flex items-center gap-2">
                       <Input value={infraName} onChange={(e) => setInfraName(e.target.value)}
+                        aria-label="Infrastructure name"
                         onKeyDown={(e) => { if (e.key === 'Enter') handleRenameInfra(); if (e.key === 'Escape') setEditingName(false); }}
-                        className="h-7 text-xs w-36 font-mono" autoFocus />
+                        className="h-7 w-36 text-xs" autoFocus />
                       <button onClick={handleRenameInfra} disabled={savingName}
-                        className="text-xs text-brand hover:text-brand/80 disabled:opacity-40 transition-colors">
-                        {savingName ? '…' : 'Save'}
+                        className="rounded-sm text-xs font-medium text-brand transition-colors hover:underline disabled:opacity-40">
+                        {savingName ? 'Saving…' : 'Save'}
                       </button>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-foreground/80">{infra.name}</span>
+                      <span className="text-xs text-foreground">{infra.name}</span>
                       {isOwner && (
-                        <button onClick={() => { setInfraName(infra.name); setEditingName(true); }}
-                          className="text-muted-foreground/50 hover:text-foreground transition-colors">
-                          <Pencil className="w-3 h-3" />
+                        <button aria-label="Rename" onClick={() => { setInfraName(infra.name); setEditingName(true); }}
+                          className="rounded-sm text-muted-foreground transition-colors hover:text-foreground">
+                          <Pencil className="size-3" />
                         </button>
                       )}
                     </div>
                   )}
                 </div>
               </div>
-            </div>
+            </SettingsGroup>
 
             {isOwner && infra.is_cloud_authenticated && (() => {
               // Branch between the script and CFN refresh flows by how this account was
@@ -706,155 +742,136 @@ export default function InfrastructureDetailPage() {
               // that the same as the model's own 'script' default.
               const isCfnManaged = isCfnOnboardingEnabled() && infra.onboarding_method === 'cloudformation';
               return (
-                <div className="space-y-2">
-                  <p className="eyebrow px-1">AWS Permissions</p>
-                  <div className={`rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3 ${policyState.kind === 'stale' ? 'ring-1 ring-warning/40' : ''}`}>
-                    <div>
-                      <p className="text-xs font-medium text-foreground">{policyState.title}</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">{policyState.detail}</p>
-                    </div>
-                    <Button
-                      variant={policyState.kind === 'stale' ? 'default' : 'outline'}
-                      size="sm"
-                      onClick={() => (isCfnManaged ? setCfnRefreshOpen(true) : setRefreshPolicyOpen(true))}
-                      className="gap-1.5 shrink-0"
-                    >
-                      <ShieldCheck className="w-3.5 h-3.5" /> Refresh
-                    </Button>
-                  </div>
-                </div>
+                <SettingsGroup title="AWS permissions">
+                  <SettingsRow
+                    highlight={policyState.kind === 'stale'}
+                    title={policyState.title}
+                    description={policyState.detail}
+                    action={
+                      <Button
+                        variant={policyState.kind === 'stale' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => (isCfnManaged ? setCfnRefreshOpen(true) : setRefreshPolicyOpen(true))}
+                      >
+                        <ShieldCheck className="size-3.5" /> Refresh
+                      </Button>
+                    }
+                  />
+                </SettingsGroup>
               );
             })()}
 
             {isOwner && (
-              <div className="space-y-2">
-                <p className="eyebrow px-1">Compliance</p>
-                <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-medium text-foreground">Evidence Pack</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">
-                      What Launchpad can do in your account, what it actually has, and where they differ.
-                    </p>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={handleDownloadEvidencePack} disabled={downloadingEvidence} className="gap-1.5 shrink-0">
-                    <Download className="w-3.5 h-3.5" /> {downloadingEvidence ? 'Preparing…' : 'Download'}
-                  </Button>
-                </div>
-              </div>
+              <SettingsGroup title="Compliance">
+                <SettingsRow
+                  title="Evidence pack"
+                  description="What Launchpad can do in your account, what it actually has, and where they differ."
+                  action={
+                    <Button variant="outline" size="sm" onClick={handleDownloadEvidencePack} disabled={downloadingEvidence}>
+                      <Download className="size-3.5" /> {downloadingEvidence ? 'Preparing…' : 'Download'}
+                    </Button>
+                  }
+                />
+              </SettingsGroup>
             )}
 
             {isOwner && !infra.exited_at && (
-              <div className="space-y-2">
-                <p className="eyebrow px-1">Continuity</p>
-                <div className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-medium text-foreground">Exit Export</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">
-                      A handover archive: inventory, revocation steps, Terraform, and CI seed — read-only.
-                    </p>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={() => setExitExportOpen(true)} className="gap-1.5 shrink-0">
-                    <Download className="w-3.5 h-3.5" /> Export
-                  </Button>
-                </div>
-              </div>
+              <SettingsGroup title="Continuity">
+                <SettingsRow
+                  title="Exit export"
+                  description="A read-only handover archive: inventory, revocation steps, Terraform and CI seed."
+                  action={
+                    <Button variant="outline" size="sm" onClick={() => setExitExportOpen(true)}>
+                      <Download className="size-3.5" /> Export
+                    </Button>
+                  }
+                />
+              </SettingsGroup>
             )}
 
             {infra.exited_at && (
-              <div className="space-y-2">
-                <p className="eyebrow px-1">Continuity</p>
-                <div className="rounded-xl panel-inset px-4 py-3">
-                  <p className="text-xs font-medium text-foreground">Exited</p>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">
-                    This infrastructure exited on {new Date(infra.exited_at).toLocaleString()}. Platform hostnames no longer resolve.
-                  </p>
-                </div>
-              </div>
+              <SettingsGroup title="Continuity">
+                <SettingsRow
+                  title="Exited"
+                  description={<>This infrastructure exited on {new Date(infra.exited_at).toLocaleString()}. Platform hostnames no longer resolve.</>}
+                  action={null}
+                />
+              </SettingsGroup>
             )}
 
-            <div className="space-y-2">
-              <p className="eyebrow px-1">Users ({infra.invited_users?.length ?? 0})</p>
+            <SettingsGroup title={`Users (${infra.invited_users?.length ?? 0})`}>
               {!infra.invited_users || infra.invited_users.length === 0 ? (
-                <p className="text-xs text-muted-foreground px-1">No invited users yet.</p>
+                <p className="px-1 text-xs text-muted-foreground">Nobody has been invited yet.</p>
               ) : (
-                <div className="space-y-1.5">
+                <ul className="divide-y divide-border rounded-lg border border-border bg-surface-1">
                   {infra.invited_users.map((u) => (
-                    <div key={u.id} className="rounded-xl panel-inset px-4 py-3 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-7 h-7 rounded-full bg-surface-3 border border-hairline flex items-center justify-center">
-                          <User className="w-3 h-3 text-muted-foreground" />
-                        </div>
-                        <div>
-                          <p className="text-xs font-medium text-foreground">{u.user_name}</p>
-                          <p className="text-[11px] text-muted-foreground">{u.email}</p>
+                    <li key={u.id} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <span className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border bg-surface-3">
+                          <User className="size-3 text-muted-foreground" />
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-foreground">{u.user_name}</p>
+                          <p className="truncate text-xs text-muted-foreground">{u.email}</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <span className={`text-[10px] font-mono uppercase tracking-[0.12em] ${ROLE_COLORS[u.role] ?? 'text-muted-foreground'}`}>{u.role}</span>
+                      <div className="flex shrink-0 items-center gap-3">
+                        <span className={cn('text-xs', ROLE_COLORS[u.role] ?? 'text-muted-foreground')}>{u.role}</span>
                         {isOwner && (
                           <button
+                            aria-label={`Remove ${u.user_name}`}
                             onClick={() => handleRemoveUser(u)}
                             disabled={removingUserId === u.id}
-                            className="text-muted-foreground/50 hover:text-destructive transition-colors disabled:opacity-40"
+                            className="rounded-sm text-muted-foreground transition-colors hover:text-destructive disabled:opacity-40"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Trash2 className="size-3.5" />
                           </button>
                         )}
                       </div>
-                    </div>
+                    </li>
                   ))}
-                </div>
+                </ul>
               )}
-            </div>
+            </SettingsGroup>
 
             {isOwner && (
-              <div className="space-y-2">
-                <p className="eyebrow px-1 text-destructive/70">Danger Zone</p>
+              <SettingsGroup title="Danger zone" tone="danger">
                 {!infra.exited_at && (
-                  <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 flex items-center justify-between">
-                    <div>
-                      <p className="text-xs font-medium text-foreground">Complete Exit</p>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">Tears down platform DNS for this infrastructure. Your AWS resources are untouched.</p>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCompleteExitOpen(true)}
-                      className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive gap-1.5 shrink-0 ml-4"
-                    >
-                      Complete Exit
-                    </Button>
-                  </div>
+                  <SettingsRow
+                    tone="danger"
+                    title="Complete exit"
+                    description="Removes the platform DNS records for this infrastructure. Your AWS resources are untouched."
+                    action={
+                      <Button variant="outline" size="sm" onClick={() => setCompleteExitOpen(true)}
+                        className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive">
+                        Complete exit
+                      </Button>
+                    }
+                  />
                 )}
-                <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-foreground">Delete Infrastructure</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">Tears down all AWS resources. Cannot be undone.</p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setDeleteOpen(true)}
-                    className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive gap-1.5 shrink-0 ml-4"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" /> Delete
-                  </Button>
-                </div>
-                <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-foreground">Nuke Infrastructure</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">Destroys everything — apps, databases (no snapshot), logs, and all AWS resources. Does not refuse when apps or databases exist.</p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setNukeOpen(true)}
-                    className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive gap-1.5 shrink-0 ml-4"
-                  >
-                    <Flame className="w-3.5 h-3.5" /> Nuke
-                  </Button>
-                </div>
-              </div>
+                <SettingsRow
+                  tone="danger"
+                  title="Delete infrastructure"
+                  description="Tears down all AWS resources Launchpad created. This can’t be undone."
+                  action={
+                    <Button variant="outline" size="sm" onClick={() => setDeleteOpen(true)}
+                      className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive">
+                      <Trash2 className="size-3.5" /> Delete
+                    </Button>
+                  }
+                />
+                <SettingsRow
+                  tone="danger"
+                  title="Nuke infrastructure"
+                  description="Destroys everything: apps, databases (no snapshot), logs and all AWS resources. It does not refuse when apps or databases exist."
+                  action={
+                    <Button variant="outline" size="sm" onClick={() => setNukeOpen(true)}
+                      className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive">
+                      <Flame className="size-3.5" /> Nuke
+                    </Button>
+                  }
+                />
+              </SettingsGroup>
             )}
           </div>
         </SheetContent>
@@ -863,10 +880,10 @@ export default function InfrastructureDetailPage() {
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">Delete Infrastructure</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Delete infrastructure</DialogTitle>
           </DialogHeader>
-          <p className="text-xs text-muted-foreground">
-            Delete <span className="text-foreground font-mono">{infra.name}</span>? This will trigger Terraform destroy and remove all AWS resources it provisioned in your account. This cannot be undone.
+          <p className="text-sm text-muted-foreground">
+            Delete <span className="font-mono text-foreground">{infra.name}</span>? Terraform will destroy every AWS resource it created in your account. This can’t be undone.
           </p>
           <div className="flex gap-2 justify-end mt-2">
             <Button variant="outline" onClick={() => setDeleteOpen(false)}>
@@ -890,19 +907,19 @@ export default function InfrastructureDetailPage() {
       <Dialog open={!!setupCommand} onOpenChange={(o) => { if (!o) { setSetupCommand(null); setSetupCommandCopied(false); } }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">Setup Command</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Setup command</DialogTitle>
           </DialogHeader>
           {setupCommand?.misconfig ? (
             <p className="text-xs text-destructive">{setupCommand.misconfig}</p>
           ) : (
             <div className="space-y-3">
-              <div className="rounded-xl border border-warning/30 bg-warning/10 p-3">
-                <p className="text-xs text-warning">
-                  This mints a new one-time token — any earlier onboarding token for this infrastructure stops working. Run this command in a shell with AWS credentials for account <span className="font-mono">{infra.code}</span>.
+              <Banner tone="warning">
+                <p className="text-xs">
+                  This creates a new one-time token, and any earlier token for this infrastructure stops working. Run the command in a shell with AWS credentials for account <span className="font-mono">{infra.code}</span>.
                 </p>
-              </div>
+              </Banner>
               <div className="relative">
-                <pre className="bg-surface-3 border border-hairline rounded-lg px-3 py-2.5 text-[11px] font-mono text-success overflow-x-auto whitespace-pre">{setupCommand?.invocation}</pre>
+                <pre className="overflow-x-auto whitespace-pre rounded-md border border-border bg-surface-1 px-3 py-2.5 pr-9 font-mono text-xs text-foreground">{setupCommand?.invocation}</pre>
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(setupCommand?.invocation ?? '').then(
@@ -910,12 +927,13 @@ export default function InfrastructureDetailPage() {
                         setSetupCommandCopied(true);
                         setTimeout(() => setSetupCommandCopied(false), 2000);
                       },
-                      () => toast.error('Copy failed — copy it manually'),
+                      () => toast.error('Copy failed. Copy it by hand.'),
                     );
                   }}
-                  className="absolute top-2 right-2 text-muted-foreground hover:text-foreground transition-colors"
+                  aria-label="Copy command"
+                  className="absolute right-2 top-2 rounded-sm text-muted-foreground transition-colors hover:text-foreground"
                 >
-                  {setupCommandCopied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                  {setupCommandCopied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
                 </button>
               </div>
             </div>
@@ -929,12 +947,12 @@ export default function InfrastructureDetailPage() {
       <Dialog open={exitExportOpen} onOpenChange={setExitExportOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">Download Exit Export</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Download exit export</DialogTitle>
           </DialogHeader>
-          <p className="text-xs text-muted-foreground">
-            Downloads a handover archive for <span className="text-foreground font-mono">{infra.name}</span>: inventory and ARNs,
-            revocation instructions, a Terraform bundle, redacted task-definitions or Kubernetes manifests, the CI buildspec,
-            and a GitHub webhook removal list. Every environment value is redacted — this is strictly read-only against your AWS account.
+          <p className="text-sm text-muted-foreground">
+            Downloads a handover archive for <span className="font-mono text-foreground">{infra.name}</span>: inventory and ARNs,
+            revocation instructions, a Terraform bundle, redacted task definitions or Kubernetes manifests, the CI buildspec,
+            and a list of GitHub webhooks to remove. Every environment value is redacted, and nothing is changed in your AWS account.
           </p>
           <div className="flex gap-2 justify-end mt-2">
             <Button variant="outline" onClick={() => setExitExportOpen(false)}>
@@ -950,19 +968,19 @@ export default function InfrastructureDetailPage() {
       <Dialog open={completeExitOpen} onOpenChange={setCompleteExitOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">Complete Exit</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Complete exit</DialogTitle>
           </DialogHeader>
-          <p className="text-xs text-muted-foreground">
-            This requests removal of <span className="text-foreground font-mono">{infra.name}</span>&apos;s platform DNS records and marks it exited.
-            Your AWS resources keep running unaffected — only Launchpad&apos;s own DNS zone changes. Platform hostnames will stop resolving.
-            This cannot be undone. Download the exit export first if you have not already.
+          <p className="text-sm text-muted-foreground">
+            This removes the platform DNS records for <span className="font-mono text-foreground">{infra.name}</span> and marks it exited.
+            Your AWS resources keep running; only Launchpad&apos;s own DNS zone changes, so platform hostnames stop resolving.
+            This can’t be undone. Download the exit export first if you haven’t already.
           </p>
           <div className="flex gap-2 justify-end mt-2">
             <Button variant="outline" onClick={() => setCompleteExitOpen(false)}>
               Cancel
             </Button>
             <Button variant="destructive" onClick={handleCompleteExit} disabled={completingExit}>
-              {completingExit ? 'Completing…' : 'Complete Exit'}
+              {completingExit ? 'Completing…' : 'Complete exit'}
             </Button>
           </div>
         </DialogContent>
@@ -971,17 +989,17 @@ export default function InfrastructureDetailPage() {
       <Dialog open={inviteOpen} onOpenChange={(o) => { if (!o) closeInviteDialog(); else setInviteOpen(true); }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">{inviteUrl ? 'Invitation Ready' : 'Invite User'}</DialogTitle>
+            <DialogTitle className="text-base font-semibold">{inviteUrl ? 'Invitation ready' : 'Invite user'}</DialogTitle>
           </DialogHeader>
           {inviteUrl ? (
             <div className="space-y-4">
               <p className="text-xs text-muted-foreground">
                 Share this link with <span className="text-foreground font-mono">{inviteForm.email}</span>.
               </p>
-              <div className="rounded-xl panel-inset p-3 flex items-center gap-3">
-                <p className="flex-1 text-xs font-mono text-muted-foreground break-all">{inviteUrl}</p>
-                <button onClick={copyUrl} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
-                  {copied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
+              <div className="flex items-center gap-3 rounded-md border border-border bg-surface-1 p-3">
+                <p className="flex-1 break-all font-mono text-xs text-muted-foreground">{inviteUrl}</p>
+                <button aria-label="Copy link" onClick={copyUrl} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground">
+                  {copied ? <Check className="size-4 text-success" /> : <Copy className="size-4" />}
                 </button>
               </div>
               <Button onClick={closeInviteDialog} variant="outline" className="w-full">Done</Button>
@@ -991,30 +1009,30 @@ export default function InfrastructureDetailPage() {
               {[
                 { label: 'Email', type: 'email', placeholder: 'user@example.com', key: 'email' },
                 { label: 'Username', type: 'text', placeholder: 'johndoe', key: 'user_name' },
-                { label: 'Temporary Password', type: 'password', placeholder: 'Min 6 characters', key: 'password' },
+                { label: 'Temporary password', type: 'password', placeholder: 'At least 6 characters', key: 'password' },
               ].map(({ label, type, placeholder, key }) => (
                 <div key={key} className="space-y-1.5">
-                  <Label className="eyebrow">{label}</Label>
-                  <Input type={type} placeholder={placeholder}
+                  <Label htmlFor={`invite-${key}`}>{label}</Label>
+                  <Input id={`invite-${key}`} type={type} placeholder={placeholder}
                     value={inviteForm[key as keyof typeof inviteForm]}
                     onChange={(e) => setInviteForm({ ...inviteForm, [key]: e.target.value })}
                     required minLength={key === 'password' ? 6 : undefined}
-                    className="h-9 text-sm" />
+                    />
                 </div>
               ))}
               <div className="space-y-1.5">
-                <Label className="eyebrow">Role</Label>
+                <Label>Role</Label>
                 <Select value={inviteForm.role} onValueChange={(v) => setInviteForm({ ...inviteForm, role: v as 'admin' | 'user' | 'guest' })}>
-                  <SelectTrigger className="h-9 text-sm w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent className="w-[320px]">
-                    <SelectItem value="admin" className="text-sm py-2.5">Admin — can deploy apps</SelectItem>
-                    <SelectItem value="user" className="text-sm py-2.5">User — view only</SelectItem>
-                    <SelectItem value="guest" className="text-sm py-2.5">Guest — limited access</SelectItem>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="admin">Admin: can deploy apps</SelectItem>
+                    <SelectItem value="user">User: view only</SelectItem>
+                    <SelectItem value="guest">Guest: limited access</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <Button type="submit" disabled={inviting} className="w-full mt-1">
-                {inviting ? 'Inviting…' : 'Send Invite'}
+                {inviting ? 'Inviting…' : 'Send invite'}
               </Button>
             </form>
           )}
@@ -1023,6 +1041,6 @@ export default function InfrastructureDetailPage() {
 
       <PolicyRefreshDialog open={refreshPolicyOpen} onOpenChange={setRefreshPolicyOpen} infraId={id} />
       <CfnRefreshDialog open={cfnRefreshOpen} onOpenChange={setCfnRefreshOpen} infraId={id} />
-    </motion.div>
+    </div>
   );
 }

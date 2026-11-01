@@ -67,7 +67,7 @@ const FEATURES = [
   {
     icon: Database,
     title: 'Databases',
-    body: 'PostgreSQL, MySQL and Redis, provisioned in your account next to the apps that use them.',
+    body: 'PostgreSQL, MySQL, Redis or DocumentDB, provisioned in your account next to the apps that use them.',
   },
   {
     icon: Globe,
