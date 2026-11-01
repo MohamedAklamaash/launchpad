@@ -36,7 +36,9 @@ const TEXT: Record<Tone, string> = {
   muted: 'text-muted-foreground',
 };
 
-export function StatusBadge({ status, className }: { status: string; className?: string }) {
+export function StatusBadge({ status, className }: { status?: string | null; className?: string }) {
+  // Some list endpoints omit status; render nothing rather than a bare dot.
+  if (!status) return null;
   const s = TONE[status] ?? { tone: 'muted' as Tone, label: status };
   return (
     <span className={cn('inline-flex items-center gap-1.5 text-xs font-medium', TEXT[s.tone], className)}>
