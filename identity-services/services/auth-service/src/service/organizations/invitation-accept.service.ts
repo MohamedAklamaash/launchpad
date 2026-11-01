@@ -32,16 +32,24 @@ const invalidInvitation = () =>
 
 const MANAGER_ROLES: readonly string[] = [ORG_ROLE.OWNER, ORG_ROLE.ADMIN];
 
+// Reads the inviter under a share lock (Organization is locked first by the caller, the
+// same order the manager paths use) so a concurrent demotion cannot land between this
+// check and commit. Only the owner may have issued an admin invitation.
 const inviterCanStillInvite = async (
-    organizationId: string,
-    inviterAccountId: string,
+    invitation: Invitation,
     transaction: Transaction,
 ): Promise<boolean> => {
     const inviter = await Membership.findOne({
-        where: { organization_id: organizationId, account_id: inviterAccountId, removed_at: null },
+        where: {
+            organization_id: invitation.organization_id,
+            account_id: invitation.invited_by_account_id,
+            removed_at: null,
+        },
         transaction,
+        lock: transaction.LOCK.SHARE,
     });
-    return inviter !== null && MANAGER_ROLES.includes(inviter.role);
+    if (inviter === null || !MANAGER_ROLES.includes(inviter.role)) return false;
+    return invitation.role !== ORG_ROLE.ADMIN || inviter.role === ORG_ROLE.OWNER;
 };
 
 // Proof of control of the invited address: the caller is an authenticated session whose
@@ -134,12 +142,9 @@ export const acceptInvitation = async (
 
         const organization = await Organization.findByPk(invitation.organization_id, {
             transaction,
+            lock: transaction.LOCK.SHARE,
         });
-        const inviterStillAllowed = await inviterCanStillInvite(
-            invitation.organization_id,
-            invitation.invited_by_account_id,
-            transaction,
-        );
+        const inviterStillAllowed = await inviterCanStillInvite(invitation, transaction);
         if (!organization || !inviterStillAllowed) throw invalidInvitation();
 
         const accountId = await resolveAccountId(credential, invitation.email, transaction);

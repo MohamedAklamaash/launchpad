@@ -342,9 +342,9 @@ Infrastructure.user_id`) → `owner`; `InfrastructureUserRole.role == ADMIN` →
 | Databases (create/attach/delete) | yes | yes | no | no |
 | Custom domains | yes | yes | no | no |
 | Exit (account closure) | yes | no | no | no |
-| Members: invite | yes | yes (not as owner) | no | no |
-| Members: remove | yes | yes (not owner) | no | no |
-| Members: change role | yes | yes (not to/from owner) | no | no |
+| Members: invite | yes | yes (developer/viewer only) | no | no |
+| Members: remove | yes | yes (developer/viewer only, or self) | no | no |
+| Members: change role | yes | yes (developer <-> viewer only) | no | no |
 | Billing | yes | no | no | no |
 
 `viewer` exists to give a stakeholder (e.g. a client, a non-technical founder) read access to
@@ -381,6 +381,12 @@ flagged for the required pre-review (see Risks):
 applications and change cpu, memory, port, branch and dockerfile path. Those cells stay as
 decided above and were reviewed and accepted by the owner as a known cost-control trade-off,
 not an open finding.
+
+**Owner decision (2026-11-01): only the owner manages admins.** An admin cannot invite
+someone as admin, promote anyone to admin, change an admin's role, or remove an admin (403,
+checked under the row locks in the mutating transaction). Admins still invite, re-role
+(developer <-> viewer) and remove developers and viewers, and any member, admin included,
+can leave. Ownership transfer is unchanged.
 
 Admin cannot grant or hold the `owner` role, cannot remove or demote the org's owner, and
 cannot touch billing — enforced by: the partial-unique-index invariant (only one `owner` row
@@ -955,8 +961,9 @@ Operational steps for shipping the auth-service side of F9. Order matters.
      deadlock. The team-org creation audit row records the creator as actor.
    - **`PATCH .../members/{accountId} {role}`**: owner or admin, via `changeMemberRole`. The
      schema allows `admin`, `developer`, `viewer`; `owner` is a 422, an owner's own row is a
-     409 (even for the owner), so there is no path to or from owner except transfer. An admin
-     may change another admin and may change their own role downward.
+     409 (even for the owner), so there is no path to or from owner except transfer. Only the
+     owner may change an admin's role or promote to admin (2026-11-01 decision); an admin
+     gets 403 on those, including on their own row (they can leave instead).
    - **`DELETE .../members/{accountId}`**: owner or admin removes any non-owner via
      `removeMember`. Any active member may remove themselves (leave); "self" is the verified
      credential's account compared to the path id. The owner gets 409 whether removed by an
@@ -1045,6 +1052,26 @@ Operational steps for shipping the auth-service side of F9. Order matters.
    - **Gaps closed alongside.** The caller's own row in the members list carries `account_id`
      for every role (viewers need it to call leave); other rows keep the viewer redaction. The
      gateway `AuthenticateOtpBody` declares `new_password` (6-72).
+
+10. **Only the owner manages admins (2026-11-01).** Admins get 403 on inviting as admin,
+    promoting to admin, changing an admin's role and removing an admin; accepting an
+    admin-role invitation also requires the inviter to still be the owner (checked under a
+    share lock on Organization then the inviter row). Pre-flag check: invitations created
+    before this rule may carry role admin from an admin inviter. List and revoke them before
+    enabling `ORGS_ENABLED`:
+
+    ```sql
+    SELECT i.id, i.organization_id, i.email, i.invited_by_account_id
+    FROM invitations i
+    LEFT JOIN memberships m
+      ON m.organization_id = i.organization_id
+     AND m.account_id = i.invited_by_account_id
+     AND m.removed_at IS NULL
+    WHERE i.role = 'admin' AND i.accepted_at IS NULL AND i.revoked_at IS NULL
+      AND (m.role IS DISTINCT FROM 'owner');
+    ```
+
+    Accept already refuses these (generic invalid-invitation 400), so revoking is hygiene.
 
 ## Open questions
 

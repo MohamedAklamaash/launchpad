@@ -14,7 +14,7 @@ export const lockManagerActor = async (
     organizationId: string,
     actorAccountId: string,
     transaction: Transaction,
-): Promise<void> => {
+): Promise<OrgRole> => {
     const organization = await Organization.findByPk(organizationId, {
         transaction,
         lock: transaction.LOCK.UPDATE,
@@ -29,5 +29,30 @@ export const lockManagerActor = async (
     if (!actor) throw new HttpError(404, 'Organization not found');
     if (!MANAGER_ROLES.includes(actor.role)) {
         throw new HttpError(403, 'Only an owner or admin can do this');
+    }
+    return actor.role;
+};
+
+export type ActorStanding = OrgRole | 'self' | 'system';
+
+// An actor with no verified standing (locked role, self, or system) is treated as a
+// non-owner, so omitting the manager lock can never skip the owner-only admin rule.
+export const actorStandingFor = (
+    lockedRole: OrgRole | undefined,
+    actorAccountId: string | null,
+    targetAccountId: string,
+): ActorStanding | null => {
+    if (lockedRole) return lockedRole;
+    if (actorAccountId === null) return 'system';
+    return actorAccountId === targetAccountId ? 'self' : null;
+};
+
+export const assertOwnerForAdminChange = (
+    standing: ActorStanding | null,
+    affectedRoles: readonly OrgRole[],
+): void => {
+    if (standing === ORG_ROLE.OWNER || standing === 'self' || standing === 'system') return;
+    if (affectedRoles.includes(ORG_ROLE.ADMIN)) {
+        throw new HttpError(403, 'Only the organization owner can manage admins');
     }
 };

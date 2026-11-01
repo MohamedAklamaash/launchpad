@@ -8,6 +8,7 @@ import type { AccessTokenPayload } from '@/utils/handle-token';
 import { logger } from '@/utils/logger';
 import { otpAttempts } from '@/utils/otp-attempts';
 import { issueInvitation, revokeInvitation } from './invitation.service';
+import { assertOwnerForAdminChange } from './actor-lock';
 import { requireOrgManager } from './org-access.service';
 import { enforceSlot } from './org-rate-limit';
 import { reportOwnerRoleAttempt } from './owner-attempt-signal';
@@ -61,6 +62,8 @@ export const createInvitation = async (
         }
         throw new HttpError(409, 'Cannot invite a member with this role');
     }
+
+    assertOwnerForAdminChange(manager.role, [input.role]);
 
     const alreadyMember = await Membership.findOne({
         where: {

@@ -225,6 +225,38 @@ test('accept: expired, revoked, unknown and wrong-email attempts are indistingui
     for (const body of bodies) assert.deepEqual(body, { message: GENERIC });
 });
 
+test('accept: an admin-role invitation is honored only when the inviter is the owner', async () => {
+    const cases = [
+        { inviterRole: 'admin', role: 'admin', status: 400 },
+        { inviterRole: 'owner', role: 'admin', status: 200 },
+        { inviterRole: 'admin', role: 'developer', status: 200 },
+    ];
+    for (const c of cases) {
+        const s = await seed({ inviterRole: c.inviterRole, role: c.role });
+        try {
+            const invitee = s.h.addCredential('invitedUsers', { email: 'invitee@example.com' });
+
+            const res = await accept(s.h, s.token, s.h.tokenFor(invitee));
+
+            const label = `${c.inviterRole} invites ${c.role}`;
+            assert.equal(res.status, c.status, label);
+            if (c.status === 400) {
+                assert.deepEqual(res.body, { message: GENERIC }, label);
+                assert.equal(s.invitation.accepted_at, null, label);
+                assert.equal(
+                    s.h.state.memberships.some((m) => m.account_id === invitee.account_id),
+                    false,
+                    label,
+                );
+            } else {
+                assert.equal(res.body?.role, c.role, label);
+            }
+        } finally {
+            await s.h.close();
+        }
+    }
+});
+
 test('accept: a forwarded token is useless to a different account', async () => {
     const { h, token, invitation } = await seed();
     try {

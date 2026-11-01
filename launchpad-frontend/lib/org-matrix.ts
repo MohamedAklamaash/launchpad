@@ -55,3 +55,12 @@ export const ROLE_LABEL: Record<OrgRole, string> = {
 };
 
 export const ASSIGNABLE_ROLES = ['admin', 'developer', 'viewer'] as const;
+
+export function assignableRolesFor(actor: OrgRole): readonly (typeof ASSIGNABLE_ROLES)[number][] {
+  return actor === 'owner' ? ASSIGNABLE_ROLES : ASSIGNABLE_ROLES.filter((r) => r !== 'admin');
+}
+
+export function canManageMember(actor: OrgRole, target: OrgRole): boolean {
+  if (!roleCan(actor, 'members_remove') || target === 'owner') return false;
+  return target !== 'admin' || actor === 'owner';
+}

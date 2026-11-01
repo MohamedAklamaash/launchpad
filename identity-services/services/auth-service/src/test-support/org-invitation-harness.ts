@@ -153,7 +153,7 @@ export const createHarness = async () => {
             const run = tail.then(() =>
                 runWithRollback((hooks) =>
                     cb({
-                        LOCK: { UPDATE: 'UPDATE' },
+                        LOCK: { UPDATE: 'UPDATE', SHARE: 'SHARE' },
                         afterCommit: (hook: () => void) => hooks.push(hook),
                     }),
                 ),

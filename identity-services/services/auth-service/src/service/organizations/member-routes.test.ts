@@ -67,6 +67,9 @@ test('change role: every caller role against every target role', async () => {
                 } else if (targetRole === 'owner') {
                     assert.equal(res.status, 409, label);
                     assert.equal(f.targetRow.role, 'owner', label);
+                } else if (callerRole === 'admin' && targetRole === 'admin') {
+                    assert.equal(res.status, 403, label);
+                    assert.equal(f.targetRow.role, 'admin', label);
                 } else {
                     assert.equal(res.status, 200, label);
                     assert.equal(res.body?.role, 'viewer', label);
@@ -123,7 +126,7 @@ test('change role: an admin cannot promote themselves past admin or touch the ow
 });
 
 test('change role: success writes one audit row and one membership.changed event with a bumped version', async () => {
-    const f = await fixture('admin', 'developer');
+    const f = await fixture('owner', 'developer');
     try {
         const res = await patchRole(f, f.target.account_id as string, 'admin');
 
@@ -138,6 +141,60 @@ test('change role: success writes one audit row and one membership.changed event
             f.h.state.published.map((p) => [p.routingKey, p.payload.account_id, p.payload.role]),
             [['org.membership.changed', f.target.account_id, 'admin']],
         );
+    } finally {
+        await f.h.close();
+    }
+});
+
+test('change role: an admin cannot promote anyone to admin or change an admin, the owner can', async () => {
+    const asAdmin = await fixture('admin', 'developer');
+    try {
+        for (const from of ['developer', 'viewer'] as const) {
+            asAdmin.targetRow.role = from;
+            const res = await patchRole(asAdmin, asAdmin.target.account_id as string, 'admin');
+            assert.equal(res.status, 403, from);
+            assert.equal(asAdmin.targetRow.role, from);
+        }
+        const selfDemote = await patchRole(asAdmin, asAdmin.caller.account_id as string, 'viewer');
+        assert.equal(selfDemote.status, 403);
+        assert.equal(asAdmin.h.state.published.length, 0);
+        assert.equal(asAdmin.h.state.audit.length, 0);
+
+        asAdmin.targetRow.role = 'developer';
+        const allowed = await patchRole(asAdmin, asAdmin.target.account_id as string, 'viewer');
+        assert.equal(allowed.status, 200);
+        assert.equal(asAdmin.targetRow.role, 'viewer');
+    } finally {
+        await asAdmin.h.close();
+    }
+
+    const asOwner = await fixture('owner', 'developer');
+    try {
+        const promote = await patchRole(asOwner, asOwner.target.account_id as string, 'admin');
+        assert.equal(promote.status, 200);
+        assert.equal(asOwner.targetRow.role, 'admin');
+        const demote = await patchRole(asOwner, asOwner.target.account_id as string, 'developer');
+        assert.equal(demote.status, 200);
+        assert.equal(asOwner.targetRow.role, 'developer');
+    } finally {
+        await asOwner.h.close();
+    }
+});
+
+test('remove: an admin cannot remove an admin but can leave; the owner can remove one', async () => {
+    const f = await fixture('admin', 'admin');
+    try {
+        const blocked = await del(f, f.target.account_id as string);
+        assert.equal(blocked.status, 403);
+        assert.equal(f.targetRow.removed_at, null);
+        assert.equal(f.h.state.published.length, 0);
+
+        const left = await del(f, f.caller.account_id as string);
+        assert.equal(left.status, 204);
+
+        const byOwner = await del(f, f.target.account_id as string, f.h.tokenFor(f.owner));
+        assert.equal(byOwner.status, 204);
+        assert.notEqual(f.targetRow.removed_at, null);
     } finally {
         await f.h.close();
     }
@@ -173,6 +230,9 @@ test('remove: every caller role against every other target role', async () => {
                     assert.equal(f.targetRow.removed_at, null, label);
                 } else if (targetRole === 'owner') {
                     assert.equal(res.status, 409, label);
+                    assert.equal(f.targetRow.removed_at, null, label);
+                } else if (callerRole === 'admin' && targetRole === 'admin') {
+                    assert.equal(res.status, 403, label);
                     assert.equal(f.targetRow.removed_at, null, label);
                 } else {
                     assert.equal(res.status, 204, label);
