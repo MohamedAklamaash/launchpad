@@ -14,7 +14,7 @@ export const lockManagerActor = async (
     organizationId: string,
     actorAccountId: string,
     transaction: Transaction,
-): Promise<void> => {
+): Promise<OrgRole> => {
     const organization = await Organization.findByPk(organizationId, {
         transaction,
         lock: transaction.LOCK.UPDATE,
@@ -29,5 +29,16 @@ export const lockManagerActor = async (
     if (!actor) throw new HttpError(404, 'Organization not found');
     if (!MANAGER_ROLES.includes(actor.role)) {
         throw new HttpError(403, 'Only an owner or admin can do this');
+    }
+    return actor.role;
+};
+
+export const assertOwnerForAdminChange = (
+    actorRole: OrgRole | undefined,
+    affectedRoles: readonly OrgRole[],
+): void => {
+    if (!actorRole || actorRole === ORG_ROLE.OWNER) return;
+    if (affectedRoles.includes(ORG_ROLE.ADMIN)) {
+        throw new HttpError(403, 'Only the organization owner can manage admins');
     }
 };

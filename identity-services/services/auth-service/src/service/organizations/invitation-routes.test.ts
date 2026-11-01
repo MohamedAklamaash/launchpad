@@ -54,6 +54,37 @@ test('an admin can invite a developer: only the hash is stored, the token goes t
     }
 });
 
+test('an admin cannot invite as admin and nothing is created or sent; the owner can', async () => {
+    const asAdmin = await withOrg('admin');
+    try {
+        const res = await invite(
+            asAdmin.orgId,
+            { email: 'a@example.com', role: 'admin' },
+            asAdmin.bearer,
+            asAdmin.h,
+        );
+        assert.equal(res.status, 403);
+        assert.equal(asAdmin.h.state.invitations.length, 0);
+        assert.equal(asAdmin.h.state.emailJobs.length, 0);
+    } finally {
+        await asAdmin.h.close();
+    }
+
+    const asOwner = await withOrg('owner');
+    try {
+        const res = await invite(
+            asOwner.orgId,
+            { email: 'a@example.com', role: 'admin' },
+            asOwner.bearer,
+            asOwner.h,
+        );
+        assert.equal(res.status, 201);
+        assert.equal(res.body?.role, 'admin');
+    } finally {
+        await asOwner.h.close();
+    }
+});
+
 test('an owner can invite a viewer', async () => {
     const { h, orgId, bearer } = await withOrg('owner');
     try {

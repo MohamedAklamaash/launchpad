@@ -17,7 +17,7 @@ import { apiErrorMessage, organizationApi } from '@/lib/api/organizations';
 import { useOrgStore } from '@/lib/store/org';
 import { useAuthStore } from '@/lib/store/auth';
 import { currentSessionClaims } from '@/lib/session-claims';
-import { ASSIGNABLE_ROLES, ROLE_LABEL, roleCan } from '@/lib/org-matrix';
+import { assignableRolesFor, canManageMember, ROLE_LABEL, roleCan } from '@/lib/org-matrix';
 import { loginUrlWithNext } from '@/lib/post-login';
 import type { AssignableRole, OrgInvitation, OrgMember } from '@/types/organization';
 
@@ -142,7 +142,8 @@ function Members() {
                 key={m.id}
                 member={m}
                 self={isSelf(m)}
-                canManage={canManage}
+                roles={role ? assignableRolesFor(role) : []}
+                canManage={!!role && canManageMember(role, m.role)}
                 onChangeRole={async (next) => {
                   if (!m.account_id) return;
                   try {
@@ -167,7 +168,7 @@ function Members() {
       </section>
 
       {canManage && (
-        <InviteSection orgId={id} invitations={invitations} onChanged={loadInvitations} />
+        <InviteSection orgId={id} roles={assignableRolesFor(role!)} invitations={invitations} onChanged={loadInvitations} />
       )}
 
       {canTransfer && members && (
@@ -257,12 +258,14 @@ function MemberRow({
   member,
   self,
   canManage,
+  roles,
   onChangeRole,
   onRemove,
 }: {
   member: OrgMember;
   self: boolean;
   canManage: boolean;
+  roles: readonly AssignableRole[];
   onChangeRole: (role: AssignableRole) => Promise<void>;
   onRemove: () => void;
 }) {
@@ -286,7 +289,7 @@ function MemberRow({
             <SelectValue>{ROLE_LABEL[member.role]}</SelectValue>
           </SelectTrigger>
           <SelectContent>
-            {ASSIGNABLE_ROLES.map((r) => (
+            {roles.map((r) => (
               <SelectItem key={r} value={r} className="text-sm py-2">{ROLE_LABEL[r]}</SelectItem>
             ))}
           </SelectContent>
@@ -308,10 +311,12 @@ function MemberRow({
 
 function InviteSection({
   orgId,
+  roles,
   invitations,
   onChanged,
 }: {
   orgId: string;
+  roles: readonly AssignableRole[];
   invitations: OrgInvitation[];
   onChanged: () => Promise<void>;
 }) {
@@ -364,7 +369,7 @@ function InviteSection({
               <SelectValue>{ROLE_LABEL[role]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {ASSIGNABLE_ROLES.map((r) => (
+              {roles.map((r) => (
                 <SelectItem key={r} value={r} className="text-sm py-2">{ROLE_LABEL[r]}</SelectItem>
               ))}
             </SelectContent>

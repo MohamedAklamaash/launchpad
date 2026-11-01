@@ -60,7 +60,8 @@ export interface ChangeRoleResult {
     version: number;
 }
 
-// Matrix row "change role": owner and admin only. Owner is never a source or a target role
+// Matrix row "change role": owner and admin only; only the owner may change an admin's role
+// or promote anyone to admin (enforced under the row locks in changeMemberRole). Owner is never a source or a target role
 // here: changeMemberRole rejects an owner row and the owner role, and the route schema
 // refuses `owner` before this runs. Ownership moves only through transfer. The actor is
 // re-verified as a manager under row locks inside the transaction.
@@ -87,7 +88,7 @@ export const changeOrgMemberRole = async (
     };
 };
 
-// Matrix row "remove": owner and admin (never the owner). Any active member may remove
+// Matrix row "remove": owner and admin (never the owner); only the owner removes an admin. Any active member may remove
 // themselves (leave), except the owner, who must transfer first. "Self" is the verified
 // credential's account, compared to the path id, never the raw token claim.
 export const removeOrLeaveOrganization = async (

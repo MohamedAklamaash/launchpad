@@ -5,7 +5,9 @@ here or not at all.
 
 The first 15 capabilities are the plan's rows verbatim. The `Members:*` rows are enforced
 by auth-service and have no Django call site; they stay in the table so the matrix is one
-complete, testable artifact. The last two capabilities cover endpoints the plan's table
+complete, testable artifact. Owner decision 2026-11-01: only the owner manages admins, so
+the admin cells in the `Members:*` rows cover developers and viewers only (the extra
+admin-target rule lives in auth-service). The last two capabilities cover endpoints the plan's table
 does not name. Each keeps the role set the endpoint had before F9 (owner-only, or
 owner+admin for application deletion) so this ticket widens nothing the plan did not decide.
 """
