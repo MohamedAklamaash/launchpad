@@ -107,7 +107,7 @@ function ApplicationsPageInner() {
       <PageHeader
         title="Applications"
         description="Services running on your AWS accounts."
-        actions={canDeploy && apps.length > 0 ? deployButton : undefined}
+        actions={canDeploy ? deployButton : undefined}
       />
 
       {infrastructures.length > 0 && (

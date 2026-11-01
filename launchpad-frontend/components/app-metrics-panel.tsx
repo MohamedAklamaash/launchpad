@@ -364,7 +364,7 @@ export function AppMetricsPanel({ appId, infraId }: Props) {
                 pauseAutoRefreshRef.current = false;
                 load();
               }}
-              className="text-xs font-mediumst text-muted-foreground hover:text-foreground transition-colors shrink-0"
+              className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors shrink-0"
             >
               Retry
             </button>

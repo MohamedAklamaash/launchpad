@@ -71,7 +71,7 @@ export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack,
             {d.has_build_logs && (
               <button
                 onClick={() => setLogsTarget(d)}
-                className="shrink-0 flex items-center gap-1 text-xs font-mediumst text-muted-foreground hover:text-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
+                className="shrink-0 flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
                 title="View this build's logs"
               >
                 <Hammer className="size-3" /> Build logs
@@ -81,7 +81,7 @@ export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack,
               d.rollback_addressable ? (
                 <button
                   onClick={() => setTarget(d)}
-                  className="shrink-0 flex items-center gap-1 text-xs font-mediumst text-muted-foreground hover:text-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
+                  className="shrink-0 flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
                   title="Roll back to this deployment"
                 >
                   <RotateCcw className="size-3" /> Roll back
@@ -89,7 +89,7 @@ export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack,
               ) : (
                 <button
                   disabled
-                  className="shrink-0 flex items-center gap-1 text-xs font-mediumst text-muted-foreground/30 cursor-not-allowed rounded px-1.5 py-1"
+                  className="shrink-0 flex items-center gap-1 text-xs font-medium text-muted-foreground/30 cursor-not-allowed rounded px-1.5 py-1"
                   title="This deploy predates per-commit image tagging and can't be rolled back to"
                 >
                   <RotateCcw className="size-3" /> Roll back

@@ -606,7 +606,7 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
               type="button"
               onClick={() => fetchLogs(nextCursor)}
               disabled={loading}
-              className="mt-2 flex items-center gap-1 text-xs font-mediumst text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+              className="mt-2 flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
             >
               <ChevronDown className="size-3" /> Load more
             </button>
