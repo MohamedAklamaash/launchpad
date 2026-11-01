@@ -118,7 +118,7 @@ const SECURITY = [
 
 const ROLES = [
   ['Owner', 'Everything, including billing, deleting infrastructure and transferring ownership.'],
-  ['Admin', 'Adds AWS accounts, manages members, databases, domains and costs.'],
+  ['Admin', 'Adds AWS accounts, invites developers and viewers, manages databases, domains and costs.'],
   ['Developer', 'Deploys, rolls back, edits environment variables, reads logs and metrics.'],
   ['Viewer', 'Read-only. Sees what is running; changes nothing.'],
 ];
