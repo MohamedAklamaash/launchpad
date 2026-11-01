@@ -43,7 +43,7 @@ function describeError(e: unknown): LogError {
       const seconds = retryAfter ? parseInt(retryAfter, 10) : NaN;
       return {
         status,
-        message: Number.isFinite(seconds) ? `Too many requests, try again in ${seconds}s.` : 'Too many requests, try again shortly.',
+        message: Number.isFinite(seconds) ? `Too many requests. Try again in ${seconds}s.` : 'Too many requests. Try again shortly.',
       };
     }
     case 502:
@@ -147,32 +147,32 @@ export function RuntimeLogsPanel({ appId, computeType }: Props) {
   const isForbidden = error?.status === 403;
 
   return (
-    <div className="rounded-xl panel p-4">
+    <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <ScrollText className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="eyebrow">Runtime Logs</p>
+          <ScrollText className="size-3.5 text-muted-foreground" />
+          <h2 className="text-sm font-medium text-foreground">Runtime logs</h2>
         </div>
         {hasLoaded && !isForbidden && (
-          <span className="font-mono text-[10px] text-muted-foreground/60">{events.length} lines</span>
+          <span className="font-mono text-xs text-muted-foreground">{events.length} lines</span>
         )}
       </div>
 
       {isForbidden ? (
-        <div className="flex items-center gap-2.5 rounded-lg border border-hairline bg-surface-1 px-3 py-3">
-          <Lock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-surface-1 px-3 py-3">
+          <Lock className="size-3.5 text-muted-foreground shrink-0" />
           <p className="text-xs text-muted-foreground">{error.message}</p>
         </div>
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-2 mb-3">
-            <div className="flex items-center rounded-lg border border-hairline p-0.5 gap-0.5">
+            <div className="flex items-center rounded-lg border border-border p-0.5 gap-0.5">
               {(['app', 'proxy'] as const).map((c) => (
                 <button
                   key={c}
                   type="button"
                   onClick={() => handleContainerChange(c)}
-                  className={`px-2.5 h-6 rounded-md text-[11px] font-mono uppercase tracking-wide transition-colors ${
+                  className={`px-2.5 h-6 rounded-md text-xs font-medium transition-colors ${
                     container === c ? 'bg-surface-3 text-foreground' : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
@@ -185,7 +185,7 @@ export function RuntimeLogsPanel({ appId, computeType }: Props) {
               <SelectTrigger size="sm" className="h-7 font-mono text-xs">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent className="bg-popover border-hairline">
+              <SelectContent className="bg-popover border-border">
                 {WINDOW_OPTIONS.map((m) => (
                   <SelectItem key={m} value={String(m)} className="font-mono text-xs">Last {m}m</SelectItem>
                 ))}
@@ -193,7 +193,7 @@ export function RuntimeLogsPanel({ appId, computeType }: Props) {
             </Select>
 
             {computeType === 'eks' && (
-              <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80 select-none cursor-pointer">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground/80 select-none cursor-pointer">
                 <input
                   type="checkbox"
                   checked={previous}
@@ -205,7 +205,7 @@ export function RuntimeLogsPanel({ appId, computeType }: Props) {
             )}
 
             <div className="ml-auto flex items-center gap-2">
-              <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80 select-none cursor-pointer">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground/80 select-none cursor-pointer">
                 <input
                   type="checkbox"
                   checked={autoRefresh}
@@ -224,7 +224,7 @@ export function RuntimeLogsPanel({ appId, computeType }: Props) {
                   fetchLogs();
                 }}
               >
-                <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} />
                 {hasLoaded ? 'Refresh' : 'Load logs'}
               </Button>
             </div>
@@ -232,7 +232,7 @@ export function RuntimeLogsPanel({ appId, computeType }: Props) {
 
           {error && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 mb-3">
-              <p className="text-xs text-destructive/80">{error.message}</p>
+              <p className="text-xs text-muted-foreground">{error.message}</p>
             </div>
           )}
 
@@ -242,24 +242,24 @@ export function RuntimeLogsPanel({ appId, computeType }: Props) {
 
           {events.length > 0 && (
             <>
-              <div className="bg-surface-1 border border-hairline rounded-lg p-3 max-h-96 overflow-y-auto font-mono text-[11px] leading-relaxed">
+              <div className="bg-surface-1 border border-border rounded-lg p-3 max-h-96 overflow-y-auto font-mono text-xs leading-relaxed">
                 {events.map((event, idx) => (
                   <div key={`${idx}-${event.timestamp}`} className="whitespace-pre-wrap break-all text-foreground/90">
-                    <span className="text-muted-foreground/60">{event.timestamp}</span>{' '}{event.message}
+                    <span className="text-muted-foreground">{event.timestamp}</span>{' '}{event.message}
                   </div>
                 ))}
               </div>
               {truncated && (
-                <p className="text-[10px] text-warning mt-1.5">Output truncated — narrow the time window for full coverage.</p>
+                <p className="text-xs text-warning mt-1.5">Output truncated, narrow the time window for full coverage.</p>
               )}
               {nextCursor && (
                 <button
                   type="button"
                   onClick={() => fetchLogs(nextCursor)}
                   disabled={loading}
-                  className="mt-2 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors disabled:opacity-40"
+                  className="mt-2 flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
                 >
-                  <ChevronDown className="w-3 h-3" /> Load more
+                  <ChevronDown className="size-3" /> Load more
                 </button>
               )}
             </>

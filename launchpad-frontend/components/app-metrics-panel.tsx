@@ -32,7 +32,7 @@ const CHART_HEIGHT = 190;
 // An unrecognized future code still renders (with the raw code appended) rather than
 // silently showing nothing.
 const UNAVAILABLE_REASONS: Record<string, string> = {
-  eks_container_insights_pending: "Container Insights hasn't reported data for this app yet — it can take a few minutes after deploy.",
+  eks_container_insights_pending: "Container Insights hasn't reported data for this app yet, it can take a few minutes after deploy.",
 };
 
 function unavailableMessage(code: string): string {
@@ -117,10 +117,10 @@ function ChartTooltip({ active, payload, label, unit }: {
 }) {
   if (!active || !payload?.length || label === undefined) return null;
   return (
-    <div className="rounded-lg border border-hairline bg-popover px-2.5 py-2 shadow-lg">
-      <p className="text-[10px] text-muted-foreground mb-1">{new Date(label).toLocaleString()}</p>
+    <div className="rounded-lg border border-border bg-popover px-2.5 py-2 shadow-popover">
+      <p className="text-xs text-muted-foreground mb-1">{new Date(label).toLocaleString()}</p>
       {payload.map((p) => (
-        <p key={p.dataKey} className="flex items-center gap-1.5 text-[11px]">
+        <p key={p.dataKey} className="flex items-center gap-1.5 text-xs">
           <span className="w-2 h-2 rounded-full shrink-0" style={{ background: p.color }} />
           <span className="text-muted-foreground">{p.name}</span>
           <span className="font-mono text-foreground ml-auto">
@@ -147,15 +147,15 @@ function MetricChart({ title, unit, lines, range, yDomain, unavailableReason, al
   const showLegend = lines.length > 1;
 
   return (
-    <div className="rounded-lg border border-hairline bg-surface-1 p-3">
+    <div className="rounded-lg border border-border bg-surface-1 p-3">
       <p className="text-xs font-medium text-foreground mb-2">{title}</p>
       {unavailableReason ? (
         <div style={{ height: CHART_HEIGHT }} className="flex items-center justify-center px-4 text-center">
-          <p className="text-[11px] text-muted-foreground">{unavailableReason}</p>
+          <p className="text-xs text-muted-foreground">{unavailableReason}</p>
         </div>
       ) : !hasData ? (
         <div style={{ height: CHART_HEIGHT }} className="flex items-center justify-center">
-          <p className="text-[11px] text-muted-foreground">No traffic in this window</p>
+          <p className="text-xs text-muted-foreground">No traffic in this window</p>
         </div>
       ) : (
         <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
@@ -215,9 +215,9 @@ function lastValue(points: MetricPoint[] | undefined): number | null {
 
 function StatCard({ label, value, unavailable }: { label: string; value: string; unavailable?: boolean }) {
   return (
-    <div className="rounded-lg border border-hairline bg-surface-1 px-3 py-2.5">
-      <p className="text-[10px] uppercase tracking-[0.1em] text-muted-foreground/70 mb-1">{label}</p>
-      <p className={`text-lg font-display font-semibold ${unavailable ? 'text-muted-foreground/50' : 'text-foreground'}`}>{value}</p>
+    <div className="rounded-lg border border-border bg-surface-1 px-3 py-2.5">
+      <p className="text-xs text-muted-foreground mb-1">{label}</p>
+      <p className={`text-lg font-semibold ${unavailable ? 'text-muted-foreground' : 'text-foreground'}`}>{value}</p>
     </div>
   );
 }
@@ -299,21 +299,21 @@ export function AppMetricsPanel({ appId, infraId }: Props) {
   const unavailable: Partial<Record<MetricSeriesName, string>> = data?.unavailable ?? {};
 
   return (
-    <div className="rounded-xl panel p-4">
+    <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <Activity className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="eyebrow">Metrics</p>
-          {data?.cached && <span className="font-mono text-[10px] text-muted-foreground/60">cached</span>}
+          <Activity className="size-3.5 text-muted-foreground" />
+          <h2 className="text-sm font-medium text-foreground">Metrics</h2>
+          {data?.cached && <span className="font-mono text-xs text-muted-foreground">cached</span>}
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-lg border border-hairline p-0.5 gap-0.5">
+          <div className="flex items-center rounded-lg border border-border p-0.5 gap-0.5">
             {RANGES.map((r) => (
               <button
                 key={r.value}
                 type="button"
                 onClick={() => setRange(r.value)}
-                className={`px-2.5 h-6 rounded-md text-[11px] font-mono uppercase tracking-wide transition-colors ${
+                className={`px-2.5 h-6 rounded-md text-xs font-medium transition-colors ${
                   range === r.value ? 'bg-surface-3 text-foreground' : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
@@ -331,7 +331,7 @@ export function AppMetricsPanel({ appId, infraId }: Props) {
               load();
             }}
           >
-            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} />
           </Button>
         </div>
       </div>
@@ -339,7 +339,7 @@ export function AppMetricsPanel({ appId, infraId }: Props) {
       {loading && !data && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-3">
           {Array.from({ length: 5 }).map((_, i) => (
-            <div key={i} className="h-16 rounded-lg panel-inset animate-pulse" />
+            <div key={i} className="h-16 rounded-lg bg-muted/80 animate-pulse" />
           ))}
         </div>
       )}
@@ -348,13 +348,13 @@ export function AppMetricsPanel({ appId, infraId }: Props) {
         <div
           className={`flex items-start gap-2.5 rounded-lg px-3 py-3 mb-3 ${
             error.kind === 'not_deployed'
-              ? 'border border-hairline bg-surface-1'
+              ? 'border border-border bg-surface-1'
               : 'border border-destructive/30 bg-destructive/10'
           }`}
         >
-          {error.kind !== 'not_deployed' && <AlertTriangle className="w-3.5 h-3.5 text-destructive shrink-0 mt-0.5" />}
+          {error.kind !== 'not_deployed' && <AlertTriangle className="size-3.5 text-destructive shrink-0 mt-0.5" />}
           <div className="flex-1">
-            <p className={`text-xs ${error.kind === 'not_deployed' ? 'text-muted-foreground' : 'text-destructive/80'}`}>
+            <p className={`text-xs ${error.kind === 'not_deployed' ? 'text-muted-foreground' : 'text-muted-foreground'}`}>
               {error.message}
             </p>
           </div>
@@ -364,7 +364,7 @@ export function AppMetricsPanel({ appId, infraId }: Props) {
                 pauseAutoRefreshRef.current = false;
                 load();
               }}
-              className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors shrink-0"
+              className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors shrink-0"
             >
               Retry
             </button>

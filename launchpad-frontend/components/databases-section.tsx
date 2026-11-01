@@ -229,9 +229,9 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
                 placeholder="primary-db" pattern="^[a-z][a-z0-9-]{2,30}$" required className="font-mono" />
             </div>
             <div className="space-y-1.5">
-              <Label>Engine</Label>
+              <Label htmlFor="db-engine">Engine</Label>
               <Select value={form.engine} onValueChange={(v) => handleEngineChange(v as DatabaseEngine)}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="db-engine" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {ENGINE_OPTIONS.map((o) => (
                     <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
@@ -241,9 +241,9 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Version</Label>
+                <Label htmlFor="db-version">Version</Label>
                 <Select value={form.engine_version} onValueChange={(v) => v && setForm({ ...form, engine_version: v })}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="db-version" className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {ENGINE_VERSIONS[form.engine].map((v) => (
                       <SelectItem key={v} value={v}>{v}</SelectItem>
@@ -252,9 +252,9 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label>Instance class</Label>
+                <Label htmlFor="db-instance">Instance class</Label>
                 <Select value={form.instance_class} onValueChange={(v) => v && setForm({ ...form, instance_class: v })}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="db-instance" className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {INSTANCE_CLASSES[form.engine].map((v) => (
                       <SelectItem key={v} value={v} className="font-mono">{v}</SelectItem>
@@ -265,8 +265,8 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
             </div>
             {form.engine !== 'redis' && (
               <div className="space-y-1.5">
-                <Label>Storage (GB)</Label>
-                <Input type="number" min={20} max={1000} value={form.allocated_storage ?? 20}
+                <Label htmlFor="db-storage">Storage (GB)</Label>
+                <Input id="db-storage" type="number" min={20} max={1000} value={form.allocated_storage ?? 20}
                   onChange={(e) => setForm({ ...form, allocated_storage: Number(e.target.value) })}
                   className="font-mono" required />
               </div>
@@ -287,8 +287,11 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
             Type <span className="font-mono text-foreground">{deleteTarget?.name}</span> to confirm. Launchpad takes a final
             snapshot before it destroys the database.
           </p>
-          <Input value={confirmName} onChange={(e) => setConfirmName(e.target.value)}
-            placeholder={deleteTarget?.name} className="font-mono" />
+          <div className="space-y-1.5">
+            <Label htmlFor="db-confirm">Database name</Label>
+            <Input id="db-confirm" value={confirmName} onChange={(e) => setConfirmName(e.target.value)}
+              placeholder={deleteTarget?.name} className="font-mono" autoComplete="off" />
+          </div>
           <div className="flex gap-2 justify-end mt-2">
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting || confirmName !== deleteTarget?.name}>

@@ -441,11 +441,11 @@ export default function InfrastructureDetailPage() {
         toast.error(message || 'LaunchpadDeploymentRole is not tagged as CloudFormation-managed yet. Launch the stack first.');
       } else if (status === 403) {
         const retrySeconds = err.response?.data?.retry_after_seconds;
-        toast.error(message || (retrySeconds ? `AssumeRole failed — try again in ${retrySeconds}s.` : 'AssumeRole failed.'));
+        toast.error(message || (retrySeconds ? `AssumeRole failed. Try again in ${retrySeconds}s.` : 'AssumeRole failed.'));
       } else if (status === 404) {
         toast.error(message || 'CloudFormation onboarding is not available on this deployment.');
       } else if (status === 429) {
-        toast.error(message || 'Too many requests for this operation, try again later.');
+        toast.error(message || 'Too many requests for this operation. Try again later.');
       } else {
         toast.error(message || 'Failed to verify the connection');
       }
@@ -1021,9 +1021,9 @@ export default function InfrastructureDetailPage() {
                 </div>
               ))}
               <div className="space-y-1.5">
-                <Label>Role</Label>
+                <Label htmlFor="invite-role">Role</Label>
                 <Select value={inviteForm.role} onValueChange={(v) => setInviteForm({ ...inviteForm, role: v as 'admin' | 'user' | 'guest' })}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger id="invite-role" className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="admin">Admin: can deploy apps</SelectItem>
                     <SelectItem value="user">User: view only</SelectItem>

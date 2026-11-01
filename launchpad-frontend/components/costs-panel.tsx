@@ -89,7 +89,7 @@ export function CostsPanel({ infraId, connected }: Props) {
           setData(await infrastructureApi.getCosts(infraId, months));
           return;
         } catch (retryErr) {
-          setError(isTransient(retryErr) ? 'Cost data is temporarily unavailable, usually clears in a moment.' : e.response?.data?.error || 'Failed to load costs');
+          setError(isTransient(retryErr) ? 'Cost data is temporarily unavailable. It usually clears in a moment.' : e.response?.data?.error || 'Failed to load costs');
           return;
         }
       }

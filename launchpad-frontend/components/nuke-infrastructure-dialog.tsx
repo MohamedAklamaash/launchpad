@@ -123,7 +123,7 @@ export function NukeInfrastructureDialog({ open, onOpenChange, infraId, infraNam
                 <li>Every application on this infrastructure, unlike Delete, this does not refuse when apps exist.</li>
                 <li>Every database, with <span className="text-foreground">no final snapshot</span>, including any snapshot left by an earlier database delete.</li>
                 <li>Custom domains, certificates, logs, and all Terraform-managed AWS resources.</li>
-                <li>The shared deployment role and Terraform state, but only if this is the last Launchpad infrastructure in this AWS account, otherwise they&rsquo;re kept and reported.</li>
+                <li>The shared deployment role and Terraform state, but only if this is the last Launchpad infrastructure in this AWS account; otherwise they&rsquo;re kept and reported.</li>
               </ul>
               <p className="text-xs text-destructive/90">This cannot be undone.</p>
             </div>
@@ -161,7 +161,7 @@ export function NukeInfrastructureDialog({ open, onOpenChange, infraId, infraNam
                     )}
                     {step.status === 'policy_refresh_required' && (
                       <p className="text-xs text-warning mt-0.5">
-                        Policy refresh required, re-run the Refresh policy script, then retry.
+                        Policy refresh required. Re-run the Refresh policy script, then retry.
                       </p>
                     )}
                   </div>

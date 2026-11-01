@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { notFound } from 'next/navigation';
 import { format } from 'date-fns';
-import { LogOut, Pencil, Trash2, UserPlus, X } from 'lucide-react';
+import { LogOut, Pencil, Trash2, UserPlus, Users, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,6 +12,8 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { EmptyState } from '@/components/ui/empty-state';
+import { PageHeader } from '@/components/layout/page-header';
 import { ORGS_ENABLED } from '@/lib/orgs-enabled';
 import { apiErrorMessage, organizationApi } from '@/lib/api/organizations';
 import { useOrgStore } from '@/lib/store/org';
@@ -87,56 +89,48 @@ function Members() {
 
   if (orgStatus === 'ready' && !org) {
     return (
-      <div className="rounded-2xl panel-inset px-8 py-16 text-center">
-        <p className="text-base font-display font-medium text-foreground">Organization not found</p>
-        <p className="text-sm text-muted-foreground mt-1.5">You are not a member of this organization.</p>
-      </div>
+      <EmptyState icon={Users} title="Organization not found" description="You are not a member of this organization." />
     );
   }
 
   const isSelf = (m: OrgMember) => !!myAccountId && m.account_id === myAccountId;
 
   return (
-    <div className="space-y-10">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <span className="eyebrow">Console / Members</span>
-          <h1 className="mt-2 text-2xl font-display font-semibold text-foreground tracking-tight truncate">
-            {org?.name ?? <Skeleton className="h-8 w-48" />}
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1.5">
-            {org ? `${org.is_personal ? 'Personal' : 'Team'} organization · you are ${ROLE_LABEL[org.role].toLowerCase()}` : ' '}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {canManage && (
-            <Button variant="outline" size="sm" onClick={() => setRenameOpen(true)} className="gap-1.5">
-              <Pencil className="w-3.5 h-3.5" /> Rename
-            </Button>
-          )}
-          {role && role !== 'owner' && (
-            <Button variant="outline" size="sm" onClick={() => setLeaveOpen(true)} className="gap-1.5 text-destructive hover:text-destructive">
-              <LogOut className="w-3.5 h-3.5" /> Leave
-            </Button>
-          )}
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title={org?.name ?? 'Members'}
+        description={org ? `${org.is_personal ? 'Personal' : 'Team'} organization. You are ${ROLE_LABEL[org.role].toLowerCase()}.` : undefined}
+        actions={
+          <>
+            {canManage && (
+              <Button variant="outline" size="sm" onClick={() => setRenameOpen(true)}>
+                <Pencil className="size-3.5" /> Rename
+              </Button>
+            )}
+            {role && role !== 'owner' && (
+              <Button variant="outline" size="sm" onClick={() => setLeaveOpen(true)} className="text-destructive hover:text-destructive">
+                <LogOut className="size-3.5" /> Leave
+              </Button>
+            )}
+          </>
+        }
+      />
 
       <section className="space-y-3">
-        <p className="eyebrow">Members</p>
+        <h2 className="text-sm font-medium text-foreground">Members</h2>
         {members === null && !membersError ? (
           <div className="space-y-2">
             {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 w-full rounded-xl" />
+              <Skeleton key={i} className="h-14 w-full rounded-lg" />
             ))}
           </div>
         ) : membersError ? (
-          <div role="alert" className="rounded-2xl panel-inset px-6 py-8 text-center">
+          <div role="alert" className="rounded-lg border border-border bg-surface-1 px-6 py-8 text-center">
             <p className="text-sm text-foreground">{membersError}</p>
             <Button variant="outline" size="sm" onClick={loadMembers} className="mt-4">Try again</Button>
           </div>
         ) : (
-          <div className="rounded-2xl panel divide-y divide-hairline">
+          <div className="rounded-lg border border-border bg-card divide-y divide-border">
             {members!.map((m) => (
               <MemberRow
                 key={m.id}
@@ -163,7 +157,7 @@ function Members() {
           </div>
         )}
         {role === 'viewer' && (
-          <p className="text-[11px] text-muted-foreground/70 px-1">Emails are visible to owners, admins and developers only.</p>
+          <p className="text-xs text-muted-foreground px-1">Emails are visible to owners, admins and developers only.</p>
         )}
       </section>
 
@@ -173,8 +167,8 @@ function Members() {
 
       {canTransfer && members && (
         <section className="space-y-3">
-          <p className="eyebrow">Ownership</p>
-          <div className="rounded-2xl panel p-5 flex items-center justify-between gap-4">
+          <h2 className="text-sm font-medium text-foreground">Ownership</h2>
+          <div className="rounded-lg border border-border bg-card p-5 flex items-center justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-foreground">Transfer ownership</p>
               <p className="text-xs text-muted-foreground mt-0.5 max-w-md">
@@ -248,7 +242,7 @@ function Members() {
 
 function RoleBadge({ role }: { role: OrgMember['role'] }) {
   return (
-    <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-md border border-hairline bg-surface-1 text-muted-foreground">
+    <span className="text-xs px-1.5 py-0.5 rounded-md border border-border bg-surface-1 text-muted-foreground">
       {ROLE_LABEL[role]}
     </span>
   );
@@ -276,7 +270,7 @@ function MemberRow({
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-foreground truncate">
           {member.display_name}
-          {self && <span className="ml-2 font-mono text-[10px] text-brand">You</span>}
+          {self && <span className="ml-2 font-mono text-xs text-brand">You</span>}
         </p>
         {member.email && <p className="text-xs text-muted-foreground truncate">{member.email}</p>}
       </div>
@@ -300,7 +294,7 @@ function MemberRow({
       {canManage && !isOwner && !self && member.account_id ? (
         <Button variant="ghost" size="icon-sm" onClick={onRemove} aria-label={`Remove ${member.display_name}`}
           className="text-muted-foreground hover:text-destructive">
-          <Trash2 className="w-3.5 h-3.5" />
+          <Trash2 className="size-3.5" />
         </Button>
       ) : (
         <span className="w-7" aria-hidden />
@@ -355,17 +349,17 @@ function InviteSection({
 
   return (
     <section className="space-y-3">
-      <p className="eyebrow">Invitations</p>
-      <form onSubmit={send} className="rounded-2xl panel p-5 grid gap-4 sm:grid-cols-[1fr_200px_auto] sm:items-end">
+      <h2 className="text-sm font-medium text-foreground">Invitations</h2>
+      <form onSubmit={send} className="rounded-lg border border-border bg-card p-5 grid gap-4 sm:grid-cols-[1fr_200px_auto] sm:items-end">
         <div className="space-y-1.5">
-          <Label htmlFor="invite-email" className="eyebrow">Email</Label>
+          <Label htmlFor="invite-email">Email</Label>
           <Input id="invite-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)}
             required maxLength={254} placeholder="teammate@example.com" />
         </div>
         <div className="space-y-1.5">
-          <Label className="eyebrow">Role</Label>
+          <Label htmlFor="invite-role">Role</Label>
           <Select value={role} onValueChange={(v) => v && setRole(v as AssignableRole)}>
-            <SelectTrigger className="w-full h-9" aria-label="Role for the invitation">
+            <SelectTrigger id="invite-role" className="w-full">
               <SelectValue>{ROLE_LABEL[role]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
@@ -376,13 +370,13 @@ function InviteSection({
           </Select>
         </div>
         <Button type="submit" disabled={sending || !email.trim()} className="gap-1.5">
-          <UserPlus className="w-3.5 h-3.5" /> {sending ? 'Sending…' : 'Invite'}
+          <UserPlus className="size-3.5" /> {sending ? 'Sending…' : 'Invite'}
         </Button>
         <p className="text-xs text-muted-foreground sm:col-span-3 -mt-2">{ROLE_HINT[role]}</p>
       </form>
 
       {invitations.length > 0 && (
-        <div className="rounded-2xl panel divide-y divide-hairline">
+        <div className="rounded-lg border border-border bg-card divide-y divide-border">
           {invitations.map((inv) => (
             <div key={inv.id} className="flex items-center gap-4 px-5 py-3">
               <div className="min-w-0 flex-1">
@@ -393,7 +387,7 @@ function InviteSection({
               </div>
               <Button variant="ghost" size="sm" onClick={() => revoke(inv)} disabled={revoking === inv.id}
                 aria-label={`Revoke invitation for ${inv.email}`} className="gap-1.5 text-muted-foreground hover:text-destructive">
-                <X className="w-3.5 h-3.5" /> Revoke
+                <X className="size-3.5" /> Revoke
               </Button>
             </div>
           ))}
@@ -443,10 +437,10 @@ function RenameDialog({
       <DialogContent>
         <form onSubmit={save} className="grid gap-4">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">Rename organization</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Rename organization</DialogTitle>
           </DialogHeader>
           <div className="space-y-1.5">
-            <Label htmlFor="rename-org" className="eyebrow">Name</Label>
+            <Label htmlFor="rename-org">Name</Label>
             <Input id="rename-org" value={name} onChange={(e) => setName(e.target.value)} required maxLength={64} autoFocus />
           </div>
           <DialogFooter>
@@ -491,7 +485,7 @@ function ConfirmDialog({
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="text-base font-display font-semibold">{title}</DialogTitle>
+          <DialogTitle className="text-base font-semibold">{title}</DialogTitle>
           <DialogDescription>{body}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -553,7 +547,7 @@ function TransferDialog({
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="text-base font-display font-semibold">Transfer ownership</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Transfer ownership</DialogTitle>
           <DialogDescription>
             {confirming
               ? `Transfer ${orgName} to ${target?.display_name}?`
@@ -567,9 +561,9 @@ function TransferDialog({
               <p className="text-sm text-muted-foreground">Invite someone and wait for them to join first.</p>
             ) : (
               <div className="space-y-1.5">
-                <Label className="eyebrow">New owner</Label>
+                <Label htmlFor="new-owner">New owner</Label>
                 <Select value={targetId} onValueChange={(v) => v && setTargetId(v)}>
-                  <SelectTrigger className="w-full h-9" aria-label="New owner">
+                  <SelectTrigger id="new-owner" className="w-full">
                     <SelectValue placeholder="Select a member">
                       {target ? `${target.display_name}${target.email ? ` (${target.email})` : ''}` : undefined}
                     </SelectValue>

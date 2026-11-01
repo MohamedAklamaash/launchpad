@@ -37,19 +37,19 @@ function CopyField({ record, warn }: { record: DnsRecord; warn?: string }) {
   };
 
   return (
-    <div className="rounded-lg border border-hairline bg-surface-3 px-3 py-2 space-y-1">
+    <div className="rounded-lg border border-border bg-surface-3 px-3 py-2 space-y-1">
       <div className="flex items-center justify-between gap-2">
-        <span className="eyebrow text-[10px]">{record.type} · {record.name}</span>
+        <span className="text-xs text-muted-foreground">{record.type} · {record.name}</span>
         {record.value && (
           <button onClick={copy} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
-            {copied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+            {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
           </button>
         )}
       </div>
-      <code className="block text-[11px] font-mono text-foreground break-all">
-        {record.value || 'Still generating — refresh in a moment'}
+      <code className="block text-xs font-mono text-foreground break-all">
+        {record.value || 'Still generating, refresh in a moment'}
       </code>
-      {warn && <p className="text-[10px] text-warning">{warn}</p>}
+      {warn && <p className="text-xs text-warning">{warn}</p>}
     </div>
   );
 }
@@ -85,7 +85,7 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
       const domain = await customDomainApi.claim(infraId, appId, trimmed);
       setDomains((prev) => [domain, ...prev]);
       setHostname('');
-      toast.success('Domain claimed — save the ownership token below, it will not be shown again.');
+      toast.success('Domain claimed, save the ownership token below, it will not be shown again.');
     } catch (e: unknown) {
       toast.error(errorMessage(e, 'Failed to claim domain'));
     } finally {
@@ -100,7 +100,7 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
       setDomains((prev) => prev.map((d) => (d.id === domainId ? updated : d)));
       toast.success(`${updated.hostname} is now live`);
     } catch (e: unknown) {
-      toast.error(errorMessage(e, 'Verification failed — check the DNS records below and try again'));
+      toast.error(errorMessage(e, 'Verification failed, check the DNS records below and try again'));
     } finally {
       setVerifyingId(null);
     }
@@ -119,10 +119,10 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
   };
 
   return (
-    <div className="panel rounded-2xl p-5 space-y-4">
+    <div className="space-y-4 rounded-lg border border-border bg-card p-4">
       <div className="flex items-center gap-2">
-        <Globe className="w-4 h-4 text-muted-foreground" />
-        <h3 className="text-sm font-display font-semibold text-foreground">Custom Domains</h3>
+        <Globe className="size-4 text-muted-foreground" />
+        <h3 className="text-sm font-medium text-foreground">Custom domains</h3>
       </div>
 
       <div className="flex items-center gap-2">
@@ -134,7 +134,7 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
           onKeyDown={(e) => { if (e.key === 'Enter') handleClaim(); }}
         />
         <Button onClick={handleClaim} disabled={claiming || !hostname.trim()} className="gap-1.5 shrink-0">
-          {claiming ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+          {claiming ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
           Claim
         </Button>
       </div>
@@ -150,7 +150,7 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
           {domains.map((domain) => {
             const badge = STATUS_BADGE[domain.status];
             return (
-              <div key={domain.id} className="rounded-xl border border-hairline p-4 space-y-3">
+              <div key={domain.id} className="rounded-lg border border-border p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-sm font-medium text-foreground truncate">{domain.hostname}</span>
@@ -161,7 +161,7 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
                       variant="outline" size="sm" className="gap-1.5 shrink-0"
                       onClick={() => handleRemove(domain.id)} disabled={removingId === domain.id}
                     >
-                      {removingId === domain.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      {removingId === domain.id ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
                       Remove
                     </Button>
                   )}
@@ -175,21 +175,21 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
                     </p>
                     <CopyField
                       record={domain.ownership_txt}
-                      warn={domain.ownership_txt.value ? 'Shown once — save it now.' : 'Already claimed once; delete and re-claim to see it again.'}
+                      warn={domain.ownership_txt.value ? 'Shown once, save it now.' : 'Already claimed once; delete and re-claim to see it again.'}
                     />
                     <CopyField record={domain.cname_to_edge} />
                     {domain.acm_validation ? (
                       <CopyField record={domain.acm_validation} />
                     ) : (
-                      <p className="text-[11px] text-muted-foreground">
-                        Certificate validation record is still generating — refresh shortly.
+                      <p className="text-xs text-muted-foreground">
+                        Certificate validation record is still generating, refresh shortly.
                       </p>
                     )}
                     <Button
                       size="sm" className="gap-1.5" onClick={() => handleVerify(domain.id)}
                       disabled={verifyingId === domain.id}
                     >
-                      {verifyingId === domain.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                      {verifyingId === domain.id ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
                       Verify
                     </Button>
                   </div>
@@ -197,7 +197,7 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
 
                 {domain.status === 'VALIDATED' && (
                   <p className="text-xs text-success flex items-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <ShieldCheck className="size-3.5" />
                     Live at https://{domain.hostname}
                     {domain.last_verified_at && ` · last verified ${new Date(domain.last_verified_at).toLocaleString()}`}
                   </p>
@@ -205,8 +205,8 @@ export function CustomDomainsPanel({ appId, infraId }: Props) {
 
                 {domain.status === 'DISABLED' && (
                   <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-                    <ShieldX className="w-3.5 h-3.5" />
-                    Disabled — ownership could no longer be verified, or it was removed.
+                    <ShieldX className="size-3.5" />
+                    Disabled, ownership could no longer be verified, or it was removed.
                   </p>
                 )}
               </div>

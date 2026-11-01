@@ -39,7 +39,7 @@ function describeError(e: unknown): LogError {
       return {
         status,
         message: code === 'legacy_build'
-          ? 'This deployment used the pre-platform build path — no build logs are available.'
+          ? 'This deployment used the pre-platform build path, no build logs are available.'
           : (resp?.data?.error || 'Build logs are not available for this deployment.'),
       };
     case 429: {
@@ -47,7 +47,7 @@ function describeError(e: unknown): LogError {
       const seconds = retryAfter ? parseInt(retryAfter, 10) : NaN;
       return {
         status,
-        message: Number.isFinite(seconds) ? `Too many requests, retrying in ${seconds}s.` : 'Too many requests, retrying shortly.',
+        message: Number.isFinite(seconds) ? `Too many requests. Retrying in ${seconds}s.` : 'Too many requests. Retrying shortly.',
       };
     }
     case 502:
@@ -273,29 +273,29 @@ export function BuildLogs({ appId, deploymentId, onFinished }: Props) {
   const isForbidden = error?.status === 403;
 
   return (
-    <div className="rounded-xl panel p-4">
+    <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <Hammer className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="eyebrow">Build Logs</p>
+          <Hammer className="size-3.5 text-muted-foreground" />
+          <h2 className="text-sm font-medium text-foreground">Build logs</h2>
         </div>
         {!loading && events.length > 0 && (
-          <span className="font-mono text-[10px] text-muted-foreground/60">
+          <span className="font-mono text-xs text-muted-foreground">
             {events.length} lines{complete ? '' : ' · live'}
           </span>
         )}
       </div>
 
       {isForbidden ? (
-        <div className="flex items-center gap-2.5 rounded-lg border border-hairline bg-surface-1 px-3 py-3">
-          <Lock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-surface-1 px-3 py-3">
+          <Lock className="size-3.5 text-muted-foreground shrink-0" />
           <p className="text-xs text-muted-foreground">{error.message}</p>
         </div>
       ) : (
         <>
           {error && error.status !== 429 && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 mb-3">
-              <p className="text-xs text-destructive/80">{error.message}</p>
+              <p className="text-xs text-muted-foreground">{error.message}</p>
             </div>
           )}
 
@@ -312,12 +312,12 @@ export function BuildLogs({ appId, deploymentId, onFinished }: Props) {
               <div
                 ref={scrollRef}
                 onScroll={handleScroll}
-                className="bg-surface-1 border border-hairline rounded-lg p-3 max-h-96 overflow-y-auto font-mono text-[11px] leading-relaxed"
+                className="bg-surface-1 border border-border rounded-lg p-3 max-h-96 overflow-y-auto font-mono text-xs leading-relaxed"
               >
                 {events.map((event) => (
                   <div key={event.seq} className="whitespace-pre-wrap break-all text-foreground/90">
-                    <span className="text-muted-foreground/60">{formatTimestamp(event.timestamp)}</span>{' '}
-                    <span className="text-muted-foreground/50 uppercase text-[9px]">[{event.container}]</span>{' '}
+                    <span className="text-muted-foreground">{formatTimestamp(event.timestamp)}</span>{' '}
+                    <span className="text-muted-foreground text-xs">[{event.container}]</span>{' '}
                     {event.message}
                   </div>
                 ))}
@@ -327,9 +327,9 @@ export function BuildLogs({ appId, deploymentId, onFinished }: Props) {
                 <button
                   type="button"
                   onClick={jumpToLatest}
-                  className="absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full bg-brand text-primary-foreground px-3 py-1.5 text-[11px] font-medium shadow-lg hover:opacity-90 transition-opacity"
+                  className="absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full bg-brand text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-popover hover:opacity-90 transition-opacity"
                 >
-                  <ArrowDownToLine className="w-3 h-3" />
+                  <ArrowDownToLine className="size-3" />
                   Jump to latest{newSinceScroll > 0 ? ` (${newSinceScroll})` : ''}
                 </button>
               )}

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
 import {
   Github,
   Users,
@@ -26,6 +25,9 @@ import { authApi } from "@/lib/api/auth";
 import { Infrastructure } from "@/types/infrastructure";
 import { InvitedUser } from "@/types/auth";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/layout/page-header";
+import { EmptyState } from "@/components/ui/empty-state";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -59,9 +61,9 @@ const emptyInvite = {
 
 const ROLE_STYLES: Record<string, string> = {
   super_admin: "border-brand/30 bg-brand-soft text-brand",
-  admin: "border-azure/30 bg-azure/10 text-azure",
+  admin: "border-border bg-muted text-foreground",
   user: "border-success/30 bg-success/10 text-success",
-  guest: "border-hairline bg-surface-1 text-muted-foreground",
+  guest: "border-border bg-surface-1 text-muted-foreground",
 };
 const RANK: Record<string, number> = {
   super_admin: 3,
@@ -70,13 +72,6 @@ const RANK: Record<string, number> = {
   guest: 0,
 };
 const roleLabel = (r: string) => r.replace("_", " ");
-
-const fade = {
-  initial: { opacity: 0, y: 8 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -8 },
-  transition: { duration: 0.2 },
-};
 
 type TabKey = "profile" | "organization" | "billing";
 
@@ -200,7 +195,7 @@ export default function SettingsPage() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      toast.error("Couldn't copy — select and copy the link manually");
+      toast.error("Couldn't copy. Select the link and copy it by hand.");
     }
   };
 
@@ -214,7 +209,7 @@ export default function SettingsPage() {
       );
       if (scopedInfraIds.length === 0) {
         toast.error(
-          "You do not manage any organization this member belongs to",
+          "You don't manage any organization this member belongs to.",
         );
         return;
       }
@@ -235,7 +230,7 @@ export default function SettingsPage() {
       const failed = scopedInfraIds.length - removed.length;
       if (failed > 0) {
         toast.error(
-          `Removed from ${removed.length} of ${scopedInfraIds.length} infrastructures — reopen to retry the rest`,
+          `Removed from ${removed.length} of ${scopedInfraIds.length} infrastructures. Reopen to retry the rest.`,
         );
       } else {
         toast.success(
@@ -282,37 +277,29 @@ export default function SettingsPage() {
   ];
 
   return (
-    <div className="space-y-8">
-      <div>
-        <span className="eyebrow">Console / Settings</span>
-        <h1 className="mt-2 text-2xl font-display font-semibold text-foreground tracking-tight">
-          Settings
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1.5">
-          Your profile, organization, and account.
-        </p>
-      </div>
+    <div className="space-y-6">
+      <PageHeader title="Settings" description="Your profile, organization and account." />
 
-      <div className="flex flex-col md:flex-row gap-8">
-        <nav className="md:w-52 shrink-0 flex md:flex-col gap-1">
+      <div className="flex flex-col gap-6 md:flex-row md:gap-10">
+        <nav aria-label="Settings sections" className="flex shrink-0 gap-1 overflow-x-auto md:w-48 md:flex-col">
           {tabs
             .filter((t) => t.show)
             .map(({ key, label, icon: Icon }) => (
               <button
                 key={key}
                 onClick={() => setTab(key)}
-                className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-left transition-colors ${
+                aria-current={tab === key ? "page" : undefined}
+                className={cn(
+                  "flex h-8 items-center gap-2.5 whitespace-nowrap rounded-md px-2.5 text-left text-sm transition-colors",
                   tab === key
-                    ? "bg-surface-2 text-foreground border border-hairline"
-                    : "text-muted-foreground hover:text-foreground hover:bg-surface-1 border border-transparent"
-                }`}
+                    ? "bg-muted font-medium text-foreground"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                )}
               >
-                <Icon
-                  className={`w-4 h-4 ${tab === key ? "text-brand" : ""}`}
-                />
+                <Icon className="size-4" />
                 {label}
                 {key === "organization" && pendingCount > 0 && (
-                  <span className="ml-auto font-mono text-[10px] px-1.5 py-0.5 rounded border border-warning/30 bg-warning/10 text-warning">
+                  <span className="ml-auto rounded-md border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-xs text-foreground">
                     {pendingCount}
                   </span>
                 )}
@@ -321,18 +308,17 @@ export default function SettingsPage() {
         </nav>
 
         <div className="flex-1 min-w-0 max-w-2xl">
-          <AnimatePresence mode="wait">
-            <motion.div key={tab} {...fade}>
+          <div key={tab} className="reveal">
               {tab === "profile" && (
                 <section className="space-y-3">
-                  <p className="eyebrow">Profile</p>
-                  <div className="rounded-2xl panel p-5">
+                  <h2 className="text-sm font-medium text-foreground">Profile</h2>
+                  <div className="rounded-lg border border-border bg-card p-5">
                     <div className="flex items-center gap-4">
-                      <span className="w-14 h-14 rounded-full overflow-hidden ring-1 ring-hairline-strong shrink-0 flex items-center justify-center bg-surface-2">
+                      <span className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-2">
                         {user.profile_url ? (
                           <Image
                             src={user.profile_url}
-                            alt={user.user_name}
+                            alt=""
                             width={56}
                             height={56}
                             className="w-14 h-14 object-cover"
@@ -350,40 +336,40 @@ export default function SettingsPage() {
                         </p>
                       </div>
                       <span
-                        className={`ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${ROLE_STYLES[user.role] ?? ROLE_STYLES.guest}`}
+                        className={`ml-auto shrink-0 text-xs px-2 py-0.5 rounded-md border ${ROLE_STYLES[user.role] ?? ROLE_STYLES.guest}`}
                       >
                         {roleLabel(user.role)}
                       </span>
                     </div>
 
-                    <div className="mt-5 grid grid-cols-3 gap-3">
+                    <div className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-3">
                       <Stat
                         icon={Server}
-                        tint="text-brand"
+                        tint="text-muted-foreground"
                         label="Infrastructures"
                         value={infras.length}
                       />
                       <Stat
                         icon={Rocket}
-                        tint="text-azure"
+                        tint="text-muted-foreground"
                         label="Applications"
                         value={appCount}
                       />
                       {canSeeOrg && (
                         <Stat
                           icon={Users}
-                          tint="text-success"
+                          tint="text-muted-foreground"
                           label="Members"
                           value={members.length + 1}
                         />
                       )}
                     </div>
 
-                    <div className="mt-4 rounded-xl panel-inset divide-y divide-hairline">
+                    <div className="mt-4 rounded-lg border border-border bg-surface-1 divide-y divide-border">
                       {user.metadata?.github?.username && (
                         <Row label="GitHub">
                           <span className="flex items-center gap-1.5 text-foreground/80">
-                            <Github className="w-3.5 h-3.5" />
+                            <Github className="size-3.5" />
                             {user.metadata.github.username}
                           </span>
                         </Row>
@@ -403,8 +389,8 @@ export default function SettingsPage() {
 
               {tab === "organization" && ORGS_ENABLED && (
                 <section className="space-y-3">
-                  <p className="eyebrow">Organization</p>
-                  <div className="rounded-2xl panel p-5 space-y-4">
+                  <h2 className="text-sm font-medium text-foreground">Organization</h2>
+                  <div className="space-y-4 rounded-lg border border-border bg-card p-5">
                     {orgRole.org ? (
                       <>
                         <div className="flex items-start justify-between gap-3">
@@ -417,7 +403,7 @@ export default function SettingsPage() {
                               organization
                             </p>
                           </div>
-                          <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-1.5 py-0.5 rounded-md border border-hairline bg-surface-1 text-muted-foreground">
+                          <span className="text-xs px-1.5 py-0.5 rounded-md border border-border bg-surface-1 text-muted-foreground">
                             {ROLE_LABEL[orgRole.org.role]}
                           </span>
                         </div>
@@ -426,7 +412,7 @@ export default function SettingsPage() {
                           className="inline-flex"
                         >
                           <Button variant="outline" size="sm" className="gap-1.5">
-                            <Users className="w-3.5 h-3.5" /> Manage members and name
+                            <Users className="size-3.5" /> Manage members and name
                           </Button>
                         </Link>
                       </>
@@ -445,8 +431,8 @@ export default function SettingsPage() {
                 <section className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-baseline gap-2.5 min-w-0">
-                      <p className="eyebrow">Organization</p>
-                      <span className="font-mono text-[10px] text-muted-foreground/60 truncate">
+                      <h2 className="text-sm font-medium text-foreground">Organization</h2>
+                      <span className="truncate text-xs text-muted-foreground">
                         {members.length + 1}{" "}
                         {members.length === 0 ? "member" : "members"}
                         {pendingCount > 0 ? ` · ${pendingCount} pending` : ""}
@@ -459,11 +445,11 @@ export default function SettingsPage() {
                         disabled={infras.length === 0}
                         className="gap-1.5 shrink-0"
                       >
-                        <UserPlus className="w-3.5 h-3.5" /> Invite member
+                        <UserPlus className="size-3.5" /> Invite member
                       </Button>
                     )}
                   </div>
-                  <div className="rounded-2xl panel divide-y divide-hairline">
+                  <div className="rounded-lg border border-border bg-card divide-y divide-border">
                     <MemberRow
                       name={user.user_name}
                       email={user.email}
@@ -488,7 +474,7 @@ export default function SettingsPage() {
                     ))}
                     {members.length === 0 && (
                       <div className="px-5 py-8 text-center">
-                        <p className="text-sm text-foreground">
+                        <p className="text-sm font-medium text-foreground">
                           No teammates yet
                         </p>
                         <p className="text-xs text-muted-foreground mt-1 mb-4 max-w-xs mx-auto">
@@ -504,13 +490,13 @@ export default function SettingsPage() {
                             disabled={infras.length === 0}
                             className="gap-1.5"
                           >
-                            <UserPlus className="w-3.5 h-3.5" /> Invite member
+                            <UserPlus className="size-3.5" /> Invite member
                           </Button>
                         )}
                       </div>
                     )}
                   </div>
-                  <p className="text-[11px] text-muted-foreground/70 px-1">
+                  <p className="px-1 text-xs text-muted-foreground">
                     <span className="inline-block w-1.5 h-1.5 rounded-full bg-warning align-middle mr-1.5" />
                     Pending means the invite hasn&apos;t been accepted (email
                     not verified) yet.
@@ -520,21 +506,15 @@ export default function SettingsPage() {
 
               {tab === "billing" && (
                 <section className="space-y-3">
-                  <p className="eyebrow">Billing</p>
-                  <div className="rounded-2xl panel-inset px-5 py-12 text-center">
-                    <div className="w-11 h-11 rounded-xl bg-surface-2 border border-hairline flex items-center justify-center mx-auto mb-4">
-                      <CreditCard className="w-5 h-5 text-muted-foreground" />
-                    </div>
-                    <p className="text-sm text-foreground">No invoices yet</p>
-                    <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
-                      Plan, payment history, and invoices will appear here once
-                      billing is enabled for your account.
-                    </p>
-                  </div>
+                  <h2 className="text-sm font-medium text-foreground">Billing</h2>
+                  <EmptyState
+                    icon={CreditCard}
+                    title="No invoices yet"
+                    description="Your plan, payment history and invoices will show up here once billing is turned on for your account."
+                  />
                 </section>
               )}
-            </motion.div>
-          </AnimatePresence>
+          </div>
         </div>
       </div>
 
@@ -546,11 +526,11 @@ export default function SettingsPage() {
       >
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">
+            <DialogTitle className="text-base font-semibold">
               Remove member
             </DialogTitle>
           </DialogHeader>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Remove{" "}
             <span className="text-foreground font-medium">
               {removeTarget?.user_name}
@@ -568,7 +548,7 @@ export default function SettingsPage() {
               disabled={removing}
               className="gap-1.5"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <Trash2 className="size-3.5" />
               {removing ? "Removing…" : "Remove"}
             </Button>
           </div>
@@ -578,7 +558,7 @@ export default function SettingsPage() {
       <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">
+            <DialogTitle className="text-base font-semibold">
               {inviteUrl ? "Invitation ready" : "Invite member"}
             </DialogTitle>
           </DialogHeader>
@@ -594,25 +574,25 @@ export default function SettingsPage() {
                 </span>{" "}
                 as{" "}
                 <span
-                  className={`font-mono uppercase tracking-[0.1em] ${ROLE_STYLES[inviteForm.role]?.split(" ").pop()}`}
+                  className={`font-medium ${ROLE_STYLES[inviteForm.role]?.split(" ").pop()}`}
                 >
                   {inviteForm.role}
                 </span>
                 . Share this sign-in link and the temporary password you set.
               </p>
-              <div className="rounded-xl panel-inset p-3 flex items-center gap-3">
+              <div className="rounded-lg border border-border bg-surface-1 p-3 flex items-center gap-3">
                 <p className="flex-1 text-xs font-mono text-muted-foreground break-all">
                   {inviteUrl}
                 </p>
                 <button
                   onClick={copyInviteUrl}
-                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-                  title="Copy link"
+                  className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                  aria-label="Copy link"
                 >
                   {copied ? (
-                    <Check className="w-4 h-4 text-success" />
+                    <Check className="size-4 text-success" />
                   ) : (
-                    <Copy className="w-4 h-4" />
+                    <Copy className="size-4" />
                   )}
                 </button>
               </div>
@@ -623,7 +603,7 @@ export default function SettingsPage() {
                     onClick={inviteElsewhere}
                     className="flex-1 gap-1.5"
                   >
-                    <UserPlus className="w-3.5 h-3.5" /> Add to another
+                    <UserPlus className="size-3.5" /> Add to another
                   </Button>
                 )}
                 <Button onClick={() => setInviteOpen(false)} className="flex-1">
@@ -634,14 +614,14 @@ export default function SettingsPage() {
           ) : (
             <form onSubmit={handleInvite} className="space-y-4">
               <div className="space-y-1.5">
-                <Label className="eyebrow">Infrastructure</Label>
+                <Label htmlFor="inv-infra">Infrastructure</Label>
                 <Select
                   value={inviteForm.infra_id}
                   onValueChange={(v) => {
                     if (v) setInviteForm({ ...inviteForm, infra_id: v });
                   }}
                 >
-                  <SelectTrigger className="h-9 text-sm w-full">
+                  <SelectTrigger id="inv-infra" className="w-full">
                     <SelectValue placeholder="Select an infrastructure">
                       {inviteInfra?.name}
                     </SelectValue>
@@ -651,7 +631,6 @@ export default function SettingsPage() {
                       <SelectItem
                         key={i.id}
                         value={i.id}
-                        className="text-sm py-2"
                       >
                         {i.name}
                       </SelectItem>
@@ -661,8 +640,9 @@ export default function SettingsPage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
-                  <Label className="eyebrow">Email</Label>
+                  <Label htmlFor="inv-email">Email</Label>
                   <Input
+                    id="inv-email"
                     type="email"
                     placeholder="user@example.com"
                     value={inviteForm.email}
@@ -670,12 +650,12 @@ export default function SettingsPage() {
                       setInviteForm({ ...inviteForm, email: e.target.value })
                     }
                     required
-                    className="h-9 text-sm"
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="eyebrow">Username</Label>
+                  <Label htmlFor="inv-user">Username</Label>
                   <Input
+                    id="inv-user"
                     type="text"
                     placeholder="johndoe"
                     value={inviteForm.user_name}
@@ -686,46 +666,44 @@ export default function SettingsPage() {
                       })
                     }
                     required
-                    className="h-9 text-sm"
                   />
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label className="eyebrow">Temporary password</Label>
+                <Label htmlFor="inv-pass">Temporary password</Label>
                 <Input
+                  id="inv-pass"
                   type="password"
-                  placeholder="Min 6 characters"
+                  placeholder="At least 6 characters"
                   value={inviteForm.password}
                   onChange={(e) =>
                     setInviteForm({ ...inviteForm, password: e.target.value })
                   }
                   required
                   minLength={6}
-                  className="h-9 text-sm"
                 />
               </div>
               <div className="space-y-1.5">
-                <Label className="eyebrow">Role in this infrastructure</Label>
+                <Label htmlFor="inv-role">Role in this infrastructure</Label>
                 <Select
                   value={inviteForm.role}
                   onValueChange={(v) =>
                     setInviteForm({ ...inviteForm, role: v as InviteRole })
                   }
                 >
-                  <SelectTrigger className="h-9 text-sm w-full">
+                  <SelectTrigger id="inv-role" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="w-[var(--radix-select-trigger-width)]">
+                  <SelectContent>
                     {ROLE_HINTS.map((r) => (
                       <SelectItem
                         key={r.value}
                         value={r.value}
-                        className="text-sm py-2.5"
                       >
                         <span className="font-medium">{r.label}</span>
                         <span className="text-muted-foreground">
                           {" "}
-                          — {r.hint}
+                          : {r.hint}
                         </span>
                       </SelectItem>
                     ))}
@@ -759,11 +737,11 @@ function Stat({
   tint: string;
 }) {
   return (
-    <div className="rounded-xl panel-inset p-4">
-      <Icon className={`w-4 h-4 ${tint} mb-3`} />
-      <p className="eyebrow">{label}</p>
-      <p className="mt-1 text-lg font-display font-semibold text-foreground">
-        {value ?? "—"}
+    <div className="bg-card p-4">
+      <Icon className={`mb-2 size-4 ${tint}`} />
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="mt-0.5 text-lg font-semibold tabular-nums text-foreground">
+        {value ?? "Not available"}
       </p>
     </div>
   );
@@ -805,17 +783,17 @@ function MemberRow({
 }) {
   return (
     <div className="flex items-center gap-3 px-5 py-3.5">
-      <span className="w-9 h-9 rounded-full overflow-hidden ring-1 ring-hairline shrink-0 flex items-center justify-center bg-surface-2">
+      <span className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-2">
         {profileUrl ? (
           <Image
             src={profileUrl}
-            alt={name}
+            alt=""
             width={36}
             height={36}
             className="w-9 h-9 object-cover"
           />
         ) : (
-          <Users className="w-4 h-4 text-muted-foreground" />
+          <Users className="size-4 text-muted-foreground" />
         )}
       </span>
       <div className="min-w-0">
@@ -824,12 +802,12 @@ function MemberRow({
       </div>
       <div className="ml-auto flex items-center gap-3 shrink-0">
         {tag && (
-          <span className="hidden sm:inline font-mono text-[10px] text-muted-foreground/60 truncate max-w-[140px]">
+          <span className="hidden max-w-[140px] truncate text-xs text-muted-foreground sm:inline">
             {tag}
           </span>
         )}
         <span
-          className={`flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.1em] ${pending ? "text-warning" : "text-success"}`}
+          className={`flex items-center gap-1.5 text-xs font-medium ${pending ? "text-warning" : "text-success"}`}
         >
           <span
             className={`w-1.5 h-1.5 rounded-full ${pending ? "bg-warning" : "bg-success"}`}
@@ -841,13 +819,13 @@ function MemberRow({
             {infraRoles.map((ir) => (
               <span
                 key={ir.id}
-                className={`flex items-center gap-1.5 font-mono text-[10px] px-2 py-0.5 rounded-md border ${ROLE_STYLES[ir.role] ?? ROLE_STYLES.guest}`}
+                className={`flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs ${ROLE_STYLES[ir.role] ?? ROLE_STYLES.guest}`}
               >
-                <span className="normal-case tracking-normal text-muted-foreground/80 truncate max-w-[90px]">
+                <span className="max-w-[90px] truncate text-muted-foreground">
                   {ir.name}
                 </span>
                 <span className="opacity-40">·</span>
-                <span className="uppercase tracking-[0.1em]">
+                <span className="capitalize">
                   {roleLabel(ir.role)}
                 </span>
               </span>
@@ -855,7 +833,7 @@ function MemberRow({
           </div>
         ) : (
           <span
-            className={`font-mono text-[10px] uppercase tracking-[0.12em] px-2 py-0.5 rounded-md border ${ROLE_STYLES[role] ?? ROLE_STYLES.guest}`}
+            className={`text-xs px-2 py-0.5 rounded-md border ${ROLE_STYLES[role] ?? ROLE_STYLES.guest}`}
           >
             {roleLabel(role)}
           </span>
@@ -863,10 +841,10 @@ function MemberRow({
         {onRemove && (
           <button
             onClick={onRemove}
-            title="Remove from organization"
-            className="text-muted-foreground/50 hover:text-destructive transition-colors"
+            aria-label={`Remove ${name} from organization`}
+            className="rounded-sm text-muted-foreground transition-colors hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Trash2 className="size-3.5" />
           </button>
         )}
       </div>

@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { notFound, useRouter } from 'next/navigation';
-import { motion } from 'framer-motion';
 import { LogoMark } from '@/components/logo-mark';
 import { Button } from '@/components/ui/button';
+import { buttonVariants } from '@/components/ui/button-variants';
 import { ORGS_ENABLED } from '@/lib/orgs-enabled';
 import { apiErrorMessage, goToDashboard, organizationApi, switchToOrg } from '@/lib/api/organizations';
 import {
@@ -16,8 +16,6 @@ import {
   takeTokenFromUrl,
 } from '@/lib/invite-token';
 import { loginUrlWithNext } from '@/lib/post-login';
-
-const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
 type View =
   | { kind: 'working'; label: string }
@@ -92,24 +90,23 @@ function AcceptInvitation() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden px-4">
-      <div className="brand-glow pointer-events-none absolute inset-0" />
-      <motion.div {...rise} className="relative flex w-full max-w-sm flex-col items-center gap-5 text-center">
+    <div className="flex min-h-dvh items-center justify-center bg-background px-4">
+      <div className="reveal flex w-full max-w-sm flex-col items-center gap-6 text-center">
         <div className="inline-flex items-center gap-2.5">
-          <LogoMark size={32} />
-          <span className="font-display text-lg font-semibold tracking-tight text-foreground">Launchpad</span>
+          <LogoMark size={28} />
+          <span className="text-sm font-semibold tracking-tight text-foreground">Launchpad</span>
         </div>
 
         {view.kind === 'working' && (
           <>
-            <div className="w-6 h-6 border-2 border-hairline-strong border-t-brand rounded-full animate-spin" />
+            <div className="size-5 animate-spin rounded-full border-2 border-border border-t-brand" />
             <p className="text-sm text-muted-foreground" role="status">{view.label}</p>
           </>
         )}
 
         {view.kind === 'missing' && (
           <Notice title="No invitation found" body="Open the link from your invitation email again. It can only be used from that link.">
-            <Link href="/dashboard"><Button variant="outline">Go to dashboard</Button></Link>
+            <Link href="/dashboard" className={buttonVariants({ variant: 'outline' })}>Go to dashboard</Link>
           </Notice>
         )}
 
@@ -118,18 +115,18 @@ function AcceptInvitation() {
             title="This invitation can't be used"
             body="The link is invalid or has expired, or it was sent to a different email address than the one you are signed in with. Ask the organization for a new invitation."
           >
-            <Link href="/dashboard"><Button variant="outline">Go to dashboard</Button></Link>
+            <Link href="/dashboard" className={buttonVariants({ variant: 'outline' })}>Go to dashboard</Link>
           </Notice>
         )}
 
         {view.kind === 'already-member' && (
           <Notice title="Already a member" body={view.message}>
-            <Link href="/dashboard"><Button>Go to dashboard</Button></Link>
+            <Link href="/dashboard" className={buttonVariants()}>Go to dashboard</Link>
           </Notice>
         )}
 
         {view.kind === 'joined-no-switch' && (
-          <Notice title="You joined the organization" body="Switching into it did not work. Use the organization switcher in the dashboard header.">
+          <Notice title="You joined the organization" body="Switching into it didn't work. Use the organization switcher in the dashboard header.">
             <Button onClick={goToDashboard}>Go to dashboard</Button>
           </Notice>
         )}
@@ -139,7 +136,7 @@ function AcceptInvitation() {
             <Button onClick={retry}>Try again</Button>
           </Notice>
         )}
-      </motion.div>
+      </div>
     </div>
   );
 }
@@ -148,7 +145,7 @@ function Notice({ title, body, children }: { title: string; body: string; childr
   return (
     <div className="space-y-4" role="alert">
       <div className="space-y-1.5">
-        <h1 className="font-display text-lg font-semibold text-foreground">{title}</h1>
+        <h1 className="text-xl font-semibold tracking-tight text-foreground">{title}</h1>
         <p className="text-sm text-muted-foreground">{body}</p>
       </div>
       {children}
