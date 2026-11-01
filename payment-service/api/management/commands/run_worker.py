@@ -33,7 +33,7 @@ def _start(consumer_cls, name):
 
 
 def _org_consumer_threads():
-    """F9 ticket 4: gated on ORGS_ENABLED (default off) — with the flag off, this returns
+    """F9 ticket 4: gated on ORGS_ENABLED — with the flag off, this returns
     no threads and nothing here opens a socket to the broker. Split out from handle() so
     the gate itself is directly testable without starting a real consumer thread."""
     from django.conf import settings

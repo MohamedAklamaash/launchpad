@@ -21,7 +21,8 @@ process.env.REDIS_HOST = '127.0.0.1';
 process.env.REDIS_PORT = '1';
 process.env.REDIS_PASSWORD = 'test';
 process.env.RABBITMQ_URL = 'amqp://guest:guest@127.0.0.1:1/';
-// Deliberately left unset (default false) — this file proves the flag's whole point:
+process.env.ORGS_ENABLED = 'false';
+// Pinned off explicitly — this file proves the flag's whole point:
 // "No request behaviour change" (task scope) must hold even if something calls this
 // service layer before the flag is flipped.
 

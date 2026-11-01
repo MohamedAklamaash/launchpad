@@ -11,7 +11,7 @@ const envSchema = z.object({
     DATABASE_HOST: z.string(),
     DATABASE_PORT: z.coerce.number().default(5432),
     DATABASE_NAME: z.string(),
-    DATABASE_SSL: z.preprocess((v) => v === 'true' || v === true, z.boolean()).default(false),
+    DATABASE_SSL: z.preprocess((v) => v === 'true' || v === true, z.boolean()).default(true),
     DATABASE_SSL_REJECT_UNAUTHORIZED: z
         .preprocess((v) => v === 'true' || v === true, z.boolean())
         .default(false),
@@ -75,7 +75,7 @@ const envSchema = z.object({
     // F9: gates every behavior change the Organizations/Membership work introduces.
     // Ticket 1 (Account table + backfill) reads nothing behind this flag yet — it exists
     // now so later F9 tickets don't need to touch env.ts again to use it.
-    ORGS_ENABLED: z.preprocess((v) => v === 'true' || v === true, z.boolean()).default(false),
+    ORGS_ENABLED: z.preprocess((v) => v === 'true' || v === true, z.boolean()).default(true),
 
     // Same name and default as infrastructure-service's exit-export freshness window.
     // Ownership transfer is gated by that exact window so the two cannot drift apart.

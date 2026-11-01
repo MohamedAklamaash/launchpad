@@ -231,8 +231,8 @@ def _wait_for_db(max_wait: int = 60, interval: int = 3) -> bool:
 
 
 def start_org_event_consumer():
-    """Entry point called from api/apps.py's ready(). Gated on ORGS_ENABLED (default
-    off) — with the flag off, nothing here opens a socket to the broker."""
+    """Entry point called from api/apps.py's ready(). Gated on ORGS_ENABLED — with the
+    flag off, nothing here opens a socket to the broker."""
     if not settings.ORGS_ENABLED:
         logger.info("ORGS_ENABLED is False — org.events consumer not started")
         return

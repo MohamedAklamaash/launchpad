@@ -99,6 +99,16 @@ run_django_service "payment-service" 8003 "$ROOT_DIR/payment-service/venv/bin/py
 
 echo ""
 echo "All app services started."
+if [ "${ORGS_ENABLED:-true}" != "false" ]; then
+  echo ""
+  echo "ORGS_ENABLED is on (default). A database that predates organizations needs these once,"
+  echo "in this order, after every service above is up (both are idempotent, neither deletes):"
+  echo "  cd identity-services"
+  echo "  pnpm --filter auth-service backfill:accounts"
+  echo "  ORGS_ENABLED=true pnpm --filter auth-service backfill:personal-orgs"
+  echo "Freshly reset databases need neither: personal orgs are created at GitHub login."
+  echo "Details: plan/F9-teams-and-orgs.md, Cutover checklist."
+fi
 echo "Press Ctrl+C to stop them."
 echo ""
 

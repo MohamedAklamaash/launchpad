@@ -66,5 +66,5 @@ REDIS_PORT = 6379
 REDIS_PASSWORD = ""
 REDIS_DB = 0
 
-ORGS_ENABLED = os.environ.get("ORGS_ENABLED", "False").lower() == "true"
+ORGS_ENABLED = False
 SERVICE_NAME = "payment-service"

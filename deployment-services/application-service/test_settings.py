@@ -97,7 +97,7 @@ EKS_MAX_APP_MEMORY = float(os.environ.get('EKS_MAX_APP_MEMORY', '256'))
 MAX_SNI_CERTIFICATES_PER_LISTENER = 24
 INFRASTRUCTURE_SERVICE_URL = "http://localhost:8002"
 
-ORGS_ENABLED = os.environ.get("ORGS_ENABLED", "False").lower() == "true"
+ORGS_ENABLED = False
 SERVICE_NAME = "application-service"
 
 # F7 ticket 7
