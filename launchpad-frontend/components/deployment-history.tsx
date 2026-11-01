@@ -52,18 +52,18 @@ export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack,
   if (!deployments || deployments.length === 0) return null;
 
   return (
-    <div className="rounded-xl panel p-4">
-      <p className="eyebrow mb-3 flex items-center gap-1.5">
-        <History className="w-3 h-3" /> Deployment history
+    <div className="rounded-lg border border-border bg-card p-4">
+      <p className="mb-3 flex items-center gap-1.5 text-sm font-medium text-foreground">
+        <History className="size-3" /> Deployment history
       </p>
       <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
         {deployments.map((d) => (
           <div key={d.id} className="flex items-center justify-between gap-3 rounded-lg px-2.5 py-2 hover:bg-surface-2 transition-colors">
             <div className="min-w-0 flex items-center gap-2">
-              <GitCommitHorizontal className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+              <GitCommitHorizontal className="size-3.5 text-muted-foreground shrink-0" />
               <div className="min-w-0">
                 <p className="text-xs font-mono text-foreground truncate">{d.image_tag}</p>
-                <p className="text-[10px] text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                   {d.triggered_by === 'ROLLBACK' ? 'Rollback' : 'Deploy'} · {new Date(d.created_at).toLocaleString()}
                 </p>
               </div>
@@ -71,28 +71,28 @@ export function DeploymentHistory({ appId, appStatus, canRollback, onRolledBack,
             {d.has_build_logs && (
               <button
                 onClick={() => setLogsTarget(d)}
-                className="shrink-0 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
+                className="shrink-0 flex items-center gap-1 text-xs font-mediumst text-muted-foreground hover:text-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
                 title="View this build's logs"
               >
-                <Hammer className="w-3 h-3" /> Build logs
+                <Hammer className="size-3" /> Build logs
               </button>
             )}
             {canRollback && (
               d.rollback_addressable ? (
                 <button
                   onClick={() => setTarget(d)}
-                  className="shrink-0 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
+                  className="shrink-0 flex items-center gap-1 text-xs font-mediumst text-muted-foreground hover:text-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded px-1.5 py-1"
                   title="Roll back to this deployment"
                 >
-                  <RotateCcw className="w-3 h-3" /> Roll back
+                  <RotateCcw className="size-3" /> Roll back
                 </button>
               ) : (
                 <button
                   disabled
-                  className="shrink-0 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/30 cursor-not-allowed rounded px-1.5 py-1"
+                  className="shrink-0 flex items-center gap-1 text-xs font-mediumst text-muted-foreground/30 cursor-not-allowed rounded px-1.5 py-1"
                   title="This deploy predates per-commit image tagging and can't be rolled back to"
                 >
-                  <RotateCcw className="w-3 h-3" /> Roll back
+                  <RotateCcw className="size-3" /> Roll back
                 </button>
               )
             )}

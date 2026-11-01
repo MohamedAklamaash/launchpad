@@ -123,7 +123,7 @@ export function ProvisioningLogsPanel({ infraId, status, connected }: Props) {
                 {data.truncated && <span>head clipped to storage cap</span>}
               </div>
               <pre className="max-h-96 overflow-auto px-4 pb-4 text-xs leading-relaxed font-mono text-foreground whitespace-pre-wrap break-words">
-                {data.logs || (live ? 'Waiting for Terraform output, first lines usually appear within a minute.' : 'No output recorded yet.')}
+                {data.logs || (live ? 'Waiting for Terraform output. The first lines usually appear within a minute.' : 'No output recorded yet.')}
               </pre>
             </>
           )}

@@ -262,7 +262,7 @@ export default function NewInfrastructurePage() {
             <Tabs defaultValue="script" className="w-full">
               <TabsList className="w-full">
                 <TabsTrigger value="script" className="flex-1">Script</TabsTrigger>
-                <span title={!siblingsResolved ? 'Checking this AWS account’s onboarding status…' : cfnAccountState === 'script_sibling' ? 'This AWS account already uses the shell-script onboarding method, use the Script tab instead.' : undefined} className="flex-1">
+                <span title={!siblingsResolved ? 'Checking this AWS account’s onboarding status…' : cfnAccountState === 'script_sibling' ? 'This AWS account already uses the shell-script onboarding method. Use the Script tab instead.' : undefined} className="flex-1">
                   <TabsTrigger value="cloudformation" disabled={!siblingsResolved || cfnAccountState === 'script_sibling'} className="w-full">
                     CloudFormation
                   </TabsTrigger>
@@ -271,7 +271,7 @@ export default function NewInfrastructurePage() {
 
               {siblingsResolved && cfnAccountState === 'script_sibling' && (
                 <p className="px-1 pt-2 text-xs text-muted-foreground">
-                  This AWS account already uses the shell-script onboarding method, an account picks one method
+                  This AWS account already uses the shell-script onboarding method. An account picks one method
                   for life. Use the Script tab above instead.
                 </p>
               )}
@@ -358,11 +358,10 @@ export default function NewInfrastructurePage() {
 
           {step === 1 && (
             <Field id="infra-region" label="Region">
-              <div className="relative" ref={dropdownRef}>
+              <div className="relative" ref={dropdownRef} onKeyDown={(e) => { if (e.key === 'Escape') setDropdownOpen(false); }}>
                 <button
                   id="infra-region"
                   type="button"
-                  aria-haspopup="listbox"
                   aria-expanded={dropdownOpen}
                   onClick={() => { setDropdownOpen((o) => !o); setRegionSearch(''); }}
                   className="flex h-8 w-full items-center justify-between rounded-md border border-input px-2.5 text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
@@ -384,14 +383,15 @@ export default function NewInfrastructurePage() {
                         className="flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
                       />
                     </div>
-                    <ul role="listbox" aria-label="Regions" className="max-h-52 overflow-y-auto p-1">
+                    <ul className="max-h-52 overflow-y-auto p-1">
                       {filteredRegions.length === 0 ? (
                         <li className="px-3 py-2 text-xs text-muted-foreground">No regions found</li>
                       ) : (
                         filteredRegions.map((r) => (
-                          <li key={r.value} role="option" aria-selected={formData.aws_region === r.value}>
+                          <li key={r.value}>
                             <button
                               type="button"
+                              aria-current={formData.aws_region === r.value ? 'true' : undefined}
                               onClick={() => { set('aws_region', r.value); setDropdownOpen(false); }}
                               className={cn(
                                 'flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none',
@@ -566,10 +566,10 @@ function ScriptOnboardingPanel({ createdInfra, onboardingMisconfig, bootstrapScr
                 { k: 'Onboarding token', v: createdInfra.onboarding_token, copyable: true, key: 'token' },
               ].map((row) => (
                 <div key={row.k} className="flex items-center gap-2">
-                  <span className="eyebrow w-28 shrink-0">{row.k}</span>
+                  <span className="w-28 shrink-0 text-xs text-muted-foreground">{row.k}</span>
                   <code className="break-all font-mono text-xs text-foreground">{row.v}</code>
                   {row.copyable && (
-                    <button onClick={() => copy(row.v, row.key)} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground">
+                    <button type="button" aria-label={`Copy ${row.k}`} onClick={() => copy(row.v, row.key)} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
                       {copiedKey === row.key ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
                     </button>
                   )}
@@ -588,7 +588,7 @@ function ScriptOnboardingPanel({ createdInfra, onboardingMisconfig, bootstrapScr
               <p className="text-sm font-medium text-foreground">{bootstrapScript.label}</p>
               <p className="text-xs text-muted-foreground">{bootstrapScript.description}</p>
             </div>
-            <button aria-label="Copy command" onClick={() => copy(bootstrapScript!.invocation, 'bootstrap')} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground">
+            <button type="button" aria-label="Copy command" onClick={() => copy(bootstrapScript!.invocation, 'bootstrap')} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
               {copiedKey === 'bootstrap' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
             </button>
           </div>
@@ -653,7 +653,7 @@ function CloudFormationOnboardingPanel({
   if (accountState === 'script_sibling') {
     return (
       <p className="text-xs text-muted-foreground">
-        This AWS account already uses the shell-script onboarding method, an account picks one method for life.
+        This AWS account already uses the shell-script onboarding method. An account picks one method for life.
         Use the Script tab instead.
       </p>
     );
@@ -684,30 +684,30 @@ function CloudFormationOnboardingPanel({
             <CloudCog className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <p className="text-xs text-muted-foreground">
               AWS account <span className="font-mono">{createdInfra.code}</span> already has a CloudFormation-managed
-              {' '}<span className="font-mono">{CFN_ROLE_NAME}</span> stack. Update it in place instead of creating a new one
-             , open the stack&apos;s <span className="font-medium">Update stack</span> flow, choose
+              {' '}<span className="font-mono">{CFN_ROLE_NAME}</span> stack. Update it in place instead of creating a new one:
+              open the stack&apos;s <span className="font-medium">Update stack</span> flow, choose
               {' '}<span className="font-medium">Replace current template</span>, and paste the values below.
             </p>
           </div>
           <div className="space-y-2.5 rounded-lg border border-border bg-card p-4">
             <div className="flex items-center gap-2">
-              <span className="eyebrow w-44 shrink-0">Template (recommended)</span>
+              <span className="w-44 shrink-0 text-xs text-muted-foreground">Template (recommended)</span>
               <span className="text-xs text-foreground">{templateLabel}</span>
             </div>
             {templateUrl && (
               <div className="flex items-center gap-2">
-                <span className="eyebrow w-44 shrink-0">Template URL</span>
+                <span className="w-44 shrink-0 text-xs text-muted-foreground">Template URL</span>
                 <code className="text-xs font-mono text-foreground break-all flex-1">{templateUrl}</code>
-                <button onClick={() => copy(templateUrl, 'cfn-template-url')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+                <button type="button" aria-label="Copy template URL" onClick={() => copy(templateUrl, 'cfn-template-url')} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
                   {copiedKey === 'cfn-template-url' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
                 </button>
               </div>
             )}
             {paramRows.map((row) => (
               <div key={row.key} className="flex items-center gap-2">
-                <span className="eyebrow w-44 shrink-0">{row.k}</span>
+                <span className="w-44 shrink-0 text-xs text-muted-foreground">{row.k}</span>
                 <code className="text-xs font-mono text-foreground break-all flex-1">{row.v}</code>
-                <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+                <button type="button" aria-label={`Copy ${row.k}`} onClick={() => copy(row.v, row.key)} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
                   {copiedKey === row.key ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
                 </button>
               </div>
@@ -764,18 +764,18 @@ function CloudFormationOnboardingPanel({
           </p>
           {templateUrl && (
             <div className="flex items-center gap-2">
-              <span className="eyebrow w-44 shrink-0">Template URL</span>
+              <span className="w-44 shrink-0 text-xs text-muted-foreground">Template URL</span>
               <code className="text-xs font-mono text-foreground break-all flex-1">{templateUrl}</code>
-              <button onClick={() => copy(templateUrl, 'cfn-template-url')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+              <button type="button" aria-label="Copy template URL" onClick={() => copy(templateUrl, 'cfn-template-url')} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
                 {copiedKey === 'cfn-template-url' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
               </button>
             </div>
           )}
           {paramRows.map((row) => (
             <div key={row.key} className="flex items-center gap-2">
-              <span className="eyebrow w-44 shrink-0">{row.k}</span>
+              <span className="w-44 shrink-0 text-xs text-muted-foreground">{row.k}</span>
               <code className="text-xs font-mono text-foreground break-all flex-1">{row.v}</code>
-              <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+              <button type="button" aria-label={`Copy ${row.k}`} onClick={() => copy(row.v, row.key)} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
                 {copiedKey === row.key ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
               </button>
             </div>

@@ -116,7 +116,7 @@ export function PolicyRefreshDialog({ open, onOpenChange, infraId, deniedActions
                 <p className="text-xs font-medium text-foreground">Script source is misconfigured</p>
                 <p className="text-xs text-muted-foreground">{onboardingMisconfig}</p>
                 <div className="flex items-center gap-2 pt-1">
-                  <span className="eyebrow w-16 shrink-0">API key</span>
+                  <span className="w-16 shrink-0 text-xs text-muted-foreground">API key</span>
                   <code className="break-all font-mono text-xs text-foreground">{apiKey}</code>
                 </div>
               </div>
@@ -128,7 +128,7 @@ export function PolicyRefreshDialog({ open, onOpenChange, infraId, deniedActions
                     <p className="text-sm font-medium text-foreground">{refreshScript.label}</p>
                     <p className="text-xs text-muted-foreground">{refreshScript.description}</p>
                   </div>
-                  <button onClick={() => copy(refreshScript!.invocation)} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
+                  <button type="button" aria-label="Copy command" onClick={() => copy(refreshScript!.invocation)} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
                     {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
                   </button>
                 </div>

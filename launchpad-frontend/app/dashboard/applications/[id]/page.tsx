@@ -2,9 +2,14 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { motion } from 'framer-motion';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff, Github, Copy, Globe, PackageX, Pin, PlayCircle, AlertTriangle } from 'lucide-react';
+import { buttonVariants } from '@/components/ui/button-variants';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
+import { ArrowLeft, ExternalLink, RefreshCw, Moon, Sun, Trash2, Pencil, Eye, EyeOff, Github, Copy, PackageX, Pin, PlayCircle, AlertTriangle } from 'lucide-react';
 import { Application } from '@/types/application';
 import { Infrastructure } from '@/types/infrastructure';
 import { applicationApi } from '@/lib/api/applications';
@@ -30,23 +35,42 @@ const POLLING_STATUSES = ['CREATED', 'BUILDING', 'PUSHING_IMAGE', 'DEPLOYING'];
 const IN_PROGRESS_BUILD_STATUSES = ['BUILDING', 'PUSHING_IMAGE'];
 
 const IN_FLIGHT_HINT: Record<string, string> = {
-  CREATED: 'Queued — waiting for a build slot…',
-  BUILDING: 'Building your image — usually a couple of minutes…',
+  CREATED: 'Queued, waiting for a build slot…',
+  BUILDING: 'Building your image, usually a couple of minutes…',
   PUSHING_IMAGE: 'Pushing the built image to your registry…',
-  DEPLOYING: 'Rolling out — waiting for tasks to pass health checks…',
+  DEPLOYING: 'Rolling out, waiting for tasks to pass health checks…',
 };
 
-const STATUS: Record<string, { dot: string; label: string }> = {
-  ACTIVE: { dot: 'bg-success', label: 'text-success' },
-  BUILDING: { dot: 'bg-azure animate-pulse', label: 'text-azure' },
-  DEPLOYING: { dot: 'bg-azure animate-pulse', label: 'text-azure' },
-  PUSHING_IMAGE: { dot: 'bg-azure animate-pulse', label: 'text-azure' },
-  CREATED: { dot: 'bg-warning animate-pulse', label: 'text-warning' },
-  SLEEPING: { dot: 'bg-warning', label: 'text-warning' },
-  FAILED: { dot: 'bg-destructive', label: 'text-destructive' },
-};
+const FOCUS_ICON = 'rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60';
 
-const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
+function Panel({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium text-foreground">{title}</h2>
+        {aside}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function UrlRow({ label, url }: { label: string; url: string }) {
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group flex items-center justify-between gap-4 rounded-lg border border-border bg-surface-1 px-4 py-3 outline-none transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring/60"
+    >
+      <div className="min-w-0">
+        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="mt-0.5 truncate font-mono text-sm text-brand">{url}</p>
+      </div>
+      <ExternalLink className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+    </a>
+  );
+}
 
 export default function ApplicationDetailPage() {
   const router = useRouter();
@@ -125,7 +149,7 @@ export default function ApplicationDetailPage() {
     try {
       const creds = await applicationApi.rotateWebhookSecret(id);
       setWebhookCreds(creds);
-      toast.success('Webhook secret generated. Save it now — it will not be shown again.');
+      toast.success('Webhook secret generated. Save it now, it will not be shown again.');
     } catch (e: unknown) {
       const error = e as { response?: { data?: { error?: string } } };
       toast.error(error.response?.data?.error || 'Failed to generate webhook secret');
@@ -179,112 +203,75 @@ export default function ApplicationDetailPage() {
   };
 
   if (loading) return (
-    <div className="space-y-6">
-      <div className="h-4 w-16 rounded panel animate-pulse" />
-      <div className="h-8 w-56 rounded-lg panel animate-pulse" />
-      <div className="h-16 rounded-xl panel animate-pulse" />
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="h-40 rounded-xl panel animate-pulse" />
-        <div className="h-40 rounded-xl panel animate-pulse" />
+    <div className="space-y-6" aria-busy="true" aria-label="Loading application">
+      <Skeleton className="h-4 w-16" />
+      <Skeleton className="h-7 w-56" />
+      <Skeleton className="h-14 w-full" />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <Skeleton className="h-36 w-full" />
+        <Skeleton className="h-36 w-full" />
       </div>
     </div>
   );
 
   if (!app) return (
-    <div className="relative overflow-hidden rounded-2xl panel-inset px-8 py-20 text-center">
-      <div className="pointer-events-none absolute inset-0 brand-glow opacity-60" />
-      <div className="relative">
-        <div className="w-14 h-14 rounded-2xl bg-surface-2 border border-hairline-strong flex items-center justify-center mx-auto mb-5">
-          <PackageX className="w-6 h-6 text-muted-foreground" />
-        </div>
-        <p className="text-base font-display font-medium text-foreground mb-1.5">Application not found</p>
-        <p className="text-sm text-muted-foreground mb-6 max-w-sm mx-auto">It may have been deleted, or you don&apos;t have access to it.</p>
-        <Button variant="outline" size="lg" onClick={() => router.push('/dashboard')} className="gap-1.5">
-          <ArrowLeft className="w-4 h-4" /> Back to dashboard
-        </Button>
-      </div>
-    </div>
+    <EmptyState
+      icon={PackageX}
+      title="Application not found"
+      description="It may have been deleted, or you may not have access to it."
+      action={<Link href="/dashboard/applications" className={buttonVariants({ variant: 'outline' })}>Back to applications</Link>}
+    />
   );
 
   const displayStatus = app.is_sleeping ? 'SLEEPING' : app.status;
-  const st = STATUS[displayStatus] ?? { dot: 'bg-muted-foreground', label: 'text-muted-foreground' };
 
   return (
-    <motion.div {...rise} className="space-y-8">
-      <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-        <ArrowLeft className="w-3.5 h-3.5" /> Back
+    <div className="reveal space-y-6">
+      <button onClick={() => router.back()} className="flex items-center gap-1.5 rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground">
+        <ArrowLeft className="size-3.5" /> Back
       </button>
 
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <span className="eyebrow">Console / Application</span>
-          <div className="mt-2 flex items-center gap-3">
-            <h1 className="text-2xl font-display font-semibold text-foreground tracking-tight">{app.name}</h1>
-            <span className="flex items-center gap-1.5">
-              <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
-              <span className={`font-mono text-[10px] uppercase tracking-[0.12em] ${st.label}`}>{displayStatus}</span>
-            </span>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h1 className="truncate text-xl font-semibold tracking-tight text-foreground">{app.name}</h1>
+            <StatusBadge status={displayStatus} />
             {app.auto_deploy_paused && (
-              <span className="flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5">
-                <Pin className="w-2.5 h-2.5 text-warning" />
-                <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-warning">Pinned</span>
+              <span className="inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-xs text-foreground">
+                <Pin className="size-3 text-warning" />
+                Pinned
               </span>
             )}
           </div>
-          {app.description && <p className="text-sm text-muted-foreground mt-1.5">{app.description}</p>}
+          {app.description && <p className="mt-1.5 text-sm text-muted-foreground">{app.description}</p>}
         </div>
         {canEdit && !app.infrastructure_exited && (
-          <Button variant="outline" size="sm" onClick={() => setEditOpen(true)} className="gap-1.5">
-            <Pencil className="w-3.5 h-3.5" /> Edit
+          <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+            <Pencil className="size-3.5" /> Edit
           </Button>
         )}
       </div>
 
       {app.infrastructure_exited && (
-        <div className="flex items-start gap-3 rounded-xl border border-warning/30 bg-warning/10 px-4 py-3.5">
-          <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+        <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
           <div>
-            <p className="text-sm font-medium text-warning">Infrastructure exited</p>
-            <p className="text-xs text-warning/80 mt-0.5">
+            <p className="text-sm font-medium text-foreground">Infrastructure exited</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
               This application&apos;s infrastructure has completed the exit flow. Deploys, rollbacks,
-              config changes, and auto-deploy on push are disabled. Runtime logs still work.
+              config changes and auto-deploy on push are disabled. Runtime logs still work.
             </p>
           </div>
         </div>
       )}
 
-      {app.host_url && (
-        <a href={app.host_url} target="_blank" rel="noopener noreferrer"
-          className="group flex items-center gap-4 rounded-xl border border-azure/30 bg-azure/10 px-4 py-3.5 transition-colors hover:border-azure/50 hover:bg-azure/[0.14] outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
-          <span className="w-10 h-10 rounded-lg bg-azure/15 border border-azure/30 flex items-center justify-center shrink-0">
-            <Globe className="w-4 h-4 text-azure" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <span className="eyebrow text-azure">Host URL</span>
-            <p className="mt-0.5 text-sm font-mono text-azure truncate">{app.host_url}</p>
-          </div>
-          <ExternalLink className="w-4 h-4 text-azure/70 shrink-0 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-        </a>
-      )}
-
-      {app.deployment_url && (
-        <a href={app.deployment_url} target="_blank" rel="noopener noreferrer"
-          className="group flex items-center gap-4 rounded-xl border border-azure/30 bg-azure/10 px-4 py-3.5 transition-colors hover:border-azure/50 hover:bg-azure/[0.14] outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
-          <span className="w-10 h-10 rounded-lg bg-azure/15 border border-azure/30 flex items-center justify-center shrink-0">
-            <Globe className="w-4 h-4 text-azure" />
-          </span>
-          <div className="min-w-0 flex-1">
-            <span className="eyebrow text-azure">{app.host_url ? 'Path URL' : 'Live URL'}</span>
-            <p className="mt-0.5 text-sm font-mono text-azure truncate">{app.deployment_url}</p>
-          </div>
-          <ExternalLink className="w-4 h-4 text-azure/70 shrink-0 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
-        </a>
-      )}
+      {app.host_url && <UrlRow label="Host URL" url={app.host_url} />}
+      {app.deployment_url && <UrlRow label={app.host_url ? 'Path URL' : 'Live URL'} url={app.deployment_url} />}
 
       {POLLING_STATUSES.includes(app.status) && !app.is_sleeping && (
-        <div className="rounded-xl border border-azure/20 bg-azure/5 px-4 py-3 flex items-center gap-3">
-          <div className="w-1.5 h-1.5 rounded-full bg-azure animate-pulse shrink-0" />
-          <p className="text-xs text-azure">{IN_FLIGHT_HINT[app.status]}</p>
+        <div role="status" className="flex items-center gap-3 rounded-lg border border-border bg-surface-1 px-4 py-3">
+          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-brand" />
+          <p className="text-sm text-foreground">{IN_FLIGHT_HINT[app.status]}</p>
         </div>
       )}
 
@@ -293,193 +280,188 @@ export default function ApplicationDetailPage() {
       )}
 
       {app.is_sleeping && (
-        <div className="rounded-xl border border-warning/20 bg-warning/5 px-4 py-3 flex items-center gap-3">
-          <Moon className="w-3.5 h-3.5 text-warning shrink-0" />
-          <p className="text-xs text-warning">Scaled to zero — click Wake Up to restore it.</p>
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-surface-1 px-4 py-3">
+          <Moon className="size-3.5 shrink-0 text-muted-foreground" />
+          <p className="text-sm text-foreground">Scaled to zero. Use Wake up to bring it back.</p>
         </div>
       )}
 
       {app.error_message && (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3">
-          <p className="eyebrow text-destructive mb-1">{app.status === 'FAILED' ? 'Last deploy failed' : 'Error'}</p>
-          <pre className="text-xs text-destructive/80 font-mono whitespace-pre-wrap break-words max-h-40 overflow-auto">{app.error_message}</pre>
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3">
+          <p className="mb-1 text-sm font-medium text-foreground">{app.status === 'FAILED' ? 'Last deploy failed' : 'Error'}</p>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">{app.error_message}</pre>
         </div>
       )}
 
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex flex-wrap gap-2">
         {canDeployNow && app.status === 'ACTIVE' && !app.is_sleeping && (
           <>
             {!app.infrastructure_exited && (
-              <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Redeployment queued', 'deploy')} disabled={actionLoading} className="gap-1.5">
-                <RefreshCw className={`w-3.5 h-3.5 ${pendingAction === 'deploy' ? 'animate-spin' : ''}`} /> {pendingAction === 'deploy' ? 'Queuing…' : 'Redeploy'}
+              <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Redeployment queued.', 'deploy')} disabled={actionLoading}>
+                <RefreshCw className={`size-3.5 ${pendingAction === 'deploy' ? 'animate-spin' : ''}`} /> {pendingAction === 'deploy' ? 'Queuing…' : 'Redeploy'}
               </Button>
             )}
             {!app.infrastructure_exited && (
-              <Button variant="outline" size="sm" className="gap-1.5"
+              <Button variant="outline" size="sm"
                 onClick={() => action(() => applicationApi.sleep(id), 'Application sleeping', 'sleep')} disabled={actionLoading}>
-                <Moon className="w-3.5 h-3.5" /> {pendingAction === 'sleep' ? 'Sleeping…' : 'Sleep'}
+                <Moon className="size-3.5" /> {pendingAction === 'sleep' ? 'Sleeping…' : 'Sleep'}
               </Button>
             )}
           </>
         )}
         {canDeployNow && app.is_sleeping && !app.infrastructure_exited && (
-          <Button size="sm" onClick={() => action(() => applicationApi.wake(id), 'Application waking up', 'wake')} disabled={actionLoading} className="gap-1.5">
-            <Sun className="w-3.5 h-3.5" /> {pendingAction === 'wake' ? 'Waking…' : 'Wake Up'}
+          <Button size="sm" onClick={() => action(() => applicationApi.wake(id), 'Application waking up', 'wake')} disabled={actionLoading}>
+            <Sun className="size-3.5" /> {pendingAction === 'wake' ? 'Waking…' : 'Wake up'}
           </Button>
         )}
         {canDeployNow && app.status === 'FAILED' && !app.infrastructure_exited && (
-          <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Retry queued', 'retry')} disabled={actionLoading} className="gap-1.5">
-            <RefreshCw className={`w-3.5 h-3.5 ${pendingAction === 'retry' ? 'animate-spin' : ''}`} /> {pendingAction === 'retry' ? 'Queuing…' : 'Retry'}
+          <Button size="sm" onClick={() => action(() => applicationApi.deploy(id), 'Retry queued', 'retry')} disabled={actionLoading}>
+            <RefreshCw className={`size-3.5 ${pendingAction === 'retry' ? 'animate-spin' : ''}`} /> {pendingAction === 'retry' ? 'Queuing…' : 'Retry'}
           </Button>
         )}
         {app.auto_deploy_paused && canRollbackRole && hasRollbackAccess && !app.infrastructure_exited && (
-          <Button variant="outline" size="sm" className="gap-1.5"
+          <Button variant="outline" size="sm"
             onClick={() => action(() => applicationApi.resumeAutoDeploy(id), 'Auto-deploy resumed')} disabled={actionLoading}>
-            <PlayCircle className="w-3.5 h-3.5" /> Resume auto-deploy
+            <PlayCircle className="size-3.5" /> Resume auto-deploy
           </Button>
         )}
         {canDeleteApp && (
-          <Button variant="destructive" size="sm" className="gap-1.5 ml-auto"
+          <Button variant="destructive" size="sm" className="ml-auto"
             onClick={() => setDeleteOpen(true)} disabled={actionLoading}>
-            <Trash2 className="w-3.5 h-3.5" /> Delete
+            <Trash2 className="size-3.5" /> Delete
           </Button>
         )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="rounded-xl panel p-4">
-          <p className="eyebrow mb-3">Repository</p>
-          <div className="space-y-2.5">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <Panel title="Repository">
+          <dl className="space-y-2.5">
             <div className="flex items-start justify-between gap-4">
-              <span className="text-xs text-muted-foreground shrink-0">URL</span>
-              <a href={app.url} target="_blank" rel="noopener noreferrer"
-                className="text-xs text-azure hover:text-azure/80 break-all text-right font-mono transition-colors">{app.url}</a>
+              <dt className="shrink-0 text-xs text-muted-foreground">URL</dt>
+              <dd className="text-right">
+                <a href={app.url} target="_blank" rel="noopener noreferrer"
+                  className="break-all rounded-sm font-mono text-xs text-brand hover:underline">{app.url}</a>
+              </dd>
             </div>
-            {[['Branch', app.branch], ['Dockerfile', app.dockerfile_path], ...(app.build_context ? [['Build Context', app.build_context]] : [])].map(([k, v]) => (
+            {[['Branch', app.branch], ['Dockerfile', app.dockerfile_path], ...(app.build_context ? [['Build context', app.build_context]] : [])].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between gap-4">
-                <span className="text-xs text-muted-foreground">{k}</span>
-                <span className="text-xs text-foreground font-mono truncate">{v}</span>
+                <dt className="text-xs text-muted-foreground">{k}</dt>
+                <dd className="truncate font-mono text-xs text-foreground">{v}</dd>
               </div>
             ))}
-          </div>
-        </div>
+          </dl>
+        </Panel>
 
-        <div className="rounded-xl panel p-4">
-          <p className="eyebrow mb-3">Resources</p>
-          <div className="space-y-2.5">
+        <Panel title="Resources">
+          <dl className="space-y-2.5">
             {[['CPU', `${app.cpu} vCPU`], ['Memory', `${app.memory} GB`], ['Port', String(app.port)]].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between">
-                <span className="text-xs text-muted-foreground">{k}</span>
-                <span className="text-xs text-foreground font-mono">{v}</span>
+                <dt className="text-xs text-muted-foreground">{k}</dt>
+                <dd className="font-mono text-xs text-foreground">{v}</dd>
               </div>
             ))}
-          </div>
-        </div>
+          </dl>
+        </Panel>
       </div>
 
-      <div className="rounded-xl panel p-4">
+      <section className="rounded-lg border border-border bg-card p-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3">
-            <span className="w-9 h-9 rounded-lg bg-surface-3 border border-hairline flex items-center justify-center shrink-0">
-              <Github className="w-4 h-4 text-foreground" />
-            </span>
+            <Github className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <div>
-              <p className="text-sm font-medium text-foreground">Auto-deploy on push</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Redeploy automatically on every push to{' '}
+              <h2 className="text-sm font-medium text-foreground">Auto-deploy on push</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Redeploy on every push to{' '}
                 <span className="font-mono text-foreground">{app.branch}</span>.
               </p>
             </div>
           </div>
           {canEdit && (
-            <Button
-              onClick={generateWebhook}
-              disabled={webhookLoading}
-              variant="outline"
-              size="sm"
-              className="gap-1.5 shrink-0"
-            >
-              <RefreshCw className={`w-3 h-3 ${webhookLoading ? 'animate-spin' : ''}`} />
+            <Button onClick={generateWebhook} disabled={webhookLoading} variant="outline" size="sm" className="shrink-0">
+              <RefreshCw className={cn('size-3', webhookLoading && 'animate-spin')} />
               {webhookCreds ? 'Rotate secret' : 'Generate webhook secret'}
             </Button>
           )}
         </div>
         {webhookCreds && (
-          <div className="space-y-3 mt-4">
-            <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2">
-              <p className="text-[11px] text-warning">This secret is shown only once. Copy it now and store it safely.</p>
+          <div className="mt-4 space-y-3">
+            <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+              <p className="text-xs text-foreground">This secret is shown once. Copy it now and store it somewhere safe.</p>
             </div>
             <div className="space-y-2.5">
               <div>
-                <p className="eyebrow mb-1.5">Webhook URL</p>
+                <p className="mb-1.5 text-xs font-medium text-foreground/90">Webhook URL</p>
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 text-xs text-foreground bg-surface-1 border border-hairline rounded-lg px-2.5 py-1.5 break-all font-mono">
+                  <code className="flex-1 break-all rounded-md border border-border bg-surface-1 px-2.5 py-1.5 font-mono text-xs text-foreground">
                     {webhookCreds.webhook_url}
                   </code>
                   <button
+                    type="button"
                     onClick={() => copyToClipboard(webhookCreds.webhook_url, 'URL')}
-                    className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-                    title="Copy URL"
+                    className={cn('p-1.5', FOCUS_ICON)}
+                    aria-label="Copy webhook URL"
                   >
-                    <Copy className="w-3.5 h-3.5" />
+                    <Copy className="size-3.5" />
                   </button>
                 </div>
               </div>
               <div>
-                <p className="eyebrow mb-1.5">Secret</p>
+                <p className="mb-1.5 text-xs font-medium text-foreground/90">Secret</p>
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 text-xs text-foreground bg-surface-1 border border-hairline rounded-lg px-2.5 py-1.5 break-all font-mono">
+                  <code className="flex-1 break-all rounded-md border border-border bg-surface-1 px-2.5 py-1.5 font-mono text-xs text-foreground">
                     {webhookCreds.secret}
                   </code>
                   <button
+                    type="button"
                     onClick={() => copyToClipboard(webhookCreds.secret, 'Secret')}
-                    className="text-muted-foreground hover:text-foreground transition-colors p-1.5 rounded outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-                    title="Copy secret"
+                    className={cn('p-1.5', FOCUS_ICON)}
+                    aria-label="Copy webhook secret"
                   >
-                    <Copy className="w-3.5 h-3.5" />
+                    <Copy className="size-3.5" />
                   </button>
                 </div>
               </div>
-              <p className="text-[11px] text-muted-foreground leading-relaxed">{webhookCreds.instructions}</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">{webhookCreds.instructions}</p>
             </div>
           </div>
         )}
-      </div>
+      </section>
 
       {(canEditEnvs || (app.envs && Object.keys(app.envs).length > 0)) && (
-        <div className="rounded-xl panel p-4">
-          <div className="flex items-center justify-between mb-3">
-            <p className="eyebrow">Environment Variables</p>
+        <Panel
+          title="Environment variables"
+          aside={
             <div className="flex items-center gap-3">
               {editingEnvs ? (
                 <>
                   <button onClick={() => setEditingEnvs(false)} disabled={savingEnvs}
-                    className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-foreground transition-colors disabled:opacity-40">
+                    className="rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40">
                     Cancel
                   </button>
-                  <Button size="sm" onClick={saveEnvs} disabled={savingEnvs} className="h-7">
+                  <Button size="sm" onClick={saveEnvs} disabled={savingEnvs}>
                     {savingEnvs ? 'Saving…' : 'Save'}
                   </Button>
                 </>
               ) : (
                 <>
                   {app.envs && Object.keys(app.envs).length > 0 && (
-                    <span className="font-mono text-[10px] text-muted-foreground/60">{Object.keys(app.envs).length} vars</span>
+                    <span className="text-xs text-muted-foreground">{Object.keys(app.envs).length} variables</span>
                   )}
                   {canEditEnvs && !app.infrastructure_exited && (
                     <button onClick={startEditEnvs}
-                      className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors">
-                      <Pencil className="w-3 h-3" /> Edit
+                      className="flex items-center gap-1 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground">
+                      <Pencil className="size-3" /> Edit
                     </button>
                   )}
                 </>
               )}
             </div>
-          </div>
+          }
+        >
           {editingEnvs ? (
             <EnvEditor envs={envRows} onChange={setEnvRows} hideTitle />
           ) : app.envs && Object.keys(app.envs).length > 0 ? (
-            <div className="space-y-1.5 font-mono max-h-80 overflow-y-auto pr-1">
+            <div className="max-h-80 space-y-1.5 overflow-y-auto pr-1 font-mono">
               {Object.entries(app.envs).map(([key, value]) => {
                 const revealed = revealedEnvs.has(key);
                 const masked = value.length <= 4
@@ -487,29 +469,30 @@ export default function ApplicationDetailPage() {
                   : `${value.slice(0, Math.ceil(value.length * 0.2))}${'*'.repeat(Math.max(1, value.length - Math.ceil(value.length * 0.4)))}${value.slice(-Math.ceil(value.length * 0.2))}`;
                 return (
                   <div key={key} className="flex items-center gap-2 text-xs">
-                    <span className="text-brand shrink-0">{key}</span>
-                    <span className="text-muted-foreground/60">=</span>
-                    <span className="text-foreground break-all flex-1">{revealed ? value : masked}</span>
+                    <span className="shrink-0 text-brand">{key}</span>
+                    <span className="text-muted-foreground">=</span>
+                    <span className="flex-1 break-all text-foreground">{revealed ? value : masked}</span>
                     <button
+                      type="button"
                       onClick={() => setRevealedEnvs(prev => {
                         const next = new Set(prev);
                         if (revealed) next.delete(key);
                         else next.add(key);
                         return next;
                       })}
-                      className="shrink-0 text-muted-foreground/60 hover:text-foreground transition-colors ml-1 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 rounded"
-                      title={revealed ? 'Hide' : 'Reveal'}
+                      className={cn('ml-1 shrink-0', FOCUS_ICON)}
+                      aria-label={`${revealed ? 'Hide' : 'Reveal'} ${key}`}
                     >
-                      {revealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      {revealed ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
                     </button>
                   </div>
                 );
               })}
             </div>
           ) : (
-            <p className="text-xs text-muted-foreground">No environment variables yet. Click Edit to add some.</p>
+            <p className="text-xs text-muted-foreground">No environment variables yet. Use Edit to add some.</p>
           )}
-        </div>
+        </Panel>
       )}
 
       <DeploymentHistory
@@ -522,7 +505,7 @@ export default function ApplicationDetailPage() {
 
       {canSeeLogs && infra && (
         <div className="space-y-3">
-          <span className="eyebrow">Observability</span>
+          <h2 className="text-sm font-medium text-foreground">Observability</h2>
           <AppMetricsPanel appId={id} infraId={infra.id} computeType={infra.compute_type} />
           <AppLiveLogs appId={id} infraId={infra.id} computeType={infra.compute_type} />
         </div>
@@ -533,9 +516,9 @@ export default function ApplicationDetailPage() {
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">Delete Application</DialogTitle>
-            <DialogDescription className="text-xs text-muted-foreground">
-              Delete <span className="text-foreground font-mono">{app.name}</span>? This cannot be undone.
+            <DialogTitle className="text-base font-semibold">Delete application</DialogTitle>
+            <DialogDescription>
+              Delete <span className="text-foreground font-mono">{app.name}</span>? This can’t be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -559,6 +542,6 @@ export default function ApplicationDetailPage() {
           onSaved={() => loadApp()}
         />
       )}
-    </motion.div>
+    </div>
   );
 }

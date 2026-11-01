@@ -74,7 +74,7 @@ function describeError(e: unknown): LogError {
       const seconds = retryAfter ? parseInt(retryAfter, 10) : NaN;
       return {
         status,
-        message: Number.isFinite(seconds) ? `Too many requests, retrying in ${seconds}s.` : 'Too many requests, retrying shortly.',
+        message: Number.isFinite(seconds) ? `Too many requests. Retrying in ${seconds}s.` : 'Too many requests. Retrying shortly.',
         retryAfterSeconds: Number.isFinite(seconds) ? seconds : undefined,
       };
     }
@@ -449,34 +449,34 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
   const isForbidden = error?.status === 403;
 
   return (
-    <div className="rounded-xl panel p-4">
+    <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <ScrollText className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="eyebrow">Live Logs</p>
+          <ScrollText className="size-3.5 text-muted-foreground" />
+          <h2 className="text-sm font-medium text-foreground">Live logs</h2>
         </div>
         {hasLoaded && !isForbidden && (
-          <span className="font-mono text-[10px] text-muted-foreground/60">
+          <span className="font-mono text-xs text-muted-foreground">
             {filterLower ? `${visibleEvents.length} / ${events.length}` : events.length} lines
           </span>
         )}
       </div>
 
       {isForbidden ? (
-        <div className="flex items-center gap-2.5 rounded-lg border border-hairline bg-surface-1 px-3 py-3">
-          <Lock className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-surface-1 px-3 py-3">
+          <Lock className="size-3.5 text-muted-foreground shrink-0" />
           <p className="text-xs text-muted-foreground">{error.message}</p>
         </div>
       ) : (
         <>
           <div className="flex flex-wrap items-center gap-2 mb-3">
-            <div className="flex items-center rounded-lg border border-hairline p-0.5 gap-0.5">
+            <div className="flex items-center rounded-lg border border-border p-0.5 gap-0.5">
               {(['app', 'proxy'] as const).map((c) => (
                 <button
                   key={c}
                   type="button"
                   onClick={() => handleContainerChange(c)}
-                  className={`px-2.5 h-6 rounded-md text-[11px] font-mono uppercase tracking-wide transition-colors ${
+                  className={`px-2.5 h-6 rounded-md text-xs font-medium transition-colors ${
                     container === c ? 'bg-surface-3 text-foreground' : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
@@ -485,14 +485,14 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
               ))}
             </div>
 
-            <div className="flex items-center rounded-lg border border-hairline p-0.5 gap-0.5">
+            <div className="flex items-center rounded-lg border border-border p-0.5 gap-0.5">
               {WINDOW_OPTIONS.map((m) => (
                 <button
                   key={m}
                   type="button"
                   disabled={live}
                   onClick={() => handleMinutesChange(m)}
-                  className={`px-2.5 h-6 rounded-md text-[11px] font-mono uppercase tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  className={`px-2.5 h-6 rounded-md text-xs font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                     minutes === m ? 'bg-surface-3 text-foreground' : 'text-muted-foreground hover:text-foreground'
                   }`}
                 >
@@ -502,7 +502,7 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
             </div>
 
             {computeType === 'eks' && (
-              <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80 select-none cursor-pointer">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground/80 select-none cursor-pointer">
                 <input
                   type="checkbox"
                   checked={previous}
@@ -514,12 +514,12 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
             )}
 
             <div className="relative">
-              <Search className="w-3 h-3 text-muted-foreground/60 absolute left-2 top-1/2 -translate-y-1/2" />
+              <Search className="size-3 text-muted-foreground absolute left-2 top-1/2 -translate-y-1/2" />
               <Input
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder="Filter…"
-                className="h-6 w-32 pl-6 text-[11px] font-mono"
+                className="h-6 w-32 pl-6 text-xs font-mono"
               />
             </div>
 
@@ -527,10 +527,10 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
               {events.length > 0 && (
                 <>
                   <button onClick={copyVisible} title="Copy visible logs" className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded">
-                    <Copy className="w-3.5 h-3.5" />
+                    <Copy className="size-3.5" />
                   </button>
                   <button onClick={downloadVisible} title="Download visible logs" className="text-muted-foreground hover:text-foreground transition-colors p-1 rounded">
-                    <Download className="w-3.5 h-3.5" />
+                    <Download className="size-3.5" />
                   </button>
                 </>
               )}
@@ -549,7 +549,7 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
                     fetchLogs();
                   }}
                 >
-                  <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} />
                   {hasLoaded ? 'Refresh' : 'Load logs'}
                 </Button>
               )}
@@ -558,7 +558,7 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
 
           {error && (
             <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 mb-3">
-              <p className="text-xs text-destructive/80">{error.message}</p>
+              <p className="text-xs text-muted-foreground">{error.message}</p>
             </div>
           )}
 
@@ -571,14 +571,14 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
               <div
                 ref={scrollRef}
                 onScroll={handleScroll}
-                className="bg-surface-1 border border-hairline rounded-lg p-3 max-h-96 overflow-y-auto font-mono text-[11px] leading-relaxed"
+                className="bg-surface-1 border border-border rounded-lg p-3 max-h-96 overflow-y-auto font-mono text-xs leading-relaxed"
               >
                 {visibleEvents.length === 0 ? (
                   <p className="text-muted-foreground">No lines match &ldquo;{filter}&rdquo;.</p>
                 ) : (
                   visibleEvents.map((event) => (
                     <div key={event.seq} className={`whitespace-pre-wrap break-all ${levelClass(event.message)}`}>
-                      <span className="text-muted-foreground/60">{formatTimestamp(event.timestamp)}</span>{' '}
+                      <span className="text-muted-foreground">{formatTimestamp(event.timestamp)}</span>{' '}
                       {highlightAll(event.message, filterLower)}
                     </div>
                   ))
@@ -589,9 +589,9 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
                 <button
                   type="button"
                   onClick={jumpToLatest}
-                  className="absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full bg-brand text-primary-foreground px-3 py-1.5 text-[11px] font-medium shadow-lg hover:opacity-90 transition-opacity"
+                  className="absolute bottom-3 right-3 flex items-center gap-1.5 rounded-full bg-brand text-primary-foreground px-3 py-1.5 text-xs font-medium shadow-popover hover:opacity-90 transition-opacity"
                 >
-                  <ArrowDownToLine className="w-3 h-3" />
+                  <ArrowDownToLine className="size-3" />
                   Jump to latest{newSinceScroll > 0 ? ` (${newSinceScroll})` : ''}
                 </button>
               )}
@@ -599,16 +599,16 @@ export function AppLiveLogs({ appId, infraId, computeType }: Props) {
           )}
 
           {truncated && (
-            <p className="text-[10px] text-warning mt-1.5">Output truncated — narrow the time window for full coverage.</p>
+            <p className="text-xs text-warning mt-1.5">Output truncated, narrow the time window for full coverage.</p>
           )}
           {!live && nextCursor && (
             <button
               type="button"
               onClick={() => fetchLogs(nextCursor)}
               disabled={loading}
-              className="mt-2 flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/70 hover:text-brand transition-colors disabled:opacity-40"
+              className="mt-2 flex items-center gap-1 text-xs font-mediumst text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
             >
-              <ChevronDown className="w-3 h-3" /> Load more
+              <ChevronDown className="size-3" /> Load more
             </button>
           )}
         </>
