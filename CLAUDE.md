@@ -33,6 +33,7 @@ customer tree and not reachable by the provisioning worker's credentials (see ea
 - **User auth:** JWT issued by auth-service; Django services verify it in `shared/middleware/authentication.py`.
 - **Service-to-service:** gateway injects `X-INTERNAL-TOKEN`; enforced by `shared/middleware/internal_auth.py` with per-service exempt paths/prefixes in each `core/settings.py`.
 - **Onboarding token:** single-use, SHA-256-hashed token on `Infrastructure` (`issue_onboarding_token()`), burned by the onboarding callback.
+- **Organizations (F9):** `ORGS_ENABLED` defaults on in auth-service, the three Django services and the frontend (`NEXT_PUBLIC_ORGS_ENABLED`, on unless `false`); roles come from org Membership, not `invited_users`. Rollout order and rollback caveats: `plan/F9-teams-and-orgs.md` *Cutover checklist*.
 - **GitHub webhooks:** per-app secret, validated with `hmac.compare_digest` on `X-Hub-Signature-256`.
 
 ## Roadmap

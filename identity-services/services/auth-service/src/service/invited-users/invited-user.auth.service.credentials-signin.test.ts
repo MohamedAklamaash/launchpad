@@ -21,6 +21,7 @@ process.env.REDIS_HOST = '127.0.0.1';
 process.env.REDIS_PORT = '1';
 process.env.REDIS_PASSWORD = 'test';
 process.env.RABBITMQ_URL = 'amqp://guest:guest@127.0.0.1:1/';
+process.env.ORGS_ENABLED = 'false';
 
 const { sequelize } = await import('@/db/sequalize');
 const { InvitedUser, UserOTP, RefreshToken } = await import('@/db');
@@ -34,7 +35,7 @@ const withTransactionMock = () =>
         cb({ afterCommit: () => undefined }),
     );
 
-// This whole file runs with ORGS_ENABLED unset (default off) — login()'s
+// This whole file pins ORGS_ENABLED off — login()'s
 // email_verified_at gate is NOT behind that flag (it's a security fix, not an org
 // feature; see R1), so every test here also demonstrates "flag off: behavior matches
 // main for a verified account, and the deliberate never-verified-after-OTP-expiry

@@ -23,6 +23,7 @@ process.env.REDIS_HOST = '127.0.0.1';
 process.env.REDIS_PORT = '1';
 process.env.REDIS_PASSWORD = 'test';
 process.env.RABBITMQ_URL = 'amqp://guest:guest@127.0.0.1:1/';
+process.env.ORGS_ENABLED = 'false';
 
 // This test drives the real service layer (not the facade) so it exercises the actual
 // attempt-cap wiring around the OTP lookup, mocking only the Sequelize boundary

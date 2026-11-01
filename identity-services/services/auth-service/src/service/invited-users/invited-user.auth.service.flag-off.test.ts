@@ -21,6 +21,7 @@ process.env.REDIS_HOST = '127.0.0.1';
 process.env.REDIS_PORT = '1';
 process.env.REDIS_PASSWORD = 'test';
 process.env.RABBITMQ_URL = 'amqp://guest:guest@127.0.0.1:1/';
+process.env.ORGS_ENABLED = 'false';
 // Deliberately left unset (default false, scope item 4) — tokens/refresh must be
 // byte-for-byte unchanged, including tolerating a non-UUID legacy id, which a real
 // deployment never has but this suite's fixtures (and plenty of pre-F9 tests) do.

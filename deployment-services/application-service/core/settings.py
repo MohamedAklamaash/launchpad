@@ -15,6 +15,7 @@ from pathlib import Path
 
 from api.common.envs.application import app_config
 from api.common.envs.database import db_config
+from shared.flags import flag_default_on
 from shared.mode import is_dev_mode
 
 from core.allowed_hosts_config import get_allowed_hosts
@@ -352,9 +353,9 @@ INFRASTRUCTURE_SERVICE_URL = os.environ.get('INFRASTRUCTURE_SERVICE_URL', 'http:
 EKS_HOST_MODE_ENABLED = os.environ.get('EKS_HOST_MODE_ENABLED', 'True').lower() == 'true'
 
 # F9 ticket 4: gates the org.events consumer (Organization/Membership read-model sync).
-# Default off, same shape as EKS_ENABLED (infrastructure-service) — with the flag off,
-# nothing new connects to the broker (plan/F9-teams-and-orgs.md).
-ORGS_ENABLED = os.environ.get('ORGS_ENABLED', 'False').lower() == 'true'
+# Default on (F9 cutover); off only for false/0/no/off, any case. ORGS_ENABLED=false is the rollback; see plan/F9-teams-and-orgs.md
+# *Cutover checklist* for the startup-guard caveat.
+ORGS_ENABLED = flag_default_on(os.environ.get('ORGS_ENABLED'))
 # Security review H2: prefixes the org_role Redis cache key so infrastructure-service,
 # application-service, and payment-service — three independently-lagging Membership
 # mirrors sharing one Redis instance — never read or write each other's cache entries.

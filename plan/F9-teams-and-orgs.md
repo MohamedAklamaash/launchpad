@@ -6,8 +6,9 @@
 #149), ticket 3 (personal-org backfill + `organization_id` columns on infrastructure-service/
 application-service/payment-service, #151), and ticket 4 (`org.events` consumers mirroring
 Organization/Membership read-models in those same three services, #154) are merged, as are
-tickets 5-8, 10 and 13; ticket 11 (audit log HTTP surface and observability) is in review. All
-ship behind `ORGS_ENABLED` (default off), so none changes request behavior yet. **Depends
+tickets 5-8, 10, 11 and 13, and ticket 12 (cutover) flips `ORGS_ENABLED` to on by default
+(owner-approved 2026-11-01). Deployed environments follow the *Cutover checklist* below; the
+old code paths stay, so `ORGS_ENABLED=false` remains the rollback. **Depends
 on:** nothing technical. **Blocked by:** nothing. The owner has since decided both Open
 Questions below: Stripe consolidation is deferred, and there is one global limit with no
 per-org tiers.
@@ -622,8 +623,12 @@ cutover ticket).
     owner-role-change-attempt alert). Tests: every mutation produces exactly one audit row in
     the same transaction. **Shipped; decisions in Rollout note 9.** **Security review required
     before merge** (new manager-only read surface over actor and target identities).
-12. **Cutover**: flip `ORGS_ENABLED=true` by default once 1–11 are verified (mirrors F7's
-    staged real-environment validation). Legacy `invited_users`/`InfrastructureUserRole`/
+12. **Cutover** (shipped; see *Cutover checklist*): `ORGS_ENABLED` defaults to on in
+    auth-service, infrastructure-service, application-service, payment-service and the
+    frontend (`NEXT_PUBLIC_ORGS_ENABLED`, on unless explicitly `false`); Django `test_settings`
+    pin it off explicitly. Gated on a 52-check local end-to-end run (backfills, mirror
+    verification, invite/accept/switch, role matrix, propagation, removal, transfer, audit
+    log) with real Postgres, Redis and RabbitMQ. Legacy `invited_users`/`InfrastructureUserRole`/
     `roles{}` retirement is explicitly its own later ticket, not part of this plan — same
     "old path stays in the codebase pending its own separate retirement ticket" decision F7
     made for its CodeBuild path.
@@ -1072,6 +1077,52 @@ Operational steps for shipping the auth-service side of F9. Order matters.
     ```
 
     Accept already refuses these (generic invalid-invitation 400), so revoking is hygiene.
+
+## Cutover checklist
+
+Ordered steps for a deployed environment, consolidating the *Rollout notes* above. Because
+the default is now on, a service that boots before steps 1-8 are done runs with the flag on
+against data that has no organizations: set `ORGS_ENABLED=false` on every service for the
+first deploy, then flip it at step 9. Fresh dev databases need none of this (personal orgs
+are created at GitHub login).
+
+1. Deploy all services (auth-service, gateway, infrastructure-service, application-service,
+   payment-service, notification-service, frontend) with `ORGS_ENABLED=false`, and with
+   `NODE_ENV=production` everywhere (note 3: OTPs are echoed in responses otherwise) and
+   `DASHBOARD_URL` set on notification-service (note 4: invitation emails fail without it).
+2. Run the Django migrations in infrastructure-service (`0041`), application-service (`0045`)
+   and payment-service (`0008`) so rows created after the first backfill get an
+   `organization_id` (note 6).
+3. Let auth-service boot once so `applyPendingSchemaPatches()` adds the new columns (note 1).
+4. `pnpm --filter auth-service backfill:accounts`; review its collision log (note 1). Re-invite
+   previously verified users whose code expired, using the SQL in note 2.
+5. Turn `ORGS_ENABLED=true` on the three Django services first, so each `org.events`
+   consumer binds its durable queue. Users have no access until step 6 completes, so
+   schedule a short window. Confirm all three are consuming (note 5, step 2). Events
+   published while no queue is bound are dropped; `--republish-existing` recovers them.
+6. `ORGS_ENABLED=true pnpm --filter auth-service backfill:personal-orgs`. Exit `2` or `3`
+   means resolve conflicts, inconsistencies, shared accounts or a pending outbox by hand
+   before continuing (note 5, step 3).
+7. Run the verification SQL from note 5 in both the infrastructure-service and
+   application-service databases (and the auth-service cross-check); all must return zero
+   rows. Re-run step 6 with `-- --republish-existing` if a mirror is missing orgs.
+8. Run the stale admin-invite SQL from note 10 and revoke what it lists. Send the notice, then
+   `pnpm --filter auth-service reset:inviter-passwords -- --dry-run`, then run it without
+   `--dry-run` (note 5). Affected invitees use "Forgot password" once.
+9. Remove the `ORGS_ENABLED=false` override (or set it to `true`) on auth-service, then the long-running
+   services, and build the frontend without `NEXT_PUBLIC_ORGS_ENABLED=false`. All services parse the flag
+   the same way: off only for `false`, `0`, `no` or `off` (any case, whitespace ignored);
+   unset, empty or anything else is on. Every user
+   must log in again: tokens without an `account_id` claim resolve to no role (note 6).
+   Legacy invitees have no access until re-invited into an org (note 6).
+
+**Rollback:** set `ORGS_ENABLED=false` (or `0`, `no`, `off`) on every service (and `NEXT_PUBLIC_ORGS_ENABLED=false`
+at frontend build time) and restart. infrastructure-service refuses to start flag-off once
+an org admin has created an infrastructure, or an org's ownership was transferred, while the
+flag was on (`created_by_non_owner_under_orgs`, `api/services/org_flag_guard.py`): the
+creator would become the owner under the legacy checks. In that case re-enable the flag or
+reassign those rows by hand first. Retiring `invited_users`, `InfrastructureUserRole` and
+`roles{}` is a separate later ticket.
 
 ## Open questions
 
