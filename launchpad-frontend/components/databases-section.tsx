@@ -7,6 +7,9 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Database as DatabaseIcon, Plus, Trash2 } from 'lucide-react';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { EmptyState } from '@/components/ui/empty-state';
+import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import { databaseApi } from '@/lib/api/databases';
 import { DatabaseCreate, DatabaseEngine, ManagedDatabase } from '@/types/database';
@@ -34,21 +37,12 @@ const INSTANCE_CLASSES: Record<DatabaseEngine, string[]> = {
   docdb: ['db.t3.medium', 'db.r6g.large'],
 };
 
-const STATUS: Record<string, { dot: string; label: string }> = {
-  ACTIVE: { dot: 'bg-success', label: 'text-success' },
-  PENDING: { dot: 'bg-warning animate-pulse', label: 'text-warning' },
-  PROVISIONING: { dot: 'bg-azure animate-pulse', label: 'text-azure' },
-  DELETING: { dot: 'bg-warning animate-pulse', label: 'text-warning' },
-  ERROR: { dot: 'bg-destructive', label: 'text-destructive' },
-};
-const statusOf = (s: string) => STATUS[s] ?? { dot: 'bg-muted-foreground', label: 'text-muted-foreground' };
-
 const IN_FLIGHT: string[] = ['PENDING', 'PROVISIONING', 'DELETING'];
 
 const IN_FLIGHT_HINT: Record<string, string> = {
-  PENDING: 'Creating database — usually 5–10 minutes',
-  PROVISIONING: 'Creating database — usually 5–10 minutes',
-  DELETING: 'Deleting — a final snapshot is taken first, usually 5–10 minutes',
+  PENDING: 'Creating the database. This usually takes 5 to 10 minutes.',
+  PROVISIONING: 'Creating the database. This usually takes 5 to 10 minutes.',
+  DELETING: 'Deleting. A final snapshot is taken first, which usually takes 5 to 10 minutes.',
 };
 
 interface Props {
@@ -148,124 +142,122 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
     }
   };
 
-  if (loading) return <div className="h-24 rounded-xl panel animate-pulse" />;
+  if (loading) return <Skeleton className="h-24 w-full" />;
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-display font-semibold text-foreground">
-          Databases <span className="text-muted-foreground/60 font-normal font-mono">({databases.length})</span>
+        <h2 className="text-sm font-medium text-foreground">
+          Databases <span className="font-normal text-muted-foreground">{databases.length}</span>
         </h2>
         {environmentActive && canManage && (
-          <Button size="sm" onClick={() => setCreateOpen(true)} className="gap-1.5">
-            <Plus className="w-3.5 h-3.5" /> New Database
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-3.5" /> New database
           </Button>
         )}
       </div>
 
       {databases.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-hairline-strong p-10 text-center">
-          <p className="text-xs text-muted-foreground mb-3">
-            {environmentActive ? 'No managed databases yet' : 'Databases can be created once the environment is ACTIVE'}
-          </p>
-          {environmentActive && canManage && (
-            <Button size="sm" onClick={() => setCreateOpen(true)} className="gap-1.5">
-              <Plus className="w-3.5 h-3.5" /> Create First Database
-            </Button>
-          )}
-        </div>
+        <EmptyState
+          icon={DatabaseIcon}
+          title="No databases yet"
+          description={
+            environmentActive
+              ? 'Launchpad can create PostgreSQL, MySQL, Redis or DocumentDB inside this AWS account.'
+              : 'You can create databases once the environment is active.'
+          }
+          action={
+            environmentActive && canManage ? (
+              <Button size="sm" onClick={() => setCreateOpen(true)}>
+                <Plus className="size-3.5" /> Create a database
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {databases.map((db) => {
-            const st = statusOf(db.status);
-            return (
-              <div key={db.id} className="rounded-xl panel p-4 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <DatabaseIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                    <span className="text-sm font-medium text-foreground truncate">{db.name}</span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0 ml-2">
-                    <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
-                    <span className={`font-mono text-[10px] uppercase tracking-[0.12em] ${st.label}`}>{db.status}</span>
-                    {canManage && !IN_FLIGHT.includes(db.status) && db.status !== 'DELETED' && (
-                      <button onClick={() => { setDeleteTarget(db); setConfirmName(''); }}
-                        className="text-muted-foreground/50 hover:text-destructive transition-colors">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-                  </div>
+        <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+          {databases.map((db) => (
+            <li key={db.id} className="space-y-1.5 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <DatabaseIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate text-sm font-medium text-foreground">{db.name}</span>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {db.engine} {db.engine_version} · {db.instance_class}
+                    {db.allocated_storage != null && ` · ${db.allocated_storage} GB`}
+                  </span>
                 </div>
-                <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono">
-                  <span className="uppercase">{db.engine}</span>
-                  <span>{db.engine_version}</span>
-                  <span>{db.instance_class}</span>
-                  {db.allocated_storage != null && <span>{db.allocated_storage}GB</span>}
+                <div className="flex shrink-0 items-center gap-3">
+                  <StatusBadge status={db.status} />
+                  {canManage && !IN_FLIGHT.includes(db.status) && db.status !== 'DELETED' && (
+                    <button
+                      aria-label={`Delete ${db.name}`}
+                      onClick={() => { setDeleteTarget(db); setConfirmName(''); }}
+                      className="rounded-sm text-muted-foreground transition-colors hover:text-destructive"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  )}
                 </div>
-                {db.host && (
-                  <p className="text-[11px] text-muted-foreground font-mono truncate">{db.host}:{db.port}</p>
-                )}
-                {db.secret_arn && (
-                  <p className="text-[10px] text-muted-foreground/70 font-mono truncate" title={db.secret_arn}>
-                    Secret: {db.secret_arn}
-                  </p>
-                )}
-                {IN_FLIGHT.includes(db.status) && (
-                  <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
-                    <span className="w-1 h-1 rounded-full bg-current animate-pulse shrink-0" />
-                    {IN_FLIGHT_HINT[db.status]}
-                  </p>
-                )}
-                {db.error_message && db.status === 'ERROR' && (
-                  <p className="text-[11px] text-destructive">{db.error_message}</p>
-                )}
               </div>
-            );
-          })}
-        </div>
+              {db.host && <p className="truncate font-mono text-xs text-muted-foreground">{db.host}:{db.port}</p>}
+              {db.secret_arn && (
+                <p className="truncate font-mono text-xs text-muted-foreground" title={db.secret_arn}>
+                  Secret: {db.secret_arn}
+                </p>
+              )}
+              {IN_FLIGHT.includes(db.status) && (
+                <p className="text-xs text-muted-foreground">{IN_FLIGHT_HINT[db.status]}</p>
+              )}
+              {db.error_message && db.status === 'ERROR' && (
+                <p className="text-xs text-destructive">{db.error_message}</p>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">New Database</DialogTitle>
+            <DialogTitle className="text-base font-semibold">New database</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleCreate} className="space-y-3">
             <div className="space-y-1.5">
-              <Label className="eyebrow">Name</Label>
-              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="primary-db" pattern="^[a-z][a-z0-9-]{2,30}$" required className="h-9 text-sm font-mono" />
+              <Label htmlFor="db-name">Name</Label>
+              <Input id="db-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="primary-db" pattern="^[a-z][a-z0-9-]{2,30}$" required className="font-mono" />
             </div>
             <div className="space-y-1.5">
-              <Label className="eyebrow">Engine</Label>
+              <Label>Engine</Label>
               <Select value={form.engine} onValueChange={(v) => handleEngineChange(v as DatabaseEngine)}>
-                <SelectTrigger className="h-9 text-sm w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {ENGINE_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value} className="text-sm py-2.5">{o.label}</SelectItem>
+                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label className="eyebrow">Version</Label>
+                <Label>Version</Label>
                 <Select value={form.engine_version} onValueChange={(v) => v && setForm({ ...form, engine_version: v })}>
-                  <SelectTrigger className="h-9 text-sm w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {ENGINE_VERSIONS[form.engine].map((v) => (
-                      <SelectItem key={v} value={v} className="text-sm py-2.5">{v}</SelectItem>
+                      <SelectItem key={v} value={v}>{v}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-1.5">
-                <Label className="eyebrow">Instance Class</Label>
+                <Label>Instance class</Label>
                 <Select value={form.instance_class} onValueChange={(v) => v && setForm({ ...form, instance_class: v })}>
-                  <SelectTrigger className="h-9 text-sm w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {INSTANCE_CLASSES[form.engine].map((v) => (
-                      <SelectItem key={v} value={v} className="text-sm py-2.5 font-mono">{v}</SelectItem>
+                      <SelectItem key={v} value={v} className="font-mono">{v}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -273,14 +265,14 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
             </div>
             {form.engine !== 'redis' && (
               <div className="space-y-1.5">
-                <Label className="eyebrow">Storage (GB)</Label>
+                <Label>Storage (GB)</Label>
                 <Input type="number" min={20} max={1000} value={form.allocated_storage ?? 20}
                   onChange={(e) => setForm({ ...form, allocated_storage: Number(e.target.value) })}
-                  className="h-9 text-sm font-mono" required />
+                  className="font-mono" required />
               </div>
             )}
             <Button type="submit" disabled={creating} className="w-full mt-1">
-              {creating ? 'Creating…' : 'Create Database'}
+              {creating ? 'Creating…' : 'Create database'}
             </Button>
           </form>
         </DialogContent>
@@ -289,14 +281,14 @@ export function DatabasesSection({ infraId, environmentActive, canManage }: Prop
       <Dialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base font-display font-semibold">Delete Database</DialogTitle>
+            <DialogTitle className="text-base font-semibold">Delete database</DialogTitle>
           </DialogHeader>
-          <p className="text-xs text-muted-foreground">
-            Type <span className="text-foreground font-mono">{deleteTarget?.name}</span> to confirm. A final
-            snapshot is taken before the underlying resource is destroyed.
+          <p className="text-sm text-muted-foreground">
+            Type <span className="font-mono text-foreground">{deleteTarget?.name}</span> to confirm. Launchpad takes a final
+            snapshot before it destroys the database.
           </p>
           <Input value={confirmName} onChange={(e) => setConfirmName(e.target.value)}
-            placeholder={deleteTarget?.name} className="h-9 text-sm font-mono" />
+            placeholder={deleteTarget?.name} className="font-mono" />
           <div className="flex gap-2 justify-end mt-2">
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>Cancel</Button>
             <Button variant="destructive" onClick={handleDelete} disabled={deleting || confirmName !== deleteTarget?.name}>

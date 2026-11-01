@@ -49,10 +49,10 @@ export function CfnRefreshDialog({ open, onOpenChange, infraId, deniedActions }:
       const message = err.response?.data?.error;
       if (status === 429) {
         const retryAfter = err.response?.headers?.['retry-after'];
-        setError(message || (retryAfter ? `Too many requests — try again in ${retryAfter}s.` : 'Too many requests — try again later.'));
+        setError(message || (retryAfter ? `Too many requests, try again in ${retryAfter}s.` : 'Too many requests, try again later.'));
       } else if (status === 403) {
         const retrySeconds = err.response?.data?.retry_after_seconds;
-        setError(message || (retrySeconds ? `AssumeRole failed — try again in ${retrySeconds}s.` : 'AssumeRole failed.'));
+        setError(message || (retrySeconds ? `AssumeRole failed, try again in ${retrySeconds}s.` : 'AssumeRole failed.'));
       } else if (status === 400) {
         setError(message || 'This infrastructure was not onboarded via CloudFormation.');
       } else if (status === 404) {
@@ -77,15 +77,15 @@ export function CfnRefreshDialog({ open, onOpenChange, infraId, deniedActions }:
     <Dialog open={open} onOpenChange={close}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle className="text-base font-display font-semibold">Refresh IAM Policy (CloudFormation)</DialogTitle>
+          <DialogTitle className="text-base font-semibold">Refresh IAM Policy (CloudFormation)</DialogTitle>
         </DialogHeader>
 
         {deniedActions && deniedActions.length > 0 && (
-          <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
-            <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
+            <ShieldAlert className="size-4 text-warning shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <p className="text-sm font-medium text-warning">Missing IAM permissions</p>
-              <p className="text-xs text-warning/80">
+              <p className="text-sm font-medium text-foreground">Missing IAM permissions</p>
+              <p className="text-xs text-muted-foreground">
                 Launchpad&apos;s role in your AWS account is missing: {deniedActions.join(', ')}. Prepare a change set
                 below, review it, and execute it, then try again.
               </p>
@@ -94,8 +94,8 @@ export function CfnRefreshDialog({ open, onOpenChange, infraId, deniedActions }:
         )}
 
         {error && (
-          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 flex items-start gap-3">
-            <ShieldAlert className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 flex items-start gap-3">
+            <ShieldAlert className="size-4 text-destructive shrink-0 mt-0.5" />
             <p className="text-xs text-destructive">{error}</p>
           </div>
         )}
@@ -107,13 +107,13 @@ export function CfnRefreshDialog({ open, onOpenChange, infraId, deniedActions }:
               you review and execute it yourself in the AWS console.
             </p>
             <Button onClick={handlePrepare} disabled={loading} className="w-full gap-1.5">
-              {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+              {loading ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
               {loading ? 'Preparing…' : 'Prepare change set'}
             </Button>
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="rounded-xl panel-inset px-4 py-3 space-y-1.5">
+            <div className="rounded-lg border border-border bg-surface-1 px-4 py-3 space-y-1.5">
               <div className="flex items-center gap-2">
                 <span className="eyebrow w-24 shrink-0">Stack</span>
                 <code className="text-xs font-mono text-foreground break-all">{result.stack_name}</code>
@@ -126,16 +126,16 @@ export function CfnRefreshDialog({ open, onOpenChange, infraId, deniedActions }:
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Review the proposed change set in the AWS console and execute it when ready — Launchpad never applies
+              Review the proposed change set in the AWS console and execute it when ready, Launchpad never applies
               a widening change on your behalf. You&apos;ll be prompted to acknowledge <span className="font-mono">CAPABILITY_NAMED_IAM</span>.
             </p>
             <a href={result.review_url} target="_blank" rel="noopener noreferrer">
               <Button className="w-full gap-1.5">
-                <ExternalLink className="w-3.5 h-3.5" /> Review change set in AWS console
+                <ExternalLink className="size-3.5" /> Review change set in AWS console
               </Button>
             </a>
             <Button variant="outline" onClick={() => close(false)} className="w-full gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5" /> Done
+              <ShieldCheck className="size-3.5" /> Done
             </Button>
           </div>
         )}

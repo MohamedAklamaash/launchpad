@@ -2,11 +2,13 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { PageHeader } from '@/components/layout/page-header';
+import { cn } from '@/lib/utils';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { ArrowLeft, ArrowRight, Server, Cpu, HardDrive, Hash, Copy, Check, Terminal, Globe, Search, ChevronDown, ShieldAlert, Rocket, Layers, CloudCog, ExternalLink, Loader2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Copy, Check, Terminal, Search, ChevronDown, ShieldAlert, CloudCog, ExternalLink, Loader2 } from 'lucide-react';
 import { LaunchSequence } from '@/components/launch';
 import { infrastructureApi, AwsRegion } from '@/lib/api/infrastructures';
 import { ComputeType, Infrastructure, InfrastructureCreateResponse } from '@/types/infrastructure';
@@ -25,12 +27,10 @@ import { toast } from 'sonner';
 
 const API_GATEWAY_URL = process.env.NEXT_PUBLIC_API_GATEWAY_URL || 'http://localhost:8000';
 
-const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
-
 const STEPS = [
-  { title: 'Identity', sub: 'Pre-flight', blurb: 'Name the environment and link your AWS account.' },
-  { title: 'Region', sub: 'Placement', blurb: 'Choose where this environment is deployed.' },
-  { title: 'Resources', sub: 'Compute', blurb: 'Pick the compute target and set the CPU and memory ceilings.' },
+  { title: 'Account', blurb: 'Name this environment and enter the 12-digit ID of the AWS account it will live in.' },
+  { title: 'Region', blurb: 'Pick the region Launchpad deploys into.' },
+  { title: 'Compute', blurb: 'Choose ECS Fargate or Kubernetes, then set CPU and memory ceilings. The compute target can’t be changed later.' },
 ] as const;
 
 const COMPUTE_OPTIONS: { value: ComputeType; label: string; blurb: string }[] = [
@@ -51,7 +51,6 @@ export default function NewInfrastructurePage() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [createdInfra, setCreatedInfra] = useState<InfrastructureCreateResponse | null>(null);
   const [step, setStep] = useState(0);
-  const [dir, setDir] = useState(1);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -95,15 +94,14 @@ export default function NewInfrastructurePage() {
   const stepValid = [checks.name && checks.code, true, checks.compute && checks.cpu && checks.memory];
   const firstInvalid = stepValid.findIndex((v) => !v);
   const gate = firstInvalid === -1 ? STEPS.length - 1 : firstInvalid;
-  const readyCount = Object.values(checks).filter(Boolean).length;
-  const totalChecks = Object.keys(checks).length;
+  const allReady = Object.values(checks).every(Boolean);
   const isLast = step === STEPS.length - 1;
 
   useEffect(() => {
     if (step > gate) setStep(gate);
   }, [gate, step]);
 
-  const go = (i: number) => { setDir(i > step ? 1 : -1); setStep(i); };
+  const go = (i: number) => setStep(i);
   const next = () => { if (!isLast && stepValid[step]) go(step + 1); };
   const back = () => { if (step > 0) go(step - 1); else router.back(); };
 
@@ -121,7 +119,7 @@ export default function NewInfrastructurePage() {
       const { aws_region, ...rest } = formData;
       const infra = await infrastructureApi.create({ ...rest, metadata: { aws_region } });
       setCreatedInfra(infra);
-      toast.success('Liftoff — infrastructure created. Run the bootstrap script to finish onboarding.');
+      toast.success('AWS account added. Run the script to finish onboarding.');
     } catch (err: unknown) {
       const error = err as { response?: { data?: { error?: string } } };
       toast.error(error.response?.data?.error || 'Failed to create infrastructure');
@@ -236,44 +234,35 @@ export default function NewInfrastructurePage() {
           copyResetRef.current = null;
         }, 1500);
       },
-      () => toast.error('Copy failed — copy it manually'),
+      () => toast.error('Copy failed. Copy it by hand.'),
     );
   };
 
   if (createdInfra) {
     return (
-      <motion.div {...rise} className="flex justify-center">
-        <div className="w-full max-w-2xl space-y-6">
-          <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-            <ArrowLeft className="w-3.5 h-3.5" /> Back
-          </button>
+      <div className="reveal mx-auto w-full max-w-2xl space-y-6">
+        <button onClick={() => router.back()} className="flex items-center gap-1.5 rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground">
+          <ArrowLeft className="size-3.5" /> Back
+        </button>
 
-          <div className="rounded-2xl panel p-5">
-            <LaunchSequence current="ignition" />
-          </div>
+        <LaunchSequence current="connect" />
 
-          <div className="flex items-start gap-3">
-            <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand-soft border border-brand/30">
-              <Rocket className="w-4.5 h-4.5 text-brand" />
-            </span>
-            <div>
-              <span className="eyebrow">Stage 02 / Ignition</span>
-              <h1 className="mt-1 text-2xl font-display font-semibold text-foreground tracking-tight">Connect your AWS account</h1>
-              <p className="text-sm text-muted-foreground mt-1.5">
-                {cfnUiEnabled ? (
-                  <>Finish onboarding account <span className="font-mono text-foreground">{createdInfra.code}</span> with the shell script or a CloudFormation stack. Provisioning starts automatically once either one finishes.</>
-                ) : (
-                  <>Run this command in a shell with AWS credentials for account <span className="font-mono text-foreground">{createdInfra.code}</span>. Provisioning starts automatically once the script finishes.</>
-                )}
-              </p>
-            </div>
-          </div>
+        <PageHeader
+          title="Connect your AWS account"
+          description={
+            cfnUiEnabled ? (
+              <>Finish onboarding account <span className="font-mono text-foreground">{createdInfra.code}</span> with the shell script or a CloudFormation stack. Provisioning starts on its own once either one finishes.</>
+            ) : (
+              <>Run this command in a shell with AWS credentials for account <span className="font-mono text-foreground">{createdInfra.code}</span>. Provisioning starts on its own once the script finishes.</>
+            )
+          }
+        />
 
           {cfnUiEnabled ? (
             <Tabs defaultValue="script" className="w-full">
               <TabsList className="w-full">
                 <TabsTrigger value="script" className="flex-1">Script</TabsTrigger>
-                <span title={!siblingsResolved ? 'Checking this AWS account’s onboarding status…' : cfnAccountState === 'script_sibling' ? 'This AWS account already uses the shell-script onboarding method — use the Script tab instead.' : undefined} className="flex-1">
+                <span title={!siblingsResolved ? 'Checking this AWS account’s onboarding status…' : cfnAccountState === 'script_sibling' ? 'This AWS account already uses the shell-script onboarding method, use the Script tab instead.' : undefined} className="flex-1">
                   <TabsTrigger value="cloudformation" disabled={!siblingsResolved || cfnAccountState === 'script_sibling'} className="w-full">
                     CloudFormation
                   </TabsTrigger>
@@ -281,8 +270,8 @@ export default function NewInfrastructurePage() {
               </TabsList>
 
               {siblingsResolved && cfnAccountState === 'script_sibling' && (
-                <p className="text-[11px] text-muted-foreground px-1 pt-2">
-                  This AWS account already uses the shell-script onboarding method — an account picks one method
+                <p className="px-1 pt-2 text-xs text-muted-foreground">
+                  This AWS account already uses the shell-script onboarding method, an account picks one method
                   for life. Use the Script tab above instead.
                 </p>
               )}
@@ -325,225 +314,215 @@ export default function NewInfrastructurePage() {
           )}
 
           <div className="flex gap-2 pt-1">
-            <Button size="lg" onClick={() => router.push(`/dashboard/infrastructures/${createdInfra.id}`)} className="px-5 gap-1.5">
-              <Rocket className="w-4 h-4" /> Track provisioning
+            <Button size="lg" onClick={() => router.push(`/dashboard/infrastructures/${createdInfra.id}`)}>
+              Track provisioning
+              <ArrowRight className="size-4" />
             </Button>
           </div>
-        </div>
-      </motion.div>
+      </div>
     );
   }
 
   return (
-    <motion.div {...rise} className="flex justify-center">
-      <div className="w-full max-w-lg space-y-6">
-        <button onClick={() => router.back()} className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
-          <ArrowLeft className="w-3.5 h-3.5" /> Back
-        </button>
+    <div className="reveal mx-auto w-full max-w-lg space-y-6">
+      <button onClick={() => router.back()} className="flex items-center gap-1.5 rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground">
+        <ArrowLeft className="size-3.5" /> Back
+      </button>
 
-        <div>
-          <span className="eyebrow">Stage 01 / Pre-flight</span>
-          <h1 className="mt-1 text-2xl font-display font-semibold text-foreground tracking-tight">Provision an environment</h1>
-          <p className="text-sm text-muted-foreground mt-1.5">Stand up a managed AWS environment for your applications.</p>
-        </div>
+      <PageHeader
+        title="Add an AWS account"
+        description="Launchpad provisions a VPC, load balancer, registry and cluster inside it."
+      />
 
-        <div className="rounded-2xl panel p-5">
-          <Stepper current={step} gate={gate} onSelect={go} />
-        </div>
+      <Stepper current={step} gate={gate} onSelect={go} />
 
-        <form onSubmit={onSubmit} className="space-y-6">
-          <AnimatePresence mode="wait" custom={dir}>
-            <motion.div
-              key={step}
-              custom={dir}
-              initial={{ opacity: 0, x: dir * 26 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: dir * -26 }}
-              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-              className="space-y-4"
-            >
-              <div>
-                <h2 className="text-sm font-display font-semibold text-foreground">{STEPS[step].title}</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">{STEPS[step].blurb}</p>
-              </div>
-
-              {step === 0 && (
-                <div>
-                  <Field icon={<Server className="w-3.5 h-3.5" />} label="Name" hint="e.g. production, staging">
-                    <Input value={formData.name} onChange={(e) => set('name', e.target.value)}
-                      placeholder="production" autoFocus
-                      className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6" />
-                  </Field>
-                  <Field icon={<Hash className="w-3.5 h-3.5" />} label="AWS Account ID" hint="12-digit account number">
-                    <Input value={formData.code} onChange={(e) => set('code', e.target.value)}
-                      placeholder="123456789012" maxLength={12}
-                      className="bg-transparent border-0 h-9 text-sm placeholder:text-muted-foreground/50 focus-visible:ring-0 pl-6 font-mono" />
-                  </Field>
-                </div>
-              )}
-
-              {step === 1 && (
-                <Field icon={<Globe className="w-3.5 h-3.5" />} label="AWS Region" hint="Deployment region">
-                  <div className="relative" ref={dropdownRef}>
-                    <button
-                      type="button"
-                      onClick={() => { setDropdownOpen((o) => !o); setRegionSearch(''); }}
-                      className="w-full flex items-center justify-between h-9 pl-6 text-sm text-foreground focus:outline-none"
-                    >
-                      <span className="font-mono text-sm">{selectedRegionLabel}</span>
-                      <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
-                    </button>
-
-                    {dropdownOpen && (
-                      <div className="absolute z-50 left-0 right-0 top-full mt-2 bg-popover border border-hairline-strong rounded-xl shadow-xl shadow-black/40 overflow-hidden">
-                        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-hairline">
-                          <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                          <input
-                            autoFocus
-                            value={regionSearch}
-                            onChange={(e) => setRegionSearch(e.target.value)}
-                            placeholder="Search regions…"
-                            className="flex-1 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
-                          />
-                        </div>
-                        <ul className="max-h-52 overflow-y-auto py-1">
-                          {filteredRegions.length === 0 ? (
-                            <li className="px-4 py-3 text-xs text-muted-foreground">No regions found</li>
-                          ) : (
-                            filteredRegions.map((r) => (
-                              <li key={r.value}>
-                                <button
-                                  type="button"
-                                  onClick={() => { set('aws_region', r.value); setDropdownOpen(false); }}
-                                  className={`w-full text-left px-4 py-2 flex items-center justify-between transition-colors hover:bg-surface-3 ${formData.aws_region === r.value ? 'text-brand' : 'text-foreground'}`}
-                                >
-                                  <span className="text-xs">{r.label}</span>
-                                  <span className="text-[10px] font-mono text-muted-foreground">{r.value}</span>
-                                </button>
-                              </li>
-                            ))
-                          )}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                </Field>
-              )}
-
-              {step === 2 && (
-                <div>
-                  <Field icon={<Layers className="w-3.5 h-3.5" />} label="Compute Target" hint="immutable after create">
-                    <div className="flex gap-2 py-1 pl-6">
-                      {COMPUTE_OPTIONS.map((o) => {
-                        const available = enabledComputeTypes.includes(o.value);
-                        const selected = formData.compute_type === o.value;
-                        return (
-                          <button
-                            key={o.value}
-                            type="button"
-                            disabled={!available}
-                            title={available ? undefined : `${o.label} is not enabled on this deployment`}
-                            onClick={() => set('compute_type', o.value)}
-                            className={`flex-1 rounded-lg border px-3 py-2 text-left transition-colors ${selected ? 'border-brand/60 bg-brand-soft' : 'border-hairline bg-surface-1'} ${available ? 'hover:bg-surface-2' : 'opacity-50 cursor-not-allowed'}`}
-                          >
-                            <p className={`text-xs font-medium ${selected ? 'text-brand' : 'text-foreground'}`}>{o.label}</p>
-                            <p className="text-[10px] text-muted-foreground mt-0.5">
-                              {available ? o.blurb : 'Not enabled on this deployment'}
-                            </p>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </Field>
-                  <Field icon={<Cpu className="w-3.5 h-3.5" />} label="Max CPU" hint="vCPU">
-                    <Input type="number" step="0.25" min={0.25} value={Number.isNaN(formData.max_cpu) ? '' : formData.max_cpu}
-                      onChange={(e) => set('max_cpu', e.target.value === '' ? NaN : parseFloat(e.target.value))}
-                      className="bg-transparent border-0 h-9 text-sm focus-visible:ring-0 pl-6 font-mono" />
-                  </Field>
-                  <Field icon={<HardDrive className="w-3.5 h-3.5" />} label="Max Memory" hint="GB">
-                    <Input type="number" step="0.5" min={0.5} value={Number.isNaN(formData.max_memory) ? '' : formData.max_memory}
-                      onChange={(e) => set('max_memory', e.target.value === '' ? NaN : parseFloat(e.target.value))}
-                      className="bg-transparent border-0 h-9 text-sm focus-visible:ring-0 pl-6 font-mono" />
-                  </Field>
-                </div>
-              )}
-            </motion.div>
-          </AnimatePresence>
-
-          <div className="flex items-center gap-3 pt-1">
-            <Button type="button" variant="outline" size="lg" onClick={back} className="gap-1.5">
-              <ArrowLeft className="w-3.5 h-3.5" /> {step === 0 ? 'Cancel' : 'Back'}
-            </Button>
-            <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/70">
-              Stage {String(step + 1).padStart(2, '0')} / {String(STEPS.length).padStart(2, '0')}
-              <span className="ml-2 text-muted-foreground/50">{readyCount}/{totalChecks} ready</span>
-            </span>
-            <div className="ml-auto">
-              {isLast ? (
-                <Button type="submit" size="lg" disabled={loading || readyCount < totalChecks} className="px-5 gap-1.5">
-                  <Rocket className="w-4 h-4" /> {loading ? 'Igniting…' : 'Ignite provisioning'}
-                </Button>
-              ) : (
-                <Button type="submit" size="lg" disabled={!stepValid[step]} className="px-5 gap-1.5">
-                  Next <ArrowRight className="w-4 h-4" />
-                </Button>
-              )}
-            </div>
+      <form onSubmit={onSubmit} className="space-y-6">
+        <div key={step} className="reveal space-y-4 rounded-lg border border-border bg-card p-5">
+          <div>
+            <h2 className="text-sm font-medium text-foreground">{STEPS[step].title}</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">{STEPS[step].blurb}</p>
           </div>
-        </form>
-      </div>
-    </motion.div>
+
+          {step === 0 && (
+            <div className="space-y-4">
+              <Field id="infra-name" label="Name" hint="For example production or staging">
+                <Input id="infra-name" value={formData.name} onChange={(e) => set('name', e.target.value)}
+                  placeholder="production" autoFocus />
+              </Field>
+              <Field id="infra-code" label="AWS account ID" hint="12 digits">
+                <Input id="infra-code" value={formData.code} onChange={(e) => set('code', e.target.value)}
+                  placeholder="123456789012" maxLength={12} inputMode="numeric" className="font-mono" />
+              </Field>
+            </div>
+          )}
+
+          {step === 1 && (
+            <Field id="infra-region" label="Region">
+              <div className="relative" ref={dropdownRef}>
+                <button
+                  id="infra-region"
+                  type="button"
+                  aria-haspopup="listbox"
+                  aria-expanded={dropdownOpen}
+                  onClick={() => { setDropdownOpen((o) => !o); setRegionSearch(''); }}
+                  className="flex h-8 w-full items-center justify-between rounded-md border border-input px-2.5 text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+                >
+                  <span className="font-mono text-sm">{selectedRegionLabel}</span>
+                  <ChevronDown className={cn('size-3.5 text-muted-foreground transition-transform', dropdownOpen && 'rotate-180')} />
+                </button>
+
+                {dropdownOpen && (
+                  <div className="absolute left-0 right-0 top-full z-50 mt-1.5 overflow-hidden rounded-md bg-popover shadow-popover">
+                    <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+                      <Search className="size-3.5 shrink-0 text-muted-foreground" />
+                      <input
+                        autoFocus
+                        aria-label="Search regions"
+                        value={regionSearch}
+                        onChange={(e) => setRegionSearch(e.target.value)}
+                        placeholder="Search regions"
+                        className="flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                      />
+                    </div>
+                    <ul role="listbox" aria-label="Regions" className="max-h-52 overflow-y-auto p-1">
+                      {filteredRegions.length === 0 ? (
+                        <li className="px-3 py-2 text-xs text-muted-foreground">No regions found</li>
+                      ) : (
+                        filteredRegions.map((r) => (
+                          <li key={r.value} role="option" aria-selected={formData.aws_region === r.value}>
+                            <button
+                              type="button"
+                              onClick={() => { set('aws_region', r.value); setDropdownOpen(false); }}
+                              className={cn(
+                                'flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none',
+                                formData.aws_region === r.value ? 'text-brand' : 'text-foreground',
+                              )}
+                            >
+                              <span className="text-sm">{r.label}</span>
+                              <span className="font-mono text-xs text-muted-foreground">{r.value}</span>
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </Field>
+          )}
+
+          {step === 2 && (
+            <div className="space-y-4">
+              <div role="group" aria-labelledby="compute-label" className="space-y-1.5">
+                <div className="flex items-baseline justify-between">
+                  <span id="compute-label" className="text-xs font-medium text-foreground/90">Compute target</span>
+                  <span className="text-xs text-muted-foreground">Can’t be changed later</span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {COMPUTE_OPTIONS.map((o) => {
+                    const available = enabledComputeTypes.includes(o.value);
+                    const selected = formData.compute_type === o.value;
+                    return (
+                      <button
+                        key={o.value}
+                        type="button"
+                        disabled={!available}
+                        aria-pressed={selected}
+                        title={available ? undefined : `${o.label} is not enabled on this deployment`}
+                        onClick={() => set('compute_type', o.value)}
+                        className={cn(
+                          'rounded-md border px-3 py-2.5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60',
+                          selected ? 'border-brand bg-brand-soft' : 'border-border hover:bg-muted/50',
+                          !available && 'cursor-not-allowed opacity-50 hover:bg-transparent',
+                        )}
+                      >
+                        <p className={cn('text-sm font-medium', selected ? 'text-brand' : 'text-foreground')}>{o.label}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {available ? o.blurb : 'Not enabled on this deployment'}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field id="infra-cpu" label="Max CPU" hint="vCPU">
+                  <Input id="infra-cpu" type="number" step="0.25" min={0.25} value={Number.isNaN(formData.max_cpu) ? '' : formData.max_cpu}
+                    onChange={(e) => set('max_cpu', e.target.value === '' ? NaN : parseFloat(e.target.value))}
+                    className="font-mono" />
+                </Field>
+                <Field id="infra-mem" label="Max memory" hint="GB">
+                  <Input id="infra-mem" type="number" step="0.5" min={0.5} value={Number.isNaN(formData.max_memory) ? '' : formData.max_memory}
+                    onChange={(e) => set('max_memory', e.target.value === '' ? NaN : parseFloat(e.target.value))}
+                    className="font-mono" />
+                </Field>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Button type="button" variant="outline" size="lg" onClick={back}>
+            <ArrowLeft className="size-3.5" /> {step === 0 ? 'Cancel' : 'Back'}
+          </Button>
+          <span className="text-xs text-muted-foreground">Step {step + 1} of {STEPS.length}</span>
+          <div className="ml-auto">
+            {isLast ? (
+              <Button type="submit" size="lg" disabled={loading || !allReady}>
+                {loading ? 'Creating…' : 'Create account'}
+              </Button>
+            ) : (
+              <Button type="submit" size="lg" disabled={!stepValid[step]}>
+                Next <ArrowRight className="size-4" />
+              </Button>
+            )}
+          </div>
+        </div>
+      </form>
+    </div>
   );
 }
 
 function Stepper({ current, gate, onSelect }: { current: number; gate: number; onSelect: (i: number) => void }) {
   return (
-    <div className="flex items-center">
+    <ol className="flex items-center" aria-label="Steps">
       {STEPS.map((s, i) => {
         const state = i < current ? 'done' : i === current ? 'active' : 'todo';
         const reachable = i <= gate;
         return (
-          <div key={s.title} className={`flex items-center ${i < STEPS.length - 1 ? 'flex-1' : ''}`}>
+          <li key={s.title} aria-current={state === 'active' ? 'step' : undefined} className={cn('flex items-center', i < STEPS.length - 1 && 'flex-1')}>
             <button
               type="button"
               onClick={() => reachable && onSelect(i)}
               disabled={!reachable}
-              className="flex items-center gap-2.5 text-left outline-none disabled:cursor-not-allowed focus-visible:opacity-100"
+              className="flex items-center gap-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/60 disabled:cursor-not-allowed"
             >
               <span
-                className={`relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border text-[10px] font-mono transition-colors ${
-                  state === 'done'
-                    ? 'border-brand/40 bg-brand-soft text-brand'
-                    : state === 'active'
-                      ? 'border-brand bg-brand text-primary-foreground'
-                      : 'border-hairline bg-surface-1 text-muted-foreground'
-                }`}
+                className={cn(
+                  'flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium tabular-nums',
+                  state === 'done' && 'border-brand bg-brand text-background',
+                  state === 'active' && 'border-brand text-brand',
+                  state === 'todo' && 'border-border text-muted-foreground',
+                )}
               >
-                {state === 'done' ? <Check className="w-3.5 h-3.5" /> : String(i + 1).padStart(2, '0')}
-                {state === 'active' && <span className="absolute inset-0 rounded-lg bg-brand/40 animate-ping" />}
+                {state === 'done' ? <Check className="size-3" /> : i + 1}
               </span>
-              <div className="hidden sm:block leading-tight">
-                <p className={`text-xs font-medium ${state === 'todo' ? 'text-muted-foreground' : 'text-foreground'}`}>{s.title}</p>
-                <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-muted-foreground/70">{s.sub}</p>
-              </div>
+              <span className={cn('text-xs', state === 'todo' ? 'text-muted-foreground' : 'text-foreground')}>{s.title}</span>
             </button>
-            {i < STEPS.length - 1 && <span className={`mx-3 h-px flex-1 ${i < current ? 'bg-brand/40' : 'bg-hairline'}`} />}
-          </div>
+            {i < STEPS.length - 1 && <span className={cn('mx-3 h-px flex-1', i < current ? 'bg-brand' : 'bg-border')} />}
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }
 
-function Field({ icon, label, hint, children }: {
-  icon: React.ReactNode; label: string; hint?: string; children: React.ReactNode;
-}) {
+function Field({ id, label, hint, children }: { id: string; label: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="group bg-surface-1 border border-hairline px-4 py-2.5 transition-colors focus-within:border-brand/40 focus-within:bg-surface-2 first:rounded-t-xl last:rounded-b-xl">
-      <div className="flex items-center gap-2 mb-0.5">
-        <span className="text-muted-foreground/70 group-focus-within:text-brand transition-colors">{icon}</span>
-        <span className="eyebrow">{label}</span>
-        {hint && <span className="text-[10px] text-muted-foreground/60 ml-auto font-mono">{hint}</span>}
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between">
+        <Label htmlFor={id}>{label}</Label>
+        {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
       </div>
       {children}
     </div>
@@ -561,24 +540,24 @@ function ScriptOnboardingPanel({ createdInfra, onboardingMisconfig, bootstrapScr
 }) {
   return (
     <>
-      <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
-        <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+      <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
+        <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" />
         <div className="space-y-0.5">
-          <p className="text-sm font-medium text-warning">This token is shown only once</p>
-          <p className="text-xs text-warning/80">
-            Copy the snippet now. If you navigate away you will need to delete and recreate this infrastructure to get a new token.
+          <p className="text-sm font-medium text-foreground">This token is shown once</p>
+          <p className="text-xs text-muted-foreground">
+            Copy the command now. If you leave this page, you will have to delete this account and add it again to get a new token.
           </p>
         </div>
       </div>
 
       {onboardingMisconfig && (
-        <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
-          <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+        <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
+          <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" />
           <div className="space-y-1 flex-1">
-            <p className="text-sm font-medium text-warning">Onboarding is misconfigured</p>
-            <p className="text-xs text-warning/80">{onboardingMisconfig}</p>
-            <p className="text-xs text-warning/80">
-              Your onboarding token and AWS account ID are still valid — use them with a manually-fetched copy of the bootstrap script.
+            <p className="text-sm font-medium text-foreground">Onboarding is misconfigured</p>
+            <p className="text-xs text-muted-foreground">{onboardingMisconfig}</p>
+            <p className="text-xs text-muted-foreground">
+              Your onboarding token and AWS account ID are still valid. Use them with a copy of the bootstrap script you fetch yourself.
             </p>
             <div className="mt-2 space-y-1.5">
               {[
@@ -588,10 +567,10 @@ function ScriptOnboardingPanel({ createdInfra, onboardingMisconfig, bootstrapScr
               ].map((row) => (
                 <div key={row.k} className="flex items-center gap-2">
                   <span className="eyebrow w-28 shrink-0">{row.k}</span>
-                  <code className="text-xs font-mono text-warning break-all">{row.v}</code>
+                  <code className="break-all font-mono text-xs text-foreground">{row.v}</code>
                   {row.copyable && (
-                    <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-warning/70 hover:text-warning transition-colors">
-                      {copiedKey === row.key ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                    <button onClick={() => copy(row.v, row.key)} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground">
+                      {copiedKey === row.key ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
                     </button>
                   )}
                 </div>
@@ -602,24 +581,24 @@ function ScriptOnboardingPanel({ createdInfra, onboardingMisconfig, bootstrapScr
       )}
 
       {bootstrapScript && (
-        <div className="rounded-xl panel p-4 space-y-3">
+        <div className="space-y-3 rounded-lg border border-border bg-card p-4">
           <div className="flex items-start gap-3">
-            <Terminal className="w-4 h-4 text-success shrink-0 mt-0.5" />
+            <Terminal className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
             <div className="space-y-0.5 flex-1 min-w-0">
               <p className="text-sm font-medium text-foreground">{bootstrapScript.label}</p>
               <p className="text-xs text-muted-foreground">{bootstrapScript.description}</p>
             </div>
-            <button onClick={() => copy(bootstrapScript!.invocation, 'bootstrap')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
-              {copiedKey === 'bootstrap' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+            <button aria-label="Copy command" onClick={() => copy(bootstrapScript!.invocation, 'bootstrap')} className="shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground">
+              {copiedKey === 'bootstrap' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
             </button>
           </div>
-          <pre className="bg-surface-3 border border-hairline rounded-lg px-3 py-2.5 text-[11px] font-mono text-success overflow-x-auto whitespace-pre">{bootstrapScript.invocation}</pre>
+          <pre className="overflow-x-auto whitespace-pre rounded-md border border-border bg-surface-1 px-3 py-2.5 font-mono text-xs text-foreground">{bootstrapScript.invocation}</pre>
           {bootstrapScript.locationIsUrl ? (
-            <a href={bootstrapScript.location} target="_blank" rel="noopener noreferrer" className="inline-block text-[10px] text-muted-foreground hover:text-brand transition-colors font-mono">
-              View script source →
+            <a href={bootstrapScript.location} target="_blank" rel="noopener noreferrer" className="inline-block text-xs text-muted-foreground transition-colors hover:text-foreground">
+              View script source
             </a>
           ) : (
-            <p className="text-[10px] text-muted-foreground font-mono">Local path: {bootstrapScript.location}</p>
+            <p className="font-mono text-xs text-muted-foreground">Local path: {bootstrapScript.location}</p>
           )}
         </div>
       )}
@@ -653,8 +632,8 @@ function CloudFormationOnboardingPanel({
 }) {
   if (siblingsLoading) {
     return (
-      <div className="flex items-center gap-2.5 py-6 justify-center text-muted-foreground">
-        <Loader2 className="w-4 h-4 animate-spin" />
+      <div className="flex items-center justify-center gap-2.5 py-6 text-muted-foreground" role="status">
+        <Loader2 className="size-4 animate-spin" />
         <p className="text-xs">Checking your AWS account&apos;s onboarding status…</p>
       </div>
     );
@@ -662,10 +641,10 @@ function CloudFormationOnboardingPanel({
 
   if (siblingsError) {
     return (
-      <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 space-y-2.5">
+      <div className="space-y-2.5 rounded-lg border border-destructive/30 bg-destructive/10 p-4">
         <p className="text-xs text-destructive">Couldn&apos;t check this AWS account&apos;s onboarding status.</p>
         <Button variant="outline" size="sm" onClick={onRetry} className="gap-1.5">
-          <Loader2 className="w-3.5 h-3.5" /> Retry
+          <Loader2 className="size-3.5" /> Retry
         </Button>
       </div>
     );
@@ -674,7 +653,7 @@ function CloudFormationOnboardingPanel({
   if (accountState === 'script_sibling') {
     return (
       <p className="text-xs text-muted-foreground">
-        This AWS account already uses the shell-script onboarding method — an account picks one method for life.
+        This AWS account already uses the shell-script onboarding method, an account picks one method for life.
         Use the Script tab instead.
       </p>
     );
@@ -692,8 +671,8 @@ function CloudFormationOnboardingPanel({
   return (
     <div className="space-y-4">
       {misconfig ? (
-        <div className="rounded-xl border border-warning/30 bg-warning/10 p-4 flex items-start gap-3">
-          <ShieldAlert className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+        <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
+          <ShieldAlert className="mt-0.5 size-4 shrink-0 text-warning" />
           <div className="space-y-1">
             <p className="text-sm font-medium text-warning">CloudFormation onboarding is misconfigured</p>
             <p className="text-xs text-warning/80">{misconfig}</p>
@@ -701,16 +680,16 @@ function CloudFormationOnboardingPanel({
         </div>
       ) : accountState === 'cfn_sibling' ? (
         <div className="space-y-3">
-          <div className="rounded-xl border border-azure/20 bg-azure/5 p-4 flex items-start gap-3">
-            <CloudCog className="w-4 h-4 text-azure shrink-0 mt-0.5" />
-            <p className="text-xs text-azure">
+          <div className="flex items-start gap-3 rounded-lg border border-border bg-surface-1 p-4">
+            <CloudCog className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            <p className="text-xs text-muted-foreground">
               AWS account <span className="font-mono">{createdInfra.code}</span> already has a CloudFormation-managed
               {' '}<span className="font-mono">{CFN_ROLE_NAME}</span> stack. Update it in place instead of creating a new one
-              — open the stack&apos;s <span className="font-medium">Update stack</span> flow, choose
+             , open the stack&apos;s <span className="font-medium">Update stack</span> flow, choose
               {' '}<span className="font-medium">Replace current template</span>, and paste the values below.
             </p>
           </div>
-          <div className="rounded-xl panel p-4 space-y-2.5">
+          <div className="space-y-2.5 rounded-lg border border-border bg-card p-4">
             <div className="flex items-center gap-2">
               <span className="eyebrow w-44 shrink-0">Template (recommended)</span>
               <span className="text-xs text-foreground">{templateLabel}</span>
@@ -720,7 +699,7 @@ function CloudFormationOnboardingPanel({
                 <span className="eyebrow w-44 shrink-0">Template URL</span>
                 <code className="text-xs font-mono text-foreground break-all flex-1">{templateUrl}</code>
                 <button onClick={() => copy(templateUrl, 'cfn-template-url')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
-                  {copiedKey === 'cfn-template-url' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedKey === 'cfn-template-url' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
                 </button>
               </div>
             )}
@@ -729,7 +708,7 @@ function CloudFormationOnboardingPanel({
                 <span className="eyebrow w-44 shrink-0">{row.k}</span>
                 <code className="text-xs font-mono text-foreground break-all flex-1">{row.v}</code>
                 <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
-                  {copiedKey === row.key ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedKey === row.key ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
                 </button>
               </div>
             ))}
@@ -737,11 +716,11 @@ function CloudFormationOnboardingPanel({
           {cfnStackName ? (
             <a href={buildStackInfoUrl(cfnStackName)} target="_blank" rel="noopener noreferrer">
               <Button variant="outline" className="w-full gap-1.5">
-                <ExternalLink className="w-3.5 h-3.5" /> Open stack in AWS console
+                <ExternalLink className="size-3.5" /> Open stack in AWS console
               </Button>
             </a>
           ) : (
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Open CloudFormation in the AWS console (region us-east-1) and find the stack backing{' '}
               <span className="font-mono">{CFN_ROLE_NAME}</span> to apply this update.
             </p>
@@ -753,14 +732,14 @@ function CloudFormationOnboardingPanel({
         </div>
       ) : quickCreate ? (
         <div className="space-y-3">
-          <div className="rounded-xl panel p-4 space-y-2">
+          <div className="space-y-2 rounded-lg border border-border bg-card p-4">
             <div className="flex items-start gap-3">
-              <CloudCog className="w-4 h-4 text-success shrink-0 mt-0.5" />
+              <CloudCog className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <div className="space-y-0.5 flex-1 min-w-0">
                 <p className="text-sm font-medium text-foreground">Launch stack ({templateLabel})</p>
                 <p className="text-xs text-muted-foreground">
                   Opens the CloudFormation console pre-filled with this infrastructure&apos;s parameters. Review
-                  and create the stack there — nothing happens on Launchpad&apos;s side until you verify the
+                  and create the stack there, nothing happens on Launchpad&apos;s side until you verify the
                   connection.
                 </p>
               </div>
@@ -768,7 +747,7 @@ function CloudFormationOnboardingPanel({
           </div>
           <a href={quickCreate.url} target="_blank" rel="noopener noreferrer">
             <Button className="w-full gap-1.5">
-              <ExternalLink className="w-3.5 h-3.5" /> Launch stack in AWS console
+              <ExternalLink className="size-3.5" /> Launch stack in AWS console
             </Button>
           </a>
           <p className="text-xs text-muted-foreground">
@@ -778,9 +757,9 @@ function CloudFormationOnboardingPanel({
           </p>
         </div>
       ) : (
-        <div className="rounded-xl panel p-4 space-y-2.5">
+        <div className="space-y-2.5 rounded-lg border border-border bg-card p-4">
           <p className="text-xs text-muted-foreground">
-            The parameter list is too large for a quick-create link — specify the template manually in the AWS
+            The parameter list is too large for a quick-create link, specify the template manually in the AWS
             console and paste these parameters:
           </p>
           {templateUrl && (
@@ -788,7 +767,7 @@ function CloudFormationOnboardingPanel({
               <span className="eyebrow w-44 shrink-0">Template URL</span>
               <code className="text-xs font-mono text-foreground break-all flex-1">{templateUrl}</code>
               <button onClick={() => copy(templateUrl, 'cfn-template-url')} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
-                {copiedKey === 'cfn-template-url' ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedKey === 'cfn-template-url' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
               </button>
             </div>
           )}
@@ -797,7 +776,7 @@ function CloudFormationOnboardingPanel({
               <span className="eyebrow w-44 shrink-0">{row.k}</span>
               <code className="text-xs font-mono text-foreground break-all flex-1">{row.v}</code>
               <button onClick={() => copy(row.v, row.key)} className="shrink-0 text-muted-foreground hover:text-foreground transition-colors">
-                {copiedKey === row.key ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
+                {copiedKey === row.key ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
               </button>
             </div>
           ))}
