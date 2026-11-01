@@ -2,7 +2,6 @@
 
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { motion } from 'framer-motion';
 import { LogoMark } from '@/components/logo-mark';
 import { useAuthStore } from '@/lib/store/auth';
 import { authApi } from '@/lib/api/auth';
@@ -12,8 +11,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-
-const rise = { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] as const } } };
 
 function AuthenticateWithOtpInner() {
   const router = useRouter();
@@ -34,11 +31,11 @@ function AuthenticateWithOtpInner() {
     authApi.verifyOtp(email, otp, newPassword)
       .then((res) => {
         setAuth(res.user, res.access_token, res.refresh_token);
-        toast.success('Authenticated successfully');
+        toast.success('You\'re signed in.');
         router.replace(ORGS_ENABLED ? postLoginPath() : '/dashboard');
       })
       .catch((err) => {
-        const msg = err.response?.data?.error || 'Invalid or expired link';
+        const msg = err.response?.data?.error || 'This link is invalid or has expired.';
         toast.error(msg);
         router.replace(`/login?email=${encodeURIComponent(email)}`);
       });
@@ -49,7 +46,7 @@ function AuthenticateWithOtpInner() {
     ran.current = true;
 
     if (!email || !otp) {
-      toast.error('Invalid authentication link');
+      toast.error('This sign-in link is not valid.');
       router.replace('/login');
       return;
     }
@@ -59,42 +56,39 @@ function AuthenticateWithOtpInner() {
   }, []);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden px-4">
-      <div className="brand-glow pointer-events-none absolute inset-0" />
-      <motion.div {...rise} className="relative flex flex-col items-center gap-5 text-center">
-        <div className="inline-flex items-center gap-2.5">
-          <LogoMark size={32} />
-          <span className="font-display text-lg font-semibold tracking-tight text-foreground">Launchpad</span>
-        </div>
+    <div className="flex min-h-dvh items-center justify-center bg-background px-4">
+      <div className="reveal flex w-full max-w-[22rem] flex-col items-center gap-6 text-center">
+        <LogoMark size={28} />
         {ORGS_ENABLED && email && otp && !submitting ? (
           <form
             onSubmit={(e) => { e.preventDefault(); submit(password || undefined); }}
-            className="w-full max-w-xs space-y-4 text-left"
+            className="w-full space-y-5 text-left"
           >
             <div className="space-y-1.5 text-center">
-              <span className="eyebrow">Confirm your email</span>
+              <h1 className="text-xl font-semibold tracking-tight text-foreground">Confirm your email</h1>
               <p className="text-sm text-muted-foreground">
                 Choose a password for <span className="font-mono text-foreground">{email}</span>, or leave it blank to continue without one.
               </p>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="new-password" className="eyebrow">Set your password (optional)</Label>
+              <Label htmlFor="new-password">Password (optional)</Label>
               <Input id="new-password" type="password" value={password} minLength={6} maxLength={72}
-                autoComplete="new-password" placeholder="6–72 characters"
+                autoComplete="new-password"
                 onChange={(e) => setPassword(e.target.value)} />
+              <p className="text-xs text-muted-foreground">6 to 72 characters.</p>
             </div>
-            <Button type="submit" size="lg" className="w-full">Verify &amp; continue</Button>
+            <Button type="submit" size="lg" className="w-full">Continue</Button>
           </form>
         ) : (
-          <>
-            <div className="w-6 h-6 border-2 border-hairline-strong border-t-brand rounded-full animate-spin" />
-            <div className="space-y-1.5">
-              <span className="eyebrow">Verifying link</span>
-              <p className="text-sm text-muted-foreground">Authenticating…</p>
+          <div role="status" className="flex flex-col items-center gap-4">
+            <div className="size-5 animate-spin rounded-full border-2 border-border border-t-brand" />
+            <div className="space-y-1">
+              <h1 className="text-sm font-medium text-foreground">Checking your link</h1>
+              <p className="text-sm text-muted-foreground">This takes a moment.</p>
             </div>
-          </>
+          </div>
         )}
-      </motion.div>
+      </div>
     </div>
   );
 }

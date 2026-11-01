@@ -12,6 +12,8 @@ import { useAuthStore } from '@/lib/store/auth';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { OrgSwitcher } from '@/components/org-switcher';
+import { MobileSidebar } from '@/components/layout/sidebar';
+import { ThemeToggle } from '@/components/theme-toggle';
 import { ORGS_ENABLED } from '@/lib/orgs-enabled';
 
 export function Header() {
@@ -24,44 +26,40 @@ export function Header() {
   };
 
   return (
-    <header className="h-16 shrink-0 border-b border-hairline bg-surface-1/60 backdrop-blur-sm flex items-center justify-between px-6">
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <span className="w-1.5 h-1.5 rounded-full bg-success" />
-          <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-            Mission Control
-          </span>
-        </div>
+    <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 sm:px-4">
+      <div className="flex min-w-0 items-center gap-2">
+        <MobileSidebar />
         {ORGS_ENABLED && <OrgSwitcher />}
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-1">
+        <ThemeToggle />
         <DropdownMenu>
-          <DropdownMenuTrigger className="rounded-full w-9 h-9 flex items-center justify-center transition-all ring-1 ring-hairline-strong hover:ring-brand/40 overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
+          <DropdownMenuTrigger
+            aria-label="Account menu"
+            className="flex size-8 items-center justify-center overflow-hidden rounded-full border border-border bg-surface-2 outline-none transition-colors hover:border-hairline-strong focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
             {user?.profile_url ? (
-              <Image src={user.profile_url} alt={user.user_name} width={36} height={36} className="w-9 h-9 rounded-full object-cover" />
+              <Image src={user.profile_url} alt="" width={32} height={32} className="size-8 rounded-full object-cover" />
             ) : (
-              <User className="w-4 h-4 text-muted-foreground" />
+              <User className="size-4 text-muted-foreground" />
             )}
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[220px] bg-popover border-hairline-strong shadow-xl shadow-black/40">
-            <div className="px-3 py-2.5 space-y-0.5">
-              <p className="font-medium text-sm text-foreground truncate">{user?.user_name}</p>
-              <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+          <DropdownMenuContent align="end" className="min-w-[220px]">
+            <div className="space-y-0.5 px-2 py-2">
+              <p className="truncate text-sm font-medium text-foreground">{user?.user_name}</p>
+              <p className="truncate text-xs text-muted-foreground">{user?.email}</p>
             </div>
-            <DropdownMenuSeparator className="bg-hairline" />
-            <DropdownMenuItem
-              onClick={() => router.push('/dashboard/settings')}
-              className="cursor-pointer mx-1 mt-1 rounded-md"
-            >
-              <Settings className="w-3.5 h-3.5 mr-2" />
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => router.push('/dashboard/settings')} className="cursor-pointer">
+              <Settings className="size-3.5" />
               Settings
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={handleLogout}
-              className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer mx-1 mb-1 rounded-md"
+              className="cursor-pointer text-destructive focus:bg-destructive/10 focus:text-destructive"
             >
-              <LogOut className="w-3.5 h-3.5 mr-2" />
+              <LogOut className="size-3.5" />
               Sign out
             </DropdownMenuItem>
           </DropdownMenuContent>
