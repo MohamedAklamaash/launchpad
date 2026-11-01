@@ -1,10 +1,14 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutGrid, Server, Rocket, Users } from 'lucide-react';
+import { LayoutGrid, Menu, Rocket, Server, Settings, Users } from 'lucide-react';
 import { LogoMark } from '@/components/logo-mark';
+import { Button } from '@/components/ui/button';
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useOrgRole } from '@/lib/use-org-role';
+import { cn } from '@/lib/utils';
 
 const navItems = [
   { href: '/dashboard', icon: LayoutGrid, label: 'Overview', match: 'exact' as const },
@@ -12,62 +16,106 @@ const navItems = [
   { href: '/dashboard/applications', icon: Rocket, label: 'Applications', match: 'prefix' as const },
 ];
 
-export function Sidebar() {
+function Brand() {
+  return (
+    <Link
+      href="/dashboard"
+      className="flex items-center gap-2.5 rounded-md px-1 py-1 text-sm font-semibold tracking-tight text-foreground"
+    >
+      <LogoMark size={22} />
+      Launchpad
+    </Link>
+  );
+}
+
+function NavLink({
+  href,
+  icon: Icon,
+  label,
+  active,
+  onNavigate,
+}: {
+  href: string;
+  icon: typeof LayoutGrid;
+  label: string;
+  active: boolean;
+  onNavigate?: () => void;
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onNavigate}
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors duration-(--duration-fast)',
+        active
+          ? 'bg-sidebar-accent font-medium text-foreground'
+          : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
+      )}
+    >
+      <Icon className={cn('size-4 shrink-0', active ? 'text-foreground' : 'text-muted-foreground')} />
+      {label}
+    </Link>
+  );
+}
+
+function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { enabled, org } = useOrgRole();
-  const items = enabled && org
-    ? [...navItems, { href: `/dashboard/organizations/${org.id}/members`, icon: Users, label: 'Members', match: 'prefix' as const }]
-    : navItems;
+  const items =
+    enabled && org
+      ? [...navItems, { href: `/dashboard/organizations/${org.id}/members`, icon: Users, label: 'Members', match: 'prefix' as const }]
+      : navItems;
+  const isActive = (href: string, match: 'exact' | 'prefix') =>
+    match === 'exact' ? pathname === href : pathname === href || pathname.startsWith(href + '/');
 
   return (
-    <aside className="w-60 shrink-0 bg-sidebar border-r border-hairline flex flex-col">
-      <div className="px-5 h-16 flex items-center border-b border-hairline">
-        <Link href="/dashboard" className="flex items-center gap-2.5 group">
-          <span className="w-8 h-8 rounded-lg bg-surface-2 border border-hairline-strong flex items-center justify-center shrink-0 transition-colors group-hover:border-brand/40">
-            <LogoMark size={20} />
-          </span>
-          <span className="text-[15px] font-display font-semibold tracking-tight text-foreground">Launchpad</span>
-        </Link>
+    <nav aria-label="Main" className="flex flex-1 flex-col px-2 pt-1">
+      <div className="space-y-0.5">
+        {items.map((item) => (
+          <NavLink key={item.href} {...item} active={isActive(item.href, item.match)} onNavigate={onNavigate} />
+        ))}
       </div>
-
-      <div className="px-5 pt-6 pb-2">
-        <span className="eyebrow">Console</span>
+      <div className="mt-auto pb-3">
+        <NavLink
+          href="/dashboard/settings"
+          icon={Settings}
+          label="Settings"
+          active={isActive('/dashboard/settings', 'prefix')}
+          onNavigate={onNavigate}
+        />
       </div>
+    </nav>
+  );
+}
 
-      <nav className="flex-1 px-3 space-y-1">
-        {items.map((item) => {
-          const isActive =
-            item.match === 'exact'
-              ? pathname === item.href
-              : pathname === item.href || pathname.startsWith(item.href + '/');
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              aria-current={isActive ? 'page' : undefined}
-              className={`relative flex items-center gap-3 px-3 h-9 rounded-lg text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
-                isActive
-                  ? 'bg-surface-2 text-foreground font-medium'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-surface-1'
-              }`}
-            >
-              {isActive && (
-                <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-full bg-brand" />
-              )}
-              <item.icon className={`w-4 h-4 transition-colors ${isActive ? 'text-brand' : 'text-muted-foreground/80'}`} />
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
-
-      <div className="px-5 py-4 border-t border-hairline flex items-center justify-between">
-        <span className="eyebrow">v1.0.0</span>
-        <span className="flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
-          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">Live</span>
-        </span>
+export function Sidebar() {
+  return (
+    <aside className="hidden w-56 shrink-0 flex-col border-r border-sidebar-border bg-sidebar lg:flex">
+      <div className="flex h-12 items-center px-3">
+        <Brand />
       </div>
+      <SidebarNav />
     </aside>
+  );
+}
+
+export function MobileSidebar() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation" onClick={() => setOpen(true)}>
+        <Menu className="size-4" />
+      </Button>
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetContent side="left" showCloseButton={false} className="w-64 gap-0 bg-sidebar p-0">
+          <SheetTitle className="sr-only">Navigation</SheetTitle>
+          <div className="flex h-12 items-center px-3">
+            <Brand />
+          </div>
+          <SidebarNav onNavigate={() => setOpen(false)} />
+        </SheetContent>
+      </Sheet>
+    </>
   );
 }
