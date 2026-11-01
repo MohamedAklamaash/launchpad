@@ -1096,8 +1096,9 @@ are created at GitHub login).
 3. Let auth-service boot once so `applyPendingSchemaPatches()` adds the new columns (note 1).
 4. `pnpm --filter auth-service backfill:accounts`; review its collision log (note 1). Re-invite
    previously verified users whose code expired, using the SQL in note 2.
-5. Turn `ORGS_ENABLED=true` on the three Django services first (users have no access until step 6 completes, so schedule a short window) so each `org.events` consumer
-   binds its durable queue, and confirm all three are consuming (note 5, step 2). Events
+5. Turn `ORGS_ENABLED=true` on the three Django services first, so each `org.events`
+   consumer binds its durable queue. Users have no access until step 6 completes, so
+   schedule a short window. Confirm all three are consuming (note 5, step 2). Events
    published while no queue is bound are dropped; `--republish-existing` recovers them.
 6. `ORGS_ENABLED=true pnpm --filter auth-service backfill:personal-orgs`. Exit `2` or `3`
    means resolve conflicts, inconsistencies, shared accounts or a pending outbox by hand
@@ -1108,12 +1109,14 @@ are created at GitHub login).
 8. Run the stale admin-invite SQL from note 10 and revoke what it lists. Send the notice, then
    `pnpm --filter auth-service reset:inviter-passwords -- --dry-run`, then run it without
    `--dry-run` (note 5). Affected invitees use "Forgot password" once.
-9. Set `ORGS_ENABLED=true` (or remove the override) on auth-service, then the long-running
-   services, and build the frontend without `NEXT_PUBLIC_ORGS_ENABLED=false`. Every user
+9. Remove the `ORGS_ENABLED=false` override (or set it to `true`) on auth-service, then the long-running
+   services, and build the frontend without `NEXT_PUBLIC_ORGS_ENABLED=false`. All services parse the flag
+   the same way: off only for `false`, `0`, `no` or `off` (any case, whitespace ignored);
+   unset, empty or anything else is on. Every user
    must log in again: tokens without an `account_id` claim resolve to no role (note 6).
    Legacy invitees have no access until re-invited into an org (note 6).
 
-**Rollback:** set `ORGS_ENABLED=false` on every service (and `NEXT_PUBLIC_ORGS_ENABLED=false`
+**Rollback:** set `ORGS_ENABLED=false` (or `0`, `no`, `off`) on every service (and `NEXT_PUBLIC_ORGS_ENABLED=false`
 at frontend build time) and restart. infrastructure-service refuses to start flag-off once
 an org admin has created an infrastructure, or an org's ownership was transferred, while the
 flag was on (`created_by_non_owner_under_orgs`, `api/services/org_flag_guard.py`): the
